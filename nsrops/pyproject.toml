@@ -1,0 +1,71 @@
+[project]
+name = "nsrops"
+description = "Neural Symbolic Regression Operators"
+authors = [
+    {name = "Paul Saegert"},
+    ]
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+version = "0.0.1"
+urls = { Github = "https://github.com/psaegert/flash-ansr"}
+
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "flake8",
+    "pygount",
+    "types-setuptools",
+    "types-tqdm",
+    "types-toml",
+    "types-PyYAML"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+    "platformdirs==3.10.0",
+]
+build-backend = "setuptools.build_meta"
+
+
+[tool.flake8]
+ignore = ["E501"]
+exclude = [
+    ".git",
+	"__pycache__",
+	"documentation",
+	"build",
+	"venv",
+	".venv",
+	"env",
+	".env",
+	"images",
+]
+per-file-ignores = "__init__.py:F401"
+
+
+[tool.mypy]
+no_implicit_optional = false
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+explicit_package_bases = true
+exclude = "(.venv|tests/|experimental/)"
+ignore_missing_imports = true

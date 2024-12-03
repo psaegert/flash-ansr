@@ -1,0 +1,36 @@
+on:
+  push:
+    branches: main
+    paths:
+      - "**.py"
+  pull_request:
+    paths:
+      - "**.py"
+
+name: pytest
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - uses: actions/checkout@v4.1.1
+
+      # Setup Python
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5.1.0
+        with:
+          python-version: "3.11"
+
+      # Install the package and development requirements
+      - name: Install package and development requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./nsrops
+          pip install -e .[dev]
+
+      # Run the tests
+      - name: Run tests
+        run: |
+          pytest tests

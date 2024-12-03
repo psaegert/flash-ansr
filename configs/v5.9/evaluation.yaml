@@ -1,0 +1,13 @@
+n_support: 512
+n_beams: 128
+n_restarts: 32
+max_len: 32
+numeric_head: True
+equivalence_pruning: True
+pointwise_close_criterion: 0.95
+pointwise_close_accuracy_rtol: 0.05
+pointwise_close_accuracy_atol: 0.001
+r2_close_criterion: 0.95
+refiner_p0_noise: 'normal'
+refiner_p0_noise_kwargs: {'loc': 0, 'scale': 0.1}
+device: cuda

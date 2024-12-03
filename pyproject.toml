@@ -1,0 +1,75 @@
+[project]
+name = "flash_ansr"
+description = "Flash Amortized Neural Symbolic Regression"
+authors = [
+    {name = "Paul Saegert"},
+    ]
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+version = "0.1.0"
+urls = { Github = "https://github.com/psaegert/flash-ansr"}
+
+[project.scripts]
+flash_ansr = "flash_ansr.__main__:main"
+
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "flake8",
+    "pygount",
+    "types-setuptools",
+    "types-tqdm",
+    "types-toml",
+    "types-PyYAML",
+    "radon"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[build-system]
+requires = [
+    "setuptools>=68",
+    "wheel",
+    "platformdirs==3.10.0",
+]
+build-backend = "setuptools.build_meta"
+
+
+[tool.flake8]
+ignore = ["E501"]
+exclude = [
+    ".git",
+	"__pycache__",
+	"documentation",
+	"build",
+	"venv",
+	".venv",
+	"env",
+	".env",
+	"images",
+]
+per-file-ignores = "__init__.py:F401"
+
+
+[tool.mypy]
+no_implicit_optional = false
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+explicit_package_bases = true
+exclude = "(.venv|tests/|experimental/|src/flash_ansr/compat/nesymres.py)"
+ignore_missing_imports = true

@@ -1,0 +1,16 @@
+absl-py
+datasets
+editdistance
+einops
+matplotlib
+nltk
+numpy
+pyyaml
+rouge_score
+scikit-learn
+scipy
+torch
+torch_optimizer
+tqdm
+wandb
+zss

@@ -1,0 +1,1 @@
+pylint --rcfile=./pylint.cfg ./src

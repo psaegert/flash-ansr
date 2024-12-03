@@ -1,0 +1,23 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: requirements-txt-fixer
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.0.0
+    hooks:
+        - id: flake8
+          additional_dependencies: [ Flake8-pyproject ]
+          exclude: ^experimental/
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.9.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [
+            types-setuptools==69.0.0.20240125 ,
+            types-tqdm==4.66.0.20240106 ,
+            types-toml==0.10.8.7,
+            types-PyYAML==6.0.12.20240311]
+        exclude: ^(tests/|experimental/)
