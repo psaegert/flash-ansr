@@ -195,6 +195,7 @@ class Trainer():
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
             validate_interval: int | None = None,
+            wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             verbose: bool = False) -> FlashANSRTransformer:
         return self.run(
             project_name=project_name,
@@ -208,7 +209,7 @@ class Trainer():
             validate_interval=validate_interval,
             validate_size=self.config.get("val_size", None),
             validate_batch_size=self.config["val_batch_size"],
-            wandb_mode=self.config.get("wandb_mode", "online"),
+            wandb_mode=wandb_mode,
             verbose=verbose
         )
 
