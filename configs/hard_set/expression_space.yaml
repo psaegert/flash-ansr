@@ -281,7 +281,4 @@ operators:
     symmetry: 0
     positive: false
     monotonicity: 1
-variables:
-- x1
-- x2
-- x3
+variables: 3

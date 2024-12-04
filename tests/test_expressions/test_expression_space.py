@@ -29,7 +29,7 @@ class TestExpressionSpace(unittest.TestCase):
                 "positive": False,
                 "monotonicity": 0
             }},
-            variables=["x1"])
+            variables=1)
 
         assert space.variables == ["x1"]
         assert space.operator_arity == {'+': 2}
