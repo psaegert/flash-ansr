@@ -1,12 +1,13 @@
 import importlib
-from typing import Literal, Callable
+from typing import Literal, Callable, Any
 import warnings
 
 import numpy as np
+import torch
 from scipy.optimize import curve_fit, OptimizeWarning
 
 from flash_ansr.expressions import ExpressionSpace
-from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants
+from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
 
 
 class ConvergenceError(Exception):
@@ -273,13 +274,13 @@ class Refiner:
 
         return popt, pcov
 
-    def predict(self, X: np.ndarray, nth_best_constants: int = 0) -> np.ndarray:
+    def predict(self, X: np.ndarray | torch.Tensor, nth_best_constants: int = 0) -> np.ndarray:
         '''
         Predict the output of the expression with the fitted constants
 
         Parameters
         ----------
-        X : np.ndarray
+        X : np.ndarray or torch.Tensor
             The input data
         nth_best_constants : int, optional
             An index specifying which fitted constants to use. By default 0 (the best constants)
@@ -299,16 +300,19 @@ class Refiner:
         else:
             y = self.expression_lambda(*X.T, *constants_values)  # type: ignore
 
-        if not isinstance(y, np.ndarray):
+        if not isinstance(y, (np.ndarray, torch.Tensor)):
             y = np.full((X.shape[0], 1), y.reshape(-1, 1))
 
         if len(y) == 1:
             # Repeat y to match the shape of x
-            y = np.repeat(y, X.shape[0])
+            if isinstance(X, torch.Tensor):
+                y = torch.repeat_interleave(y, X.shape[0], dim=0)
+            else:
+                y = np.repeat(y, X.shape[0])
 
         return y.reshape(-1, 1)
 
-    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2) -> list[str]:
+    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, variable_mapping: dict | None = None, **kwargs: Any) -> list[str]:
         '''
         Insert the fitted constants to the expression
 
@@ -322,6 +326,8 @@ class Refiner:
             Whether to return the expression in prefix notation. By default False
         precision : int, optional
             The precision for rounding the constants. By default 2
+        variable_mapping : dict, optional
+            A dictionary mapping the variables to their names. By default None (use the default variable names)
 
         Returns
         -------
@@ -334,10 +340,14 @@ class Refiner:
         constants_values = self._all_constants_values[nth_best_constants][0]
 
         expression_with_values = substitude_constants(expression, np.round(constants_values, precision))
+
+        if variable_mapping is not None:
+            expression_with_values = apply_variable_mapping(expression_with_values, variable_mapping)
+
         if return_prefix:
             return expression_with_values
 
-        expression_with_values_infix = self.expression_space.prefix_to_infix(expression_with_values)
+        expression_with_values_infix = self.expression_space.prefix_to_infix(expression_with_values, **kwargs)
         return expression_with_values_infix
 
     def __str__(self) -> str:
@@ -349,4 +359,4 @@ class Refiner:
         str
             The string representation
         '''
-        return f"Refiner(expression={self.input_expression}, best_constants={self.constants_values}, best_loss={self.loss} expression_space={self.expression_space})"
+        return f"Refiner(expression={self.input_expression}, best_constants={self.constants_values}, best_loss={self.loss})"

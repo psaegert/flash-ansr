@@ -54,6 +54,7 @@ def main(argv: str = None) -> None:
     train_parser.add_argument('--project', type=str, default='neural-symbolic-regression', help='Name of the wandb project')
     train_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
     train_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
+    train_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
 
     evaluate_parser = subparsers.add_parser("evaluate")
     evaluate_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
@@ -180,7 +181,8 @@ def main(argv: str = None) -> None:
                     verbose=args.verbose,
                     checkpoint_interval=args.checkpoint_interval,
                     checkpoint_directory=substitute_root_path(args.output_dir),
-                    validate_interval=args.validate_interval)
+                    validate_interval=args.validate_interval,
+                    wandb_mode=args.mode)
             except KeyboardInterrupt:
                 print("Training interrupted. Saving model...")
 

@@ -94,6 +94,25 @@ def substitude_constants(prefix_expression: list[str], values: list | np.ndarray
     return prefix_expression_with_constants
 
 
+def apply_variable_mapping(prefix_expression: list[str], variable_mapping: dict[str, str]) -> list[str]:
+    '''
+    Apply a variable mapping to a prefix expression.
+
+    Parameters
+    ----------
+    prefix_expression : list[str]
+        The prefix expression to apply the mapping to.
+    variable_mapping : dict[str, str]
+        The variable mapping to apply.
+
+    Returns
+    -------
+    list[str]
+        The prefix expression with the variable mapping applied.
+    '''
+    return list(map(lambda token: variable_mapping.get(token, token), prefix_expression))
+
+
 def numbers_to_num(prefix_expression: list[str]) -> list[str]:
     '''
     Replace all numbers in a prefix expression with the string '<num>'.
