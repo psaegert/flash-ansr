@@ -6,6 +6,7 @@
 
 [![pytest](https://github.com/psaegert/flash-ansr/actions/workflows/pytest.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/pytest.yml)
 [![quality checks](https://github.com/psaegert/flash-ansr/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/pre-commit.yml)
+[![CodeQL Advanced](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yml)
 
 </div>
 
