@@ -1,9 +1,11 @@
 import copy
-from typing import Literal
+from typing import Literal, Any
 
 import numpy as np
+import pandas as pd
 import torch
 from torch import nn
+from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 
@@ -77,45 +79,93 @@ class FlashANSR(BaseEstimator):
         self._results: list[tuple[Refiner, dict]] = []
         self.verbose = verbose
 
-    def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor, converge_error: Literal['raise', 'ignore', 'print'] = 'ignore') -> "FlashANSR":
+        self.variable_mapping: dict[str, str] = {}
+
+    def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
         '''
         Perform symbolic regression on the input data.
 
         Parameters
         ----------
-        X : np.ndarray or torch.Tensor
+        X : np.ndarray | torch.Tensor | pd.DataFrame
             The input data.
-        y : np.ndarray or torch.Tensor
+        y : np.ndarray | torch.Tensor | pd.DataFrame | pd.Series
             The target data.
+        variable_names : list[str] | dict[str, str] | {'auto'}, optional
+            The variable names, by default 'auto'.
+            - If list[str], the i-th column of X will be named variable_names[i].
+            - If dict[str, str]:
+                - If X is array-like, the i-th column of X will be named after the variable_names keys
+                - If X is a DataFrame, variable_names will be used to map the column names to the variable names.
+            - If 'auto':
+                - If X is a DataFrame, the column names will be used as variable names.
+                - If X is an array or tensor, the variables will be named x0, x1, x2, ...
+            - If None, the variables will be named x0, x1, x2, ...
         converge_error : {'raise', 'ignore', 'print'}, optional
             The behavior for convergence errors, by default 'ignore'.
+        verbose : bool, optional
+            Whether to display a progress bar, by default False.
 
         Returns
         -------
-        NSR
+        FlashANSR
             The fitted model.
         '''
+        # Default: No mapping
+        self.variable_mapping = {}
+
+        if isinstance(variable_names, list):
+            # column i -> variable_names[i]
+            self.variable_mapping = {f"x{i}": name for i, name in enumerate(variable_names)}
+
+        elif isinstance(variable_names, dict):
+            if isinstance(X, pd.DataFrame):
+                # column i -> variable_names[column i]
+                self.variable_mapping = {f"x{i}": variable_names[c] for i, c in enumerate(X.columns)}
+            else:
+                # custom mapping
+                self.variable_mapping = variable_names
+
+        elif variable_names == 'auto':
+            if isinstance(X, pd.DataFrame):
+                # column i -> column name
+                self.variable_mapping = {f"x{i}": name for i, name in enumerate(X.columns)}
+
         with torch.no_grad():
             # Convert the input data to a tensor
             if not isinstance(X, torch.Tensor):
-                X = torch.tensor(X, dtype=torch.float32)
+                if isinstance(X, pd.DataFrame):
+                    X = torch.tensor(X.values, dtype=torch.float32, device=self.nsr_transformer.device)
+                else:
+                    X = torch.tensor(X, dtype=torch.float32, device=self.nsr_transformer.device)
+            else:
+                X = X.to(self.nsr_transformer.device)
+
             if not isinstance(y, torch.Tensor):
-                y = torch.tensor(y, dtype=torch.float32)
+                if isinstance(y, (pd.DataFrame, pd.Series)):
+                    y = torch.tensor(y.values, dtype=torch.float32, device=self.nsr_transformer.device)
+                else:
+                    y = torch.tensor(y, dtype=torch.float32, device=self.nsr_transformer.device)
+            else:
+                y = y.to(self.nsr_transformer.device)
+
+            if y.dim() == 1:
+                y = y.unsqueeze(-1)
 
             # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
             pad_length = self.nsr_transformer.encoder_max_n_variables - X.shape[-1] - y.shape[-1]
+
             if pad_length > 0:
-                X = nn.functional.pad(X, (0, pad_length, 0, 0, 0, 0), value=0)
+                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
 
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
             # Generate the beams
             if self.generation_type == 'beam_search':
-                beams, log_probs = self.nsr_transformer.beam_search(data_tensor, beam_size=self.n_beams, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning)
+                beams, log_probs = self.nsr_transformer.beam_search(data_tensor, beam_size=self.n_beams, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, verbose=verbose)
             elif self.generation_type == 'softmax_sampling':
                 raise NotImplementedError("Softmax sampling is not yet implemented")
-                beams, log_probs = self.nsr_transformer.softmax_sampling(data_tensor, n_choices=self.n_beams, temperature=1, max_len=self.max_len)
             beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
             # Silence numpy errors
@@ -125,7 +175,7 @@ class FlashANSR(BaseEstimator):
             self._results = []
 
             # Fit the refiner to each beam
-            for beam, beam_decoded, log_prob in zip(beams, beams_decoded, log_probs):
+            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose):
                 if self.expression_space.is_valid(beam_decoded):
                     numeric_prediction = None
 
@@ -145,6 +195,11 @@ class FlashANSR(BaseEstimator):
                             p0_noise_kwargs=self.p0_noise_kwargs,
                             converge_error=converge_error)
 
+                        if len(refiner._all_constants_values) == 0:
+                            score = np.inf
+                        else:
+                            score = refiner._all_constants_values[0][-1] + self.parsimony * len(beam_decoded)
+
                         self._results.append((
                             refiner,
                             {
@@ -154,7 +209,7 @@ class FlashANSR(BaseEstimator):
                                 'expression': beam_decoded,
                                 'lambda': refiner.expression_lambda,
                                 'fits': copy.deepcopy(refiner._all_constants_values),
-                                'score': refiner._all_constants_values[0][-1] + self.parsimony * len(beam_decoded)
+                                'score': score
                             }))
 
                     except ConvergenceError:
@@ -171,13 +226,13 @@ class FlashANSR(BaseEstimator):
 
             return self
 
-    def predict(self, X: np.ndarray, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
+    def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
         '''
         Predict the target data using the fitted model.
 
         Parameters
         ----------
-        X : np.ndarray
+        X : np.ndarray | torch.Tensor | pd.DataFrame
             The input data.
         nth_best_beam : int, optional
             The nth best beam to use, by default 0.
@@ -189,4 +244,47 @@ class FlashANSR(BaseEstimator):
         np.ndarray
             The predicted target data.
         '''
+        if isinstance(X, pd.DataFrame):
+            X = X.values
+
+        # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
+        pad_length = self.nsr_transformer.encoder_max_n_variables - X.shape[-1] - 1
+
+        if pad_length > 0:
+            if isinstance(X, torch.Tensor):
+                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
+            elif isinstance(X, np.ndarray):
+                X = np.pad(X, ((0, 0), (0, pad_length)), mode='constant', constant_values=0)
+
         return self._results[nth_best_beam][0].predict(X, nth_best_constants=nth_best_constants)
+
+    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> str:
+        '''
+        Get the nth best expression.
+
+        Parameters
+        ----------
+        nth_best_beam : int, optional
+            The nth best beam to use, by default 0.
+        nth_best_constants : int, optional
+            The nth best constants to use for the given beam, by default 0.
+        return_prefix : bool, optional
+            Whether to return the expression with the prefix, by default False.
+        precision : int, optional
+            The precision for rounding the constants, by default 2.
+        map_variables : bool, optional
+            Whether to map the variables to their specified names if possible, by default True.
+        **kwargs : Any
+
+        Returns
+        -------
+        str
+            The nth best expression.
+        '''
+        return self._results[nth_best_beam][0].transform(
+            expression=self._results[nth_best_beam][1]['expression'],
+            nth_best_constants=nth_best_constants,
+            return_prefix=return_prefix,
+            precision=precision,
+            variable_mapping=self.variable_mapping if map_variables else None,
+            **kwargs)

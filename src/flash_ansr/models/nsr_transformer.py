@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 import torch
 from torch import nn
+from tqdm import tqdm
 
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions.expression_space import ExpressionSpace
@@ -209,7 +210,7 @@ class FlashANSRTransformer(nn.Module):
 
         return logits, num_out
 
-    def beam_search(self, data: torch.Tensor, beam_size: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True) -> tuple[list[list[int]], list[float]]:
+    def beam_search(self, data: torch.Tensor, beam_size: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
         '''
         Beam search algorithm to generate sequences.
 
@@ -218,13 +219,15 @@ class FlashANSRTransformer(nn.Module):
         data : torch.Tensor
             The data tensor.
         beam_size : int, optional
-            The beam size, by default 4.
+            The number of beams, by default 4.
         max_len : int, optional
             The maximum length of the sequences, by default 100.
         mini_batch_size : int, optional
             The mini-batch size, by default 128.
         equivalence_pruning : bool, optional
             Whether to prune equivalent sequences, by default True.
+        verbose : bool, optional
+            Whether to print debug information, by default False.
 
         Returns
         -------
@@ -234,6 +237,9 @@ class FlashANSRTransformer(nn.Module):
         # Step 1: Initialize the beam with the initial input sequence
         beams = [([self.expression_space.tokenizer['<bos>']], 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
+        n_pruned = 0
+
+        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})")
 
         for _ in range(max_len):
             all_sequences = []
@@ -306,6 +312,8 @@ class FlashANSRTransformer(nn.Module):
                             # print(f'candidate_simplified: {candidate_simplified}')
                             if candidate_simplified not in [seq for seq, _ in all_candidates_unique] and candidate_simplified not in [seq for seq, _ in completed_sequences]:
                                 all_candidates_unique.append((candidate_simplified, candidate[1]))
+                            else:
+                                n_pruned += 1
                     else:
                         # print(f'appending {self.expression_space.tokenizer.decode(candidate[0])}')
                         all_candidates_unique.append(candidate)
@@ -319,6 +327,9 @@ class FlashANSRTransformer(nn.Module):
             # If no beams are left to expand, break early
             if not beams:
                 break
+
+            pbar.set_postfix({'completed': len(completed_sequences), 'pruned': n_pruned})
+            pbar.update(1)
 
         # Step 7: Combine completed sequences with current beams (in case they are incomplete)
         completed_sequences.extend(beams)

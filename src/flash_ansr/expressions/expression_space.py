@@ -22,10 +22,10 @@ class ExpressionSpace:
     ----------
     operators : dict[str, dict[str, Any]]
         A dictionary of operators with their properties
-    variables : list[str], optional
-        A list of variables, by default None
+    variables : int
+        The number of variables
     """
-    def __init__(self, operators: dict[str, dict[str, Any]], variables: list[str] | None = None) -> None:
+    def __init__(self, operators: dict[str, dict[str, Any]], variables: int) -> None:
         self.special_constants = {"pi": np.pi}
 
         self.operator_tokens = list(operators.keys())
@@ -71,9 +71,7 @@ class ExpressionSpace:
         self.max_power = max([int(op[3:]) for op in self.operator_tokens if re.match(r'pow\d+(?!\_)', op)] + [0])
         self.max_fractional_power = max([int(op[5:]) for op in self.operator_tokens if re.match(r'pow1_\d+', op)] + [0])
 
-        self.variables = variables or []
-        if not isinstance(self.variables, list) or not all(isinstance(v, str) for v in self.variables):
-            raise ValueError('Variables must be a list of strings.')
+        self.variables = [f'x{i + 1}' for i in range(variables)]
 
         self.tokenizer = Tokenizer(self.operator_tokens + self.variables)
 

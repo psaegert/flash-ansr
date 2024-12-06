@@ -13,4 +13,4 @@ from .data import FlashANSRDataset
 from .train.train import Trainer, OptimizerFactory, LRSchedulerFactory
 from .eval import Evaluation
 from .refine import Refiner
-from .nsr import FlashANSR
+from .flash_ansr import FlashANSR

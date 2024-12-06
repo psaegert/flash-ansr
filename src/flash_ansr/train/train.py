@@ -1,7 +1,7 @@
 import os
 import time
 import copy
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch_optimizer
@@ -195,6 +195,7 @@ class Trainer():
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
             validate_interval: int | None = None,
+            wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             verbose: bool = False) -> FlashANSRTransformer:
         return self.run(
             project_name=project_name,
@@ -208,6 +209,7 @@ class Trainer():
             validate_interval=validate_interval,
             validate_size=self.config.get("val_size", None),
             validate_batch_size=self.config["val_batch_size"],
+            wandb_mode=wandb_mode,
             verbose=verbose
         )
 
@@ -224,6 +226,7 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
+            wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             verbose: bool = False) -> FlashANSRTransformer:
         if verbose:
             print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
@@ -242,7 +245,7 @@ class Trainer():
         self.last_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
         self.initial_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
 
-        with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name):  # type: ignore
+        with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             pbar = tqdm(range(steps), disable=not verbose, smoothing=0.001, desc="Training")
 
             # Validate
