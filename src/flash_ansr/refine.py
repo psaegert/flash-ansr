@@ -43,7 +43,7 @@ class Refiner:
         self.constants_values: np.ndarray | None = None
         self.loss: float | None = None
 
-        self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []  # (n_restarts, (constants, loss))
+        self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []
 
     def import_modules(self) -> None:
         '''
