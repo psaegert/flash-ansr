@@ -204,15 +204,16 @@ with
 #### 4.1 Evaluate NeSymRes
 1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) to a directory of your choice.
 2. Download the `100M` model as described [here](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)
-3. Create a Python 3.10 (!) environment and install flash-ansr as in the previous steps.
-4. Install NeSymRes in the same environment:
+3. Move the `100M` model into `flash-ansr/models/nesymres/`
+4. Create a Python 3.10 (!) environment and install flash-ansr as in the previous steps.
+5. Install NeSymRes in the same environment:
 ```sh
 cd NeuralSymbolicRegressionThatScales
 pip install -e src/
 ```
-5. Navigate back to this repository and run the evaluation
+1. Navigate back to this repository and run the evaluation
 ```sh
-cd ansr
+cd flash-ansr
 ./scripts/evaluate_nesymres <test_set>
 ```
 

@@ -312,7 +312,7 @@ class Refiner:
 
         return y.reshape(-1, 1)
 
-    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, variable_mapping: dict | None = None, **kwargs: Any) -> list[str]:
+    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, variable_mapping: dict | None = None, **kwargs: Any) -> list[str] | str:
         '''
         Insert the fitted constants to the expression
 
@@ -331,7 +331,7 @@ class Refiner:
 
         Returns
         -------
-        list
+        list[str] or str
             The transformed expression
         '''
         if self.constants_values is None and len(self.constants_symbols) > 0:

@@ -37,7 +37,7 @@ class NeSymResEvaluation():
     def __init__(
             self,
             n_support: int | None = None,
-            n_beams: int = 1,
+            beam_width: int = 1,
             n_restarts: int = 1,
             pointwise_close_criterion: float = 0.95,
             pointwise_close_accuracy_rtol: float = 0.05,
@@ -46,7 +46,7 @@ class NeSymResEvaluation():
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
-        self.n_beams = n_beams
+        self.beam_width = beam_width
         self.n_restarts = n_restarts
         self.pointwise_close_criterion = pointwise_close_criterion
         self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
@@ -67,7 +67,7 @@ class NeSymResEvaluation():
 
         return cls(
             n_support=config_["n_support"],
-            n_beams=config_["n_beams"],
+            beam_width=config_["beam_width"],
             n_restarts=config_["n_restarts"],
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],

@@ -44,7 +44,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         x = torch.rand(13, 6)
 
-        beams, scores = nsr.beam_search(x, beam_size=4, max_len=10)
+        beams, scores = nsr.beam_search(x, beam_width=4, max_len=10)
 
         assert len(beams) == 4
         assert len(scores) == 4

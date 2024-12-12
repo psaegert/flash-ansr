@@ -263,7 +263,7 @@ def main(argv: str = None) -> None:
                 eq_setting_path=substitute_root_path(args.config_equation),
                 config_path=substitute_root_path(args.config_model),
                 weights_path=substitute_root_path(args.model),
-                beam_size=evaluation_config['n_beams'],
+                beam_size=evaluation_config['beam_width'],
                 n_restarts=evaluation_config['n_restarts'],
                 device=evaluation_config['device']
             )

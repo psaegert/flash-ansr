@@ -41,7 +41,7 @@ class Evaluation():
     ----------
     n_support : int, optional
         Number of input points for each equation. Default is None (sampled from the dataset).
-    n_beams : int, optional
+    beam_width : int, optional
         Number of beams for the beam search algorithm. Default is 1.
     n_restarts : int, optional
         Number of restarts for constant fitting. Default is 1.
@@ -74,7 +74,7 @@ class Evaluation():
     def __init__(
             self,
             n_support: int | None = None,
-            n_beams: int = 1,
+            beam_width: int = 1,
             n_restarts: int = 1,
             max_len: int = 20,
             numeric_head: bool = False,
@@ -88,7 +88,7 @@ class Evaluation():
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
-        self.n_beams = n_beams
+        self.beam_width = beam_width
         self.n_restarts = n_restarts
         self.max_len = max_len
         self.numeric_head = numeric_head
@@ -128,7 +128,7 @@ class Evaluation():
 
         return cls(
             n_support=config_["n_support"],
-            n_beams=config_["n_beams"],
+            beam_width=config_["beam_width"],
             n_restarts=config_["n_restarts"],
             max_len=config_["max_len"],
             numeric_head=config_["numeric_head"],
@@ -211,7 +211,7 @@ class Evaluation():
 
                 # Beam search
                 beam_search_time_start = time.time()
-                beams, _ = model.beam_search(data_tensor[0], beam_size=self.n_beams, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning)
+                beams, _ = model.beam_search(data_tensor[0], beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning)
                 results_dict['beam_search_time'].append(time.time() - beam_search_time_start)
                 beams_decoded = [model.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
@@ -233,11 +233,11 @@ class Evaluation():
                     results_dict[f'accuracy_beam_{j+1}'].extend(accuracy(beam_tensor, labels.view(1, -1), ignore_index=0, reduction='none').cpu())
 
                 # BLEU
-                bleu_scores_array = np.empty(self.n_beams)
+                bleu_scores_array = np.empty(self.beam_width)
                 for j, beam in enumerate(beams_decoded):
                     bleu_scores_array[j] = sentence_bleu(references=[labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1)
 
-                for i in range(self.n_beams):
+                for i in range(self.beam_width):
                     results_dict[f'bleu_beam_{i+1}'].append(bleu_scores_array[i])
 
                 # ROUGE
@@ -252,30 +252,30 @@ class Evaluation():
                         results_dict[f'{metric}_fmeasure_beam_{i+1}'].append(scores[metric].fmeasure)
 
                 # METEOR
-                meteor_scores_array = np.empty(self.n_beams)
+                meteor_scores_array = np.empty(self.beam_width)
                 for j, beam in enumerate(beams_decoded):
                     meteor_scores_array[j] = meteor_score(references=[labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer())
 
-                for i in range(self.n_beams):
+                for i in range(self.beam_width):
                     results_dict[f'meteor_beam_{i+1}'].append(meteor_scores_array[i])
 
                 # Edit distance
-                edit_distances_array = np.empty(self.n_beams)
+                edit_distances_array = np.empty(self.beam_width)
                 for j, beam in enumerate(beams_decoded):
                     edit_distances_array[j] = editdistance.eval(beam, labels_decoded)
 
-                for i in range(self.n_beams):
+                for i in range(self.beam_width):
                     results_dict[f'edit_distance_beam_{i+1}'].append(edit_distances_array[i])
 
                 # Tree edit distance
-                tree_edit_distances_array = np.empty(self.n_beams)
+                tree_edit_distances_array = np.empty(self.beam_width)
                 for j, beam in enumerate(beams_decoded):
                     if not model.expression_space.is_valid(beam):
                         tree_edit_distances_array[j] = float('nan')
                     else:
                         tree_edit_distances_array[j] = zss_tree_edit_distance(beam, labels_decoded, model.expression_space.operator_arity)
 
-                for i in range(self.n_beams):
+                for i in range(self.beam_width):
                     results_dict[f'tree_edit_distance_beam_{i+1}'].append(tree_edit_distances_array[i])
 
                 # Structural accuracy using model.expression_space.check_valid(expression)

@@ -1,5 +1,5 @@
 n_support: 512
-n_beams: 16
+beam_width: 16
 n_restarts: 8
 max_len: 32
 numeric_head: False

@@ -28,7 +28,7 @@ class FlashANSR(BaseEstimator):
         The core transformer model.
     generation_type : {'beam_search'}, optional
         The type of generation to use, by default 'beam_search'.
-    n_beams : int, optional
+    beam_width : int, optional
         The number of beams to generate, by default 1.
     numeric_head : bool, optional
         Whether to use the numeric head, by default False.
@@ -54,7 +54,7 @@ class FlashANSR(BaseEstimator):
             expression_space: ExpressionSpace,
             flash_ansr_transformer: FlashANSRTransformer,
             generation_type: Literal['beam_search'] = 'beam_search',
-            n_beams: int = 1,
+            beam_width: int = 1,
             numeric_head: bool = False,
             equivalence_pruning: bool = True,
             n_restarts: int = 1,
@@ -68,7 +68,7 @@ class FlashANSR(BaseEstimator):
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
 
         self.generation_type = generation_type
-        self.n_beams = n_beams
+        self.beam_width = beam_width
         self.numeric_head = numeric_head
         self.equivalence_pruning = equivalence_pruning
         self.n_restarts = n_restarts
@@ -88,7 +88,7 @@ class FlashANSR(BaseEstimator):
             cls,
             directory: str,
             generation_type: Literal['beam_search'] = 'beam_search',
-            n_beams: int = 1,
+            beam_width: int = 1,
             numeric_head: bool = False,
             equivalence_pruning: bool = True,
             n_restarts: int = 1,
@@ -112,7 +112,7 @@ class FlashANSR(BaseEstimator):
             expression_space=expression_space,
             flash_ansr_transformer=model,
             generation_type=generation_type,
-            n_beams=n_beams,
+            beam_width=beam_width,
             numeric_head=numeric_head,
             equivalence_pruning=equivalence_pruning,
             n_restarts=n_restarts,
@@ -205,7 +205,7 @@ class FlashANSR(BaseEstimator):
 
             # Generate the beams
             if self.generation_type == 'beam_search':
-                beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_size=self.n_beams, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, verbose=verbose)
+                beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, verbose=verbose)
             elif self.generation_type == 'softmax_sampling':
                 raise NotImplementedError("Softmax sampling is not yet implemented")
             beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
@@ -298,9 +298,12 @@ class FlashANSR(BaseEstimator):
             elif isinstance(X, np.ndarray):
                 X = np.pad(X, ((0, 0), (0, pad_length)), mode='constant', constant_values=0)
 
+        if len(self._results) == 0:
+            raise ValueError("The model has not been fitted yet. Please call the fit method first.")
+
         return self._results[nth_best_beam][0].predict(X, nth_best_constants=nth_best_constants)
 
-    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> str:
+    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         '''
         Get the nth best expression.
 
@@ -320,7 +323,7 @@ class FlashANSR(BaseEstimator):
 
         Returns
         -------
-        str
+        list[str] | str
             The nth best expression.
         '''
         return self._results[nth_best_beam][0].transform(
