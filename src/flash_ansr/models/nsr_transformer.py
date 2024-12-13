@@ -210,7 +210,7 @@ class FlashANSRTransformer(nn.Module):
 
         return logits, num_out
 
-    def beam_search(self, data: torch.Tensor, beam_size: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
+    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
         '''
         Beam search algorithm to generate sequences.
 
@@ -319,10 +319,10 @@ class FlashANSRTransformer(nn.Module):
                         all_candidates_unique.append(candidate)
 
                 # Step 7: Select the top 'beam_size' candidates to be the new beams
-                beams = all_candidates_unique[:beam_size]
+                beams = all_candidates_unique[:beam_width]
 
             else:
-                beams = all_candidates[:beam_size]
+                beams = all_candidates[:beam_width]
 
             # If no beams are left to expand, break early
             if not beams:
@@ -338,7 +338,7 @@ class FlashANSRTransformer(nn.Module):
         completed_sequences = sorted(completed_sequences, key=lambda x: x[1], reverse=True)
 
         # Step 9: Return the top 'beam_size' sequences
-        return [seq for seq, _ in completed_sequences[:beam_size]], [score for _, score in completed_sequences[:beam_size]]
+        return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]]
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, errors: Literal['raise', 'warn', 'ignore'] = 'warn') -> None:
         '''
