@@ -187,6 +187,7 @@ class FlashANSRDataset:
             steps: int | None = None,
             batch_size: int | BatchSizeScheduler | None = None,
             n_support: int | None = None,
+            tqdm_total: int | None = None,
             verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Iterate over the dataset.
@@ -201,6 +202,8 @@ class FlashANSRDataset:
             The batch size or scheduler, by default None.
         n_support : int, optional
             The number of support points to sample, by default None.
+        tqdm_total : int, optional
+            The total number of iterations for the tqdm progress bar, by default None.
         verbose : bool, optional
             Whether to print verbose output, by default False.
 
@@ -213,14 +216,14 @@ class FlashANSRDataset:
             if batch_size is None:
                 if steps is not None:
                     raise ValueError(f'Speficfied {steps=} which is not used for non-batched data generation')
-                yield from self.generate(size=size, n_support=n_support, verbose=verbose)
+                yield from self.generate(size=size, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
             else:
-                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, verbose=verbose)
+                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
         else:
             for instance in tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01):
                 yield instance
 
-    def generate_batch(self, batch_size: int | BatchSizeScheduler, size: int | None = None, steps: int | None = None, n_support: int | None = None, verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
+    def generate_batch(self, batch_size: int | BatchSizeScheduler, size: int | None = None, steps: int | None = None, n_support: int | None = None, tqdm_total: int | None = None, verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Generate a batch of data.
 
@@ -234,6 +237,8 @@ class FlashANSRDataset:
             The number of batches to generate, by default None.
         n_support : int, optional
             The number of support points to sample, by default None.
+        tqdm_total : int, optional
+            The total number of iterations for the tqdm progress bar, by default None
         verbose : bool, optional
             Whether to print verbose output, by default False.
 
@@ -261,7 +266,7 @@ class FlashANSRDataset:
             if isinstance(batch_size, int):
                 steps = int(np.ceil(size / batch_size))
 
-        pbar = tqdm(desc="Batch generating data", unit="b", total=steps, disable=not verbose, smoothing=0.01)
+        pbar = tqdm(desc="Batch generating data", unit="b", total=steps or tqdm_total, disable=not verbose, smoothing=0.01)
 
         batch_id = 0
         n_rejected = 0
@@ -322,7 +327,7 @@ class FlashANSRDataset:
 
         pbar.close()
 
-    def generate(self, size: int | None = None, n_support: int | None = None, avoid_fragmentation: bool = True, verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
+    def generate(self, size: int | None = None, n_support: int | None = None, avoid_fragmentation: bool = True, tqdm_total: int | None = None, verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
         '''
         Generate data.
 
@@ -334,6 +339,8 @@ class FlashANSRDataset:
             The number of support points to sample, by default None.
         avoid_fragmentation : bool, optional
             Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
+        tqdm_total : int, optional
+            The total number of iterations for the tqdm progress bar, by default None.
         verbose : bool, optional
             Whether to print verbose output, by default False.
 
@@ -343,7 +350,7 @@ class FlashANSRDataset:
             The next batch of data.
         '''
         if verbose:
-            pbar = tqdm(desc="Generating data", total=size, smoothing=0.01)
+            pbar = tqdm(desc="Generating data", total=size or tqdm_total, smoothing=0.01)
 
         n_generated = 0
         n_rejected = 0

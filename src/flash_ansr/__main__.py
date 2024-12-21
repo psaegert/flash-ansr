@@ -198,7 +198,7 @@ def main(argv: str = None) -> None:
 
         case 'evaluate':
             if args.verbose:
-                print(f'[NSR] Evaluating model from {args.model} on {args.dataset}')
+                print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')
             import os
             from flash_ansr.eval.evaluation import Evaluation
             from flash_ansr.utils import substitute_root_path

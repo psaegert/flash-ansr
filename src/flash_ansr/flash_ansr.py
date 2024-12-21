@@ -217,7 +217,7 @@ class FlashANSR(BaseEstimator):
             self._results = []
 
             # Fit the refiner to each beam
-            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose):
+            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
                 if self.expression_space.is_valid(beam_decoded):
                     numeric_prediction = None
 
