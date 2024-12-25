@@ -133,7 +133,7 @@ class Evaluation():
 
         return cls(
             n_support=config_["n_support"],
-            noise_level=config_.get(["noise_level"], 0.0),
+            noise_level=config_.get("noise_level", 0.0),
             beam_width=config_["beam_width"],
             n_restarts=config_["n_restarts"],
             max_len=config_["max_len"],
