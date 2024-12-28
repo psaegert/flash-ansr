@@ -148,7 +148,7 @@ class Evaluation():
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
-            refiner_method=config_["refiner_method"],
+            refiner_method=config_.get("refiner_method", 'curve_fit_lm'),
             refiner_p0_noise=config_["refiner_p0_noise"],
             refiner_p0_noise_kwargs=config_.get("refiner_p0_noise_kwargs", None),
             r2_close_criterion=config_["r2_close_criterion"],
