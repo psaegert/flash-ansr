@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from collections import defaultdict
 import warnings
 
@@ -60,6 +60,10 @@ class Evaluation():
         Relative tolerance for the pointwise close accuracy. Default is 0.05.
     pointwise_close_accuracy_atol : float, optional
         Absolute tolerance for the pointwise close accuracy. Default is 0.001.
+    refiner_method : str, optional
+        The optimization method to use. One of
+        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
+        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
     refiner_p0_noise : str, optional
         Noise distribution for the initial guess of the refiner. Default is 'normal'.
     refiner_p0_noise_kwargs : dict, optional
@@ -86,6 +90,7 @@ class Evaluation():
             pointwise_close_criterion: float = 0.95,
             pointwise_close_accuracy_rtol: float = 0.05,
             pointwise_close_accuracy_atol: float = 0.001,
+            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: str = 'normal',
             refiner_p0_noise_kwargs: dict[str, Any] | None = None,
             r2_close_criterion: float = 0.95,
@@ -103,6 +108,7 @@ class Evaluation():
         self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
         self.r2_close_criterion = r2_close_criterion
 
+        self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
         self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
 
@@ -142,6 +148,7 @@ class Evaluation():
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
+            refiner_method=config_["refiner_method"],
             refiner_p0_noise=config_["refiner_p0_noise"],
             refiner_p0_noise_kwargs=config_.get("refiner_p0_noise_kwargs", None),
             r2_close_criterion=config_["r2_close_criterion"],
@@ -322,6 +329,7 @@ class Evaluation():
                                 X=X,
                                 y=y,
                                 n_restarts=self.n_restarts,
+                                method=self.refiner_method,
                                 p0=numeric_prediction,
                                 p0_noise=self.refiner_p0_noise,
                                 p0_noise_kwargs=self.refiner_p0_noise_kwargs,
