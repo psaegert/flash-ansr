@@ -23,7 +23,6 @@ operators:
     monotonicity: 0
   neg:
     realization: "nsrops.neg"
-    wolfram: "Negative"
     alias: ["negative"]
     inverse: "neg"
     arity: 1
@@ -57,7 +56,6 @@ operators:
     monotonicity: 0
   abs:
     realization: "abs"
-    wolfram: "Abs"
     alias: ["absolute"]
     inverse: null
     arity: 1
@@ -69,7 +67,6 @@ operators:
     monotonicity: 0
   inv:
     realization: "nsrops.inv"
-    wolfram: "Inverse"
     alias: ["inverse"]
     inverse: "inv"
     arity: 1
@@ -169,8 +166,7 @@ operators:
     monotonicity: 1
   sin:
     realization: "numpy.sin"
-    wolfram: "Sin"
-    alias: []
+    alias []
     inverse: "asin"
     arity: 1
     weight: 4
@@ -181,8 +177,7 @@ operators:
     monotonicity: 0
   cos:
     realization: "numpy.cos"
-    wolfram: "Cos"
-    alias: []
+    alias []
     inverse: "acos"
     arity: 1
     weight: 4
@@ -193,8 +188,7 @@ operators:
     monotonicity: 0
   tan:
     realization: "numpy.tan"
-    wolfram: "Tan"
-    alias: []
+    alias []
     inverse: "atan"
     arity: 1
     weight: 4
@@ -205,8 +199,7 @@ operators:
     monotonicity: 0
   asin:
     realization: "numpy.arcsin"
-    wolfram: "ArcSin"
-    alias: ["arcsin"]
+    alias ["arcsin"]
     inverse: "sin"
     arity: 1
     weight: 2
@@ -217,8 +210,7 @@ operators:
     monotonicity: 1
   acos:
     realization: "numpy.arccos"
-    wolfram: "ArcCos"
-    alias: ["arccos"]
+    alias ["arccos"]
     inverse: "cos"
     arity: 1
     weight: 2
@@ -229,8 +221,7 @@ operators:
     monotonicity: 1
   atan:
     realization: "numpy.arctan"
-    wolfram: "ArcTan"
-    alias: ["arctan"]
+    alias ["arctan"]
     inverse: "tan"
     arity: 1
     weight: 2
@@ -241,8 +232,7 @@ operators:
     monotonicity: 1
   exp:
     realization: "numpy.exp"
-    wolfram: "Exp"
-    alias: []
+    alias []
     inverse: "log"
     arity: 1
     weight: 4
@@ -253,8 +243,7 @@ operators:
     monotonicity: 1
   log:
     realization: "numpy.log"
-    wolfram: "Log"
-    alias: ["ln"]
+    alias ["ln"]
     inverse: "exp"
     arity: 1
     weight: 4
