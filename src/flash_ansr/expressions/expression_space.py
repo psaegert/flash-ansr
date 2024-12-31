@@ -187,7 +187,7 @@ class ExpressionSpace:
 
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
-                if '.' in operator or self.operator_arity_compat[operator] > 2:
+                if '.' in operator_realization or self.operator_arity_compat[operator] > 2:
                     stack.append(f'{write_operator}({", ".join(write_operands)})')
 
                 # ** stays **
