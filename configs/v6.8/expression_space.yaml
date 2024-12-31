@@ -407,7 +407,7 @@ operators:
     positive: false
     monotonicity: 0
   y0: # bessel y0
-    realization: "sciypy.special.y0"
+    realization: "scipy.special.y0"
     alias: []
     inverse: null
     arity: 1
