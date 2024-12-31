@@ -166,7 +166,7 @@ operators:
     monotonicity: 1
   sin:
     realization: "numpy.sin"
-    alias []
+    alias: []
     inverse: "asin"
     arity: 1
     weight: 4
@@ -177,7 +177,7 @@ operators:
     monotonicity: 0
   cos:
     realization: "numpy.cos"
-    alias []
+    alias: []
     inverse: "acos"
     arity: 1
     weight: 4
@@ -188,7 +188,7 @@ operators:
     monotonicity: 0
   tan:
     realization: "numpy.tan"
-    alias []
+    alias: []
     inverse: "atan"
     arity: 1
     weight: 4
@@ -199,7 +199,7 @@ operators:
     monotonicity: 0
   asin:
     realization: "numpy.arcsin"
-    alias ["arcsin"]
+    alias: ["arcsin"]
     inverse: "sin"
     arity: 1
     weight: 2
@@ -210,7 +210,7 @@ operators:
     monotonicity: 1
   acos:
     realization: "numpy.arccos"
-    alias ["arccos"]
+    alias: ["arccos"]
     inverse: "cos"
     arity: 1
     weight: 2
@@ -221,7 +221,7 @@ operators:
     monotonicity: 1
   atan:
     realization: "numpy.arctan"
-    alias ["arctan"]
+    alias: ["arctan"]
     inverse: "tan"
     arity: 1
     weight: 2
@@ -232,7 +232,7 @@ operators:
     monotonicity: 1
   exp:
     realization: "numpy.exp"
-    alias []
+    alias: []
     inverse: "log"
     arity: 1
     weight: 4
@@ -243,7 +243,7 @@ operators:
     monotonicity: 1
   log:
     realization: "numpy.log"
-    alias ["ln"]
+    alias: ["ln"]
     inverse: "exp"
     arity: 1
     weight: 4
