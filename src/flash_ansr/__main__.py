@@ -227,6 +227,9 @@ def main(argv: str = None) -> None:
             else:
                 raise ValueError(f"Invalid dataset configuration: {args.dataset}")
 
+            # Use the same expression space as the model for correct tokenization
+            dataset.skeleton_pool.expression_space = model.expression_space
+
             evaluation = Evaluation.from_config(substitute_root_path(args.config))
 
             results_dict = evaluation.evaluate(
