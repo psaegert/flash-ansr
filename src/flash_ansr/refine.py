@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 import torch
-from scipy.optimize import curve_fit, OptimizeWarning
+from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
 from flash_ansr.expressions import ExpressionSpace
 from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
@@ -63,6 +63,7 @@ class Refiner:
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             n_restarts: int = 1,
+            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None,
             converge_error: Literal['raise', 'ignore'] = 'ignore') -> 'Refiner':
@@ -87,6 +88,10 @@ class Refiner:
             Keyword arguments for the noise generation
         n_restarts : int, optional
             Number of restarts for the optimization
+        method : str, optional
+            The optimization method to use. One of
+            - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
+            - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -119,7 +124,7 @@ class Refiner:
         # Since the ExpressionSpace is already initialized, we can use the same global scope
         self.expression_lambda = self.expression_space.code_to_lambda(self.expression_code)
 
-        def fit_function(X: np.ndarray, *constants: np.ndarray | None) -> float:
+        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float:
             if len(constants) == 0:
                 y_pred = self.expression_lambda(*X.T)
             else:
@@ -140,7 +145,7 @@ class Refiner:
             self.constants_values = np.array([])
             self.constants_cov = np.array([])
             try:
-                diff = fit_function(X) - y[:, 0]
+                diff = pred_function(X) - y[:, 0]
                 if np.isnan(diff).any():
                     self.loss = np.nan
                 else:
@@ -160,12 +165,12 @@ class Refiner:
 
         for _ in range(n_restarts):
             try:
-                constants, constants_cov = self._fit(fit_function, X, y, p0, p0_noise, p0_noise_kwargs, no_constants_error, optimizer_kwargs)
+                constants, constants_cov = self._fit(pred_function, X, y, p0, p0_noise, p0_noise_kwargs, method, no_constants_error, optimizer_kwargs)
             except (ConvergenceError, OverflowError):
                 continue
 
             try:
-                diff = fit_function(X, *constants) - y[:, 0]
+                diff = pred_function(X, *constants) - y[:, 0]
                 if np.isnan(diff).any():
                     loss = np.nan
                 else:
@@ -194,12 +199,13 @@ class Refiner:
 
     def _fit(
             self,
-            objective_function: Callable,
+            pred_function: Callable,
             X: np.ndarray,
             y: np.ndarray,
             p0: np.ndarray | None = None,
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
+            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         '''
@@ -207,8 +213,8 @@ class Refiner:
 
         Parameters
         ----------
-        objective_function : Callable
-            The objective function to minimize
+        pred_function : Callable
+            Function that predicts y from X and the constants
         X : np.ndarray
             The input data
         y : np.ndarray
@@ -221,6 +227,10 @@ class Refiner:
             - 'normal': Normal noise
         p0_noise_kwargs : dict, optional
             Keyword arguments for the noise generation
+        method : str, optional
+            The optimization method to use. One of
+            - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
+            - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -268,8 +278,18 @@ class Refiner:
         try:
             # Ignore OptimizeWarning warnings
             warnings.filterwarnings("ignore", category=OptimizeWarning)
-            popt, pcov = curve_fit(objective_function, X, y.flatten(), p0, **optimizer_kwargs)
-        except RuntimeError:
+            match method:
+                case 'curve_fit_lm':
+                    popt, pcov = curve_fit(pred_function, X, y.flatten(), p0, **optimizer_kwargs)
+                case 'minimize_bfgs':
+                    def objective(p: np.ndarray) -> float:
+                        return np.mean((pred_function(X, *p) - y.flatten()) ** 2)
+
+                    res = minimize(objective, p0, method='BFGS', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = res.hess_inv  # TODO: Check if this is correct
+
+        except (RuntimeError, TypeError):
             raise ConvergenceError("The optimization did not converge")
 
         return popt, pcov

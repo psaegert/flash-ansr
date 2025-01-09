@@ -1,1 +1,0 @@
-v5.2: 5ops, simplify, 10seeds, c(1, 5), x(-5, 5)

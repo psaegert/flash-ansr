@@ -671,7 +671,9 @@ class SkeletonPool:
 
                 if not self.expression_space.is_valid(simplified_skeleton):
                     n_invalid += 1
-                    raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
+                    pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+                    continue
+                    # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
 
                 if skeleton in self.skeletons:
                     n_duplicates += 1

@@ -72,7 +72,7 @@ class Tokenizer:
         try:
             indices = [self.token2idx[token] for token in tokens]
         except KeyError as e:
-            if oov == 'UNK':
+            if oov == 'unk':
                 indices = [self.token2idx.get(token, self.token2idx["<unk>"]) for token in tokens]
             else:
                 print(f'Could not encode tokens {tokens}')

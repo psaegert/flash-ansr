@@ -38,6 +38,10 @@ class FlashANSR(BaseEstimator):
         The number of restarts for the refiner, by default 1.
     max_len : int, optional
         The maximum length of the generated expression, by default 32.
+    refiner_method : str, optional
+        The optimization method to use. One of
+        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
+        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
     p0_noise : {'uniform', 'normal'}, optional
         The type of noise to add to the initial guess, by default 'normal'.
     p0_noise_kwargs : dict, optional
@@ -59,6 +63,7 @@ class FlashANSR(BaseEstimator):
             equivalence_pruning: bool = True,
             n_restarts: int = 1,
             max_len: int = 32,
+            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
@@ -73,6 +78,7 @@ class FlashANSR(BaseEstimator):
         self.equivalence_pruning = equivalence_pruning
         self.n_restarts = n_restarts
         self.max_len = max_len
+        self.refiner_method = refiner_method
         self.p0_noise = p0_noise
         self.p0_noise_kwargs = p0_noise_kwargs
         self.numpy_errors = numpy_errors
@@ -93,6 +99,7 @@ class FlashANSR(BaseEstimator):
             equivalence_pruning: bool = True,
             n_restarts: int = 1,
             max_len: int = 32,
+            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
@@ -117,6 +124,7 @@ class FlashANSR(BaseEstimator):
             equivalence_pruning=equivalence_pruning,
             n_restarts=n_restarts,
             max_len=max_len,
+            refiner_method=refiner_method,
             p0_noise=p0_noise,
             p0_noise_kwargs=p0_noise_kwargs,
             numpy_errors=numpy_errors,
@@ -217,7 +225,7 @@ class FlashANSR(BaseEstimator):
             self._results = []
 
             # Fit the refiner to each beam
-            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose):
+            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
                 if self.expression_space.is_valid(beam_decoded):
                     numeric_prediction = None
 
@@ -232,6 +240,7 @@ class FlashANSR(BaseEstimator):
                             X=X.cpu().numpy(),
                             y=y.cpu().numpy(),
                             n_restarts=self.n_restarts,
+                            method=self.refiner_method,
                             p0=numeric_prediction,
                             p0_noise=self.p0_noise,
                             p0_noise_kwargs=self.p0_noise_kwargs,

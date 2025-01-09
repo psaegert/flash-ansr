@@ -210,6 +210,7 @@ with
 ```sh
 cd NeuralSymbolicRegressionThatScales
 pip install -e src/
+pip install lightning
 ```
 1. Navigate back to this repository and run the evaluation
 ```sh

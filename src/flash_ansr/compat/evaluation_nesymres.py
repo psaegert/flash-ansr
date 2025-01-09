@@ -195,7 +195,7 @@ class NeSymResEvaluation():
                     results_dict['NSRTS_accuracy_r2_beam_1'].append(nsrts_accuracy_r2)
                     results_dict['residuals_beam_1'].append(residuals)
 
-                except (NameError, KeyError, ValueError, TypeError):
+                except (NameError, KeyError, ValueError, TypeError, OverflowError):
                     results_dict['fit_time'].append(float('nan'))
                     results_dict['recall_beam_1'].append(float('nan'))
                     results_dict['precision_beam_1'].append(float('nan'))

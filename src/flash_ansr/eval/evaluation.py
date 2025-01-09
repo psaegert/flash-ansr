@@ -1,5 +1,6 @@
-from typing import Any
+from typing import Any, Literal
 from collections import defaultdict
+import warnings
 
 import torch
 import numpy as np
@@ -41,6 +42,8 @@ class Evaluation():
     ----------
     n_support : int, optional
         Number of input points for each equation. Default is None (sampled from the dataset).
+    noise_level : float, optional
+        Noise level for the constant fitting in units of standard deviations of the target variable. Default is 0.0.
     beam_width : int, optional
         Number of beams for the beam search algorithm. Default is 1.
     n_restarts : int, optional
@@ -57,6 +60,10 @@ class Evaluation():
         Relative tolerance for the pointwise close accuracy. Default is 0.05.
     pointwise_close_accuracy_atol : float, optional
         Absolute tolerance for the pointwise close accuracy. Default is 0.001.
+    refiner_method : str, optional
+        The optimization method to use. One of
+        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
+        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
     refiner_p0_noise : str, optional
         Noise distribution for the initial guess of the refiner. Default is 'normal'.
     refiner_p0_noise_kwargs : dict, optional
@@ -74,6 +81,7 @@ class Evaluation():
     def __init__(
             self,
             n_support: int | None = None,
+            noise_level: float = 0.0,
             beam_width: int = 1,
             n_restarts: int = 1,
             max_len: int = 20,
@@ -82,12 +90,14 @@ class Evaluation():
             pointwise_close_criterion: float = 0.95,
             pointwise_close_accuracy_rtol: float = 0.05,
             pointwise_close_accuracy_atol: float = 0.001,
+            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: str = 'normal',
             refiner_p0_noise_kwargs: dict[str, Any] | None = None,
             r2_close_criterion: float = 0.95,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
+        self.noise_level = noise_level
         self.beam_width = beam_width
         self.n_restarts = n_restarts
         self.max_len = max_len
@@ -98,6 +108,7 @@ class Evaluation():
         self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
         self.r2_close_criterion = r2_close_criterion
 
+        self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
         self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
 
@@ -128,6 +139,7 @@ class Evaluation():
 
         return cls(
             n_support=config_["n_support"],
+            noise_level=config_.get("noise_level", 0.0),
             beam_width=config_["beam_width"],
             n_restarts=config_["n_restarts"],
             max_len=config_["max_len"],
@@ -136,6 +148,7 @@ class Evaluation():
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
+            refiner_method=config_.get("refiner_method", 'curve_fit_lm'),
             refiner_p0_noise=config_["refiner_p0_noise"],
             refiner_p0_noise_kwargs=config_.get("refiner_p0_noise_kwargs", None),
             r2_close_criterion=config_["r2_close_criterion"],
@@ -181,8 +194,20 @@ class Evaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support, verbose=verbose):
-                input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(batch, device=self.device)
+            current_size = 0
+            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support, verbose=verbose, tqdm_total=size):
+                input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
+
+                x_tensor = x_tensor.unsqueeze(0)
+                y_tensor = y_tensor.unsqueeze(0)
+
+                if self.noise_level > 0.0:
+                    y_tensor_noisy = y_tensor + (self.noise_level * y_tensor.std() * torch.randn_like(y_tensor))
+                    if not torch.all(torch.isfinite(y_tensor_noisy)):
+                        warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
+                        continue
+                else:
+                    y_tensor_noisy = y_tensor
 
                 results_dict['input_ids'].append(input_ids.cpu().numpy())
                 results_dict['labels'].append(labels.cpu().numpy())
@@ -192,19 +217,18 @@ class Evaluation():
 
                 results_dict['n_support'].append([x_tensor.shape[1]] * x_tensor.shape[0])
 
-                x_tensor = x_tensor.unsqueeze(0)
-                y_tensor = y_tensor.unsqueeze(0)
+                results_dict['y_noisy'].append(y_tensor_noisy.cpu().numpy())
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
                 labels = input_ids.clone()[1:]
                 labels_decoded = model.expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
 
                 # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-                pad_length = model.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor.shape[-1]
+                pad_length = model.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor_noisy.shape[-1]
                 if pad_length > 0:
                     x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0, 0, 0), value=0)
 
-                data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
+                data_tensor = torch.cat([x_tensor, y_tensor_noisy], dim=-1)
 
                 # Teacher forced forward pass
                 logits, num_out = model.forward(input_ids.unsqueeze(0), data_tensor, numeric_head=self.numeric_head)
@@ -286,7 +310,7 @@ class Evaluation():
                 np_errors_before = np.geterr()
                 np.seterr(all='ignore')
                 X = x_tensor.cpu().numpy()[0]
-                y = y_tensor.cpu().numpy()[0]
+                y = y_tensor_noisy.cpu().numpy()[0]
                 for j, beam in enumerate(beams_decoded):
                     refiner_time = 0.0
                     valid_results = model.expression_space.is_valid(beam)
@@ -305,6 +329,7 @@ class Evaluation():
                                 X=X,
                                 y=y,
                                 n_restarts=self.n_restarts,
+                                method=self.refiner_method,
                                 p0=numeric_prediction,
                                 p0_noise=self.refiner_p0_noise,
                                 p0_noise_kwargs=self.refiner_p0_noise_kwargs,
@@ -347,7 +372,12 @@ class Evaluation():
 
                 np.seterr(**np_errors_before)
 
-            assert len(set(len(v) for v in results_dict.values())) == 1  # Check that all lists have the same length
+                assert len(set(len(v) for v in results_dict.values())) == 1  # Check that all lists have the same length
+
+                current_size += 1
+
+                if current_size >= size:
+                    break
 
         del refiner
 
