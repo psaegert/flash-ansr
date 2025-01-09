@@ -1,6 +1,5 @@
 expression_space: './expression_space.yaml'
 holdout_pools: [
-  "{{ROOT}}/data/ansr-data/v6.0-mini/skeleton_pool_val/",
   "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
