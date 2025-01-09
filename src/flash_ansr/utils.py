@@ -1,8 +1,9 @@
 import copy
 import os
-from typing import Any, Generator
+from typing import Any, Generator, Callable
 
 import yaml
+from multiprocessing import Process, Queue
 
 
 def get_path(*args: str, filename: str | None = None, create: bool = False) -> str:
@@ -158,3 +159,34 @@ def traverse_dict(dict_: dict[str, Any]) -> Generator[tuple[str, Any], None, Non
             yield from traverse_dict(value)
         else:
             yield key, value
+
+
+def timeout(seconds: float, action: Any = None) -> Any:
+    """Calls any function with timeout after 'seconds'.
+       If a timeout occurs, 'action' will be returned or called if
+       it is a function-like object.
+       https://www.reddit.com/r/Python/comments/8t9bk4/the_absolutely_easiest_way_to_time_out_a_function/
+    """
+    def handler(queue: Queue, func: Callable, args: Any, kwargs: Any) -> None:
+        queue.put(func(*args, **kwargs))
+
+    def decorator(func: Callable) -> Callable:
+
+        def wraps(*args: Any, **kwargs: Any) -> Any:
+            q: Queue = Queue()
+            p = Process(target=handler, args=(q, func, args, kwargs))
+            p.start()
+            p.join(timeout=seconds)
+            if p.is_alive():
+                p.terminate()
+                p.join()
+                if hasattr(action, '__call__') and action is not None:
+                    return action()
+                else:
+                    return action
+            else:
+                return q.get()
+
+        return wraps
+
+    return decorator

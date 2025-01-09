@@ -6,12 +6,21 @@ from copy import deepcopy
 from types import CodeType, FunctionType
 from math import prod
 from fractions import Fraction
+import signal
 
 import numpy as np
+from sympy import simplify, parse_expr
 
 from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.utils import load_config
-from flash_ansr.expressions.utils import get_used_modules, codify, numbers_to_num, flatten_nested_list, is_prime
+from flash_ansr.expressions.utils import get_used_modules, codify, numbers_to_num, flatten_nested_list, is_prime, num_to_constants
+
+
+def timeout_handler(signum: Any, frame: Any) -> None:
+    raise TimeoutError("Timed out")
+
+
+signal.signal(signal.SIGALRM, timeout_handler)
 
 
 class ExpressionSpace:
@@ -25,7 +34,9 @@ class ExpressionSpace:
     variables : int
         The number of variables
     """
-    def __init__(self, operators: dict[str, dict[str, Any]], variables: int) -> None:
+    def __init__(self, operators: dict[str, dict[str, Any]], variables: int, simplification: Literal['flash', 'sympy'] = 'flash') -> None:
+        self.simplification = simplification
+
         self.special_constants = {"pi": np.pi}
 
         self.operator_tokens = list(operators.keys())
@@ -104,7 +115,7 @@ class ExpressionSpace:
         if "expressions" in config_.keys():
             config_ = config_["expressions"]
 
-        return cls(operators=config_["operators"], variables=config_["variables"])
+        return cls(operators=config_["operators"], variables=config_["variables"], simplification=config_.get("simplification", 'flash'))
 
     def is_valid(self, prefix_expression: list[str], verbose: bool = False) -> bool:
         '''
@@ -613,8 +624,38 @@ class ExpressionSpace:
 
         return prefix_expression_copy
 
+    # SIMPLIFICATION (Sympy)
+    def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: float = 1) -> list[str]:
+        prefix_expression, constants = num_to_constants(list(prefix_expression))
+
+        infix_expression = self.prefix_to_infix(prefix_expression)
+
+        for c in constants:
+            infix_expression = infix_expression.replace(c, str(np.random.uniform(-10, 10)))
+
+        sympy_expression = parse_expr(infix_expression)
+
+        signal.alarm(1)
+        try:
+            simplified_expression = str(simplify(sympy_expression, ratio=ratio) if ratio is not None else simplify(sympy_expression))
+        except TimeoutError:
+            return prefix_expression
+
+        parsed_expression = self.parse_expression(simplified_expression)
+
+        return numbers_to_num(parsed_expression)
+
+    def simplify(self, prefix_expression: list[str], *args: Any, **kwargs: Any) -> list[str]:
+        match self.simplification:
+            case 'flash':
+                return self.simplify_flash(prefix_expression, *args, **kwargs)
+            case 'sympy':
+                return self.simplify_sympy(prefix_expression, *args, **kwargs)
+            case _:
+                raise ValueError(f'Invalid simplification method: {self.simplification}')
+
     # SIMPLIFICATION
-    def simplify(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, verbose: bool = False, debug: bool = False) -> list[str]:
+    def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, verbose: bool = False, debug: bool = False) -> list[str]:
         '''
         Simplify an expression
 
