@@ -214,9 +214,24 @@ class ExpressionSpace:
                 write_operator = operator_realization if realization else operator
                 write_operands = [stack.pop() for _ in range(self.operator_arity_compat[operator])]
 
+                # If the operator is a power operator, format it as
+                # "pow(operand1, operand2)" if power is 'func'
+                # "operand1**operand2" if power is '**'
+                # This regex must not match pow1_2 or pow1_3
+                if re.match(r'pow\d+(?!\_)', operator) and power == '**':
+                    exponent = int(operator[3:])
+                    stack.append(f'({write_operands[0]})**{exponent}')
+
+                # If the operator is a fractional power operator such as pow1_2, format it as
+                # "pow(operand1, 0.5)" if power is 'func'
+                # "operand1**0.5" if power is '**'
+                elif re.match(r'pow1_\d+', operator) and power == '**':
+                    exponent = int(operator[5:])
+                    stack.append(f'({write_operands[0]})**(1/{exponent})')
+
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
-                if '.' in operator_realization or self.operator_arity_compat[operator] > 2:
+                elif '.' in operator_realization or self.operator_arity_compat[operator] > 2:
                     # No need for parentheses here
                     stack.append(f'{write_operator}({", ".join([self._deparenthesize(operand) for operand in write_operands])})')
 
@@ -228,21 +243,6 @@ class ExpressionSpace:
                 # "(operand1 operator operand2)"
                 elif self.operator_arity_compat[operator] == 2:
                     stack.append(f'({write_operands[0]} {write_operator} {write_operands[1]})')
-
-                # If the operator is a power operator, format it as
-                # "pow(operand1, operand2)" if power is 'func'
-                # "operand1**operand2" if power is '**'
-                # This regex must not match pow1_2 or pow1_3
-                elif re.match(r'pow\d+(?!\_)', operator):
-                    exponent = int(operator[3:])
-                    stack.append(f'({write_operands[0]})**{exponent}')
-
-                # If the operator is a fractional power operator such as pow1_2, format it as
-                # "pow(operand1, 0.5)" if power is 'func'
-                # "operand1**0.5" if power is '**'
-                elif re.match(r'pow1_\d+', operator):
-                    exponent = int(operator[5:])
-                    stack.append(f'({write_operands[0]})**(1/{exponent})')
 
                 elif operator == 'neg':
                     stack.append(f'-{write_operands[0]}')

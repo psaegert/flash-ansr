@@ -321,7 +321,10 @@ class Refiner:
             y = self.expression_lambda(*X.T, *constants_values)  # type: ignore
 
         if not isinstance(y, (np.ndarray, torch.Tensor)):
-            y = np.full((X.shape[0], 1), y.reshape(-1, 1))
+            if isinstance(X, torch.Tensor):
+                y = torch.full((X.shape[0], 1), y)
+            else:
+                y = np.full((X.shape[0], 1), y)
 
         if len(y) == 1:
             # Repeat y to match the shape of x
