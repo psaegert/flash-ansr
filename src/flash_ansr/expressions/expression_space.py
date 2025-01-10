@@ -169,6 +169,24 @@ class ExpressionSpace:
 
         return True
 
+    def _deparenthesize(self, term: str) -> str:
+        '''
+        Removes outer parentheses from a term.
+
+        Parameters
+        ----------
+        term : str
+            The term.
+
+        Returns
+        -------
+        str
+            The term without parentheses.
+        '''
+        if term.startswith('(') and term.endswith(')'):
+            return term[1:-1]
+        return term
+
     def prefix_to_infix(self, tokens: list[str], power: Literal['func', '**'] = 'func', realization: bool = False) -> str:
         '''
         Convert a list of tokens in prefix notation to infix notation
@@ -199,7 +217,8 @@ class ExpressionSpace:
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
                 if '.' in operator_realization or self.operator_arity_compat[operator] > 2:
-                    stack.append(f'{write_operator}({", ".join(write_operands)})')
+                    # No need for parentheses here
+                    stack.append(f'{write_operator}({", ".join([self._deparenthesize(operand) for operand in write_operands])})')
 
                 # ** stays **
                 elif self.operator_aliases.get(operator, operator) == '**':
@@ -232,12 +251,14 @@ class ExpressionSpace:
                     stack.append(f'(1/{write_operands[0]})')
 
                 else:
-                    stack.append(f'{write_operator}({", ".join(write_operands)})')
+                    stack.append(f'{write_operator}({", ".join([self._deparenthesize(operand) for operand in write_operands])})')
 
             else:
                 stack.append(token)
 
-        return stack.pop()
+        infix_expression = stack.pop()
+
+        return self._deparenthesize(infix_expression)
 
     def infix_to_prefix(self, infix_expression: str) -> list[str]:
         '''
