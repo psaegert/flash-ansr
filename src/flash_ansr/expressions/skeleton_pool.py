@@ -289,7 +289,9 @@ class SkeletonPool:
             return True
 
         if code is None:
-            executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
+            # Remove constants since permutations are not detected as duplicates
+            no_constant_expression = self.expression_space.remove_num(skeleton)
+            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
@@ -301,11 +303,12 @@ class SkeletonPool:
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
         try:
-            expression_image = tuple(f(*X_with_constants.T).round(4))
+            expression_image = f(*X_with_constants.T).round(4)
+            expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
         except OverflowError:
             return True  # Just to be safe
 
-        if expression_image in self.holdout_y:
+        if tuple(expression_image) in self.holdout_y:
             return True
 
         return False
@@ -323,8 +326,9 @@ class SkeletonPool:
             _, holdout_pool = SkeletonPool.load(holdout_pool)
 
         for skeleton in holdout_pool.skeletons:
-            # Codify the Expression
-            executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
+            # Remove constants since permutations are not detected as duplicates
+            no_constant_expression = self.expression_space.remove_num(skeleton)
+            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
@@ -334,13 +338,14 @@ class SkeletonPool:
             X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
-                expression_image = tuple(f(*X_with_constants.T).round(4))
+                expression_image = f(*X_with_constants.T).round(4)
+                expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
                 self.holdout_skeletons.add(skeleton)
                 continue
 
             self.holdout_skeletons.add(skeleton)
-            self.holdout_y.add(expression_image)
+            self.holdout_y.add(tuple(expression_image))
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
         '''

@@ -583,7 +583,21 @@ class ExpressionSpace:
         if mask_numbers:
             parsed_expression = numbers_to_num(parsed_expression)
 
-        return parsed_expression
+        return self.remove_pow1(parsed_expression)  # HACK: Find a better place to put this
+
+    def remove_pow1(self, prefix_expression: list[str]) -> list[str]:
+        filtered_expression = []
+        for token in prefix_expression:
+            if token == 'pow1':
+                continue
+
+            if token == 'pow_1':
+                filtered_expression.append('inv')
+                continue
+
+            filtered_expression.append(token)
+
+        return filtered_expression
 
     # Compatibility
     def convert_variable_names(self, prefix_expr: list[str], too_many_variables: Literal['ignore', 'raise'] = 'ignore') -> list[str]:
@@ -644,6 +658,53 @@ class ExpressionSpace:
                 prefix_expression_copy[i] = str(self.special_constants[token])
 
         return prefix_expression_copy
+
+    def remove_num(self, expression: list[str], verbose: bool = False, debug: bool = False) -> list[str]:
+        stack: list = []
+        i = len(expression) - 1
+
+        if debug:
+            print(f'Input expression: {expression}')
+
+        while i >= 0:
+            token = expression[i]
+
+            if debug:
+                print(f'Stack: {stack}')
+                print(f'Processing token {token}')
+
+            if token in self.operator_arity_compat or token in self.operator_aliases:
+                operator = self.operator_aliases.get(token, token)
+                arity = self.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+
+                if any(operand[0] == '<num>' for operand in operands):
+                    if verbose:
+                        print('Removing constant')
+
+                    non_num_operands = [operand for operand in operands if operand[0] != '<num>']
+
+                    if len(non_num_operands) == 0:
+                        new_term = '<num>'
+                    elif len(non_num_operands) == 1:
+                        new_term = non_num_operands[0]
+                    else:
+                        raise NotImplementedError('Removing a constant from n-operand operator is not implemented')
+
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([new_term])
+                    i -= 1
+                    continue
+
+                _ = [stack.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+
+            else:
+                stack.append([token])
+
+            i -= 1
+
+        return flatten_nested_list(stack)[::-1]
 
     # SIMPLIFICATION (Sympy)
     def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: float = 1) -> list[str]:
