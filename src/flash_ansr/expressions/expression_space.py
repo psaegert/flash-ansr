@@ -220,14 +220,14 @@ class ExpressionSpace:
                 # This regex must not match pow1_2 or pow1_3
                 if re.match(r'pow\d+(?!\_)', operator) and power == '**':
                     exponent = int(operator[3:])
-                    stack.append(f'({write_operands[0]})**{exponent}')
+                    stack.append(f'(({write_operands[0]})**{exponent})')
 
                 # If the operator is a fractional power operator such as pow1_2, format it as
                 # "pow(operand1, 0.5)" if power is 'func'
                 # "operand1**0.5" if power is '**'
                 elif re.match(r'pow1_\d+', operator) and power == '**':
                     exponent = int(operator[5:])
-                    stack.append(f'({write_operands[0]})**(1/{exponent})')
+                    stack.append(f'(({write_operands[0]})**(1/{exponent}))')
 
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
@@ -710,7 +710,7 @@ class ExpressionSpace:
     def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: float = 1) -> list[str]:
         prefix_expression, constants = num_to_constants(list(prefix_expression))
 
-        infix_expression = self.prefix_to_infix(prefix_expression)
+        infix_expression = self.prefix_to_infix(prefix_expression, power='**')
 
         for c in constants:
             infix_expression = infix_expression.replace(c, str(np.random.uniform(-10, 10)))
