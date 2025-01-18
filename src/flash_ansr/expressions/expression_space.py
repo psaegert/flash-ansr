@@ -707,7 +707,7 @@ class ExpressionSpace:
         return flatten_nested_list(stack)[::-1]
 
     # SIMPLIFICATION (Sympy)
-    def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: float = 1) -> list[str]:
+    def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: int = 1) -> list[str]:
         prefix_expression, constants = num_to_constants(list(prefix_expression))
 
         infix_expression = self.prefix_to_infix(prefix_expression, power='**')
@@ -717,7 +717,7 @@ class ExpressionSpace:
 
         sympy_expression = parse_expr(infix_expression)
 
-        signal.alarm(1)
+        signal.alarm(timeout)
         try:
             simplified_expression = str(simplify(sympy_expression, ratio=ratio) if ratio is not None else simplify(sympy_expression))
         except TimeoutError:
