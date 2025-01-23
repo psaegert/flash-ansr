@@ -67,7 +67,7 @@ class FlashANSR(BaseEstimator):
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.01,
+            parsimony: float = 1e-4,
             verbose: bool = False):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()

@@ -195,7 +195,7 @@ class Evaluation():
 
         with torch.no_grad():
             current_size = 0
-            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support, verbose=verbose, tqdm_total=size):
+            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size):
                 input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
 
                 x_tensor = x_tensor.unsqueeze(0)
@@ -212,12 +212,16 @@ class Evaluation():
                 results_dict['input_ids'].append(input_ids.cpu().numpy())
                 results_dict['labels'].append(labels.cpu().numpy())
                 results_dict['constants'].append([c.cpu().numpy() for c in constants])
-                results_dict['x'].append(x_tensor.cpu().numpy())
-                results_dict['y'].append(y_tensor.cpu().numpy())
 
-                results_dict['n_support'].append([x_tensor.shape[1]] * x_tensor.shape[0])
+                results_dict['x'].append(x_tensor.cpu().numpy()[:, :self.n_support])
+                results_dict['y'].append(y_tensor.cpu().numpy()[:, :self.n_support])
+                results_dict['y_noisy'].append(y_tensor_noisy.cpu().numpy()[:, :self.n_support])
 
-                results_dict['y_noisy'].append(y_tensor_noisy.cpu().numpy())
+                results_dict['x_val'].append(x_tensor.cpu().numpy()[:, self.n_support:])
+                results_dict['y_val'].append(y_tensor.cpu().numpy()[:, self.n_support:])
+                results_dict['y_noisy_val'].append(y_tensor_noisy.cpu().numpy()[:, self.n_support:])
+
+                results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
                 labels = input_ids.clone()[1:]
@@ -309,8 +313,13 @@ class Evaluation():
                 # Constant Fitting
                 np_errors_before = np.geterr()
                 np.seterr(all='ignore')
-                X = x_tensor.cpu().numpy()[0]
-                y = y_tensor_noisy.cpu().numpy()[0]
+
+                X = x_tensor.cpu().numpy()[0, :self.n_support]
+                y = y_tensor_noisy.cpu().numpy()[0, :self.n_support]
+
+                X_val = x_tensor.cpu().numpy()[0, self.n_support:]
+                y_val = y_tensor_noisy.cpu().numpy()[0, self.n_support:]
+
                 for j, beam in enumerate(beams_decoded):
                     refiner_time = 0.0
                     valid_results = model.expression_space.is_valid(beam)
@@ -339,9 +348,12 @@ class Evaluation():
                             assert X.dtype == y.dtype
 
                             y_pred = refiner.predict(X)
+                            y_pred_val = refiner.predict(X_val)
 
                             assert y_pred.shape == y.shape
+                            assert y_pred_val.shape == y_val.shape
 
+                            # Fit Data
                             mse = np.mean((y_pred - y) ** 2)
                             r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
 
@@ -349,6 +361,15 @@ class Evaluation():
                             nsrts_accuracy_r2 = r2 > self.r2_close_criterion
 
                             residuals = y_pred - y
+
+                            # Val Data
+                            mse_val = np.mean((y_pred_val - y_val) ** 2)
+                            r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
+
+                            nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
+                            nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
+
+                            residuals_val = y_pred_val - y_val
 
                         except (ConvergenceError, OverflowError, TypeError, ValueError):
                             valid_results = False
@@ -360,6 +381,11 @@ class Evaluation():
                         nsrts_accuracy_r2 = float('nan')
                         residuals = None
                         refiner_time = float('nan')
+                        mse_val = float('nan')
+                        r2_val = float('nan')
+                        nsrts_accuracy_close_val = float('nan')
+                        nsrts_accuracy_r2_val = float('nan')
+                        residuals_val = None
 
                     results_dict[f'mse_beam_{j+1}'].append(mse)
                     results_dict[f'r2_beam_{j+1}'].append(r2)
@@ -369,6 +395,14 @@ class Evaluation():
 
                     results_dict[f'residuals_beam_{j+1}'].append(residuals)
                     results_dict[f'refiner_time_beam_{j+1}'].append(refiner_time)
+
+                    results_dict[f'mse_beam_val_{j+1}'].append(mse_val)
+                    results_dict[f'r2_beam_val_{j+1}'].append(r2_val)
+
+                    results_dict[f'NSRTS_accuracy_close_beam_val_{j+1}'].append(nsrts_accuracy_close_val)
+                    results_dict[f'NSRTS_accuracy_r2_beam_val_{j+1}'].append(nsrts_accuracy_r2_val)
+
+                    results_dict[f'residuals_beam_val_{j+1}'].append(residuals_val)
 
                 np.seterr(**np_errors_before)
 

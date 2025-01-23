@@ -188,7 +188,8 @@ class FlashANSRDataset:
             batch_size: int | BatchSizeScheduler | None = None,
             n_support: int | None = None,
             tqdm_total: int | None = None,
-            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
+            verbose: bool = False,
+            avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Iterate over the dataset.
 
@@ -216,14 +217,14 @@ class FlashANSRDataset:
             if batch_size is None:
                 if steps is not None:
                     raise ValueError(f'Speficfied {steps=} which is not used for non-batched data generation')
-                yield from self.generate(size=size, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
+                yield from self.generate(size=size, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
             else:
-                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
+                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
         else:
             for instance in tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01):
                 yield instance
 
-    def generate_batch(self, batch_size: int | BatchSizeScheduler, size: int | None = None, steps: int | None = None, n_support: int | None = None, tqdm_total: int | None = None, verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
+    def generate_batch(self, batch_size: int | BatchSizeScheduler, size: int | None = None, steps: int | None = None, n_support: int | None = None, tqdm_total: int | None = None, verbose: bool = False, avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Generate a batch of data.
 
@@ -279,7 +280,7 @@ class FlashANSRDataset:
                 current_batch_size = batch_size
 
             if sample_n_support:
-                if batch_id == 0:
+                if batch_id == 0 and avoid_fragmentation:
                     # Allocate the maximum size tensor to avoid memory fragmentation
                     n_support_frag = int(self.skeleton_pool.n_support_prior_kwargs['max_value'])
                 elif n_support is None:
