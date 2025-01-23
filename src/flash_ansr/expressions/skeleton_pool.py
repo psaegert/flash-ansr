@@ -558,7 +558,7 @@ class SkeletonPool:
 
         raise NoValidSampleFoundError(f"Failed to sample a non-contaminated skeleton after {self.sample_strategy['max_tries']} retries")
 
-    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Sample support points and literals for an expression.
 
@@ -570,6 +570,8 @@ class SkeletonPool:
             The number of constants to sample.
         n_support : int or None, optional
             The number of support points to sample. If None, the number of support points will be sampled from the prior distribution.
+        support_prior : Callable or None, optional
+            The prior distribution for the support points. If None, the default support prior will be used.
 
         Returns
         -------
@@ -582,10 +584,16 @@ class SkeletonPool:
 
         for _ in range(self.sample_strategy['max_tries']):
             literals = self.literal_prior(size=n_constants).astype(np.float32)
+
+            support_prior = support_prior or self.support_prior
+
+            # Use the default support prior as defined by the configuration
             if self.sample_strategy.get('independent_dimensions', False):
-                x_support = np.concatenate([self.support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
+                # Sample each dimension independently
+                x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
             else:
-                x_support = self.support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
+                #
+                x_support = support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)

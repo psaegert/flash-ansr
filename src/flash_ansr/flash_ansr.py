@@ -103,7 +103,7 @@ class FlashANSR(BaseEstimator):
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.01,
+            parsimony: float = 1e-4,
             verbose: bool = False) -> "FlashANSR":
         directory = substitute_root_path(directory)
 
@@ -114,6 +114,7 @@ class FlashANSR(BaseEstimator):
 
         model = FlashANSRTransformer.from_config(flash_ansr_transformer_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
+        model.eval()
 
         return cls(
             expression_space=expression_space,
@@ -224,6 +225,8 @@ class FlashANSR(BaseEstimator):
 
             self._results = []
 
+            y_variance = y.var(dim=0).cpu().numpy()
+
             # Fit the refiner to each beam
             for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
                 if self.expression_space.is_valid(beam_decoded):
@@ -249,7 +252,8 @@ class FlashANSR(BaseEstimator):
                         if refiner.constants_values is None:  # Fit failed
                             score = np.inf
                         else:
-                            score = refiner._all_constants_values[0][-1] + self.parsimony * len(beam_decoded)
+                            fvu = refiner._all_constants_values[0][-1] / y_variance
+                            score = fvu + self.parsimony * len(beam_decoded)
 
                         self._results.append((
                             refiner,
@@ -271,7 +275,10 @@ class FlashANSR(BaseEstimator):
                 raise ConvergenceError("The optimization did not converge for any beam")
 
             # Sort the results by the best loss of each beam
-            self._results = list(sorted(self._results, key=lambda x: x[1]['score']))
+            self._results = list(sorted(self._results, key=lambda x: (
+                x[1]['score'] if not np.isnan(x[1]['score']) else float('inf'),
+                np.isnan(x[1]['score'])
+            )))
 
             np.seterr(**numpy_errors_before)
 
