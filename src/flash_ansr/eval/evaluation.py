@@ -396,13 +396,13 @@ class Evaluation():
                     results_dict[f'residuals_beam_{j+1}'].append(residuals)
                     results_dict[f'refiner_time_beam_{j+1}'].append(refiner_time)
 
-                    results_dict[f'mse_beam_val_{j+1}'].append(mse_val)
-                    results_dict[f'r2_beam_val_{j+1}'].append(r2_val)
+                    results_dict[f'mse_val_beam_{j+1}'].append(mse_val)
+                    results_dict[f'r2_val_beam_{j+1}'].append(r2_val)
 
-                    results_dict[f'NSRTS_accuracy_close_beam_val_{j+1}'].append(nsrts_accuracy_close_val)
-                    results_dict[f'NSRTS_accuracy_r2_beam_val_{j+1}'].append(nsrts_accuracy_r2_val)
+                    results_dict[f'NSRTS_accuracy_close_val_beam_{j+1}'].append(nsrts_accuracy_close_val)
+                    results_dict[f'NSRTS_accuracy_r2_val_beam_{j+1}'].append(nsrts_accuracy_r2_val)
 
-                    results_dict[f'residuals_beam_val_{j+1}'].append(residuals_val)
+                    results_dict[f'residuals_val_beam_{j+1}'].append(residuals_val)
 
                 np.seterr(**np_errors_before)
 
