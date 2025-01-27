@@ -38,12 +38,12 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
     return {k: torch.tensor([example[k] for example in batch]) for k in batch[0]}
 
 
-class ContrastiveLoss(nn.Module):
+class AILWQ_ContrastiveLoss(nn.Module):
     """
     https://github.com/AILWQ/Joint_Supervised_Learning_for_SR/blob/main/loss_function/ContrastiveLoss.py
     """
     def __init__(self, temperature: float = 0.5) -> None:
-        super(ContrastiveLoss, self).__init__()
+        super(AILWQ_ContrastiveLoss, self).__init__()
         self.temperature = temperature
 
     def forward(self, enc_features: torch.Tensor, labels: list | torch.Tensor) -> torch.Tensor:
@@ -85,6 +85,53 @@ class ContrastiveLoss(nn.Module):
         # compute loss of a batch
         loss = -torch.log(loss)
         loss = torch.sum(torch.sum(loss, dim=1)) / (len(torch.nonzero(loss)) + 1e-5)
+        return loss
+
+
+class ContrastiveLoss(nn.Module):
+    def __init__(self, margin: float = 0.5, temperature: float = 0.5) -> None:
+        super(ContrastiveLoss, self).__init__()
+        self.margin = margin
+        self.temperature = temperature
+
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the contrastive loss based on cosine similarities.
+
+        Args:
+            features (torch.Tensor): A tensor of shape (N, D), where N is the number of samples and D is the feature dimension.
+            labels (torch.Tensor): A tensor of shape (N,) with integer class labels for each sample.
+            margin (float): Margin value for dissimilar pairs. Default is 0.5.
+
+        Returns:
+            torch.Tensor: The computed contrastive loss.
+        """
+        # Normalize features to have unit norm (for cosine similarity)
+        features = F.normalize(features, p=2, dim=1)
+
+        # Compute the cosine similarity matrix
+        similarity_matrix = torch.matmul(features, features.T)
+
+        # Apply exponentiation with temperature scaling
+        similarity_matrix = torch.exp(similarity_matrix / self.temperature)
+
+        # Create a mask to identify positive (same label) and negative (different label) pairs
+        labels = labels.view(-1, 1)  # Reshape to (N, 1) for broadcasting
+        positive_mask = labels == labels.T  # Mask for positive pairs
+        negative_mask = ~positive_mask  # Mask for negative pairs
+
+        # Row-wise normalization of similarity matrix
+        row_sum = similarity_matrix.sum(dim=1, keepdim=True)  # Shape (N, 1)
+
+        # Compute positive loss
+        positive_loss = -torch.log((similarity_matrix * positive_mask).sum(dim=1) / row_sum.squeeze()).mean()
+
+        # Compute negative loss
+        negative_loss = F.relu(torch.log((similarity_matrix * negative_mask).sum(dim=1) / row_sum.squeeze()) - self.margin).mean()
+
+        # Combine positive and negative losses
+        loss = positive_loss + negative_loss
+
         return loss
 
 

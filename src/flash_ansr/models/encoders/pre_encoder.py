@@ -116,7 +116,7 @@ class PreEncoder(nn.Module):
         elif self.mode == "ieee-754":
             output_size += self.input_size * 15
 
-        if self.support_nan:
+        if self.mode != "ieee-754" and self.support_nan:
             output_size += self.input_size
 
         return output_size
