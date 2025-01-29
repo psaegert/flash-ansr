@@ -398,6 +398,8 @@ class Trainer():
             # Calculate the loss
             ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
 
+            contrastive_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
+
             if contrastive_loss_weight > 0:
                 # Use memory (embeddings of encoder) that the model cached during the forward pass
                 contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), skeleton_hashes)
@@ -530,6 +532,8 @@ class Trainer():
 
                 # Calculate the loss
                 ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
+
+                contrastive_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
                 if contrastive_loss_weight > 0:
                     # Use memory (embeddings of encoder) that the model cached during the forward pass
