@@ -84,7 +84,7 @@ class PySREvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support, verbose=verbose):
+            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose, avoid_fragmentation=False):
 
                 # Initialize here to prevent memory leak?
                 model = PySRRegressor(
@@ -110,11 +110,14 @@ class PySREvaluation():
 
                 input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(batch, device='cpu')
 
+                x_tensor = x_tensor.unsqueeze(0)
+                y_tensor = y_tensor.unsqueeze(0)
+
                 X = x_tensor.cpu().numpy()[0, :self.n_support]
-                y = y_tensor.cpu().numpy()[0, :self.n_support]
+                y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
 
                 X_val = x_tensor.cpu().numpy()[0, self.n_support:]
-                y_val = y_tensor.cpu().numpy()[0, self.n_support:]
+                y_val = y_tensor.cpu().numpy()[0, self.n_support:, 0]
 
                 results_dict['input_ids'].append(input_ids.cpu().numpy())
                 results_dict['labels'].append(labels.cpu().numpy())
