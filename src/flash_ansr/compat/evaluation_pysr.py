@@ -84,7 +84,7 @@ class PySREvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support, verbose=verbose):
+            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose, avoid_fragmentation=False):
 
                 # Initialize here to prevent memory leak?
                 model = PySRRegressor(
@@ -108,17 +108,28 @@ class PySREvaluation():
                     },
                 )
 
-                input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(batch, device='cpu')
+                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(batch, device='cpu')
 
-                y = y_tensor.cpu().numpy()[:, 0]
-                X = x_tensor.cpu().numpy()
+                x_tensor = x_tensor.unsqueeze(0)
+                y_tensor = y_tensor.unsqueeze(0)
+
+                X = x_tensor.cpu().numpy()[0, :self.n_support]
+                y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
+
+                X_val = x_tensor.cpu().numpy()[0, self.n_support:]
+                y_val = y_tensor.cpu().numpy()[0, self.n_support:, 0]
 
                 results_dict['input_ids'].append(input_ids.cpu().numpy())
                 results_dict['labels'].append(labels.cpu().numpy())
                 results_dict['constants'].append([c.cpu().numpy() for c in constants])
-                results_dict['x'].append(x_tensor.cpu().numpy())
-                results_dict['y'].append(y_tensor.cpu().numpy())
-                results_dict['n_support'].append(x_tensor.shape[0])
+
+                results_dict['x'].append(x_tensor.cpu().numpy()[:, :self.n_support])
+                results_dict['y'].append(y_tensor.cpu().numpy()[:, :self.n_support])
+
+                results_dict['x_val'].append(x_tensor.cpu().numpy()[:, self.n_support:])
+                results_dict['y_val'].append(y_tensor.cpu().numpy()[:, self.n_support:])
+
+                results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
                 labels = input_ids.clone()[1:-1]
@@ -176,9 +187,11 @@ class PySREvaluation():
                 results_dict['structural_accuracy_beam_1'].append(int(expression_space.is_valid(best_skeleton_decoded)))
 
                 y_pred = model.predict(X)
+                y_pred_val = model.predict(X_val)
 
                 assert y_pred.shape == y.shape, f"{y_pred.shape} != {y.shape}"
 
+                # Fit Data
                 mse = np.mean((y_pred - y) ** 2)
                 r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
 
@@ -187,6 +200,15 @@ class PySREvaluation():
 
                 residuals = y_pred - y
 
+                # Val Data
+                mse_val = np.mean((y_pred_val - y_val) ** 2)
+                r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
+
+                nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
+                nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
+
+                residuals_val = y_pred_val - y_val
+
                 results_dict['mse_beam_1'].append(mse)
                 results_dict['r2_beam_1'].append(r2)
 
@@ -194,6 +216,14 @@ class PySREvaluation():
                 results_dict['NSRTS_accuracy_r2_beam_1'].append(nsrts_accuracy_r2)
 
                 results_dict['residuals_beam_1'].append(residuals)
+
+                results_dict['mse_val_beam_1'].append(mse_val)
+                results_dict['r2_val_beam_1'].append(r2_val)
+
+                results_dict['NSRTS_accuracy_close_val_beam_1'].append(nsrts_accuracy_close_val)
+                results_dict['NSRTS_accuracy_r2_val_beam_1'].append(nsrts_accuracy_r2_val)
+
+                results_dict['residuals_val_beam_1'].append(residuals_val)
 
                 print(f"mse: {mse:.2f}, r2: {r2:.2f}, nsrts_accuracy_close: {nsrts_accuracy_close}, nsrts_accuracy_r2: {nsrts_accuracy_r2}")
 

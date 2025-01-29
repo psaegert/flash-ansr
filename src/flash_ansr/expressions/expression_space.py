@@ -220,14 +220,14 @@ class ExpressionSpace:
                 # This regex must not match pow1_2 or pow1_3
                 if re.match(r'pow\d+(?!\_)', operator) and power == '**':
                     exponent = int(operator[3:])
-                    stack.append(f'({write_operands[0]})**{exponent}')
+                    stack.append(f'(({write_operands[0]})**{exponent})')
 
                 # If the operator is a fractional power operator such as pow1_2, format it as
                 # "pow(operand1, 0.5)" if power is 'func'
                 # "operand1**0.5" if power is '**'
                 elif re.match(r'pow1_\d+', operator) and power == '**':
                     exponent = int(operator[5:])
-                    stack.append(f'({write_operands[0]})**(1/{exponent})')
+                    stack.append(f'(({write_operands[0]})**(1/{exponent}))')
 
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
@@ -583,7 +583,21 @@ class ExpressionSpace:
         if mask_numbers:
             parsed_expression = numbers_to_num(parsed_expression)
 
-        return parsed_expression
+        return self.remove_pow1(parsed_expression)  # HACK: Find a better place to put this
+
+    def remove_pow1(self, prefix_expression: list[str]) -> list[str]:
+        filtered_expression = []
+        for token in prefix_expression:
+            if token == 'pow1':
+                continue
+
+            if token == 'pow_1':
+                filtered_expression.append('inv')
+                continue
+
+            filtered_expression.append(token)
+
+        return filtered_expression
 
     # Compatibility
     def convert_variable_names(self, prefix_expr: list[str], too_many_variables: Literal['ignore', 'raise'] = 'ignore') -> list[str]:
@@ -645,22 +659,76 @@ class ExpressionSpace:
 
         return prefix_expression_copy
 
+    def remove_num(self, expression: list[str], verbose: bool = False, debug: bool = False) -> list[str]:
+        stack: list = []
+        i = len(expression) - 1
+
+        if debug:
+            print(f'Input expression: {expression}')
+
+        while i >= 0:
+            token = expression[i]
+
+            if debug:
+                print(f'Stack: {stack}')
+                print(f'Processing token {token}')
+
+            if token in self.operator_arity_compat or token in self.operator_aliases:
+                operator = self.operator_aliases.get(token, token)
+                arity = self.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+
+                if any(operand[0] == '<num>' for operand in operands):
+                    if verbose:
+                        print('Removing constant')
+
+                    non_num_operands = [operand for operand in operands if operand[0] != '<num>']
+
+                    if len(non_num_operands) == 0:
+                        new_term = '<num>'
+                    elif len(non_num_operands) == 1:
+                        new_term = non_num_operands[0]
+                    else:
+                        raise NotImplementedError('Removing a constant from n-operand operator is not implemented')
+
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([new_term])
+                    i -= 1
+                    continue
+
+                _ = [stack.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+
+            else:
+                stack.append([token])
+
+            i -= 1
+
+        return flatten_nested_list(stack)[::-1]
+
     # SIMPLIFICATION (Sympy)
-    def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: float = 1) -> list[str]:
+    def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: int = 1) -> list[str]:
         prefix_expression, constants = num_to_constants(list(prefix_expression))
 
-        infix_expression = self.prefix_to_infix(prefix_expression)
+        infix_expression = self.prefix_to_infix(prefix_expression, power='**')
 
         for c in constants:
             infix_expression = infix_expression.replace(c, str(np.random.uniform(-10, 10)))
 
         sympy_expression = parse_expr(infix_expression)
 
-        signal.alarm(1)
+        signal.alarm(timeout)
         try:
             simplified_expression = str(simplify(sympy_expression, ratio=ratio) if ratio is not None else simplify(sympy_expression))
         except TimeoutError:
             return prefix_expression
+
+        translations = {
+            'Abs': 'abs',
+        }
+
+        for translate_from, translate_to in translations.items():
+            simplified_expression = simplified_expression.replace(translate_from, translate_to)
 
         parsed_expression = self.parse_expression(simplified_expression)
 
@@ -860,7 +928,7 @@ class ExpressionSpace:
                                 print()
 
                         # Check for the pattern [*, A, +, A, A] -> [+, pow2, A, pow2, A]
-                        if operands[0] == operands[1][1][0] and operands[0] == operands[1][1][1]:
+                        if operands[0] == operands[1][1][0] == operands[1][1][1]:
                             if verbose:
                                 print('Applying [*, A, +, A, A] -> [+, pow2, A, pow2, A]')
                             _ = [stack.pop() for _ in range(arity)]
@@ -980,21 +1048,21 @@ class ExpressionSpace:
                         i -= 1
                         continue
 
-                    # Check for the pattern [+, *, A, B, *, A, B] -> [*, A, +, B, B]
-                    if len(operands[0]) == 2 and operands[0][0] == '*' and operands[0] == operands[1]:
+                    # Check for the pattern [+, *, A, B, *, A, C] -> [*, A, +, B, C]
+                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '*' and len(operands[0][1]) == 2 and operands[0][1][0] == operands[1][1][0]:
                         if verbose:
-                            print('Applying [+, *, A, B, *, A, B] -> [*, A, +, B, B]')
+                            print('Applying [+, *, A, B, *, A, C] -> [*, A, +, B, C]')
                         _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['*', [operands[0][1][0], ['+', [operands[0][1][1], operands[0][1][1]]]]])
+                        stack.append(['*', [operands[0][1][0], ['+', [operands[0][1][1], operands[1][1][1]]]]])
                         i -= 1
                         continue
 
-                    # Check for the pattern [+, /, A, B, /, A, B] -> [/, +, A, A, B]
-                    if len(operands[0]) == 2 and operands[0][0] == '/' and operands[0] == operands[1]:
+                    # Check for the pattern [+, /, A, B, /, C, B] -> [/, +, A, C, B]
+                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '/' and len(operands[0][1]) == 2 and operands[0][1][1] == operands[1][1][1]:
                         if verbose:
-                            print('Applying [+, /, A, B, /, A, B] -> [/, +, A, A, B]')
+                            print('Applying [+, /, A, B, /, C, B] -> [/, +, A, C, B]')
                         _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['/', [['+', [operands[0][1][0], operands[0][1][0]]], operands[0][1][1]]])
+                        stack.append(['/', [['+', [operands[0][1][0], operands[1][1][0]]], operands[0][1][1]]])
                         i -= 1
                         continue
 
@@ -1023,6 +1091,24 @@ class ExpressionSpace:
                             print('Applying [-, 0, A] -> [neg A]')
                         _ = [stack.pop() for _ in range(arity)]
                         stack.append(['neg', [operands[1]]])
+                        i -= 1
+                        continue
+
+                    # Check for the pattern [-, *, A, B, *, A, C] -> [*, A, -, B, C]
+                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '*' and len(operands[0][1]) == 2 and operands[0][1][0] == operands[1][1][0]:
+                        if verbose:
+                            print('Applying [-, *, A, B, *, A, C] -> [*, A, -, B, C]')
+                        _ = [stack.pop() for _ in range(arity)]
+                        stack.append(['*', [operands[0][1][0], ['-', [operands[0][1][1], operands[1][1][1]]]]])
+                        i -= 1
+                        continue
+
+                    # Check for the pattern [-, /, A, B, /, C, B] -> [/, -, A, C, B]
+                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '/' and len(operands[0][1]) == 2 and operands[0][1][1] == operands[1][1][1]:
+                        if verbose:
+                            print('Applying [-, /, A, B, /, C, B] -> [/, -, A, C, B]')
+                        _ = [stack.pop() for _ in range(arity)]
+                        stack.append(['/', [['-', [operands[0][1][0], operands[1][1][0]]], operands[0][1][1]]])
                         i -= 1
                         continue
 
@@ -1366,7 +1452,7 @@ class ExpressionSpace:
                             continue
 
                         # Check for the pattern [*, /, A, B, /, B, A] -> <1> or [+, -, A, B, -, B, A] -> <0>
-                        if operands[0][0] == binary_inverse and operands[1][0] == binary_inverse:
+                        if operands[0][0] == binary_inverse and operands[1][0] == binary_inverse and operands[0][1][0] == operands[1][1][1] and operands[0][1][1] == operands[1][1][0]:
                             # print("Term:", operator, operands)
                             if verbose:
                                 print(f'Applying [{operator}, {binary_inverse}, A, B, {binary_inverse}, B, A] -> [{neutral_element}]')
@@ -1430,7 +1516,8 @@ class ExpressionSpace:
                                 continue
 
                             # Check for the pattern [+, A, +, B, -, B, A] -> [+, B, B] or [*, A, *, B, /, B, A] -> [*, B, B]
-                            if operands[1][0] == operator and operands[1][1][1][0] == binary_inverse:
+                            if len(operands[1][1][1]) == 2 and len(operands[1][1][1][1]) == 2 and \
+                                    operands[1][0] == operator and operands[1][1][1][0] == binary_inverse and operands[1][1][1][1][1] == operands[0] and operands[1][1][1][1][0] == operands[1][1][0]:
                                 if verbose:
                                     print(f'Applying [{operator}, A, {operator}, B, {binary_inverse}, B, A] -> [{operator}, B, B]')
                                 B = operands[1][1][0]
@@ -1464,7 +1551,7 @@ class ExpressionSpace:
                     if len(operands[0]) == 2:
                         if len(operands[0][1]) == 2:
                             # Check for the pattern [/, *, A, B, A] -> B or [-, +, A, B, A] -> B
-                            if operands[1] == operands[0][1][0]:
+                            if operands[1] == operands[0][1][0] and operands[0][0] == base:
                                 if verbose:
                                     print(f'Applying [{operator}, {base}, A, B, A] -> B')
                                 _ = [stack.pop() for _ in range(arity)]

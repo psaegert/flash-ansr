@@ -12,7 +12,6 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
-from flash_ansr.train.scheduler import BatchSizeScheduler
 
 
 class FlashANSRDataset:
@@ -126,7 +125,7 @@ class FlashANSRDataset:
         return load_config(config_path), dataset
 
     @staticmethod
-    def collate_batch(batch: dict[str, Any], device: str | torch.device | int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+    def collate_batch(batch: dict[str, Any], device: str | torch.device | int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor], list[tuple[str]]]:
         '''
         Collate a batch of data.
 
@@ -167,7 +166,7 @@ class FlashANSRDataset:
         # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
         labels = input_ids.clone()[..., 1:]
 
-        return input_ids, x_tensor, y_tensor, labels, constants
+        return input_ids, x_tensor, y_tensor, labels, constants, batch['skeleton_hashes']
 
     def compile(self, size: int | None = None, steps: int | None = None, batch_size: int | None = None, n_support: int | None = None, verbose: bool = False) -> None:
         disable_progress_bars()
@@ -185,10 +184,12 @@ class FlashANSRDataset:
             self,
             size: int | None = None,
             steps: int | None = None,
-            batch_size: int | BatchSizeScheduler | None = None,
+            batch_size: int | None = None,
             n_support: int | None = None,
+            n_per_equation: int = 1,
             tqdm_total: int | None = None,
-            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
+            verbose: bool = False,
+            avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Iterate over the dataset.
 
@@ -202,6 +203,8 @@ class FlashANSRDataset:
             The batch size or scheduler, by default None.
         n_support : int, optional
             The number of support points to sample, by default None.
+        n_per_equation : int, optional
+            The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None.
         verbose : bool, optional
@@ -216,27 +219,38 @@ class FlashANSRDataset:
             if batch_size is None:
                 if steps is not None:
                     raise ValueError(f'Speficfied {steps=} which is not used for non-batched data generation')
-                yield from self.generate(size=size, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
+                yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
             else:
-                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, tqdm_total=tqdm_total, verbose=verbose)
+                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
         else:
             for instance in tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01):
                 yield instance
 
-    def generate_batch(self, batch_size: int | BatchSizeScheduler, size: int | None = None, steps: int | None = None, n_support: int | None = None, tqdm_total: int | None = None, verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
+    def generate_batch(
+            self,
+            batch_size: int,
+            size: int | None = None,
+            steps: int | None = None,
+            n_support: int | None = None,
+            n_per_equation: int = 1,
+            tqdm_total: int | None = None,
+            verbose: bool = False,
+            avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Generate a batch of data.
 
         Parameters
         ----------
-        batch_size : int or BatchSizeScheduler
-            The batch size or scheduler.
+        batch_size : int
+            The batch size.
         size : int, optional
             The total number of data to generate, by default None.
         steps : int, optional
             The number of batches to generate, by default None.
         n_support : int, optional
             The number of support points to sample, by default None.
+        n_per_equation : int, optional
+            The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None
         verbose : bool, optional
@@ -253,6 +267,7 @@ class FlashANSRDataset:
         batch: dict[str, list | torch.Tensor] = {
             'n_rejected': [],
             'skeletons': [],
+            'skeleton_hashes': [],
             'expressions': [],
             'constants': [],
             'input_ids': [],
@@ -273,13 +288,8 @@ class FlashANSRDataset:
         n_generated = 0
 
         while (size is None and steps is None) or (steps is not None and batch_id < steps) or (size is not None and n_generated < size):
-            if isinstance(batch_size, BatchSizeScheduler):
-                current_batch_size = batch_size.batch_size
-            elif isinstance(batch_size, int):
-                current_batch_size = batch_size
-
             if sample_n_support:
-                if batch_id == 0:
+                if batch_id == 0 and avoid_fragmentation:
                     # Allocate the maximum size tensor to avoid memory fragmentation
                     n_support_frag = int(self.skeleton_pool.n_support_prior_kwargs['max_value'])
                 elif n_support is None:
@@ -288,8 +298,9 @@ class FlashANSRDataset:
                     n_support_frag = n_support
 
             for instance in self.generate(
-                    size=min(current_batch_size, size - batch_id * current_batch_size) if size is not None else current_batch_size,
+                    size=min(batch_size, size - batch_id * batch_size) if size is not None else batch_size,
                     n_support=n_support_frag,
+                    n_per_equation=n_per_equation,
                     avoid_fragmentation=False,
                     verbose=False):
                 for key in instance.keys():
@@ -319,15 +330,19 @@ class FlashANSRDataset:
             batch = {k: [] for k in batch}
             batch_id += 1
 
-            if isinstance(batch_size, BatchSizeScheduler):
-                batch_size.step(batch_id)
-
             pbar.update(1)
             pbar.set_postfix(reject_rate=f'{n_rejected / (n_rejected + n_generated):.2%}')
 
         pbar.close()
 
-    def generate(self, size: int | None = None, n_support: int | None = None, avoid_fragmentation: bool = True, tqdm_total: int | None = None, verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
+    def generate(
+            self,
+            size: int | None = None,
+            n_support: int | None = None,
+            n_per_equation: int = 1,
+            avoid_fragmentation: bool = True,
+            tqdm_total: int | None = None,
+            verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
         '''
         Generate data.
 
@@ -337,6 +352,8 @@ class FlashANSRDataset:
             The total number of data to generate, by default None.
         n_support : int, optional
             The number of support points to sample, by default None.
+        n_per_equation : int, optional
+            The number of instances with distinct constants and support points to generate per equation, by default 1.
         avoid_fragmentation : bool, optional
             Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
         tqdm_total : int, optional
@@ -359,35 +376,56 @@ class FlashANSRDataset:
             n_support_frag = int(self.skeleton_pool.n_support_prior_kwargs['max_value']) if n_generated == 0 and avoid_fragmentation else n_support
 
             try:
-                sample = self.skeleton_pool.sample(n_support=n_support_frag)
+                # sample = self.skeleton_pool.sample(n_support=n_support_frag)
+                skeleton_hash, skeleton_code, skeleton_constants = self.skeleton_pool.sample_skeleton()
+                skeleton = list(skeleton_hash)
+
+                buffer = []
+
+                n_generated_per_equation = 0
+                while n_generated_per_equation < n_per_equation:
+                    try:
+                        x_support, y_support, literals = self.skeleton_pool.sample_data(skeleton_code, len(skeleton_constants), n_support_frag)
+
+                        if self.padding == 'zero':
+                            # Set all x that do not appear in the expression to 0
+                            for i, variable in enumerate(self.skeleton_pool.expression_space.variables):
+                                if variable not in skeleton:
+                                    x_support[:, i] = 0
+
+                        # Tokenize the expression to get the input_ids
+                        input_ids = self.skeleton_pool.expression_space.tokenizer.encode(skeleton, return_tensors=True, add_bos=True, add_eos=True)
+
+                        # Yield the sample
+                        buffer.append({
+                            'n_rejected': [n_rejected],
+                            'skeletons': skeleton,
+                            'skeleton_hashes': skeleton_hash,
+                            'expressions': substitude_constants(skeleton, values=literals),
+                            'constants': torch.tensor(literals, dtype=torch.float32),
+                            'input_ids': input_ids,
+                            'x_tensors': torch.tensor(x_support, dtype=torch.float32),
+                            'y_tensors': torch.tensor(y_support, dtype=torch.float32),
+                        })
+
+                    except NoValidSampleFoundError:
+                        buffer = []
+                        n_generated_per_equation = 0
+                        break
+
+                    n_generated_per_equation += 1
+
+                if len(buffer) == 0:
+                    n_rejected += 1
+                    continue
+
+                yield from buffer
+
             except NoValidSampleFoundError:
                 n_rejected += 1
                 continue
 
-            skeleton = list(sample["skeleton_hash"])
-
-            if self.padding == 'zero':
-                # Set all x that do not appear in the expression to 0
-                for i, variable in enumerate(self.skeleton_pool.expression_space.variables):
-                    if variable not in skeleton:
-                        sample["x_support"][:, i] = 0
-
-            # Tokenize the expression to get the input_ids
-            input_ids = self.skeleton_pool.expression_space.tokenizer.encode(
-                skeleton, return_tensors=True, add_bos=True, add_eos=True)
-
-            # Yield the sample
-            yield {
-                'n_rejected': [n_rejected],
-                'skeletons': skeleton,
-                'expressions': substitude_constants(skeleton, values=sample["literals"]),
-                'constants': torch.tensor(sample["literals"], dtype=torch.float32),
-                'input_ids': input_ids,
-                'x_tensors': torch.tensor(sample["x_support"], dtype=torch.float32),
-                'y_tensors': torch.tensor(sample["y_support"], dtype=torch.float32),
-            }
-
-            n_generated += 1
+            n_generated += n_per_equation
 
             if verbose:
                 pbar.update(1)
