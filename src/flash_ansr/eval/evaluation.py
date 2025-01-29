@@ -196,7 +196,7 @@ class Evaluation():
         with torch.no_grad():
             current_size = 0
             for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size):
-                input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
+                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
 
                 x_tensor = x_tensor.unsqueeze(0)
                 y_tensor = y_tensor.unsqueeze(0)

@@ -108,7 +108,7 @@ class PySREvaluation():
                     },
                 )
 
-                input_ids, x_tensor, y_tensor, labels, constants = FlashANSRDataset.collate_batch(batch, device='cpu')
+                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(batch, device='cpu')
 
                 X = x_tensor.cpu().numpy()[0, :self.n_support]
                 y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
