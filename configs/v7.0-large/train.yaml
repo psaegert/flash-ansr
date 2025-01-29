@@ -15,11 +15,7 @@ lr_scheduler:
     warmup_steps: 10_000
     total_steps: 1_500_000
 
-batch_size_scheduler:
-  name: Constant
-  kwargs:
-    batch_size: 32
-    gradient_accumulation_steps: 4  # Total: 4 * 32 = 128
+batch_size: 32
 
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
