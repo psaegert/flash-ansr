@@ -48,6 +48,8 @@ class FlashANSRTransformer(nn.Module):
     max_input_length : int, optional
         The maximum input length for positional embeddings, by default 32.
     '''
+    memory: torch.Tensor
+
     def __init__(
             self,
             expression_space: ExpressionSpace,
@@ -185,14 +187,14 @@ class FlashANSRTransformer(nn.Module):
             embeddings = embeddings + self.pos_encoding(embeddings)
 
         pre_encodings = self.pre_encoder(data)
-        memory = self.encoder(pre_encodings)
+        self.memory = self.encoder(pre_encodings)
 
         attn_mask = nn.Transformer.generate_square_subsequent_mask(input_tokens.shape[1], device=input_tokens.device)
         padding_mask = (input_tokens == self.expression_space.tokenizer["<pad>"]).float().masked_fill(input_tokens == self.expression_space.tokenizer["<pad>"], 1e-9)
 
         output = self.decoder.forward(
             tgt=embeddings,
-            memory=memory,
+            memory=self.memory,
             tgt_mask=attn_mask,
             tgt_key_padding_mask=padding_mask)
 
@@ -202,7 +204,7 @@ class FlashANSRTransformer(nn.Module):
         if numeric_head:
             output_full = self.decoder.forward(
                 tgt=embeddings,
-                memory=memory,
+                memory=self.memory,
                 tgt_key_padding_mask=padding_mask)
             num_out = self.num_out(output_full)
         else:

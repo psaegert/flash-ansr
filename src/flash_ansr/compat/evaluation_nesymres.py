@@ -96,7 +96,7 @@ class NeSymResEvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size):
+            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size):
                 input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
 
                 results_dict['input_ids'].append(input_ids.cpu().numpy())

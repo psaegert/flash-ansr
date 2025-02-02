@@ -1,0 +1,10 @@
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_1-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_2-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_4-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_8-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_16-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_32-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_64-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_128-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_256-points v7.0
+./scripts/evaluate.sh analysis_points_v7.0/v7.0_512-points v7.0
