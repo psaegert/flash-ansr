@@ -23,7 +23,7 @@ val_batch_size: 128
 val_size: 100_000
 
 contrastive_n_per_class: 4
-contrastive_margin: 0.5
+contrastive_margin: 0.0
 contrastive_temperature: 0.5
 
 numeric_prediction_loss_weight: 0
