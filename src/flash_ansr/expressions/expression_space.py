@@ -34,7 +34,7 @@ class ExpressionSpace:
     variables : int
         The number of variables
     """
-    def __init__(self, operators: dict[str, dict[str, Any]], variables: int, simplification: Literal['flash', 'sympy'] = 'flash') -> None:
+    def __init__(self, operators: dict[str, dict[str, Any]], variables: int, simplification: Literal['flash', 'sympy'] = 'flash', special_tokens: list[str] | None = None) -> None:
         self.simplification = simplification
 
         self.special_constants = {"pi": np.pi}
@@ -84,7 +84,7 @@ class ExpressionSpace:
 
         self.variables = [f'x{i + 1}' for i in range(variables)]
 
-        self.tokenizer = Tokenizer(self.operator_tokens + self.variables)
+        self.tokenizer = Tokenizer(vocab=self.operator_tokens + self.variables, special_tokens=special_tokens)
 
         self.modules = get_used_modules(''.join(f"{op}(" for op in self.operator_realizations.values()))  # HACK: This can be done more elegantly for sure
 
@@ -115,7 +115,7 @@ class ExpressionSpace:
         if "expressions" in config_.keys():
             config_ = config_["expressions"]
 
-        return cls(operators=config_["operators"], variables=config_["variables"], simplification=config_.get("simplification", 'flash'))
+        return cls(operators=config_["operators"], variables=config_["variables"], simplification=config_.get("simplification", 'flash'), special_tokens=config_.get("special_tokens", None))
 
     def is_valid(self, prefix_expression: list[str], verbose: bool = False) -> bool:
         '''

@@ -528,9 +528,9 @@ class SkeletonPool:
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
                             p=self.operator_probs)
-                    case "exponential":
+                    case "length_exponential":
                         if not hasattr(self, 'operator_probs'):
-                            self.operator_probs = np.exp(np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1) / self.sample_strategy['lambda'])
+                            self.operator_probs = np.exp(np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1)**self.sample_strategy['power'] / self.sample_strategy['lambda'])
                             self.operator_probs = self.operator_probs / self.operator_probs.sum()
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
