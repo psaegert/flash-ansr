@@ -108,10 +108,10 @@ class PySREvaluation():
                     },
                 )
 
-                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(batch, device='cpu')
+                batch = dataset.collate_batch(batch, device='cpu')
 
-                x_tensor = x_tensor.unsqueeze(0)
-                y_tensor = y_tensor.unsqueeze(0)
+                x_tensor = batch['x_tensors'].unsqueeze(0)
+                y_tensor = batch['y_tensors'].unsqueeze(0)
 
                 X = x_tensor.cpu().numpy()[0, :self.n_support]
                 y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
@@ -119,9 +119,9 @@ class PySREvaluation():
                 X_val = x_tensor.cpu().numpy()[0, self.n_support:]
                 y_val = y_tensor.cpu().numpy()[0, self.n_support:, 0]
 
-                results_dict['input_ids'].append(input_ids.cpu().numpy())
-                results_dict['labels'].append(labels.cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in constants])
+                results_dict['input_ids'].append(batch['input_ids'].cpu().numpy())
+                results_dict['labels'].append(batch['labels'].cpu().numpy())
+                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants']])
 
                 results_dict['x'].append(x_tensor.cpu().numpy()[:, :self.n_support])
                 results_dict['y'].append(y_tensor.cpu().numpy()[:, :self.n_support])
@@ -132,8 +132,8 @@ class PySREvaluation():
                 results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
-                labels = input_ids.clone()[1:-1]
-                labels_decoded = expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
+                labels = batch['labels'].clone()
+                labels_decoded = expression_space.tokenizer.decode(batch['labels'].tolist(), special_tokens='<num>')
 
                 # TODO: For different datasets, sort unused dimensions to the end
                 warnings.filterwarnings("ignore", category=RuntimeWarning)

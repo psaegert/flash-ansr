@@ -96,35 +96,35 @@ class NeSymResEvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size):
-                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
+            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size):
+                batch = dataset.collate_batch(batch, device=self.device)
 
-                results_dict['input_ids'].append(input_ids.cpu().numpy())
-                results_dict['labels'].append(labels.cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in constants])
+                results_dict['input_ids'].append(batch['input_ids'].cpu().numpy())
+                results_dict['labels'].append(batch['labels'].cpu().numpy())
+                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants']])
 
-                results_dict['x'].append(x_tensor.cpu().numpy()[:, :self.n_support])
-                results_dict['y'].append(y_tensor.cpu().numpy()[:, :self.n_support])
+                results_dict['x'].append(batch['x_tensors'].cpu().numpy()[:, :self.n_support])
+                results_dict['y'].append(batch['y_tensors'].cpu().numpy()[:, :self.n_support])
 
-                results_dict['x_val'].append(x_tensor.cpu().numpy()[:, self.n_support:])
-                results_dict['y_val'].append(y_tensor.cpu().numpy()[:, self.n_support:])
+                results_dict['x_val'].append(batch['x_tensors'].cpu().numpy()[:, self.n_support:])
+                results_dict['y_val'].append(batch['y_tensors'].cpu().numpy()[:, self.n_support:])
 
-                results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
+                results_dict['n_support'].append([batch['x_tensor'].shape[1] // 2] * batch['x_tensor'].shape[0])
 
-                # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
-                labels = input_ids.clone()[1:]
+                # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
+                labels = batch['labels'].clone()
                 labels_decoded = expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
 
                 # TODO: For different datasets, sort unused dimensions to the end
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-                print(expression_space.tokenizer.decode(input_ids.tolist(), special_tokens='<num>'))
+                print(expression_space.tokenizer.decode(batch['input_ids'].tolist(), special_tokens='<num>'))
 
-                X = x_tensor.cpu().numpy()[0, :self.n_support]
-                y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
+                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
+                y = batch['y_tensors'].cpu().numpy()[0, :self.n_support, 0]
 
-                X_val = x_tensor.cpu().numpy()[0, self.n_support:]
-                y_val = y_tensor.cpu().numpy()[0, self.n_support:, 0]
+                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
+                y_val = batch['y_tensors'].cpu().numpy()[0, self.n_support:, 0]
 
                 try:
                     fit_time_before = time.time()

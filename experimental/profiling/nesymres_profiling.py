@@ -19,11 +19,11 @@ model, fitfunc = load_nesymres(
 dataset = FlashANSRDataset.from_config(get_path('data', 'ansr-data', 'test_set', 'feynman', 'dataset.yaml'))
 
 # %%
-for single_element_batch in dataset.iterate(size=1, n_support=512, avoid_fragmentation=True, verbose=True, tqdm_total=1):
-    input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(single_element_batch, device='cuda')
+for batch in dataset.iterate(size=1, n_support=512, avoid_fragmentation=True, verbose=True, tqdm_total=1):
+    batch = dataset.collate_batch(batch, device='cuda')
 
-    X = x_tensor
-    y = y_tensor[:, 0]
+    X = batch['x_tensors']
+    y = batch['y_tensors'][:, 0]
 
 # %%
 X.shape, y.shape

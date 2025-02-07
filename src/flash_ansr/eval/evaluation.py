@@ -7,7 +7,6 @@ import numpy as np
 import editdistance
 import time
 
-from torch import nn
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer, scoring
@@ -195,47 +194,39 @@ class Evaluation():
 
         with torch.no_grad():
             current_size = 0
-            for single_element_batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size):
-                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(single_element_batch, device=self.device)
-
-                x_tensor = x_tensor.unsqueeze(0)
-                y_tensor = y_tensor.unsqueeze(0)
+            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size, batch_size=1):
+                batch = dataset.collate_batch(batch, device=self.device)
 
                 if self.noise_level > 0.0:
-                    y_tensor_noisy = y_tensor + (self.noise_level * y_tensor.std() * torch.randn_like(y_tensor))
-                    if not torch.all(torch.isfinite(y_tensor_noisy)):
+                    batch['y_tensors_noisy'] = batch['y_tensors'] + (self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors']))
+                    if not torch.all(torch.isfinite(batch['y_tensors_noisy'])):
                         warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
                         continue
                 else:
-                    y_tensor_noisy = y_tensor
+                    batch['y_tensors_noisy'] = batch['y_tensors']
 
-                results_dict['input_ids'].append(input_ids.cpu().numpy())
-                results_dict['labels'].append(labels.cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in constants])
+                results_dict['input_ids'].append(batch['input_ids'][0].cpu().numpy())
+                results_dict['labels'].append(batch['labels'][0].cpu().numpy())
+                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants'][0]])
 
-                results_dict['x'].append(x_tensor.cpu().numpy()[:, :self.n_support])
-                results_dict['y'].append(y_tensor.cpu().numpy()[:, :self.n_support])
-                results_dict['y_noisy'].append(y_tensor_noisy.cpu().numpy()[:, :self.n_support])
+                results_dict['x'].append(batch['x_tensors'].cpu().numpy()[:, :self.n_support])
+                results_dict['y'].append(batch['y_tensors'].cpu().numpy()[:, :self.n_support])
+                results_dict['y_noisy'].append(batch['y_tensors_noisy'].cpu().numpy()[:, :self.n_support])
 
-                results_dict['x_val'].append(x_tensor.cpu().numpy()[:, self.n_support:])
-                results_dict['y_val'].append(y_tensor.cpu().numpy()[:, self.n_support:])
-                results_dict['y_noisy_val'].append(y_tensor_noisy.cpu().numpy()[:, self.n_support:])
+                results_dict['x_val'].append(batch['x_tensors'].cpu().numpy()[:, self.n_support:])
+                results_dict['y_val'].append(batch['y_tensors'].cpu().numpy()[:, self.n_support:])
+                results_dict['y_noisy_val'].append(batch['y_tensors_noisy'].cpu().numpy()[:, self.n_support:])
 
-                results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
+                results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
-                # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
-                labels = input_ids.clone()[1:]
+                # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
+                labels = batch['labels'][0].clone()
                 labels_decoded = model.expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
 
-                # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-                pad_length = model.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor_noisy.shape[-1]
-                if pad_length > 0:
-                    x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0, 0, 0), value=0)
-
-                data_tensor = torch.cat([x_tensor, y_tensor_noisy], dim=-1)
+                data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors_noisy']], dim=-1)
 
                 # Teacher forced forward pass
-                logits, num_out = model.forward(input_ids.unsqueeze(0), data_tensor, numeric_head=self.numeric_head)
+                logits, num_out = model.forward(batch['input_ids'], data_tensor, numeric_head=self.numeric_head)
 
                 # Beam search
                 beam_search_time_start = time.time()
@@ -314,11 +305,11 @@ class Evaluation():
                 np_errors_before = np.geterr()
                 np.seterr(all='ignore')
 
-                X = x_tensor.cpu().numpy()[0, :self.n_support]
-                y = y_tensor_noisy.cpu().numpy()[0, :self.n_support]
+                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
+                y = batch['y_tensors_noisy'].cpu().numpy()[0, :self.n_support]
 
-                X_val = x_tensor.cpu().numpy()[0, self.n_support:]
-                y_val = y_tensor_noisy.cpu().numpy()[0, self.n_support:]
+                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
+                y_val = batch['y_tensors_noisy'].cpu().numpy()[0, self.n_support:]
 
                 for j, beam in enumerate(beams_decoded):
                     refiner_time = 0.0

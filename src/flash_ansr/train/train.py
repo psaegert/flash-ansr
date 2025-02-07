@@ -106,8 +106,11 @@ class ContrastiveLoss(nn.Module):
         Returns:
             torch.Tensor: The computed contrastive loss.
         """
+        if isinstance(features, np.ndarray):
+            features = torch.tensor(features)
+
         # Create labels tensor
-        if isinstance(labels, list):
+        if isinstance(labels, list) or isinstance(labels, np.ndarray):
             unique_labels_map = {label: i for i, label in enumerate(set(labels))}
             labels_tensor = torch.tensor([unique_labels_map[label] for label in labels], device=features.device)
         else:
@@ -308,7 +311,7 @@ class Trainer():
         self.initial_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
-            pbar = tqdm(range(steps), disable=not verbose, smoothing=0.001, desc="Training")
+            pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
 
             # Validate
             if validate_interval is not None:
@@ -379,21 +382,16 @@ class Trainer():
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
-            input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(micro_batch, device=self.model.device)
-
-            # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-            pad_length = self.model.encoder_max_n_variables - x_tensor.shape[2] - y_tensor.shape[2]
-            if pad_length > 0:
-                x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0, 0, 0), value=0)
+            batch = self.train_dataset.collate_batch(micro_batch, device=self.model.device)
 
             # Concatenate x and y tensors as input to the set transformer
-            data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
+            data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(input_ids, data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
+            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-            flat_labels = labels.reshape(-1)
+            flat_labels = batch['labels'].reshape(-1)
 
             # Calculate the loss
             ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -402,14 +400,14 @@ class Trainer():
 
             if contrastive_loss_weight > 0:
                 # Use memory (embeddings of encoder) that the model cached during the forward pass
-                contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), skeleton_hashes)
+                contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
             # Compare the num_output at the positions where the labels are `<num>`
             num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
             if numeric_prediction_loss_weight > 0:
                 n_tokens = 0.0
-                for i, (lbl, const) in enumerate(zip(labels, constants)):
+                for i, (lbl, const) in enumerate(zip(batch['labels'], batch['constants'])):
                     n_tokens += torch.sum(lbl != self.metrics_ignore_index).item()
                     if len(const) > 0:
                         num_loss += self.mse_loss(num_output[i, 1:, 0][lbl == self.numeric_token_index], const)
@@ -426,8 +424,8 @@ class Trainer():
 
             loss.backward()
 
-            self.cumulative_training_tokens += logits.shape[1] * x_tensor.shape[0]
-            self.cumulative_training_pflops += (self.flops_per_token * logits.shape[1] * x_tensor.shape[0]) * 1e-15  # PFLOPS per token * number of tokens * batch size
+            self.cumulative_training_tokens += logits.shape[1] * batch['x_tensors'].shape[0]
+            self.cumulative_training_pflops += (self.flops_per_token * logits.shape[1] * batch['x_tensors'].shape[0]) * 1e-15  # PFLOPS per token * number of tokens * batch size
 
         accumulated_ce_loss /= self.gradient_accumulation_steps
         accumulated_contrastive_loss /= self.gradient_accumulation_steps
@@ -437,20 +435,20 @@ class Trainer():
         try:
             if np.isnan(loss.item()):
                 print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
-                print(f'{np.sum(np.isnan(x_tensor.cpu().numpy()))} NaNs in x_tensor')
-                print(f'{np.sum(np.isnan(y_tensor.cpu().numpy()))} NaNs in y_tensor')
+                print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+                print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
                 print(f'{np.sum(np.isnan(logits.cpu().detach().numpy()))} NaNs in logits')
                 raise ValueError("Loss is NaN")
         except RuntimeError:
-            print(input_ids)
-            print(labels)
-            print(constants)
+            print(batch['input_ids'])
+            print(batch['labels'])
+            print(batch['constants'])
             print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
             print(flat_logits)
             print(flat_labels)
             # Any nans in xtensor
-            print(f'{np.sum(np.isnan(x_tensor.cpu().numpy()))} NaNs in x_tensor')
-            print(f'{np.sum(np.isnan(y_tensor.cpu().numpy()))} NaNs in y_tensor')
+            print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+            print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
             raise
 
         gradient_norms = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1)
@@ -484,13 +482,13 @@ class Trainer():
             "train_num_loss": accumulated_num_loss,
             "train_loss": accumulated_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "batch_size": x_tensor.shape[0],
+            "batch_size": batch["x_tensors"].shape[0],
             "steps_per_second": 1 / (time.time() - start_time),
             "train_mean_reciprocal_rank": reciprocal_rank(flat_logits, flat_labels, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(flat_logits, flat_labels, k=1, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_5": correct_token_predictions_at_k(flat_logits, flat_labels, k=5, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_10": correct_token_predictions_at_k(flat_logits, flat_labels, k=10, reduction='mean', ignore_index=self.metrics_ignore_index),
-            "n_support": x_tensor.shape[1],
+            "n_support": batch["x_tensors"].shape[1],
             "cumulative_training_tokens": self.cumulative_training_tokens,
             "cumulative_training_pflops": self.cumulative_training_pflops
         }, step=step)
@@ -514,21 +512,16 @@ class Trainer():
 
             for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
-                input_ids, x_tensor, y_tensor, labels, constants, skeleton_hashes = FlashANSRDataset.collate_batch(batch, device=self.model.device)
-
-                # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-                pad_length = self.model.encoder_max_n_variables - x_tensor.shape[2] - y_tensor.shape[2]
-                if pad_length > 0:
-                    x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0, 0, 0), value=0)
+                batch = self.val_dataset.collate_batch(batch, device=self.model.device)
 
                 # Concatenate x and y tensors as input to the set transformer
-                data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
+                data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Forward pass
-                logits, num_output = self.model.forward(input_ids, data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
+                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
 
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                flat_labels = labels.reshape(-1)
+                flat_labels = batch['labels'].reshape(-1)
 
                 # Calculate the loss
                 ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -537,18 +530,18 @@ class Trainer():
 
                 if contrastive_loss_weight > 0:
                     # Use memory (embeddings of encoder) that the model cached during the forward pass
-                    contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), skeleton_hashes)
+                    contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
                 # Compare the num_output at the positions where the labels are `<num>`
                 num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
                 if numeric_prediction_loss_weight > 0:
                     n_tokens = 0.0
-                    for i in range(len(constants)):
-                        if len(constants[i]) == 0:
+                    for i in range(len(batch['constants'])):
+                        if len(batch['constants'][i]) == 0:
                             continue
-                        num_loss += self.mse_loss(num_output[i, 1:, 0][labels[i] == self.numeric_token_index], constants[i])
-                        n_tokens += torch.sum(labels[i] != self.metrics_ignore_index).item()
+                        num_loss += self.mse_loss(num_output[i, 1:, 0][batch['labels'][i] == self.numeric_token_index], batch['constants'][i])
+                        n_tokens += torch.sum(batch['labels'][i] != self.metrics_ignore_index).item()
 
                     if n_tokens > 0:
                         num_loss /= n_tokens
