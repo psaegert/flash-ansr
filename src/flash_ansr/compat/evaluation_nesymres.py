@@ -118,7 +118,7 @@ class NeSymResEvaluation():
                 # TODO: For different datasets, sort unused dimensions to the end
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-                print(expression_space.tokenizer.decode(batch['input_ids'].tolist(), special_tokens='<num>'))
+                print(expression_space.tokenizer.decode(batch['input_ids'][0].tolist(), special_tokens='<num>'))
 
                 X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
                 y = batch['y_tensors'].cpu().numpy()[0, :self.n_support, 0]
