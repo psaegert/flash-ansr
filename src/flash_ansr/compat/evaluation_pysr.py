@@ -132,7 +132,7 @@ class PySREvaluation():
                 results_dict['n_support'].append([x_tensor.shape[1] // 2] * x_tensor.shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
-                labels = batch['labels'].clone()
+                labels = batch['labels'][0].clone()
                 labels_decoded = expression_space.tokenizer.decode(batch['labels'].tolist(), special_tokens='<num>')
 
                 # TODO: For different datasets, sort unused dimensions to the end

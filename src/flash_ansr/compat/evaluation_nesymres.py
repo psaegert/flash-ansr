@@ -112,7 +112,7 @@ class NeSymResEvaluation():
                 results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
-                labels = batch['labels'].clone()
+                labels = batch['labels'][0].clone()
                 labels_decoded = expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
 
                 # TODO: For different datasets, sort unused dimensions to the end
