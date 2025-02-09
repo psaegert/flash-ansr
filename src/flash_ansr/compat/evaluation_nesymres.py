@@ -109,7 +109,7 @@ class NeSymResEvaluation():
                 results_dict['x_val'].append(batch['x_tensors'].cpu().numpy()[:, self.n_support:])
                 results_dict['y_val'].append(batch['y_tensors'].cpu().numpy()[:, self.n_support:])
 
-                results_dict['n_support'].append([batch['x_tensor'].shape[1] // 2] * batch['x_tensor'].shape[0])
+                results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
                 # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
                 labels = batch['labels'].clone()
