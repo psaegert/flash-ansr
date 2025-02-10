@@ -96,7 +96,7 @@ class NeSymResEvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size, batch_size=1):
+            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size, batch_size=1):
                 batch = dataset.collate_batch(batch, device=self.device)
 
                 results_dict['input_ids'].append(batch['input_ids'].cpu().numpy())
