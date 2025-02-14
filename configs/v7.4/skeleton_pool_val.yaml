@@ -1,0 +1,36 @@
+expression_space: './expression_space.yaml'
+holdout_pools: [
+  "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/pool_15/skeleton_pool/"
+]
+
+sample_strategy:
+  n_operator_distribution: "length_proportional"
+  min_operators: 0
+  max_operators: 10
+  power: 1
+  max_length: 21
+  max_tries: 1
+  independent_dimensions: True
+
+allow_nan: False
+simplify: True
+
+literal_prior: 'uniform'
+literal_prior_kwargs:
+  low: 1
+  high: 5
+
+support_prior: "uniform_intervals"
+support_prior_kwargs:
+  low: -10
+  high: 10
+
+n_support_prior: "uniform"
+n_support_prior_kwargs:
+  low: 16
+  high: 512
+  min_value: 16
+  max_value: 512

@@ -1,0 +1,33 @@
+model: ./nsr.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    amsgrad: True
+
+lr_scheduler:
+  name: WarmupLinearAnnealing
+  kwargs:
+    min_lr: 0
+    max_lr: 1e-4
+    warmup_steps: 10_000
+    total_steps: 1_500_000
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 100_000
+
+contrastive_n_per_class: 4
+contrastive_margin: 0.0
+contrastive_temperature: 0.5
+
+numeric_prediction_loss_weight: 0
+contrastive_loss_weight: 0.2
+
+steps: 1_500_000
+device: cuda

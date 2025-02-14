@@ -13,7 +13,7 @@ class TestExpressionSpace(unittest.TestCase):
 
         infix_equation_string = space.prefix_to_infix(test_expression)
 
-        assert infix_equation_string == '(sin((1.234 ** x1)) * -423)'
+        assert infix_equation_string == 'sin(1.234 ** x1) * -423'
 
     def test_from_config_dict(self):
         space = ExpressionSpace(operators={
@@ -228,6 +228,13 @@ class TestSimplify(unittest.TestCase):
             (['inv', '*', 'x1', '/', 'x2', 'x3'], ['/', '/', 'x3', 'x1', 'x2']),  # Implicit sorting
             # [+, +, A, B, C] -> [+, A, +, B, C]
             (['+', '+', 'x1', 'x2', 'x3'], ['+', 'x1', '+', 'x2', 'x3']),
+            # Misc
+            (['*', '/', 'x1', 'x3', '/', 'x2', 'x1'], ['/', 'x2', 'x3']),
+            (['*', 'x1', '*', 'x2', '/', 'x2', 'x1'], ['pow2', 'x2']),
+            (['*', 'x1', '*', 'x3', '/', 'x2', 'x1'], ['*', 'x1', '*', 'x2', '/', 'x3', 'x1']),
+            (['+', '*', 'x1', 'x2', '*', 'x1', 'x2'], ['*', 'x1', '+', 'x2', 'x2']),
+            (['+', '*', 'x1', 'x2', '*', 'x1', 'x3'], ['*', 'x1', '+', 'x2', 'x3']),
+            (['+', '/', 'x1', 'x2', '/', 'x3', 'x2'], ['/', '+', 'x1', 'x3', 'x2']),
         ]
 
         X = np.random.uniform(-10, 10, (512, 3))
@@ -262,6 +269,7 @@ class TestSimplify(unittest.TestCase):
                 code = codify(code_string, self.space.variables)
                 f = self.space.code_to_lambda(code)
                 evaluation_signature = tuple(f(*X.T).round(4))
+                print(np.allclose(raw_evaluation_signature, evaluation_signature, equal_nan=True))
                 assert np.allclose(raw_evaluation_signature, evaluation_signature, equal_nan=True)
 
             print()

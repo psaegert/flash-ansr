@@ -289,7 +289,9 @@ class SkeletonPool:
             return True
 
         if code is None:
-            executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
+            # Remove constants since permutations are not detected as duplicates
+            no_constant_expression = self.expression_space.remove_num(skeleton)
+            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
@@ -301,11 +303,12 @@ class SkeletonPool:
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
         try:
-            expression_image = tuple(f(*X_with_constants.T).round(4))
+            expression_image = f(*X_with_constants.T).round(4)
+            expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
         except OverflowError:
             return True  # Just to be safe
 
-        if expression_image in self.holdout_y:
+        if tuple(expression_image) in self.holdout_y:
             return True
 
         return False
@@ -323,8 +326,9 @@ class SkeletonPool:
             _, holdout_pool = SkeletonPool.load(holdout_pool)
 
         for skeleton in holdout_pool.skeletons:
-            # Codify the Expression
-            executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
+            # Remove constants since permutations are not detected as duplicates
+            no_constant_expression = self.expression_space.remove_num(skeleton)
+            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
@@ -334,13 +338,14 @@ class SkeletonPool:
             X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
-                expression_image = tuple(f(*X_with_constants.T).round(4))
+                expression_image = f(*X_with_constants.T).round(4)
+                expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
                 self.holdout_skeletons.add(skeleton)
                 continue
 
             self.holdout_skeletons.add(skeleton)
-            self.holdout_y.add(expression_image)
+            self.holdout_y.add(tuple(expression_image))
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
         '''
@@ -523,9 +528,9 @@ class SkeletonPool:
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
                             p=self.operator_probs)
-                    case "exponential":
+                    case "length_exponential":
                         if not hasattr(self, 'operator_probs'):
-                            self.operator_probs = np.exp(np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1) / self.sample_strategy['lambda'])
+                            self.operator_probs = np.exp(np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1)**self.sample_strategy['power'] / self.sample_strategy['lambda'])
                             self.operator_probs = self.operator_probs / self.operator_probs.sum()
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
@@ -553,7 +558,7 @@ class SkeletonPool:
 
         raise NoValidSampleFoundError(f"Failed to sample a non-contaminated skeleton after {self.sample_strategy['max_tries']} retries")
 
-    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Sample support points and literals for an expression.
 
@@ -565,6 +570,8 @@ class SkeletonPool:
             The number of constants to sample.
         n_support : int or None, optional
             The number of support points to sample. If None, the number of support points will be sampled from the prior distribution.
+        support_prior : Callable or None, optional
+            The prior distribution for the support points. If None, the default support prior will be used.
 
         Returns
         -------
@@ -577,10 +584,16 @@ class SkeletonPool:
 
         for _ in range(self.sample_strategy['max_tries']):
             literals = self.literal_prior(size=n_constants).astype(np.float32)
+
+            support_prior = support_prior or self.support_prior
+
+            # Use the default support prior as defined by the configuration
             if self.sample_strategy.get('independent_dimensions', False):
-                x_support = np.concatenate([self.support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
+                # Sample each dimension independently
+                x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
             else:
-                x_support = self.support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
+                #
+                x_support = support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)

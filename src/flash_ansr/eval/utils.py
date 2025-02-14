@@ -15,12 +15,15 @@ def bootstrapped_metric_ci(data: np.ndarray, metric: Callable, n: int = 10_000, 
     samples = data[indices]
 
     # Compute the metric across each bootstrap sample
-    bootstrapped_metrics = np.apply_along_axis(metric, axis=1, arr=samples)
-    # bootstrapped_metrics = metric(samples, axis=1)
+    if samples.ndim == 2:
+        bootstrapped_metrics = np.apply_along_axis(metric, axis=1, arr=samples)
+        # bootstrapped_metrics = metric(samples, axis=1)
+    else:
+        bootstrapped_metrics = np.array([metric(sample) for sample in samples])
 
-    # Calculate the mean, lower, and upper bounds for the confidence interval
-    mean = np.median(bootstrapped_metrics)
+    # Calculate the median, lower, and upper bounds for the confidence interval
+    median = np.median(bootstrapped_metrics)
     lower = np.percentile(bootstrapped_metrics, (1 - interval) / 2 * 100)
     upper = np.percentile(bootstrapped_metrics, (1 + interval) / 2 * 100)
 
-    return mean, lower, upper
+    return median, lower, upper

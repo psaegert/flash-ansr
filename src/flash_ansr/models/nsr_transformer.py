@@ -48,6 +48,8 @@ class FlashANSRTransformer(nn.Module):
     max_input_length : int, optional
         The maximum input length for positional embeddings, by default 32.
     '''
+    memory: torch.Tensor
+
     def __init__(
             self,
             expression_space: ExpressionSpace,
@@ -91,6 +93,8 @@ class FlashANSRTransformer(nn.Module):
         else:
             self.pos_encoding = PositionalEncoding()
 
+        self.numeric_embedding = nn.Linear(self.pre_encoder.output_size, size)
+
         self.decoder = nn.TransformerDecoder(
             decoder_layer=nn.TransformerDecoderLayer(
                 d_model=size,
@@ -101,13 +105,13 @@ class FlashANSRTransformer(nn.Module):
             ),
             num_layers=decoder_n_layers)
 
-        self.fc_out = nn.Sequential(
+        self.next_token_head = nn.Sequential(
             nn.Linear(size, size),
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
             nn.Linear(size, len(expression_space.tokenizer)))
 
-        self.num_out = nn.Sequential(
+        self.numeric_head = nn.Sequential(
             nn.Linear(size, size),
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
@@ -164,7 +168,7 @@ class FlashANSRTransformer(nn.Module):
             learnable_positional_embeddings=config_["learnable_positional_embeddings"],
             max_input_length=config_["max_input_length"])
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, numeric_head: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, numeric_head: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
         '''
         Forward pass through the model.
 
@@ -174,6 +178,8 @@ class FlashANSRTransformer(nn.Module):
             The input tokens.
         data : torch.Tensor
             The data tensor.
+        input_num : torch.Tensor, optional
+            The input numeric tensor, by default None.
         numeric_head : bool, optional
             Whether to include the numeric head, by default False.
         '''
@@ -184,27 +190,32 @@ class FlashANSRTransformer(nn.Module):
         elif isinstance(self.pos_encoding, PositionalEncoding):
             embeddings = embeddings + self.pos_encoding(embeddings)
 
-        pre_encodings = self.pre_encoder(data)
-        memory = self.encoder(pre_encodings)
+        if input_num is not None:
+            input_num_pre_encodings = self.pre_encoder(input_num)
+            input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
+            embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
+
+        data_pre_encodings = self.pre_encoder(data)
+        self.memory = self.encoder(data_pre_encodings)
 
         attn_mask = nn.Transformer.generate_square_subsequent_mask(input_tokens.shape[1], device=input_tokens.device)
         padding_mask = (input_tokens == self.expression_space.tokenizer["<pad>"]).float().masked_fill(input_tokens == self.expression_space.tokenizer["<pad>"], 1e-9)
 
         output = self.decoder.forward(
             tgt=embeddings,
-            memory=memory,
+            memory=self.memory,
             tgt_mask=attn_mask,
             tgt_key_padding_mask=padding_mask)
 
-        logits = self.fc_out(output)
+        logits = self.next_token_head(output)
 
         # FIXME: Does this decorage TRF from predicting <num> tokens?
         if numeric_head:
             output_full = self.decoder.forward(
                 tgt=embeddings,
-                memory=memory,
+                memory=self.memory,
                 tgt_key_padding_mask=padding_mask)
-            num_out = self.num_out(output_full)
+            num_out = self.numeric_head(output_full)
         else:
             num_out = None
 
