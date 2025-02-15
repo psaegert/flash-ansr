@@ -311,8 +311,7 @@ class ExpressionSpace:
                 if stack and stack[-1] != ')' and token != ')':
                     while stack and self.operator_precedence_compat.get(stack[-1], 0) >= self.operator_precedence_compat.get(token, 0):
                         prefix_expr.append(stack.pop())
-                    else:
-                        stack.append(token)
+                    stack.append(token)
                 else:
 
                     if (token == 'neg' and not stack) or (stack and stack[-1] != ')'):
@@ -629,9 +628,11 @@ class ExpressionSpace:
                     if len(variable_translation_dict) >= len(self.variables):
                         if too_many_variables == 'raise':
                             raise ValueError(f'Too many variables in expression: {prefix_expr}')
-                        elif too_many_variables == 'ignore':
+
+                        if too_many_variables == 'ignore':
                             converted_prefix_expr.append(token)
                             continue
+
                     variable_translation_dict[token] = self.variables[len(variable_translation_dict)]
                 converted_prefix_expr.append(variable_translation_dict[token])
 

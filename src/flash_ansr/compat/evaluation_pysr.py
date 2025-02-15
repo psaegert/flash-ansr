@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import editdistance
 
+import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer
@@ -25,8 +26,6 @@ from flash_ansr.eval.token_prediction import (
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
 import nsrops
-
-import nltk
 
 
 nltk.download('wordnet', quiet=True)

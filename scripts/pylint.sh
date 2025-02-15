@@ -1,1 +1,1 @@
-pylint --rcfile=./pylint.cfg ./src
+python -m pylint --rcfile=./pylint.cfg ./src

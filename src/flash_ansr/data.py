@@ -59,6 +59,8 @@ class FlashANSRDataset:
             skeleton_pool = SkeletonPool.from_config(config_["skeleton_pool"])
         elif os.path.isdir(config_["skeleton_pool"]):
             skeleton_pool = SkeletonPool.load(config_["skeleton_pool"])[1]
+        else:
+            raise ValueError(f"Invalid skeleton pool configuration: {config_['skeleton_pool']}")
 
         return cls(
             skeleton_pool=skeleton_pool,
@@ -141,7 +143,7 @@ class FlashANSRDataset:
             The collated batch.
         '''
         # Determine the maximum length of the input_ids
-        max_length_input_ids = max([len(input_id) for input_id in batch['input_ids']])
+        max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 
         # Pad the input_ids
         for i in range(len(batch['input_ids'])):
@@ -194,9 +196,6 @@ class FlashANSRDataset:
         disable_progress_bars()
         if size is None and steps is None:
             size = len(self.skeleton_pool)
-        # FIXME: This does not work anymore since the EvaluationServer is not picklable, which the Dataset.from_generator method requires
-        # self.data = Dataset.from_generator(
-        #     partial(self.iterate, size=size, batch_size=batch_size, n_support=n_support, sample=sample, verbose=verbose))
 
         self.data = Dataset.from_list(
             list(self.iterate(size=size, steps=steps, batch_size=batch_size, n_support=n_support, verbose=verbose))
@@ -245,8 +244,7 @@ class FlashANSRDataset:
             else:
                 yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
         else:
-            for instance in tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01):
-                yield instance
+            yield from tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01)
 
     def generate_batch(
             self,
@@ -463,7 +461,6 @@ class FlashANSRDataset:
         for _ in self.iterate(size=n_samples, steps=None, batch_size=batch_size, n_support=None, verbose=verbose):
             iteration_times.append(time.time() - time_1)
             time_1 = time.time()
-            pass
 
         iteration_times_array = np.array(iteration_times)
 

@@ -382,7 +382,7 @@ def main(argv: str = None) -> None:
 
             dataset = FlashANSRDataset.from_config(substitute_root_path(args.config))
 
-            results = dataset.benchmark(n_samples=args.samples, batch_size=args.batch_size, verbose=args.verbose)
+            results = dataset._benchmark(n_samples=args.samples, batch_size=args.batch_size, verbose=args.verbose)
 
             print(f'Iteration time: {1e3 * results["mean_iteration_time"]:.0f} ± {1e3 * results["std_iteration_time"]:.0f} ms')
             print(f'Range:          {1e3 * results["min_iteration_time"]:.0f} - {1e3 * results["max_iteration_time"]:.0f} ms')

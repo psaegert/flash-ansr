@@ -31,13 +31,13 @@ class ConfigurableSequential(nn.Sequential):
         '''
         return cls([ModelFactory.get_model(layer["type"], **layer["kwargs"]) for layer in config["layers"]])
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
         '''
         Forward pass through the layers.
 
         Parameters
         ----------
-        input : torch.Tensor
+        X : torch.Tensor
             The input tensor.
 
         Returns
@@ -45,4 +45,4 @@ class ConfigurableSequential(nn.Sequential):
         torch.Tensor
             The output tensor.
         '''
-        return self.layers(input)
+        return self.layers(X)

@@ -1,8 +1,8 @@
-
-from functools import partial
 import json
-import omegaconf
+from functools import partial
 from typing import Callable
+
+import omegaconf
 
 from nesymres.architectures.model import Model
 from nesymres.dclasses import FitParams, BFGSParams

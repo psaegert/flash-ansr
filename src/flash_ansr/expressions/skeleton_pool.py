@@ -107,6 +107,8 @@ class SkeletonPool:
         self.allow_nan = allow_nan
         self.simplify = simplify
 
+        self.operator_probs = np.empty(0)
+
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SkeletonPool":
         '''
@@ -299,7 +301,6 @@ class SkeletonPool:
         # Evaluate the expression and check if its image is in the holdout images (functional equivalence)
         f = self.expression_space.code_to_lambda(code)
 
-        # FIXME: Different orders of constans may not be detected as duplicates
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
         try:
@@ -442,8 +443,8 @@ class SkeletonPool:
         '''
         if random.random() < self.variable_probability:
             return [random.choice(self.expression_space.variables)]
-        else:
-            return ['<num>']
+
+        return ['<num>']
 
     def _sample_skeleton(self, n_operators: int) -> list[str]:
         '''
