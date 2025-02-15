@@ -6,3 +6,4 @@ from .encoders import (
     SetTransformer, MAB, PMA, ISAB, SAB,
 )
 from .transformer_utils import Tokenizer, PositionalEncoding
+from .manage import install_model, remove_model
