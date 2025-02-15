@@ -19,7 +19,7 @@ decoder_ff_size: 512
 decoder_dropout: 0.1
 decoder_n_layers: 5
 
-learnable_positional_embeddings: false
+learnable_positional_embeddings: False
 max_input_length: null
 
 expression_space: './expression_space.yaml'

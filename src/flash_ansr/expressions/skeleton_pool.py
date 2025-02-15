@@ -107,6 +107,8 @@ class SkeletonPool:
         self.allow_nan = allow_nan
         self.simplify = simplify
 
+        self.operator_probs: np.ndarray | None = None
+
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SkeletonPool":
         '''
@@ -299,7 +301,6 @@ class SkeletonPool:
         # Evaluate the expression and check if its image is in the holdout images (functional equivalence)
         f = self.expression_space.code_to_lambda(code)
 
-        # FIXME: Different orders of constans may not be detected as duplicates
         warnings.filterwarnings("ignore", category=RuntimeWarning)
         X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
         try:
@@ -442,8 +443,8 @@ class SkeletonPool:
         '''
         if random.random() < self.variable_probability:
             return [random.choice(self.expression_space.variables)]
-        else:
-            return ['<num>']
+
+        return ['<num>']
 
     def _sample_skeleton(self, n_operators: int) -> list[str]:
         '''
@@ -522,14 +523,14 @@ class SkeletonPool:
                     case "equiprobable_lengths":
                         n_operators = np.random.randint(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1)
                     case "length_proportional":
-                        if not hasattr(self, 'operator_probs'):
+                        if self.operator_probs is None:
                             self.operator_probs = np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1)**self.sample_strategy['power']
                             self.operator_probs = self.operator_probs / self.operator_probs.sum()
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
                             p=self.operator_probs)
                     case "length_exponential":
-                        if not hasattr(self, 'operator_probs'):
+                        if self.operator_probs is None:
                             self.operator_probs = np.exp(np.arange(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1)**self.sample_strategy['power'] / self.sample_strategy['lambda'])
                             self.operator_probs = self.operator_probs / self.operator_probs.sum()
                         n_operators = np.random.choice(
@@ -664,49 +665,44 @@ class SkeletonPool:
         verbose : bool, optional
             Whether to display a progress bar.
         '''
-        try:
-            n_duplicates = 0
-            n_invalid = 0
-            n_created = len(self.skeletons)
+        n_duplicates = 0
+        n_invalid = 0
+        n_created = len(self.skeletons)
 
-            pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
+        pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
 
-            while n_created < size:
-                try:
-                    skeleton, code, constants = self.sample_skeleton(new=True)
-                except NoValidSampleFoundError:
-                    continue
+        while n_created < size:
+            try:
+                skeleton, code, constants = self.sample_skeleton(new=True)
+            except NoValidSampleFoundError:
+                continue
 
-                if self.simplify:
-                    simplified_skeleton = self.expression_space.simplify(skeleton)
-                else:
-                    simplified_skeleton = skeleton
+            if self.simplify:
+                simplified_skeleton = self.expression_space.simplify(skeleton)
+            else:
+                simplified_skeleton = skeleton
 
-                if not self.expression_space.is_valid(simplified_skeleton):
-                    n_invalid += 1
-                    pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                    continue
-                    # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
-
-                if skeleton in self.skeletons:
-                    n_duplicates += 1
-                    pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                    continue
-
-                h = tuple(simplified_skeleton)
-                self.skeletons.add(h)
-                self.skeleton_codes[h] = (code, constants)
-                n_created += 1
-
-                pbar.update(1)
+            if not self.expression_space.is_valid(simplified_skeleton):
+                n_invalid += 1
                 pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+                continue
+                # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
 
-                if n_created >= size:
-                    break
+            if skeleton in self.skeletons:
+                n_duplicates += 1
+                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+                continue
 
-        except (IndexError, ValueError, KeyError):
-            print(skeleton)
-            raise
+            h = tuple(simplified_skeleton)
+            self.skeletons.add(h)
+            self.skeleton_codes[h] = (code, constants)
+            n_created += 1
+
+            pbar.update(1)
+            pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+
+            if n_created >= size:
+                break
 
     def split(self, train_size: float, random_state: int | None = None) -> tuple["SkeletonPool", "SkeletonPool"]:
         """

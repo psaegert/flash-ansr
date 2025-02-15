@@ -65,7 +65,8 @@ class FlashANSRTransformer(nn.Module):
             decoder_dropout: float = 0.1,
             decoder_n_layers: int = 6,
             learnable_positional_embeddings: bool = False,
-            max_input_length: int = 32) -> None:
+            max_input_length: int = 32,
+            support_numeric_tokens: bool = False) -> None:
         super().__init__()
 
         self.expression_space = expression_space
@@ -93,7 +94,9 @@ class FlashANSRTransformer(nn.Module):
         else:
             self.pos_encoding = PositionalEncoding()
 
-        self.numeric_embedding = nn.Linear(self.pre_encoder.output_size, size)
+        self.support_numeric_tokens = support_numeric_tokens
+        if support_numeric_tokens:
+            self.numeric_embedding = nn.Linear(self.pre_encoder.output_size, size)
 
         self.decoder = nn.TransformerDecoder(
             decoder_layer=nn.TransformerDecoderLayer(
@@ -105,13 +108,13 @@ class FlashANSRTransformer(nn.Module):
             ),
             num_layers=decoder_n_layers)
 
-        self.next_token_head = nn.Sequential(
+        self.fc_out = nn.Sequential(
             nn.Linear(size, size),
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
             nn.Linear(size, len(expression_space.tokenizer)))
 
-        self.numeric_head = nn.Sequential(
+        self.num_out = nn.Sequential(
             nn.Linear(size, size),
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
@@ -191,6 +194,8 @@ class FlashANSRTransformer(nn.Module):
             embeddings = embeddings + self.pos_encoding(embeddings)
 
         if input_num is not None:
+            if not self.support_numeric_tokens:
+                raise ValueError("Model does not support numeric tokens.")
             input_num_pre_encodings = self.pre_encoder(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
@@ -207,7 +212,7 @@ class FlashANSRTransformer(nn.Module):
             tgt_mask=attn_mask,
             tgt_key_padding_mask=padding_mask)
 
-        logits = self.next_token_head(output)
+        logits = self.fc_out(output)
 
         # FIXME: Does this decorage TRF from predicting <num> tokens?
         if numeric_head:
@@ -215,7 +220,7 @@ class FlashANSRTransformer(nn.Module):
                 tgt=embeddings,
                 memory=self.memory,
                 tgt_key_padding_mask=padding_mask)
-            num_out = self.numeric_head(output_full)
+            num_out = self.num_out(output_full)
         else:
             num_out = None
 

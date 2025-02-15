@@ -289,8 +289,8 @@ class Refiner:
                     popt = res.x
                     pcov = res.hess_inv  # TODO: Check if this is correct
 
-        except (RuntimeError, TypeError):
-            raise ConvergenceError("The optimization did not converge")
+        except (RuntimeError, TypeError) as exc:
+            raise ConvergenceError("The optimization did not converge") from exc
 
         return popt, pcov
 

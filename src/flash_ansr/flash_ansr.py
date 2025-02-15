@@ -1,6 +1,7 @@
 import os
 import copy
 from typing import Literal, Any
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -132,6 +133,22 @@ class FlashANSR(BaseEstimator):
             parsimony=parsimony,
             verbose=verbose)
 
+    def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
+        if X.shape[-1] <= self.flash_ansr_transformer.encoder_max_n_variables - 1:
+            return X
+
+        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.flash_ansr_transformer.encoder_max_n_variables - 1 = } variables, but the input data has {X.shape[-1] = } variables. X and y will be truncated to {self.flash_ansr_transformer.encoder_max_n_variables - 1} variables.")
+        if isinstance(X, pd.DataFrame):
+            return X.iloc[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+
+        try:
+            return X[..., :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+        except IndexError:
+            try:
+                return X[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+            except IndexError as exc:
+                raise ValueError('Cannot truncate the input data') from exc
+
     def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
         '''
         Perform symbolic regression on the input data.
@@ -162,6 +179,8 @@ class FlashANSR(BaseEstimator):
         FlashANSR
             The fitted model.
         '''
+        X = self._truncate_input(X)
+
         # Default: No mapping
         self.variable_mapping = {}
 
@@ -217,6 +236,9 @@ class FlashANSR(BaseEstimator):
                 beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, verbose=verbose)
             elif self.generation_type == 'softmax_sampling':
                 raise NotImplementedError("Softmax sampling is not yet implemented")
+            else:
+                raise ValueError(f"Invalid generation type: {self.generation_type}")
+
             beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
             # Silence numpy errors
@@ -302,6 +324,8 @@ class FlashANSR(BaseEstimator):
         np.ndarray
             The predicted target data.
         '''
+        X = self._truncate_input(X)
+
         if isinstance(X, pd.DataFrame):
             X = X.values
 

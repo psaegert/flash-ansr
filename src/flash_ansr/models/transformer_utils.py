@@ -22,7 +22,7 @@ class Tokenizer:
         self.vocab = self.special_tokens + vocab
 
         self.token2idx = {token: idx for idx, token in enumerate(self.vocab)}
-        self.idx2token = {idx: token for idx, token in enumerate(self.vocab)}
+        self.idx2token = dict(enumerate(self.vocab))
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Tokenizer":

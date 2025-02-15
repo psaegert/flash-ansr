@@ -57,7 +57,7 @@ class LRSchedulerFactory():
 
             return torch.optim.lr_scheduler.LambdaLR(
                 optimizer=optimizer,
-                lr_lambda=lambda step: lr_schedule(step))
+                lr_lambda=lr_schedule)
 
         if hasattr(torch.optim.lr_scheduler, name):
             return getattr(torch.optim.lr_scheduler, name)(optimizer=optimizer, *args, **kwargs)

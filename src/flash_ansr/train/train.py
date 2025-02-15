@@ -43,7 +43,7 @@ class AILWQ_ContrastiveLoss(nn.Module):
     https://github.com/AILWQ/Joint_Supervised_Learning_for_SR/blob/main/loss_function/ContrastiveLoss.py
     """
     def __init__(self, temperature: float = 0.5) -> None:
-        super(AILWQ_ContrastiveLoss, self).__init__()
+        super().__init__()
         self.temperature = temperature
 
     def forward(self, enc_features: torch.Tensor, labels: list | torch.Tensor) -> torch.Tensor:
@@ -90,7 +90,7 @@ class AILWQ_ContrastiveLoss(nn.Module):
 
 class ContrastiveLoss(nn.Module):
     def __init__(self, margin: float = 0.5, temperature: float = 0.5) -> None:
-        super(ContrastiveLoss, self).__init__()
+        super().__init__()
         self.margin = margin
         self.temperature = temperature
 
@@ -388,7 +388,7 @@ class Trainer():
             data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
+            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
             flat_labels = batch['labels'].reshape(-1)
@@ -424,8 +424,9 @@ class Trainer():
 
             loss.backward()
 
-            self.cumulative_training_tokens += logits.shape[1] * batch['x_tensors'].shape[0]
-            self.cumulative_training_pflops += (self.flops_per_token * logits.shape[1] * batch['x_tensors'].shape[0]) * 1e-15  # PFLOPS per token * number of tokens * batch size
+            tokens = logits.shape[1] * batch['x_tensors'].shape[0]
+            self.cumulative_training_tokens += tokens
+            self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15  # PFLOPS per token * number of tokens * batch size
 
         accumulated_ce_loss /= self.gradient_accumulation_steps
         accumulated_contrastive_loss /= self.gradient_accumulation_steps
@@ -518,7 +519,7 @@ class Trainer():
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Forward pass
-                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=(numeric_prediction_loss_weight > 0))
+                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
 
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = batch['labels'].reshape(-1)
