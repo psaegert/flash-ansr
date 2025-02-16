@@ -57,12 +57,6 @@ pip install -e nsrops
 
 ## Use a pre-trained model
 
-Clone the Hugging Face model repository:
-
-```sh
-git clone https://huggingface.co/psaegert/ansr-models models/ansr-models
-```
-
 ```python
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
