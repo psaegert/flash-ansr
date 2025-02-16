@@ -69,7 +69,7 @@ from flash_ansr import FlashANSR, install_model, get_path
 MODEL = "psaegert/flash-ansr-v7.0"
 
 # Download the latest snapshot of the model
-# By default, the model is downloaded to the directory `./models/ansr-models` in the package root
+# By default, the model is downloaded to the directory `./models/` in the package root
 install_model(MODEL)
 
 # Load the model
