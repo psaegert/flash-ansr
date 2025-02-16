@@ -94,6 +94,12 @@ def main(argv: str = None) -> None:
     benchmark_parser.add_argument('-b', '--batch-size', type=int, default=128, help='Batch size for the dataset')
     benchmark_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
 
+    install_parser = subparsers.add_parser("install", help="Install a model")
+    install_parser.add_argument("model", type=str, help="Model identifier to install")
+
+    remove_parser = subparsers.add_parser("remove", help="Remove a model")
+    remove_parser.add_argument("path", type=str, help="Path to the model to remove")
+
     # Evaluate input
     args = parser.parse_args(argv)
 
@@ -386,6 +392,14 @@ def main(argv: str = None) -> None:
 
             print(f'Iteration time: {1e3 * results["mean_iteration_time"]:.0f} ± {1e3 * results["std_iteration_time"]:.0f} ms')
             print(f'Range:          {1e3 * results["min_iteration_time"]:.0f} - {1e3 * results["max_iteration_time"]:.0f} ms')
+
+        case 'install':
+            from flash_ansr.models.manage import install_model
+            install_model(args.model)
+
+        case 'remove':
+            from flash_ansr.models.manage import remove_model
+            remove_model(args.path)
 
         case _:
             parser.print_help()

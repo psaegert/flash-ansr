@@ -64,7 +64,39 @@ git clone https://huggingface.co/psaegert/ansr-models models/ansr-models
 ```
 
 ```python
-import flash_ansr
+import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Import flash_ansr
+from flash_ansr import FlashANSR, install_model, get_path
+
+# Specify the model
+# Here: https://huggingface.co/psaegert/flash-ansr-v7.0
+MODEL = "psaegert/flash-ansr-v7.0"
+
+# Download the latest snapshot of the model
+# By default, the model is downloaded to the directory `./models/ansr-models` in the package root
+install_model(MODEL)
+
+# Load the model
+ansr = FlashANSR.load(
+    directory=get_path('models', MODEL),
+    beam_width=256,
+    n_restarts=32,
+).to(device)
+
+# Define data
+X = ...
+y = ...
+
+# Fit the model to the data
+ansr.fit(X, y, verbose=True)
+
+# Show the best expression
+print(ansr.get_expression())
+
+# Predict with the best expression
+y_pred = ansr.predict(X)
 ```
 
 
