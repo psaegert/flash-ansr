@@ -6,7 +6,8 @@ from .models import (
     Tokenizer,
     PositionalEncoding,
     PreEncoder,
-    install_model
+    install_model,
+    remove_model
 )
 from .expressions import ExpressionSpace, SkeletonPool, NoValidSampleFoundError
 from .utils import get_path, substitute_root_path, load_config, save_config
