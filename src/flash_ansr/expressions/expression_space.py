@@ -721,7 +721,7 @@ class ExpressionSpace:
         signal.alarm(timeout)
         try:
             simplified_expression = str(simplify(sympy_expression, ratio=ratio) if ratio is not None else simplify(sympy_expression))
-        except TimeoutError:
+        except (TimeoutError, OverflowError):
             return prefix_expression
 
         translations = {
