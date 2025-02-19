@@ -43,7 +43,7 @@ def float2bit(f: torch.Tensor, num_e_bits: int = 5, num_m_bits: int = 10, bias: 
     # Handle NaN
     if torch.any(is_nan):
         # Set all exponent bits to 1 and non-zero mantissa (conventionally first mantissa bit is 1)
-        nan_pattern = torch.zeros_like(result[0])
+        nan_pattern = torch.zeros(num_e_bits + num_m_bits + 1, dtype=dtype, device=f.device)
         # Set exponent bits (all 1s)
         nan_pattern[1:1 + num_e_bits] = 1
         # Set first mantissa bit to 1
@@ -52,7 +52,7 @@ def float2bit(f: torch.Tensor, num_e_bits: int = 5, num_m_bits: int = 10, bias: 
 
     # Handle positive infinity
     if torch.any(is_pos_inf):
-        inf_pattern = torch.zeros_like(result[0])
+        inf_pattern = torch.zeros(num_e_bits + num_m_bits + 1, dtype=dtype, device=f.device)
         # Sign bit is 0
         # Set all exponent bits to 1
         inf_pattern[1:1 + num_e_bits] = 1
@@ -61,7 +61,7 @@ def float2bit(f: torch.Tensor, num_e_bits: int = 5, num_m_bits: int = 10, bias: 
 
     # Handle negative infinity
     if torch.any(is_neg_inf):
-        neg_inf_pattern = torch.zeros_like(result[0])
+        neg_inf_pattern = torch.zeros(num_e_bits + num_m_bits + 1, dtype=dtype, device=f.device)
         # Sign bit is 1
         neg_inf_pattern[0] = 1
         # Set all exponent bits to 1

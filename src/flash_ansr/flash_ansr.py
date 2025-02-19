@@ -179,6 +179,11 @@ class FlashANSR(BaseEstimator):
         FlashANSR
             The fitted model.
         '''
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+        elif y.shape[-1] != 1:
+            raise ValueError("The target data must have a single output dimension")
+
         X = self._truncate_input(X)
 
         # Default: No mapping

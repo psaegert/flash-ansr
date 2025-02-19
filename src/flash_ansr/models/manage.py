@@ -14,7 +14,7 @@ def install_model(model: str, local_dir: str | None = None, verbose: bool = True
         print(f"Model {model} installed successfully!")
 
 
-def remove_model(path: str, verbose: bool = True, force_remove: bool = False) -> None:
+def remove_model(path: str, verbose: bool = True) -> None:
     path_in_package = get_path('models', path)
 
     if os.path.exists(path_in_package) and os.path.exists(path):
@@ -22,11 +22,11 @@ def remove_model(path: str, verbose: bool = True, force_remove: bool = False) ->
 
     for path_to_delete in [path_in_package, path]:
         if os.path.exists(path_to_delete):
-            if not force_remove:
-                confirm = input(f"Are you sure you want to remove {path_to_delete}? (y/N): ")
-                if confirm.lower() != 'y':
-                    print("Aborting model removal.")
-                    return
+            confirm = input(f"Are you sure you want to remove {path_to_delete}? (y/N): ")
+            if confirm.lower() != 'y':
+                print("Aborting model removal.")
+                return
+
             shutil.rmtree(path_to_delete)
             if verbose:
                 print(f"Model {path_to_delete} removed successfully!")

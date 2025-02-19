@@ -276,14 +276,18 @@ class Refiner:
 
         # Minimize the objective function
         try:
+            valid_mask = np.isfinite(y.flatten())
+            X_valid = X[valid_mask]
+            y_valid = y[valid_mask]
+
             # Ignore OptimizeWarning warnings
             warnings.filterwarnings("ignore", category=OptimizeWarning)
             match method:
                 case 'curve_fit_lm':
-                    popt, pcov = curve_fit(pred_function, X, y.flatten(), p0, **optimizer_kwargs)
+                    popt, pcov = curve_fit(pred_function, X_valid, y_valid.flatten(), p0, **optimizer_kwargs)
                 case 'minimize_bfgs':
                     def objective(p: np.ndarray) -> float:
-                        return np.mean((pred_function(X, *p) - y.flatten()) ** 2)
+                        return np.mean((pred_function(X_valid, *p) - y_valid.flatten()) ** 2)
 
                     res = minimize(objective, p0, method='BFGS', **optimizer_kwargs)
                     popt = res.x
