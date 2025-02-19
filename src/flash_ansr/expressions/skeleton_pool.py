@@ -543,8 +543,9 @@ class SkeletonPool:
                 if self.simplify:
                     skeleton = self.expression_space.simplify(skeleton)
 
-                if not self.expression_space.is_valid(skeleton):
-                    continue
+                if self.expression_space.simplification == "sympy":
+                    if not self.expression_space.is_valid(skeleton):
+                        continue
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
