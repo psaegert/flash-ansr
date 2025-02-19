@@ -276,7 +276,7 @@ class Refiner:
 
         # Minimize the objective function
         try:
-            valid_mask = np.isfinite(y.flatten())
+            valid_mask = np.all(np.isfinite(y), axis=-1)
             X_valid = X[valid_mask]
             y_valid = y[valid_mask]
 
