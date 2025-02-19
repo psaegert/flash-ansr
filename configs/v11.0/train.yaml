@@ -5,7 +5,6 @@ optimizer:
   kwargs:
     lr: 1e-4  # Will be multiplied by scheduler
     weight_decay: 0.01
-    amsgrad: True
 
 lr_scheduler: null
 
