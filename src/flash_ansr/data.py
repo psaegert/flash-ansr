@@ -140,7 +140,7 @@ class FlashANSRDataset:
 
         return load_config(config_path), dataset
 
-    def collate_batch(self, batch: dict[str, Any], device: str | torch.device | int) -> dict[str, torch.Tensor]:
+    def collate(self, batch: dict[str, Any], device: str | torch.device | int) -> dict[str, torch.Tensor]:
         '''
         Collate a batch of data inplace.
 
@@ -156,6 +156,8 @@ class FlashANSRDataset:
         tuple
             The collated batch.
         '''
+        # TODO: Add support for single instances
+
         # Determine the maximum length of the input_ids
         max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 

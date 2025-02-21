@@ -31,20 +31,41 @@ class FlashASNRPreprocessor:
         )
 
     def format(self, batch: dict[str, Any]) -> dict[str, Any]:
-        batch['complexities'] = []
-        batch['input_num'] = []
-        for i, input_ids in enumerate(batch['input_ids']):
-            complexity = None
-            modified_input_ids = batch['input_ids'][i]
-            input_num = []
+        if not isinstance(batch['input_ids'][0], list):
+            # The input is a single instance
+            for k, diff in self._format_single(batch).items():
+                batch[k] = diff
 
-            if random.random() < self.format_probs['complexity']:
-                complexity = len(input_ids)
-                modified_input_ids = [self.expression_space.tokenizer['<ctrl_complexity>']] + [self.expression_space.tokenizer['<num>']] + input_ids
-                input_num.append((1, complexity))
+            return batch
 
-            batch['complexities'].append(complexity)
-            batch['input_ids'][i] = modified_input_ids
-            batch['input_num'].append(input_num)
+        else:
+            # The input is a batch of instances
+            new_fields: set[str] = set()
+            for i, instance in enumerate(zip(*batch.values())):
+                for k, diff in self._format_single(dict(zip(batch.keys(), instance))).items():
+                    if k not in batch:
+                        new_fields.add(k)
+                        batch[k] = []
+
+                    if k in new_fields:
+                        batch[k].append(diff)
+                    else:
+                        batch[k][i] = diff
 
         return batch
+
+    def _format_single(self, instance: dict[str, Any]) -> dict[str, Any]:
+        complexity = None
+        modified_input_ids = instance['input_ids']
+        input_num = []
+
+        if random.random() < self.format_probs['complexity']:
+            complexity = len(instance['input_ids'])
+            modified_input_ids = [self.expression_space.tokenizer['<ctrl_complexity>']] + [self.expression_space.tokenizer['<num>']] + instance['input_ids']
+            input_num.append((1, complexity))
+
+        return {
+            'complexities': complexity,
+            'input_ids': modified_input_ids,
+            'input_num': input_num
+        }

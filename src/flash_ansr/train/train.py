@@ -403,7 +403,7 @@ class Trainer():
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
-            batch = self.train_dataset.collate_batch(micro_batch, device=self.model.device)
+            batch = self.train_dataset.collate(micro_batch, device=self.model.device)
 
             # Concatenate x and y tensors as input to the set transformer
             data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
@@ -539,7 +539,7 @@ class Trainer():
 
             for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
-                batch = self.val_dataset.collate_batch(batch, device=self.model.device)
+                batch = self.val_dataset.collate(batch, device=self.model.device)
 
                 # Concatenate x and y tensors as input to the set transformer
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
