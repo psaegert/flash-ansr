@@ -279,7 +279,7 @@ for convenience.
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.1.0},
+    version = {0.2.0},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```

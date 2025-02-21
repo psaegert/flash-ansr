@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Any, Generator
+from typing import Any, Generator, Callable
 
 import yaml
 
@@ -70,6 +70,7 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
     dict
         The configuration dictionary.
     '''
+
     if isinstance(config, str):
         config_path = substitute_root_path(config)
         config_base_path = os.path.dirname(config_path)
@@ -82,15 +83,53 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
         else:
             raise ValueError(f'Config file {config_path} is not a valid file.')
 
+        def resolve_path(value: Any) -> str:
+            if isinstance(value, str) and value.endswith('.yaml') and value.startswith('.'):
+                return os.path.join(config_base_path, value)
+            return value
+
         if resolve_paths:
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml') and value.startswith('.'):
-                    # Convert the relative path to an absolute path
-                    config_[key] = os.path.join(config_base_path, value)
+            config_ = apply_on_nested(config_, resolve_path)
+
     else:
         config_ = config
 
     return config_
+
+
+def apply_on_nested(structure: list | dict, func: Callable) -> list | dict:
+    '''
+    Apply a function to all values in a nested dictionary.
+
+    Parameters
+    ----------
+    d : list or dict
+        The dictionary to apply the function to.
+    func : Callable
+        The function to apply to the dictionary values.
+
+    Returns
+    -------
+    dict
+        The dictionary with the function applied to all values.
+    '''
+    if isinstance(structure, list):
+        for i, value in enumerate(structure):
+            if isinstance(value, dict):
+                structure[i] = apply_on_nested(value, func)
+            else:
+                structure[i] = func(value)
+        return structure
+
+    if isinstance(structure, dict):
+        for key, value in structure.items():
+            if isinstance(value, dict):
+                structure[key] = apply_on_nested(value, func)
+            else:
+                structure[key] = func(value)
+        return structure
+
+    return structure
 
 
 def save_config(config: dict[str, Any], directory: str, filename: str, reference: str = 'relative', recursive: bool = True, resolve_paths: bool = False) -> None:

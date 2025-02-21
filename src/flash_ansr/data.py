@@ -12,6 +12,7 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
+from flash_ansr.control import FlashASNRPreprocessor
 
 
 class FlashANSRDataset:
@@ -25,10 +26,12 @@ class FlashANSRDataset:
     padding : {'random', 'zero'}
         The padding strategy for the input_ids, by default 'random'.
     '''
-    def __init__(self, skeleton_pool: SkeletonPool, padding: Literal['random', 'zero']) -> None:
+    def __init__(self, skeleton_pool: SkeletonPool, padding: Literal['random', 'zero'], preprocessor: FlashASNRPreprocessor | None = None) -> None:
         self.skeleton_pool = skeleton_pool
-        self.data = None
         self.padding = padding
+        self.preprocessor = preprocessor
+
+        self.data = None
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
@@ -62,9 +65,16 @@ class FlashANSRDataset:
         else:
             raise ValueError(f"Invalid skeleton pool configuration: {config_['skeleton_pool']}")
 
+        if 'preprocessor' in config_.keys() and config_['preprocessor'] is not None:
+            preprocessor = FlashASNRPreprocessor.from_config(config_['preprocessor'])
+        else:
+            preprocessor = None
+
         return cls(
             skeleton_pool=skeleton_pool,
-            padding=config_["padding"])
+            padding=config_["padding"],
+            preprocessor=preprocessor
+        )
 
     def save(self, directory: str, *args: Any, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, **kwargs: Any) -> None:
         '''
