@@ -10,7 +10,7 @@ from tqdm import tqdm
 from datasets import Dataset, load_from_disk, disable_progress_bars
 
 from flash_ansr.utils import load_config, save_config, substitute_root_path
-from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
+from flash_ansr.expressions import ExpressionSpace, SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
 from flash_ansr.control import FlashASNRPreprocessor
 
@@ -32,6 +32,10 @@ class FlashANSRDataset:
         self.preprocessor = preprocessor
 
         self.data = None
+
+    @property
+    def expression_space(self) -> ExpressionSpace:
+        return self.skeleton_pool.expression_space
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
@@ -219,8 +223,9 @@ class FlashANSRDataset:
             n_support: int | None = None,
             n_per_equation: int = 1,
             tqdm_total: int | None = None,
-            verbose: bool = False,
-            avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
+            avoid_fragmentation: bool = True,
+            preprocess: bool = False,
+            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Iterate over the dataset.
 
@@ -238,6 +243,10 @@ class FlashANSRDataset:
             The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None.
+        avoid_fragmentation : bool, optional
+            Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
+        preprocess : bool, optional
+            Whether to preprocess the data, by default False.
         verbose : bool, optional
             Whether to print verbose output, by default False.
 
@@ -247,12 +256,42 @@ class FlashANSRDataset:
             The next batch of data.
         '''
         if self.data is None:
+            # Procedurally generate the dataset
+
             if batch_size is None:
+                # Generate single instances
+
                 if steps is not None:
+                    # Trying to parameterize the number of batches for non-batched data generation
                     raise ValueError(f'Speficfied {steps=} which is not used for non-batched data generation')
-                yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+
+                if preprocess and self.preprocessor is not None:
+                    # Preprocess with available preprocessor
+                    for instance in self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation):
+                        yield self.preprocessor.format(instance)
+                else:
+                    if preprocess:
+                        # Trying to preprocess without a preprocessor
+                        warnings.warn("No preprocessor specified, skipping preprocessing.")
+
+                    # Generate the data without preprocessing
+                    yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+
             else:
-                yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+                # Generate data in batches
+
+                if preprocess and self.preprocessor is not None:
+                    # Preprocess with available preprocessor
+                    for batch in self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation):
+                        yield self.preprocessor.format(batch)
+                else:
+                    if preprocess:
+                        # Trying to preprocess without a preprocessor
+                        warnings.warn("No preprocessor specified, skipping preprocessing.")
+
+                    # Generate the data without preprocessing
+                    yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+
         else:
             yield from tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01)
 
@@ -264,8 +303,8 @@ class FlashANSRDataset:
             n_support: int | None = None,
             n_per_equation: int = 1,
             tqdm_total: int | None = None,
-            verbose: bool = False,
-            avoid_fragmentation: bool = True) -> Generator[dict[str, list | torch.Tensor], None, None]:
+            avoid_fragmentation: bool = True,
+            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Generate a batch of data.
 
@@ -283,6 +322,8 @@ class FlashANSRDataset:
             The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None
+        avoid_fragmentation : bool, optional
+            Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
         verbose : bool, optional
             Whether to print verbose output, by default False.
 

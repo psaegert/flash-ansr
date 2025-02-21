@@ -30,7 +30,7 @@ class FlashASNRPreprocessor:
             config_.get("format_probs", None)
         )
 
-    def format(self, batch: dict[str, Any]) -> None:
+    def format(self, batch: dict[str, Any]) -> dict[str, Any]:
         batch['complexities'] = []
         batch['input_num'] = []
         for i, input_ids in enumerate(batch['input_ids']):
@@ -46,3 +46,5 @@ class FlashASNRPreprocessor:
             batch['complexities'].append(complexity)
             batch['input_ids'][i] = modified_input_ids
             batch['input_num'].append(input_num)
+
+        return batch
