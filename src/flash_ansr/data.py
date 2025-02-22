@@ -140,6 +140,28 @@ class FlashANSRDataset:
 
         return load_config(config_path), dataset
 
+    def _pad_input_ids(self, input_ids: list[int], max_length: int) -> torch.Tensor:
+        return torch.nn.functional.pad(
+            torch.tensor(input_ids),
+            (0, max_length - len(input_ids)),
+            value=self.skeleton_pool.expression_space.tokenizer['<pad>']
+        ).to(torch.long)
+
+    def _create_input_num_tensor(self, input_ids_shape: tuple[int], input_num: list[tuple[int, int]] | list[list[tuple[int, int]]], device: str | torch.device | int = 'cpu') -> torch.Tensor:
+        input_num_tensor = torch.full(input_ids_shape, fill_value=torch.nan, dtype=torch.float32, device=device)
+
+        if input_num_tensor.ndim == 2:
+            for i, position_value_list in enumerate(input_num):
+                for position, value in position_value_list:  # type: ignore
+                    input_num_tensor[i, position] = value  # type: ignore
+        elif input_num_tensor.ndim == 1:
+            for position, value in input_num:  # type: ignore
+                input_num_tensor[position] = value  # type: ignore
+        else:
+            raise ValueError(f"Invalid input_num_tensor shape: Required 1 or 2 dimensions, got {input_num_tensor.ndim} from {input_ids_shape=}")
+
+        return input_num_tensor
+
     def collate(self, batch: dict[str, Any], device: str | torch.device | int) -> dict[str, torch.Tensor]:
         '''
         Collate a batch of data inplace.
@@ -156,52 +178,61 @@ class FlashANSRDataset:
         tuple
             The collated batch.
         '''
-        # TODO: Add support for single instances
 
         # Determine the maximum length of the input_ids
-        max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
+        if isinstance(batch['input_ids'][0], list):
+            # Batch of instances
+            max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 
-        # Pad the input_ids
-        for i in range(len(batch['input_ids'])):
-            batch['input_ids'][i] = torch.nn.functional.pad(
-                torch.tensor(batch['input_ids'][i]),
-                (0, max_length_input_ids - len(batch['input_ids'][i])),
-                value=self.skeleton_pool.expression_space.tokenizer['<pad>']
-            ).to(torch.long)
+            for i in range(len(batch['input_ids'])):
+                batch['input_ids'][i] = self._pad_input_ids(batch['input_ids'][i], max_length_input_ids)
 
-        for k in ['input_ids', 'x_tensors', 'y_tensors']:
-            batch[k] = torch.stack(batch[k])  # type: ignore
+            for k, dtype in [
+                ('input_ids', torch.long),
+                ('x_tensors', torch.float32),
+                ('y_tensors', torch.float32),
+            ]:
+                batch[k] = torch.stack(batch[k]).to(device=device, dtype=dtype)  # type: ignore
 
-        if isinstance(batch['input_ids'], torch.Tensor):
-            batch['input_ids'] = batch['input_ids'].to(device)
+            for i, constant in enumerate(batch['constants']):
+                if isinstance(constant, torch.Tensor):
+                    batch['constants'][i] = constant.to(device)
+                else:
+                    batch['constants'][i] = torch.tensor(constant, device=device, dtype=torch.float32)
+
+            if 'input_num' in batch:
+                batch['input_num'] = self._create_input_num_tensor(batch['input_ids'].shape, batch['input_num'], device=device)
+
+            if 'complexities' in batch:
+                batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]
+
         else:
-            batch['input_ids'] = torch.tensor(batch['input_ids'], device=device, dtype=torch.long)
+            # Single instance
+            max_length_input_ids = len(batch['input_ids'])
 
-        if isinstance(batch['x_tensors'], torch.Tensor):
-            batch['x_tensors'] = batch['x_tensors'].to(device)
-        else:
-            batch['x_tensors'] = torch.tensor(batch['x_tensors'], device=device, dtype=torch.float32)
+            batch['input_ids'] = self._pad_input_ids(batch['input_ids'], max_length_input_ids)
 
-        if isinstance(batch['y_tensors'], torch.Tensor):
-            batch['y_tensors'] = batch['y_tensors'].to(device)
-        else:
-            batch['y_tensors'] = torch.tensor(batch['y_tensors'], device=device, dtype=torch.float32)
+            for k, dtype in [
+                ('input_ids', torch.long),
+                ('x_tensors', torch.float32),
+                ('y_tensors', torch.float32),
+            ]:
+                if isinstance(batch[k], torch.Tensor):
+                    batch[k] = batch[k].to(device=device, dtype=dtype)
+                else:
+                    batch[k] = torch.tensor(batch[k], device=device, dtype=dtype)
 
-        for i, constant in enumerate(batch['constants']):
-            if isinstance(constant, torch.Tensor):
-                batch['constants'][i] = constant.to(device)
+            if isinstance(batch['constants'], torch.Tensor):
+                batch['constants'] = batch['constants'].to(device)
             else:
-                batch['constants'][i] = torch.tensor(constant, device=device, dtype=torch.float32)
+                batch['constants'] = torch.tensor(batch['constants'], device=device, dtype=torch.float32)
 
-        if 'input_num' in batch:
-            input_num_tensor = torch.full_like(batch['input_ids'], fill_value=torch.nan, dtype=torch.float32)
-            for i, position_value_list in enumerate(batch['input_num']):
-                for position, value in position_value_list:
-                    input_num_tensor[i, position] = value
-            batch['input_num'] = input_num_tensor
+            if 'input_num' in batch:
+                batch['input_num'] = self._create_input_num_tensor(batch['input_ids'].shape, batch['input_num'], device=device)
 
-        if 'complexities' in batch:
-            batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]
+            if 'complexities' in batch:
+                if batch['complexities'] is not None:
+                    batch['complexities'] = torch.tensor(batch['complexities'], device=device, dtype=torch.float32)
 
         # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
         batch['labels'] = batch['input_ids'].clone()[..., 1:]
@@ -337,17 +368,6 @@ class FlashANSRDataset:
         if size is not None and steps is not None:
             raise ValueError(f'Must either specify the total number of data (size) or batches (steps) to generate, got {size=}, {steps=}')
 
-        batch: dict[str, list | torch.Tensor] = {
-            'n_rejected': [],
-            'skeletons': [],
-            'skeleton_hashes': [],
-            'expressions': [],
-            'constants': [],
-            'input_ids': [],
-            'x_tensors': [],
-            'y_tensors': [],
-        }
-
         if size is not None:
             if isinstance(batch_size, int):
                 steps = int(np.ceil(size / batch_size))
@@ -359,6 +379,17 @@ class FlashANSRDataset:
         n_generated = 0
 
         while (size is None and steps is None) or (steps is not None and batch_id < steps) or (size is not None and n_generated < size):
+            batch: dict[str, list | torch.Tensor] = {
+                'n_rejected': [],
+                'skeletons': [],
+                'skeleton_hashes': [],
+                'expressions': [],
+                'constants': [],
+                'input_ids': [],
+                'x_tensors': [],
+                'y_tensors': [],
+            }
+
             if n_support is None:
                 if batch_id == 0 and avoid_fragmentation:
                     # Allocate the maximum size tensor to avoid memory fragmentation
@@ -376,6 +407,7 @@ class FlashANSRDataset:
                     n_per_equation=n_per_equation,
                     avoid_fragmentation=False,
                     verbose=False):
+
                 for key in instance.keys():
                     batch[key].append(instance[key])  # type: ignore
 
