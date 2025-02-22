@@ -254,10 +254,10 @@ class TestSimplify(unittest.TestCase):
             assert simplified_expression == target_simplified_expression
 
             target_executable_prefix_expression = self.space.operators_to_realizations(expression)
-            target_prefix_expression_with_constants, target_constants = num_to_constants(target_executable_prefix_expression)
+            target_prefix_expression_with_constants, target_constants = num_to_constants(target_executable_prefix_expression, inplace=True)
 
             executable_prefix_expression = self.space.operators_to_realizations(simplified_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
+            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
 
             if len(constants) == 0 and len(target_constants) == 0 and expression not in exceptions:
                 code_string = self.space.prefix_to_infix(target_prefix_expression_with_constants, realization=True)

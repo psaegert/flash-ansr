@@ -92,7 +92,7 @@ class SOOSEParser(TestSetParaser):
 
             # Codify
             prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num)
+            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
             code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, expression_space.variables + constants)
 
@@ -157,7 +157,7 @@ class FeynmanParser(TestSetParaser):
 
             # Codify
             prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num)
+            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
             code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, expression_space.variables + constants)
 
@@ -220,7 +220,7 @@ class NguyenParser(TestSetParaser):
 
             # Codify
             prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num)
+            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
             code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, expression_space.variables + constants)
 

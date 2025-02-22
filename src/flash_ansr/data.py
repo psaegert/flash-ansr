@@ -490,7 +490,7 @@ class FlashANSRDataset:
                             'n_rejected': [n_rejected],
                             'skeletons': skeleton,
                             'skeleton_hashes': skeleton_hash,
-                            'expressions': substitude_constants(skeleton, values=literals),
+                            'expressions': substitude_constants(skeleton, values=literals, inplace=True),
                             'constants': torch.tensor(literals, dtype=torch.float32),
                             'input_ids': input_ids,
                             'x_tensors': torch.tensor(x_support, dtype=torch.float32),
