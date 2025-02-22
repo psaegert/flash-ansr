@@ -96,7 +96,14 @@ class FlashANSRTransformer(nn.Module):
 
         self.support_numeric_tokens = support_numeric_tokens
         if support_numeric_tokens:
-            self.numeric_embedding = nn.Linear(self.pre_encoder.output_size, size)
+
+            self.pre_encoder_numeric_tokens = PreEncoder(
+                input_size=1,
+                mode=pre_encoder_input_type,
+                support_nan=True,
+                exponent_scale=pre_encoder_exponent_scale)
+
+            self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, size)
 
         self.decoder = nn.TransformerDecoder(
             decoder_layer=nn.TransformerDecoderLayer(
@@ -169,7 +176,8 @@ class FlashANSRTransformer(nn.Module):
             decoder_dropout=config_["decoder_dropout"],
             decoder_n_layers=config_["decoder_n_layers"],
             learnable_positional_embeddings=config_["learnable_positional_embeddings"],
-            max_input_length=config_["max_input_length"])
+            max_input_length=config_["max_input_length"],
+            support_numeric_tokens=config_.get("support_numeric_tokens", False))
 
     def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, numeric_head: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
         '''
@@ -185,6 +193,13 @@ class FlashANSRTransformer(nn.Module):
             The input numeric tensor, by default None.
         numeric_head : bool, optional
             Whether to include the numeric head, by default False.
+
+        Returns
+        -------
+        logits : torch.Tensor
+            The logits (next token probabilities from the next token head).
+        num_out : torch.Tensor
+            The numeric output from the numeric head.
         '''
         embeddings = self.embedding(input_tokens)
 
@@ -196,7 +211,7 @@ class FlashANSRTransformer(nn.Module):
         if input_num is not None:
             if not self.support_numeric_tokens:
                 raise ValueError("Model does not support numeric tokens.")
-            input_num_pre_encodings = self.pre_encoder(input_num)
+            input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
 

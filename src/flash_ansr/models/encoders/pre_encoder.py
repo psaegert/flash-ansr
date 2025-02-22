@@ -96,9 +96,6 @@ class PreEncoder(nn.Module):
         if exponent_scale is not None and mode not in ["frexp", "sfrexp"]:
             raise ValueError(f"exponent_scale is only valid for modes ['frexp', 'sfrexp'], got mode: {mode}")
 
-        if support_nan and mode == "ieee-754":
-            raise ValueError("support_nan is not valid for mode 'ieee-754'")
-
         self.input_size = input_size
         self.mode = mode
         self.support_nan = support_nan

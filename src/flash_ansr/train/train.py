@@ -409,7 +409,7 @@ class Trainer():
             data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
             flat_labels = batch['labels'].reshape(-1)
@@ -545,7 +545,7 @@ class Trainer():
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Forward pass
-                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = batch['labels'].reshape(-1)
