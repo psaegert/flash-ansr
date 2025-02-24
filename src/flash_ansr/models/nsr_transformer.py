@@ -241,7 +241,7 @@ class FlashANSRTransformer(nn.Module):
 
         return logits, num_out
 
-    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
+    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
         '''
         Beam search algorithm to generate sequences.
 
@@ -257,6 +257,8 @@ class FlashANSRTransformer(nn.Module):
             The mini-batch size, by default 128.
         equivalence_pruning : bool, optional
             Whether to prune equivalent sequences, by default True.
+        complexity : int or float, optional
+            The desired complexity (length in tokens) of the generated expression. If None, the complexity is not enforced, by default None.
         verbose : bool, optional
             Whether to print debug information, by default False.
 
@@ -265,6 +267,9 @@ class FlashANSRTransformer(nn.Module):
         tuple[list[list[int]], list[float]]
             The list of sequences and their scores.
         '''
+        if complexity is not None:
+            raise NotImplementedError("Complexity constraint is not implemented yet.")
+
         # Step 1: Initialize the beam with the initial input sequence
         beams = [([self.expression_space.tokenizer['<bos>']], 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
