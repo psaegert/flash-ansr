@@ -151,28 +151,43 @@ def save_config(config: dict[str, Any], directory: str, filename: str, reference
         - 'absolute': absolute paths
     recursive : bool, optional
         Save any referenced configs too
-    '''
+    # '''
     config_ = copy.deepcopy(config)
 
+    def save_config_relative_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = os.path.join('.', os.path.basename(value))
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
+    def save_config_project_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = value.replace(get_path(), '{{ROOT}}')
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
+    def save_config_absolute_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = os.path.abspath(substitute_root_path(value))
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
     if recursive:
-        if reference == 'relative':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    # First, convert project paths to absolute paths
-                    config_[key] = os.path.join('.', os.path.basename(config_[key]))
-                    save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-
-        elif reference == 'project':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    config_[key] = value.replace(get_path(), '{{ROOT}}')
-                    save_config(load_config(config_[key], resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-
-        elif reference == 'absolute':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    config_[key] = os.path.abspath(substitute_root_path(value))
-                    save_config(load_config(config_[key], resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        match reference:
+            case 'relative':
+                apply_on_nested(config_, save_config_relative_func)
+            case 'project':
+                apply_on_nested(config_, save_config_project_func)
+            case 'absolute':
+                apply_on_nested(config_, save_config_absolute_func)
+            case _:
+                raise ValueError(f'Invalid reference type: {reference}')
 
     with open(get_path(directory, filename=filename, create=True), 'w') as config_file:
         yaml.dump(config_, config_file, sort_keys=False)
