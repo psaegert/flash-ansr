@@ -202,6 +202,8 @@ def main(argv: str = None) -> None:
                 recursive=True,
                 resolve_paths=True)
 
+            print(f"Saved model to {args.output_dir}")
+
         case 'evaluate':
             if args.verbose:
                 print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')
@@ -261,7 +263,7 @@ def main(argv: str = None) -> None:
                 print(f'[NSR] Evaluating model from {args.model} on {args.dataset}')
             import os
             from flash_ansr import ExpressionSpace
-            from flash_ansr.compat.evaluation_nesymres import NeSymResEvaluation
+            from flash_ansr.compat.evaluation_nesymres import NeSymReSEvaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.compat.nesymres import load_nesymres
@@ -288,7 +290,7 @@ def main(argv: str = None) -> None:
             else:
                 raise ValueError(f"Invalid dataset configuration: {args.dataset}")
 
-            evaluation = NeSymResEvaluation.from_config(substitute_root_path(args.config))
+            evaluation = NeSymReSEvaluation.from_config(substitute_root_path(args.config))
 
             results_dict = evaluation.evaluate(
                 model=model,
@@ -404,3 +406,7 @@ def main(argv: str = None) -> None:
         case _:
             parser.print_help()
             sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

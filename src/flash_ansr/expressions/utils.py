@@ -5,7 +5,6 @@ from typing import Any, Callable
 from functools import partial
 import math
 
-from copy import deepcopy
 import numpy as np
 
 
@@ -60,7 +59,7 @@ def get_used_modules(infix_expression: str) -> list[str]:
     return list(modules_set)
 
 
-def substitude_constants(prefix_expression: list[str], values: list | np.ndarray, constants: list[str] | None = None) -> list[str]:
+def substitude_constants(prefix_expression: list[str], values: list | np.ndarray, constants: list[str] | None = None, inplace: bool = False) -> list[str]:
     '''
     Substitute the numeric placeholders or constants in a prefix expression with the given values.
 
@@ -72,13 +71,18 @@ def substitude_constants(prefix_expression: list[str], values: list | np.ndarray
         The values to substitute in the expression, in order.
     constants : list[str] | None
         The constants to substitute in the expression.
+    inplace : bool
+        Whether to modify the expression in place.
 
     Returns
     -------
     list[str]
         The prefix expression with the values substituted.
     '''
-    prefix_expression_with_constants = deepcopy(prefix_expression)
+    if inplace:
+        modified_prefix_expression = prefix_expression
+    else:
+        modified_prefix_expression = prefix_expression.copy()
 
     constant_index = 0
     if constants is None:
@@ -86,12 +90,12 @@ def substitude_constants(prefix_expression: list[str], values: list | np.ndarray
     else:
         constants = list(constants)
 
-    for i, token in enumerate(prefix_expression_with_constants):
+    for i, token in enumerate(prefix_expression):
         if token == "<num>" or re.match(r"C_\d+", token) or token in constants:
-            prefix_expression_with_constants[i] = str(values[constant_index])
+            modified_prefix_expression[i] = str(values[constant_index])
             constant_index += 1
 
-    return prefix_expression_with_constants
+    return modified_prefix_expression
 
 
 def apply_variable_mapping(prefix_expression: list[str], variable_mapping: dict[str, str]) -> list[str]:
@@ -113,7 +117,7 @@ def apply_variable_mapping(prefix_expression: list[str], variable_mapping: dict[
     return list(map(lambda token: variable_mapping.get(token, token), prefix_expression))
 
 
-def numbers_to_num(prefix_expression: list[str]) -> list[str]:
+def numbers_to_num(prefix_expression: list[str], inplace: bool = False) -> list[str]:
     '''
     Replace all numbers in a prefix expression with the string '<num>'.
 
@@ -121,25 +125,30 @@ def numbers_to_num(prefix_expression: list[str]) -> list[str]:
     ----------
     prefix_expression : list[str]
         The prefix expression to replace the numbers in.
+    inplace : bool
+        Whether to modify the expression in place.
 
     Returns
     -------
     list[str]
         The prefix expression with the numbers replaced.
     '''
-    prefix_expression_with_num = deepcopy(prefix_expression)
+    if inplace:
+        modified_prefix_expression = prefix_expression
+    else:
+        modified_prefix_expression = prefix_expression.copy()
 
-    for i, token in enumerate(prefix_expression_with_num):
+    for i, token in enumerate(prefix_expression):
         try:
             float(token)
-            prefix_expression_with_num[i] = '<num>'
+            modified_prefix_expression[i] = '<num>'
         except ValueError:
-            prefix_expression_with_num[i] = token
+            modified_prefix_expression[i] = token
 
-    return prefix_expression_with_num
+    return modified_prefix_expression
 
 
-def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None) -> tuple[list[str], list[str]]:
+def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None, inplace: bool = False) -> tuple[list[str], list[str]]:
     '''
     Replace all '<num>' tokens in a prefix expression with constants named 'C_i'.
     This allows the expression to be compiled into a function.
@@ -150,13 +159,18 @@ def num_to_constants(prefix_expression: list[str], constants: list[str] | None =
         The prefix expression to replace the '<num>' tokens in.
     constants : list[str] | None
         The constants to use in the expression.
+    inplace : bool
+        Whether to modify the expression in place.
 
     Returns
     -------
     tuple[list[str], list[str]]
         The prefix expression with the constants replaced and the list of constants used.
     '''
-    prefix_expression_with_constants = deepcopy(prefix_expression)
+    if inplace:
+        modified_prefix_expression = prefix_expression
+    else:
+        modified_prefix_expression = prefix_expression.copy()
 
     constant_index = 0
     if constants is None:
@@ -164,16 +178,16 @@ def num_to_constants(prefix_expression: list[str], constants: list[str] | None =
     else:
         constants = list(constants)
 
-    for i, token in enumerate(prefix_expression_with_constants):
+    for i, token in enumerate(prefix_expression):
         if token == "<num>" or re.match(r"C_\d+", token) or token.isnumeric():
             if constants is not None and len(constants) > constant_index:
-                prefix_expression_with_constants[i] = constants[constant_index]
+                modified_prefix_expression[i] = constants[constant_index]
             else:
-                prefix_expression_with_constants[i] = f"C_{constant_index}"
+                modified_prefix_expression[i] = f"C_{constant_index}"
             constants.append(f"C_{constant_index}")
             constant_index += 1
 
-    return prefix_expression_with_constants, constants
+    return modified_prefix_expression, constants
 
 
 def flatten_nested_list(nested_list: list) -> list[str]:

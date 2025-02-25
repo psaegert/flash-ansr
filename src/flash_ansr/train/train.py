@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 import torch
 import torch_optimizer
+import schedulefree
 import numpy as np
 
 import torch.nn.functional as F
@@ -25,11 +26,26 @@ import wandb
 class OptimizerFactory():
     @staticmethod
     def get_optimizer(name: str, *args: Any, **kwargs: Any) -> torch.optim.Optimizer:
+        if name.startswith('torch.optim.'):
+            if hasattr(torch.optim, name):
+                return getattr(torch.optim, name)(*args, **kwargs)
+        elif name.startswith('torch_optimizer.'):
+            if hasattr(torch_optimizer, name):
+                return getattr(torch_optimizer, name)(*args, **kwargs)
+        elif name.startswith('schedulefree.'):
+            if hasattr(schedulefree, name):
+                return getattr(schedulefree, name)(*args, **kwargs)
+
+        # Defaults
+
         if hasattr(torch.optim, name):
             return getattr(torch.optim, name)(*args, **kwargs)
 
         if hasattr(torch_optimizer, name):
             return getattr(torch_optimizer, name)(*args, **kwargs)
+
+        if hasattr(schedulefree, name):
+            return getattr(schedulefree, name)(*args, **kwargs)
 
         raise NotImplementedError(f"Optimizer {name} not found in torch.optim")
 
@@ -150,7 +166,7 @@ class Trainer():
             self,
             model: FlashANSRTransformer,
             optimizer: torch.optim.Optimizer,
-            lr_scheduler: LRScheduler,
+            lr_scheduler: LRScheduler | None,
             batch_size: int,
             train_dataset: FlashANSRDataset,
             val_dataset: FlashANSRDataset,
@@ -207,7 +223,10 @@ class Trainer():
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer']['kwargs'] if 'kwargs' in config_['optimizer'] else {})
 
         print(f'Loading lr_scheduler with config {config_["lr_scheduler"]}')
-        lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler']['kwargs'] if 'kwargs' in config_['lr_scheduler'] else {})
+        if config_["lr_scheduler"] is not None:
+            lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler']['kwargs'] if 'kwargs' in config_['lr_scheduler'] else {})
+        else:
+            lr_scheduler = None
 
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
@@ -368,6 +387,8 @@ class Trainer():
 
     def _train_batch(self, batch: dict[str, torch.Tensor], numeric_prediction_loss_weight: float, contrastive_loss_weight: float, step: int) -> float:
         self.model.train()
+        if hasattr(self.optimizer, "train"):
+            self.optimizer.train()
 
         start_time = time.time()
 
@@ -382,13 +403,13 @@ class Trainer():
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
-            batch = self.train_dataset.collate_batch(micro_batch, device=self.model.device)
+            batch = self.train_dataset.collate(micro_batch, device=self.model.device)
 
             # Concatenate x and y tensors as input to the set transformer
             data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
             flat_labels = batch['labels'].reshape(-1)
@@ -494,12 +515,17 @@ class Trainer():
             "cumulative_training_pflops": self.cumulative_training_pflops
         }, step=step)
 
-        self.lr_scheduler.step()
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
 
         return loss.item()
 
     def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, verbose: bool = False) -> float:
         self.model.eval()
+
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()
+
         with torch.no_grad():
             val_ce_loss = 0.0
             val_contrastive_loss = 0.0
@@ -513,13 +539,13 @@ class Trainer():
 
             for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
-                batch = self.val_dataset.collate_batch(batch, device=self.model.device)
+                batch = self.val_dataset.collate(batch, device=self.model.device)
 
                 # Concatenate x and y tensors as input to the set transformer
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Forward pass
-                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = batch['labels'].reshape(-1)

@@ -194,7 +194,7 @@ class Evaluation():
         with torch.no_grad():
             current_size = 0
             for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size, batch_size=1):
-                batch = dataset.collate_batch(batch, device=self.device)
+                batch = dataset.collate(batch, device=self.device)
 
                 if self.noise_level > 0.0:
                     batch['y_tensors_noisy'] = batch['y_tensors'] + (self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors']))

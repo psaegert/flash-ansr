@@ -11,6 +11,7 @@ from flash_ansr.expressions.expression_space import ExpressionSpace
 from flash_ansr.models.transformer_utils import PositionalEncoding
 from flash_ansr.models.encoders.pre_encoder import PreEncoder
 from flash_ansr.models.factory import ModelFactory
+from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
 class FlashANSRTransformer(nn.Module):
@@ -96,7 +97,14 @@ class FlashANSRTransformer(nn.Module):
 
         self.support_numeric_tokens = support_numeric_tokens
         if support_numeric_tokens:
-            self.numeric_embedding = nn.Linear(self.pre_encoder.output_size, size)
+
+            self.pre_encoder_numeric_tokens = PreEncoder(
+                input_size=1,
+                mode=pre_encoder_input_type,
+                support_nan=True,
+                exponent_scale=pre_encoder_exponent_scale)
+
+            self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, size)
 
         self.decoder = nn.TransformerDecoder(
             decoder_layer=nn.TransformerDecoderLayer(
@@ -119,6 +127,8 @@ class FlashANSRTransformer(nn.Module):
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
             nn.Linear(size, 1))
+
+        self.preprocessor = FlashASNRPreprocessor(expression_space)
 
     @property
     def device(self) -> torch.device:
@@ -169,7 +179,8 @@ class FlashANSRTransformer(nn.Module):
             decoder_dropout=config_["decoder_dropout"],
             decoder_n_layers=config_["decoder_n_layers"],
             learnable_positional_embeddings=config_["learnable_positional_embeddings"],
-            max_input_length=config_["max_input_length"])
+            max_input_length=config_["max_input_length"],
+            support_numeric_tokens=config_.get("support_numeric_tokens", False))
 
     def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, numeric_head: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
         '''
@@ -185,6 +196,13 @@ class FlashANSRTransformer(nn.Module):
             The input numeric tensor, by default None.
         numeric_head : bool, optional
             Whether to include the numeric head, by default False.
+
+        Returns
+        -------
+        logits : torch.Tensor
+            The logits (next token probabilities from the next token head).
+        num_out : torch.Tensor
+            The numeric output from the numeric head.
         '''
         embeddings = self.embedding(input_tokens)
 
@@ -196,7 +214,7 @@ class FlashANSRTransformer(nn.Module):
         if input_num is not None:
             if not self.support_numeric_tokens:
                 raise ValueError("Model does not support numeric tokens.")
-            input_num_pre_encodings = self.pre_encoder(input_num)
+            input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
 
@@ -226,7 +244,7 @@ class FlashANSRTransformer(nn.Module):
 
         return logits, num_out
 
-    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
+    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
         '''
         Beam search algorithm to generate sequences.
 
@@ -242,6 +260,8 @@ class FlashANSRTransformer(nn.Module):
             The mini-batch size, by default 128.
         equivalence_pruning : bool, optional
             Whether to prune equivalent sequences, by default True.
+        complexity : int or float, optional
+            The desired complexity (length in tokens) of the generated expression. If None, the complexity is not enforced, by default None.
         verbose : bool, optional
             Whether to print debug information, by default False.
 
@@ -250,8 +270,13 @@ class FlashANSRTransformer(nn.Module):
         tuple[list[list[int]], list[float]]
             The list of sequences and their scores.
         '''
+        if complexity is None:
+            initial_beam, input_num = [self.expression_space.tokenizer['<bos>']], None
+        else:
+            initial_beam, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']])
+
         # Step 1: Initialize the beam with the initial input sequence
-        beams = [([self.expression_space.tokenizer['<bos>']], 0.0)]  # each beam is a tuple: (sequence, score)
+        beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
         n_pruned = 0
 
@@ -288,7 +313,7 @@ class FlashANSRTransformer(nn.Module):
                 mini_batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
 
                 # Forward pass for the mini-batch
-                logits, _ = self.forward(mini_batch, mini_batch_data, numeric_head=False)
+                logits, _ = self.forward(mini_batch, mini_batch_data, input_num=input_num, numeric_head=False)
 
                 # Collect the logits for the next token
                 all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)

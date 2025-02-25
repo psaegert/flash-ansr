@@ -8,6 +8,7 @@ nltk
 numpy
 pyyaml
 rouge_score
+schedulefree
 scikit-learn
 scipy
 torch
