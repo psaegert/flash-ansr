@@ -32,7 +32,7 @@ from nesymres.architectures.model import Model
 nltk.download('wordnet', quiet=True)
 
 
-class NeSymResEvaluation():
+class NeSymReSEvaluation():
     def __init__(
             self,
             n_support: int | None = None,
@@ -58,7 +58,7 @@ class NeSymResEvaluation():
         self.rouge_scorer._tokenizer.tokenize = lambda x: x
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | str) -> "NeSymResEvaluation":
+    def from_config(cls, config: dict[str, Any] | str) -> "NeSymReSEvaluation":
         config_ = load_config(config)
 
         if "evaluation" in config_.keys():

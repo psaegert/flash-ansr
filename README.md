@@ -43,7 +43,7 @@ TODO
     - [2. Generate validation data](#2-generate-validation-data)
     - [3. Train the model](#3-train-the-model)
     - [4. Evaluate the model](#4-evaluate-the-model)
-      - [4.1 Evaluate NeSymRes](#41-evaluate-nesymres)
+      - [4.1 Evaluate NeSymReS](#41-evaluate-nesymres)
       - [4.2 Evaluate PySR](#42-evaluate-pysr)
 - [Development](#development)
   - [Setup](#setup)
@@ -261,12 +261,12 @@ with
 - `-o` the output file for results
 - `-v` verbose output
 
-#### 4.1 Evaluate NeSymRes
+#### 4.1 Evaluate NeSymReS
 1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) to a directory of your choice.
 2. Download the `100M` model as described [here](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)
 3. Move the `100M` model into `flash-ansr/models/nesymres/`
 4. Create a Python 3.10 (!) environment and install flash-ansr as in the previous steps.
-5. Install NeSymRes in the same environment:
+5. Install NeSymReS in the same environment:
 ```sh
 cd NeuralSymbolicRegressionThatScales
 pip install -e src/
