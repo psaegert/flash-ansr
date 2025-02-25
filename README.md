@@ -10,16 +10,18 @@
 
 <!-- TODO: Visual Abstract -->
 
-# Introduction
-
 <img src="./assets/images/nsr-training.drawio.svg" width="100%">
 
 > **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
 
+# Introduction
+
+TODO
+
 <img src="./assets/images/results.png" width="100%">
 
 > **Model Comparison.** Up to 3 variables. Default Model Configurations (32 threads / beams).\
-> Bootstrapped Median, 5p, 95p and AR-p ([Noreen 1989](https://www.jeffreycjohnson.org/app/download/764734156/cimeth.PDF)) values (n=1000).\
+> Bootstrapped Median, 5p, 95p and AR-p ([Noreen 1989](https://scholar.google.com/scholar?hl=en&q=Computer-intensive+methods+for+testing+hypotheses)) values (n=1000).\
 > N = 5000 ([⚡ v7.0](#usage)), 1000 ([PySR](https://github.com/MilesCranmer/PySR), [NeSymReS 100M](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)).\
 > AMD 9950X (16C32T), RTX 4090.
 
@@ -84,7 +86,7 @@ Then, install the package via
 
 ```sh
 pip install -e .
-pip install -e nsrops
+pip install -e ./nsrops
 ```
 
 # Usage
@@ -296,13 +298,7 @@ pre-commit install
 
 ## Tests
 
-Test the package with
-
-```sh
-./scripts/pytest.sh
-```
-
-for convenience.
+Test the package with `./scripts/pytest.sh`. Run pylint with `./scripts/pylint.sh`.
 
 # Citation
 ```bibtex
@@ -311,7 +307,7 @@ for convenience.
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.2.0},
+    version = {0.3.0},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```
