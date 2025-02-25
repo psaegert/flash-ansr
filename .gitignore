@@ -15,6 +15,9 @@ cloud.md
 # Wandb
 wandb
 
+# Profiling
+.prof
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
