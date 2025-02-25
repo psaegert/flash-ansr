@@ -1,5 +1,3 @@
-<h1 align="center" style="margin-top: 0px;">🏗️Work In Progress🏗️</h1>
-
 <h1 align="center" style="margin-top: 0px;">⚡ANSR:<br>Flash Amortized Neural Symbolic Regression</h1>
 
 <div align="center">
@@ -13,6 +11,46 @@
 <!-- TODO: Visual Abstract -->
 
 # Introduction
+
+<img src="./assets/images/nsr-training.drawio.svg" width="100%">
+
+> **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
+
+| Model | %<sub>FVU ≤ ε</sub><br>↑[0,100] |  | log FVU<sub>>ε</sub><br>↓[-6.92,∞] |  | ZSS<br>↓[0,∞] | PPL<br>↓[1,∞] | T<sub>wall</sub> [s]<br>↓[0,∞] |
+|-------|:-----------------:|:-------------:|:--------------------:|:----------------:|:-----------:|:-----------:|:---------------:|
+|       | Fit | Val | Fit | Val | - | - | - |
+| [PySR](https://github.com/MilesCranmer/PySR) | 61.0<br>(59.7, 62.5)<br>p = 0.00 | 60.2<br>(58.6, 61.8)<br>p = 0.00 | -3.33<br>(-3.43, -3.22)<br>p = 0.00 | -2.90<br>(-3.02, -2.78)<br>p = 0.17 | 29.9<br>(29.3, 30.5)<br>p = 0.00 | —<br>(—, —)<br>p = — | 3.99<br>(3.97, 4.01)<br>p = 0.00 |
+| [NeSymReS 100M](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models) | 35.8<br>(34.4, 37.3)<br>p = 0.00 | 35.6<br>(34.2, 37.0)<br>p = 0.00 | -1.75<br>(-1.83, -1.67)<br>p = 0.00 | -1.60<br>(-1.69, -1.52)<br>p = 0.00 | 23.6<br>(23.2, 24.1)<br>p = 0.00 | —<br>(—, —)<br>p = — | 85.9<br>(85.2, 86.6)<br>p = 0.00 |
+| [⚡ v7.0](#usage) | 64.5<br>(63.8, 65.2)<br>p = 1.00 | 64.3<br>(63.6, 64.9)<br>p = 1.00 | -2.97<br>(-3.02, -2.93)<br>p = 1.00 | -2.80<br>(-2.85, -2.73)<br>p = 1.00 | 13.3<br>(13.1, 13.4)<br>p = 1.00 | 3.73<br>(3.59, 3.86)<br>p = 1.00 | 1.03<br>(1.03, 1.03)<br>p = 1.00 |
+
+> **Model Comparison.** Up to 3 variables. Default Model Configurations (32 threads / beams).\
+> Bootstrapped Median, 5p, 95p and AR-p ([Noreen 1989](https://www.jeffreycjohnson.org/app/download/764734156/cimeth.PDF)) values (n=1000). N = 5000 (⚡), 1000 (PySR, NeSymReS).\
+> AMD 9950X (16C32T), RTX 4090.
+
+# Table of Contents
+- [Introduction](#introduction)
+- [Table of Contents](#table-of-contents)
+- [Requirements](#requirements)
+  - [Hardware](#hardware)
+  - [Software](#software)
+- [Getting Started](#getting-started)
+  - [1. Clone the repository](#1-clone-the-repository)
+  - [2. Install the package](#2-install-the-package)
+- [Usage](#usage)
+- [Training](#training)
+  - [Express](#express)
+  - [Manual](#manual)
+    - [0. Prerequisites](#0-prerequisites)
+    - [1. Import test data](#1-import-test-data)
+    - [2. Generate validation data](#2-generate-validation-data)
+    - [3. Train the model](#3-train-the-model)
+    - [4. Evaluate the model](#4-evaluate-the-model)
+      - [4.1 Evaluate NeSymRes](#41-evaluate-nesymres)
+      - [4.2 Evaluate PySR](#42-evaluate-pysr)
+- [Development](#development)
+  - [Setup](#setup)
+  - [Tests](#tests)
+- [Citation](#citation)
 
 # Requirements
 
@@ -37,7 +75,7 @@ cd flash-ansr
 
 ## 2. Install the package
 
-Optional: Create a virtual environment:
+Create a virtual environment (optional):
 
 **conda:**
 
@@ -54,8 +92,6 @@ pip install -e nsrops
 ```
 
 # Usage
-
-## Use a pre-trained model
 
 ```python
 import torch
