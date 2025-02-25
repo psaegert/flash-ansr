@@ -202,6 +202,8 @@ def main(argv: str = None) -> None:
                 recursive=True,
                 resolve_paths=True)
 
+            print(f"Saved model to {args.output_dir}")
+
         case 'evaluate':
             if args.verbose:
                 print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')

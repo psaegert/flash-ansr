@@ -12,7 +12,7 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import ExpressionSpace, SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
-from flash_ansr.control import FlashASNRPreprocessor
+from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
 class FlashANSRDataset:
@@ -140,27 +140,12 @@ class FlashANSRDataset:
 
         return load_config(config_path), dataset
 
-    def _pad_input_ids(self, input_ids: list[int], max_length: int) -> torch.Tensor:
+    def _pad_sequence(self, sequence: list[int], max_length: int, pad_value: Any, device: str | torch.device | int = 'cpu', dtype: torch.dtype = torch.long) -> torch.Tensor:
         return torch.nn.functional.pad(
-            torch.tensor(input_ids),
-            (0, max_length - len(input_ids)),
-            value=self.skeleton_pool.expression_space.tokenizer['<pad>']
-        ).to(torch.long)
-
-    def _create_input_num_tensor(self, input_ids_shape: tuple[int], input_num: list[tuple[int, int]] | list[list[tuple[int, int]]], device: str | torch.device | int = 'cpu') -> torch.Tensor:
-        input_num_tensor = torch.full(input_ids_shape, fill_value=torch.nan, dtype=torch.float32, device=device)
-
-        if input_num_tensor.ndim == 2:
-            for i, position_value_list in enumerate(input_num):
-                for position, value in position_value_list:  # type: ignore
-                    input_num_tensor[i, position] = value  # type: ignore
-        elif input_num_tensor.ndim == 1:
-            for position, value in input_num:  # type: ignore
-                input_num_tensor[position] = value  # type: ignore
-        else:
-            raise ValueError(f"Invalid input_num_tensor shape: Required 1 or 2 dimensions, got {input_num_tensor.ndim} from {input_ids_shape=}")
-
-        return input_num_tensor
+            torch.tensor(sequence, device=device, dtype=dtype),
+            (0, max_length - len(sequence)),
+            value=pad_value
+        )
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int) -> dict[str, torch.Tensor]:
         '''
@@ -178,14 +163,13 @@ class FlashANSRDataset:
         tuple
             The collated batch.
         '''
-
         # Determine the maximum length of the input_ids
         if isinstance(batch['input_ids'][0], list):
             # Batch of instances
             max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 
             for i in range(len(batch['input_ids'])):
-                batch['input_ids'][i] = self._pad_input_ids(batch['input_ids'][i], max_length_input_ids)
+                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.skeleton_pool.expression_space.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -201,7 +185,11 @@ class FlashANSRDataset:
                     batch['constants'][i] = torch.tensor(constant, device=device, dtype=torch.float32)
 
             if 'input_num' in batch:
-                batch['input_num'] = self._create_input_num_tensor(batch['input_ids'].shape, batch['input_num'], device=device)
+                max_length_input_num = max(len(input_id) for input_id in batch['input_num'])
+                for i in range(len(batch['input_num'])):
+                    batch['input_num'][i] = self._pad_sequence(batch['input_num'][i], max_length_input_num, torch.nan, device=device, dtype=torch.long)
+
+                batch['input_num'] = torch.stack(batch['input_num']).to(device=device, dtype=torch.long)
 
             if 'complexities' in batch:
                 batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]
@@ -210,7 +198,7 @@ class FlashANSRDataset:
             # Single instance
             max_length_input_ids = len(batch['input_ids'])
 
-            batch['input_ids'] = self._pad_input_ids(batch['input_ids'], max_length_input_ids)
+            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.skeleton_pool.expression_space.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -228,7 +216,8 @@ class FlashANSRDataset:
                 batch['constants'] = torch.tensor(batch['constants'], device=device, dtype=torch.float32)
 
             if 'input_num' in batch:
-                batch['input_num'] = self._create_input_num_tensor(batch['input_ids'].shape, batch['input_num'], device=device)
+                max_length_input_num = len(batch['input_num'])
+                batch['input_num'] = self._pad_sequence(batch['input_num'], max_length_input_num, torch.nan, device=device, dtype=torch.long)
 
             if 'complexities' in batch:
                 if batch['complexities'] is not None:

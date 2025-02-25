@@ -11,6 +11,7 @@ from flash_ansr.expressions.expression_space import ExpressionSpace
 from flash_ansr.models.transformer_utils import PositionalEncoding
 from flash_ansr.models.encoders.pre_encoder import PreEncoder
 from flash_ansr.models.factory import ModelFactory
+from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
 class FlashANSRTransformer(nn.Module):
@@ -126,6 +127,8 @@ class FlashANSRTransformer(nn.Module):
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
             nn.Linear(size, 1))
+
+        self.preprocessor = FlashASNRPreprocessor(expression_space)
 
     @property
     def device(self) -> torch.device:
@@ -267,11 +270,13 @@ class FlashANSRTransformer(nn.Module):
         tuple[list[list[int]], list[float]]
             The list of sequences and their scores.
         '''
-        if complexity is not None:
-            raise NotImplementedError("Complexity constraint is not implemented yet.")
+        if complexity is None:
+            initial_beam, input_num = [self.expression_space.tokenizer['<bos>']], None
+        else:
+            initial_beam, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']])
 
         # Step 1: Initialize the beam with the initial input sequence
-        beams = [([self.expression_space.tokenizer['<bos>']], 0.0)]  # each beam is a tuple: (sequence, score)
+        beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
         n_pruned = 0
 
@@ -308,7 +313,7 @@ class FlashANSRTransformer(nn.Module):
                 mini_batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
 
                 # Forward pass for the mini-batch
-                logits, _ = self.forward(mini_batch, mini_batch_data, numeric_head=False)
+                logits, _ = self.forward(mini_batch, mini_batch_data, input_num=input_num, numeric_head=False)
 
                 # Collect the logits for the next token
                 all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)

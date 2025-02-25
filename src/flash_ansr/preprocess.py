@@ -2,7 +2,9 @@ import os
 from typing import Any
 import random
 
-from flash_ansr import ExpressionSpace
+import numpy as np
+
+from flash_ansr.expressions import ExpressionSpace
 from flash_ansr.utils import load_config
 
 
@@ -33,8 +35,8 @@ class FlashASNRPreprocessor:
     def format(self, batch: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(batch['input_ids'][0], list):
             # The input is a single instance
-            for k, diff in self._format_single(batch).items():
-                batch[k] = diff
+            for k, modified_value in self._format_single(batch).items():
+                batch[k] = modified_value
 
             return batch
 
@@ -42,27 +44,34 @@ class FlashASNRPreprocessor:
             # The input is a batch of instances
             new_fields: set[str] = set()
             for i, instance in enumerate(zip(*batch.values())):
-                for k, diff in self._format_single(dict(zip(batch.keys(), instance))).items():
+                for k, modified_value in self._format_single(dict(zip(batch.keys(), instance))).items():
                     if k not in batch:
                         new_fields.add(k)
                         batch[k] = []
 
                     if k in new_fields:
-                        batch[k].append(diff)
+                        batch[k].append(modified_value)
                     else:
-                        batch[k][i] = diff
+                        batch[k][i] = modified_value
 
         return batch
 
-    def _format_single(self, instance: dict[str, Any]) -> dict[str, Any]:
-        complexity = None
-        modified_input_ids = instance['input_ids']
-        input_num = []
+    def format_complexity(self, input_ids: list[int], complexity: float | int) -> tuple[list[int], list[float]]:
+        modified_input_ids = [self.expression_space.tokenizer['<ctrl_complexity>'], self.expression_space.tokenizer['<num>']] + input_ids
 
+        input_num = [np.nan] * len(modified_input_ids)
+        input_num[1] = complexity
+
+        return modified_input_ids, input_num
+
+    def _format_single(self, instance: dict[str, Any]) -> dict[str, Any]:
         if random.random() < self.format_probs['complexity']:
             complexity = len(instance['input_ids'])
-            modified_input_ids = [self.expression_space.tokenizer['<ctrl_complexity>']] + [self.expression_space.tokenizer['<num>']] + instance['input_ids']
-            input_num.append((1, complexity))
+            modified_input_ids, input_num = self.format_complexity(instance['input_ids'], complexity=complexity)
+        else:
+            complexity = 0
+            modified_input_ids = instance['input_ids']
+            input_num = [np.nan] * len(modified_input_ids)
 
         return {
             'complexities': complexity,
