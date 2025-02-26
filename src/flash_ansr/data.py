@@ -187,9 +187,9 @@ class FlashANSRDataset:
             if 'input_num' in batch:
                 max_length_input_num = max(len(input_id) for input_id in batch['input_num'])
                 for i in range(len(batch['input_num'])):
-                    batch['input_num'][i] = self._pad_sequence(batch['input_num'][i], max_length_input_num, torch.nan, device=device, dtype=torch.long)
+                    batch['input_num'][i] = self._pad_sequence(batch['input_num'][i], max_length_input_num, torch.nan, device=device, dtype=torch.float32)
 
-                batch['input_num'] = torch.stack(batch['input_num']).to(device=device, dtype=torch.long)
+                batch['input_num'] = torch.stack(batch['input_num']).to(device=device, dtype=torch.float32)
 
             if 'complexities' in batch:
                 batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]

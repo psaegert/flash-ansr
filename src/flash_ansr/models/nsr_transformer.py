@@ -214,6 +214,7 @@ class FlashANSRTransformer(nn.Module):
         if input_num is not None:
             if not self.support_numeric_tokens:
                 raise ValueError("Model does not support numeric tokens.")
+
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
@@ -273,7 +274,7 @@ class FlashANSRTransformer(nn.Module):
         if complexity is None:
             initial_beam, input_num = [self.expression_space.tokenizer['<bos>']], None
         else:
-            initial_beam, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']])
+            initial_beam, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']], complexity=complexity)
 
         # Step 1: Initialize the beam with the initial input sequence
         beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
@@ -299,21 +300,23 @@ class FlashANSRTransformer(nn.Module):
 
             # Step 2: Pad the sequences to ensure they all have the same length
             max_seq_len = max(len(seq) for seq in all_sequences)
-            padded_sequences = [seq + [self.expression_space.tokenizer['<pad>']] * (max_seq_len - len(seq)) for seq in all_sequences]
+            input_ids_padded = [seq + [self.expression_space.tokenizer['<pad>']] * (max_seq_len - len(seq)) for seq in all_sequences]
+            input_num_padded = input_num + [torch.nan] * (max_seq_len - len(input_num)) if input_num is not None else None
 
             # Convert sequences and scores to tensors
-            input_tensor = torch.tensor(padded_sequences, device=data.device)
+            input_ids_tensor = torch.tensor(input_ids_padded, device=data.device)
+            input_num_tensor = torch.tensor(input_num_padded, device=data.device).unsqueeze(-1) if input_num is not None else None
 
             # Step 3: Run forward pass in mini-batches
             all_next_token_logits = []  # Collect logits from all mini-batches
             for start_idx in range(0, len(all_sequences), mini_batch_size):
                 # Extract the mini-batch
                 end_idx = min(start_idx + mini_batch_size, len(all_sequences))
-                mini_batch = input_tensor[start_idx:end_idx]
+                mini_batch = input_ids_tensor[start_idx:end_idx]
                 mini_batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
 
                 # Forward pass for the mini-batch
-                logits, _ = self.forward(mini_batch, mini_batch_data, input_num=input_num, numeric_head=False)
+                logits, _ = self.forward(mini_batch, mini_batch_data, input_num=input_num_tensor, numeric_head=False)
 
                 # Collect the logits for the next token
                 all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)

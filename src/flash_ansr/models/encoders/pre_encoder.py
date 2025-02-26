@@ -119,6 +119,9 @@ class PreEncoder(nn.Module):
         return output_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 1:
+            x = x.unsqueeze(-1)  # Make room for the bit representation of each number
+
         if self.mode == "ieee-754":
             x_bit = float2bit(x)
             return (x_bit.view(*x_bit.shape[:-2], self.output_size) - 0.5) * 2
