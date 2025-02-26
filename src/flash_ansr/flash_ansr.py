@@ -23,6 +23,7 @@ class Result(TypedDict):
     beam: list[int]
     log_prob: float
     expression: list[int]
+    complexity: int
     function: Callable
     fits: list[tuple[np.ndarray, np.ndarray, float]]
     score: float
@@ -99,6 +100,7 @@ class FlashANSR(BaseEstimator):
         self.parsimony = parsimony
 
         self._results: list[Result] = []
+        self.results: pd.DataFrame = pd.DataFrame()
         self.verbose = verbose
 
         self.variable_mapping: dict[str, str] = {}
@@ -248,7 +250,7 @@ class FlashANSR(BaseEstimator):
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
-            y_variance = y.var(dim=0).cpu().numpy()
+            y_variance = y.var(dim=0).item()
 
             # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
             pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - y.shape[-1]
@@ -306,16 +308,17 @@ class FlashANSR(BaseEstimator):
                                 score = fvu + self.parsimony * len(beam_decoded)
 
                             self._results.append({
-                                'refiner': refiner,
+                                'log_prob': log_prob,
+                                'fvu': fvu,
+                                'score': score,
+                                'expression': beam_decoded,
+                                'complexity': len(beam_decoded),
+                                'target_complexity': complexity,
                                 'numeric_prediction': numeric_prediction,
                                 'beam': beam,
-                                'log_prob': log_prob,
-                                'expression': beam_decoded,
                                 'function': refiner.expression_lambda,
+                                'refiner': refiner,
                                 'fits': copy.deepcopy(refiner._all_constants_values),
-                                'score': score,
-                                'target_complexity': complexity,
-                                'fvu': fvu
                             })
 
                         except ConvergenceError:
@@ -332,6 +335,19 @@ class FlashANSR(BaseEstimator):
                 x['score'] if not np.isnan(x['score']) else float('inf'),
                 np.isnan(x['score'])
             )))
+
+            # Create a dataframe
+            self.results = pd.DataFrame(self._results)
+
+            # Explode the fits for each beam
+            self.results = self.results.explode('fits')
+            self.results['beam_id'] = self.results.index
+            self.results.reset_index(drop=True, inplace=True)
+
+            # Split the fit tuples into columns
+            fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
+            self.results = pd.concat([self.results, fits_columns], axis=1)
+            self.results.drop(columns=['fits'], inplace=True)
 
             np.seterr(**numpy_errors_before)
 
