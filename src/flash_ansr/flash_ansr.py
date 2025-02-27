@@ -22,7 +22,9 @@ class Result(TypedDict):
     numeric_prediction: torch.Tensor | None
     beam: list[int]
     log_prob: float
-    expression: list[int]
+    expression: list[str]
+    raw_beam: list[int]
+    raw_beam_decoded: str
     complexity: int
     function: Callable
     fits: list[tuple[np.ndarray, np.ndarray, float]]
@@ -164,6 +166,31 @@ class FlashANSR(BaseEstimator):
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
+    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> list[int] | list[str]:
+        '''
+        Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
+
+        Parameters
+        ----------
+        beam : list[int] | list[str]
+            The beam to extract the expression from.
+
+        Returns
+        -------
+        str
+            The extracted expression.
+        '''
+        if isinstance(beam[0], int):
+            bos_position = beam.index(self.expression_space.tokenizer["<bos>"])
+            eos_position = beam.index(self.expression_space.tokenizer["<eos>"])
+        elif isinstance(beam[0], str):
+            bos_position = beam.index('<bos>')  # type: ignore
+            eos_position = beam.index('<eos>')  # type: ignore
+        else:
+            raise ValueError("The beam must be a list of integers or strings")
+
+        return beam[bos_position + 1:eos_position]
+
     def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, complexity: int | float | Iterable | None = None, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
         '''
         Perform symbolic regression on the input data.
@@ -273,21 +300,24 @@ class FlashANSR(BaseEstimator):
                 # Generate the beams
                 match self.generation_type:
                     case 'beam_search':
-                        beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, complexity=complexity, verbose=verbose)
+                        raw_beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, complexity=complexity, verbose=verbose)
+                        beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
                     case _:
                         raise ValueError(f"Generation type not supported. Expected one of ['beam_search'], got {self.generation_type}")
 
+                raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
                 beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
                 # Fit the refiner to each beam
-                for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
+                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
                     if self.expression_space.is_valid(beam_decoded):
                         numeric_prediction = None
 
                         if self.numeric_head:
-                            with torch.no_grad():
-                                _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
-                                numeric_prediction = num_output[0, :, 0][beam == self.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
+                            raise NotImplementedError("Numeric head is not yet implemented")
+                            # with torch.no_grad():
+                            #     _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
+                            #     numeric_prediction = num_output[0, :, 0][beam == self.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
 
                         try:
                             refiner = Refiner(expression_space=self.expression_space).fit(
@@ -315,7 +345,9 @@ class FlashANSR(BaseEstimator):
                                 'complexity': len(beam_decoded),
                                 'target_complexity': complexity,
                                 'numeric_prediction': numeric_prediction,
-                                'beam': beam,
+                                'raw_beam': raw_beam,
+                                'beam': beam,    # type: ignore
+                                'raw_beam_decoded': raw_beam_decoded,
                                 'function': refiner.expression_lambda,
                                 'refiner': refiner,
                                 'fits': copy.deepcopy(refiner._all_constants_values),
@@ -436,4 +468,16 @@ class FlashANSR(BaseEstimator):
             The model on the new device.
         '''
         self.flash_ansr_transformer.to(device)
+        return self
+
+    def eval(self) -> "FlashANSR":
+        '''
+        Set the model to evaluation mode.
+
+        Returns
+        -------
+        FlashANSR
+            The model in evaluation mode.
+        '''
+        self.flash_ansr_transformer.eval()
         return self

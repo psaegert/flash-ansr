@@ -2,10 +2,10 @@ import unittest
 import shutil
 
 from flash_ansr.eval.evaluation import Evaluation
-from flash_ansr import get_path
+from flash_ansr import get_path, FlashANSR
 from flash_ansr import FlashANSRTransformer
 from flash_ansr.data import FlashANSRDataset
-from flash_ansr.expressions import SkeletonPool
+from flash_ansr.expressions import SkeletonPool, ExpressionSpace
 
 
 class TestEvaluation(unittest.TestCase):
@@ -31,10 +31,20 @@ class TestEvaluation(unittest.TestCase):
 
     def test_evaluate(self):
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
-        nsr_transformer = FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml'))
+        ansr = FlashANSR(
+            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            flash_ansr_transformer=FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml')),
+            beam_width=2,
+            numeric_head=False,
+            equivalence_pruning=True,
+            n_restarts=3,
+            p0_noise='uniform',
+            p0_noise_kwargs={'low': -5, 'high': 5},
+        )
+
         val_dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 
         evaluation.evaluate(
-            model=nsr_transformer,
+            model=ansr,
             dataset=val_dataset,
             size=2)

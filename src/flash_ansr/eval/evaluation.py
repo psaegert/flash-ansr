@@ -12,9 +12,9 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer, scoring
 
-from flash_ansr.models import FlashANSRTransformer
+from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.data import FlashANSRDataset
-from flash_ansr.refine import Refiner, ConvergenceError
+from flash_ansr.refine import ConvergenceError
 from flash_ansr.eval.token_prediction import (
     correct_token_predictions_at_k,
     reciprocal_rank,
@@ -85,6 +85,8 @@ class Evaluation():
             max_len: int = 20,
             numeric_head: bool = False,
             equivalence_pruning: bool = True,
+            complexity: str | list[int | float] = 'none',
+            preprocess: bool = False,
             pointwise_close_criterion: float = 0.95,
             pointwise_close_accuracy_rtol: float = 0.05,
             pointwise_close_accuracy_atol: float = 0.001,
@@ -101,6 +103,8 @@ class Evaluation():
         self.max_len = max_len
         self.numeric_head = numeric_head
         self.equivalence_pruning = equivalence_pruning
+        self.complexity = complexity
+        self.preprocess = preprocess
         self.pointwise_close_criterion = pointwise_close_criterion
         self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
         self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
@@ -143,6 +147,8 @@ class Evaluation():
             max_len=config_["max_len"],
             numeric_head=config_["numeric_head"],
             equivalence_pruning=config_["equivalence_pruning"],
+            complexity=config_.get("complexity", 'none'),
+            preprocess=config_.get("preprocess", False),
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
@@ -155,7 +161,7 @@ class Evaluation():
 
     def evaluate(
             self,
-            model: FlashANSRTransformer,
+            model: FlashANSR,
             dataset: FlashANSRDataset,
             size: int | None = None,
             verbose: bool = True) -> dict[str, Any]:
@@ -164,10 +170,8 @@ class Evaluation():
 
         Parameters
         ----------
-        model : FlashANSRTransformer
+        model : FlashANSR
             The model to evaluate.
-        dataset : FlashANSRDataset
-            The dataset to evaluate the model on.
         size : int, optional
             Number of samples to evaluate. Default is None.
         verbose : bool, optional
@@ -178,10 +182,8 @@ class Evaluation():
         dict
             Dictionary with the evaluation results.
         '''
-
+        # Make sure the model is in evaluation mode
         model.to(self.device).eval()
-
-        refiner = Refiner(model.expression_space)
 
         results_dict = defaultdict(list)
 
@@ -193,7 +195,7 @@ class Evaluation():
 
         with torch.no_grad():
             current_size = 0
-            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, verbose=verbose, tqdm_total=size, batch_size=1):
+            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, preprocess=self.preprocess, verbose=verbose, tqdm_total=size, batch_size=1):
                 batch = dataset.collate(batch, device=self.device)
 
                 if self.noise_level > 0.0:
@@ -203,6 +205,12 @@ class Evaluation():
                         continue
                 else:
                     batch['y_tensors_noisy'] = batch['y_tensors']
+
+                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
+                y = batch['y_tensors_noisy'].cpu().numpy()[0, :self.n_support]
+
+                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
+                y_val = batch['y_tensors_noisy'].cpu().numpy()[0, self.n_support:]
 
                 results_dict['input_ids'].append(batch['input_ids'][0].cpu().numpy())
                 results_dict['labels'].append(batch['labels'][0].cpu().numpy())
@@ -225,12 +233,28 @@ class Evaluation():
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors_noisy']], dim=-1)
 
                 # Teacher forced forward pass
-                logits, num_out = model.forward(batch['input_ids'], data_tensor, numeric_head=self.numeric_head)
+                fit_time_start = time.time()
+                try:
+                    if self.complexity == 'none':
+                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, numeric_head=self.numeric_head)
+                        model.fit(X, y)
+                    elif self.complexity == 'ground_truth':
+                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'], numeric_head=self.numeric_head)
+                        model.fit(X, y, complexity=batch['complexity'])
+                    elif isinstance(self.complexity, list):
+                        raise NotImplementedError('Complexity list not implemented yet.')
+                        # logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'], numeric_head=self.numeric_head)
+                        model.fit(X, y, complexity=self.complexity)
+                    else:
+                        raise ValueError(f'Unknown complexity: {self.complexity}')
 
-                # Beam search
-                beam_search_time_start = time.time()
-                beams, _ = model.beam_search(data_tensor[0], beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning)
-                results_dict['beam_search_time'].append(time.time() - beam_search_time_start)
+                    model.fit(X, y)
+                except (ConvergenceError, OverflowError, TypeError, ValueError):
+                    pass
+                results_dict['fit_time'].append(time.time() - fit_time_start)
+
+                beams = [r['beam'] for r in model._results]
+
                 beams_decoded = [model.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
                 for j, beam in enumerate(beams):
@@ -304,65 +328,36 @@ class Evaluation():
                 np_errors_before = np.geterr()
                 np.seterr(all='ignore')
 
-                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
-                y = batch['y_tensors_noisy'].cpu().numpy()[0, :self.n_support]
+                for j, result in enumerate(model._results):
+                    try:
+                        assert X.dtype == y.dtype
 
-                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
-                y_val = batch['y_tensors_noisy'].cpu().numpy()[0, self.n_support:]
+                        y_pred = result['refiner'].predict(X)
+                        y_pred_val = result['refiner'].predict(X_val)
 
-                for j, beam in enumerate(beams_decoded):
-                    refiner_time = 0.0
-                    valid_results = model.expression_space.is_valid(beam)
+                        assert y_pred.shape == y.shape
+                        assert y_pred_val.shape == y_val.shape
 
-                    if valid_results:
-                        numeric_prediction = None
+                        # Fit Data
+                        mse = np.mean((y_pred - y) ** 2)
+                        r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
 
-                        if self.numeric_head:
-                            _, num_output = model.forward(beam, data_tensor, numeric_head=True)
-                            numeric_prediction = num_output[0, 1:, 0][beam == model.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
+                        nsrts_accuracy_close = np.mean(np.isclose(y_pred, y, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
+                        nsrts_accuracy_r2 = r2 > self.r2_close_criterion
 
-                        try:
-                            refiner_time_start = time.time()
-                            refiner.fit(
-                                expression=beam,
-                                X=X,
-                                y=y,
-                                n_restarts=self.n_restarts,
-                                method=self.refiner_method,
-                                p0=numeric_prediction,
-                                p0_noise=self.refiner_p0_noise,
-                                p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                                converge_error='raise')
-                            refiner_time += (time.time() - refiner_time_start)
+                        residuals = y_pred - y
 
-                            assert X.dtype == y.dtype
+                        # Val Data
+                        mse_val = np.mean((y_pred_val - y_val) ** 2)
+                        r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
 
-                            y_pred = refiner.predict(X)
-                            y_pred_val = refiner.predict(X_val)
+                        nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
+                        nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
 
-                            assert y_pred.shape == y.shape
-                            assert y_pred_val.shape == y_val.shape
+                        residuals_val = y_pred_val - y_val
 
-                            # Fit Data
-                            mse = np.mean((y_pred - y) ** 2)
-                            r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
-
-                            nsrts_accuracy_close = np.mean(np.isclose(y_pred, y, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                            nsrts_accuracy_r2 = r2 > self.r2_close_criterion
-
-                            residuals = y_pred - y
-
-                            # Val Data
-                            mse_val = np.mean((y_pred_val - y_val) ** 2)
-                            r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
-
-                            nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                            nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
-
-                            residuals_val = y_pred_val - y_val
-
-                        except (ConvergenceError, OverflowError, TypeError, ValueError):
-                            valid_results = False
+                    except (ConvergenceError, OverflowError, TypeError, ValueError):
+                        valid_results = False
 
                     if not valid_results:
                         mse = float('nan')
@@ -402,8 +397,6 @@ class Evaluation():
 
                 if current_size >= size:
                     break
-
-        del refiner
 
         # Sort the scores alphabetically by key
         results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore
