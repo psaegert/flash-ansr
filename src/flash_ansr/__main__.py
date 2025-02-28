@@ -202,12 +202,15 @@ def main(argv: str = None) -> None:
                 recursive=True,
                 resolve_paths=True)
 
+            print(f"Saved model to {args.output_dir}")
+
         case 'evaluate':
             if args.verbose:
                 print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')
             import os
+            from flash_ansr import FlashANSR
             from flash_ansr.eval.evaluation import Evaluation
-            from flash_ansr.utils import substitute_root_path
+            from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.models import FlashANSRTransformer
 
@@ -238,8 +241,21 @@ def main(argv: str = None) -> None:
 
             evaluation = Evaluation.from_config(substitute_root_path(args.config))
 
+            evaluation_config = load_config(substitute_root_path(args.config))
+
             results_dict = evaluation.evaluate(
-                model=model,
+                model=FlashANSR.load(
+                    directory=substitute_root_path(args.model),
+                    beam_width=evaluation_config['beam_width'],
+                    n_restarts=evaluation_config['n_restarts'],
+                    numeric_head=evaluation_config['numeric_head'],
+                    equivalence_pruning=evaluation_config['equivalence_pruning'],
+                    max_len=evaluation_config['max_len'],
+                    refiner_method=evaluation_config.get("refiner_method", 'curve_fit_lm'),
+                    refiner_p0_noise=evaluation_config["refiner_p0_noise"],
+                    refiner_p0_noise_kwargs=evaluation_config.get("refiner_p0_noise_kwargs", None),
+                    parsimony=evaluation_config.get("parsimony", 0),
+                ),
                 dataset=dataset,
                 size=args.size,
                 verbose=args.verbose)
@@ -261,7 +277,7 @@ def main(argv: str = None) -> None:
                 print(f'[NSR] Evaluating model from {args.model} on {args.dataset}')
             import os
             from flash_ansr import ExpressionSpace
-            from flash_ansr.compat.evaluation_nesymres import NeSymResEvaluation
+            from flash_ansr.compat.evaluation_nesymres import NeSymReSEvaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.compat.nesymres import load_nesymres
@@ -288,7 +304,7 @@ def main(argv: str = None) -> None:
             else:
                 raise ValueError(f"Invalid dataset configuration: {args.dataset}")
 
-            evaluation = NeSymResEvaluation.from_config(substitute_root_path(args.config))
+            evaluation = NeSymReSEvaluation.from_config(substitute_root_path(args.config))
 
             results_dict = evaluation.evaluate(
                 model=model,
@@ -404,3 +420,7 @@ def main(argv: str = None) -> None:
         case _:
             parser.print_help()
             sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

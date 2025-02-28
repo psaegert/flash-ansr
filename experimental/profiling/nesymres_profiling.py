@@ -20,7 +20,7 @@ dataset = FlashANSRDataset.from_config(get_path('data', 'ansr-data', 'test_set',
 
 # %%
 for batch in dataset.iterate(size=1, n_support=512, avoid_fragmentation=True, verbose=True, tqdm_total=1):
-    batch = dataset.collate_batch(batch, device='cuda')
+    batch = dataset.collate(batch, device='cuda')
 
     X = batch['x_tensors']
     y = batch['y_tensors'][:, 0]

@@ -10,7 +10,7 @@ from nesymres.dclasses import FitParams, BFGSParams
 
 def load_nesymres(eq_setting_path: str, config_path: str, weights_path: str, beam_size: int | None = 32, n_restarts: int | None = 4, device: str = "cpu") -> tuple[Model, Callable]:
     '''
-    Load the NeSymRes model and the fitting function.
+    Load the NeSymReS model and the fitting function.
 
     Parameters
     ----------
@@ -30,7 +30,7 @@ def load_nesymres(eq_setting_path: str, config_path: str, weights_path: str, bea
     Returns
     -------
     tuple[Model, Callable]
-        The NeSymRes model and the fitting function.
+        The NeSymReS model and the fitting function.
 
     Notes
     -----

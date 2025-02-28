@@ -21,5 +21,6 @@ decoder_n_layers: 5
 
 learnable_positional_embeddings: False
 max_input_length: null
+support_numeric_tokens: True
 
 expression_space: './expression_space.yaml'

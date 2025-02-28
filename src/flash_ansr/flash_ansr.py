@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Literal, Any
+from typing import Literal, Any, Iterable, TypedDict, Callable
 import warnings
 
 import numpy as np
@@ -15,6 +15,22 @@ from flash_ansr.utils import substitute_root_path
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.models import FlashANSRTransformer
 from flash_ansr.expressions import ExpressionSpace
+
+
+class Result(TypedDict):
+    refiner: Refiner
+    numeric_prediction: torch.Tensor | None
+    beam: list[int]
+    log_prob: float
+    expression: list[str]
+    raw_beam: list[int]
+    raw_beam_decoded: str
+    complexity: int
+    function: Callable
+    fits: list[tuple[np.ndarray, np.ndarray, float]]
+    score: float
+    target_complexity: int | float | None
+    fvu: float
 
 
 class FlashANSR(BaseEstimator):
@@ -65,8 +81,8 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 1,
             max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
             verbose: bool = False):
@@ -80,12 +96,13 @@ class FlashANSR(BaseEstimator):
         self.n_restarts = n_restarts
         self.max_len = max_len
         self.refiner_method = refiner_method
-        self.p0_noise = p0_noise
-        self.p0_noise_kwargs = p0_noise_kwargs
+        self.refiner_p0_noise = refiner_p0_noise
+        self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
 
-        self._results: list[tuple[Refiner, dict]] = []
+        self._results: list[Result] = []
+        self.results: pd.DataFrame = pd.DataFrame()
         self.verbose = verbose
 
         self.variable_mapping: dict[str, str] = {}
@@ -101,8 +118,8 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 1,
             max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
             verbose: bool = False) -> "FlashANSR":
@@ -127,8 +144,8 @@ class FlashANSR(BaseEstimator):
             n_restarts=n_restarts,
             max_len=max_len,
             refiner_method=refiner_method,
-            p0_noise=p0_noise,
-            p0_noise_kwargs=p0_noise_kwargs,
+            refiner_p0_noise=refiner_p0_noise,
+            refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
             parsimony=parsimony,
             verbose=verbose)
@@ -149,7 +166,32 @@ class FlashANSR(BaseEstimator):
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
-    def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
+    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> list[int] | list[str]:
+        '''
+        Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
+
+        Parameters
+        ----------
+        beam : list[int] | list[str]
+            The beam to extract the expression from.
+
+        Returns
+        -------
+        str
+            The extracted expression.
+        '''
+        if isinstance(beam[0], int):
+            bos_position = beam.index(self.expression_space.tokenizer["<bos>"])
+            eos_position = beam.index(self.expression_space.tokenizer["<eos>"])
+        elif isinstance(beam[0], str):
+            bos_position = beam.index('<bos>')  # type: ignore
+            eos_position = beam.index('<eos>')  # type: ignore
+        else:
+            raise ValueError("The beam must be a list of integers or strings")
+
+        return beam[bos_position + 1:eos_position]
+
+    def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, complexity: int | float | Iterable | None = None, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
         '''
         Perform symbolic regression on the input data.
 
@@ -159,6 +201,8 @@ class FlashANSR(BaseEstimator):
             The input data.
         y : np.ndarray | torch.Tensor | pd.DataFrame | pd.Series
             The target data.
+        complexity : int | list[int] | None, optional
+            The desired complexity (length in tokens) of the expression, by default None.
         variable_names : list[str] | dict[str, str] | {'auto'}, optional
             The variable names, by default 'auto'.
             - If list[str], the i-th column of X will be named variable_names[i].
@@ -179,6 +223,11 @@ class FlashANSR(BaseEstimator):
         FlashANSR
             The fitted model.
         '''
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
+        elif y.shape[-1] != 1:
+            raise ValueError("The target data must have a single output dimension")
+
         X = self._truncate_input(X)
 
         # Default: No mapping
@@ -201,6 +250,12 @@ class FlashANSR(BaseEstimator):
                 # column i -> column name
                 self.variable_mapping = {f"x{i + 1}": name for i, name in enumerate(X.columns)}
 
+        # TODO: Improve the handling of different types
+        if complexity is None or not hasattr(complexity, '__iter__'):
+            complexity_list: list[int | float | None] = [complexity]
+        else:
+            complexity_list = complexity  # type: ignore
+
         with torch.no_grad():
             # Convert the input data to a tensor
             if not isinstance(X, torch.Tensor):
@@ -222,6 +277,8 @@ class FlashANSR(BaseEstimator):
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
+            y_variance = y.var(dim=0).item()
+
             # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
             pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - y.shape[-1]
 
@@ -231,76 +288,99 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
-            # Generate the beams
-            if self.generation_type == 'beam_search':
-                beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, verbose=verbose)
-            elif self.generation_type == 'softmax_sampling':
-                raise NotImplementedError("Softmax sampling is not yet implemented")
-            else:
-                raise ValueError(f"Invalid generation type: {self.generation_type}")
-
-            beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
+            self._results = []
 
             # Silence numpy errors
             numpy_errors_before = np.geterr()
             np.seterr(all=self.numpy_errors)
 
-            self._results = []
+            # --- INFERENCE ---
 
-            y_variance = y.var(dim=0).cpu().numpy()
+            for complexity in complexity_list:
+                # Generate the beams
+                match self.generation_type:
+                    case 'beam_search':
+                        raw_beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, complexity=complexity, verbose=verbose)
+                        beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
+                    case _:
+                        raise ValueError(f"Generation type not supported. Expected one of ['beam_search'], got {self.generation_type}")
 
-            # Fit the refiner to each beam
-            for beam, beam_decoded, log_prob in tqdm(zip(beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
-                if self.expression_space.is_valid(beam_decoded):
-                    numeric_prediction = None
+                raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
+                beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
-                    if self.numeric_head:
-                        with torch.no_grad():
-                            _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
-                            numeric_prediction = num_output[0, :, 0][beam == self.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
+                # Fit the refiner to each beam
+                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
+                    if self.expression_space.is_valid(beam_decoded):
+                        numeric_prediction = None
 
-                    try:
-                        refiner = Refiner(expression_space=self.expression_space).fit(
-                            expression=beam_decoded,
-                            X=X.cpu().numpy(),
-                            y=y.cpu().numpy(),
-                            n_restarts=self.n_restarts,
-                            method=self.refiner_method,
-                            p0=numeric_prediction,
-                            p0_noise=self.p0_noise,
-                            p0_noise_kwargs=self.p0_noise_kwargs,
-                            converge_error=converge_error)
+                        if self.numeric_head:
+                            raise NotImplementedError("Numeric head is not yet implemented")
+                            # with torch.no_grad():
+                            #     _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
+                            #     numeric_prediction = num_output[0, :, 0][beam == self.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
 
-                        if refiner.constants_values is None:  # Fit failed
-                            score = np.inf
-                        else:
-                            fvu = refiner._all_constants_values[0][-1] / y_variance
-                            score = fvu + self.parsimony * len(beam_decoded)
+                        try:
+                            refiner = Refiner(expression_space=self.expression_space).fit(
+                                expression=beam_decoded,
+                                X=X.cpu().numpy(),
+                                y=y.cpu().numpy(),
+                                n_restarts=self.n_restarts,
+                                method=self.refiner_method,
+                                p0=numeric_prediction,
+                                p0_noise=self.refiner_p0_noise,
+                                p0_noise_kwargs=self.refiner_p0_noise_kwargs,
+                                converge_error=converge_error)
 
-                        self._results.append((
-                            refiner,
-                            {
-                                'numeric_prediction': numeric_prediction,
-                                'beam': beam,
+                            if refiner.constants_values is None:  # Fit failed
+                                fvu = np.inf
+                                score = np.inf
+                            else:
+                                fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
+                                score = fvu + self.parsimony * len(beam_decoded)
+
+                            self._results.append({
                                 'log_prob': log_prob,
+                                'fvu': fvu,
+                                'score': score,
                                 'expression': beam_decoded,
-                                'lambda': refiner.expression_lambda,
+                                'complexity': len(beam_decoded),
+                                'target_complexity': complexity,
+                                'numeric_prediction': numeric_prediction,
+                                'raw_beam': raw_beam,
+                                'beam': beam,    # type: ignore
+                                'raw_beam_decoded': raw_beam_decoded,
+                                'function': refiner.expression_lambda,
+                                'refiner': refiner,
                                 'fits': copy.deepcopy(refiner._all_constants_values),
-                                'score': score
-                            }))
+                            })
 
-                    except ConvergenceError:
-                        if self.verbose and converge_error == 'print':
-                            print(f"Failed to converge for beam: {beam_decoded}")
+                        except ConvergenceError:
+                            if self.verbose and converge_error == 'print':
+                                print(f"Failed to converge for beam: {beam_decoded}")
+
+            # --- /INFERENCE ---
 
             if not self._results:
                 raise ConvergenceError("The optimization did not converge for any beam")
 
             # Sort the results by the best loss of each beam
             self._results = list(sorted(self._results, key=lambda x: (
-                x[1]['score'] if not np.isnan(x[1]['score']) else float('inf'),
-                np.isnan(x[1]['score'])
+                x['score'] if not np.isnan(x['score']) else float('inf'),
+                np.isnan(x['score'])
             )))
+
+            # Create a dataframe
+            self.results = pd.DataFrame(self._results)
+
+            # Explode the fits for each beam
+            self.results = self.results.explode('fits')
+            self.results['beam_id'] = self.results.index
+            self.results.reset_index(drop=True, inplace=True)
+
+            # Split the fit tuples into columns
+            fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
+            self.results = pd.concat([self.results, fits_columns], axis=1)
+            self.results.drop(columns=['fits'], inplace=True)
 
             np.seterr(**numpy_errors_before)
 
@@ -341,7 +421,7 @@ class FlashANSR(BaseEstimator):
         if len(self._results) == 0:
             raise ValueError("The model has not been fitted yet. Please call the fit method first.")
 
-        return self._results[nth_best_beam][0].predict(X, nth_best_constants=nth_best_constants)
+        return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
 
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         '''
@@ -366,8 +446,8 @@ class FlashANSR(BaseEstimator):
         list[str] | str
             The nth best expression.
         '''
-        return self._results[nth_best_beam][0].transform(
-            expression=self._results[nth_best_beam][1]['expression'],
+        return self._results[nth_best_beam]['refiner'].transform(
+            expression=self._results[nth_best_beam]['expression'],
             nth_best_constants=nth_best_constants,
             return_prefix=return_prefix,
             precision=precision,
@@ -389,4 +469,16 @@ class FlashANSR(BaseEstimator):
             The model on the new device.
         '''
         self.flash_ansr_transformer.to(device)
+        return self
+
+    def eval(self) -> "FlashANSR":
+        '''
+        Set the model to evaluation mode.
+
+        Returns
+        -------
+        FlashANSR
+            The model in evaluation mode.
+        '''
+        self.flash_ansr_transformer.eval()
         return self

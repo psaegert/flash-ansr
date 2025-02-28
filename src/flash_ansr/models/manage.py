@@ -27,6 +27,7 @@ def remove_model(path: str, verbose: bool = True, force_remove: bool = False) ->
                 if confirm.lower() != 'y':
                     print("Aborting model removal.")
                     return
+            print(f"Removing {path_to_delete}...")
             shutil.rmtree(path_to_delete)
             if verbose:
                 print(f"Model {path_to_delete} removed successfully!")

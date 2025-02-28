@@ -117,7 +117,7 @@ def sympy_simplify_wrapper(expression: list[str], ratio=None, debug=False):
     expression = pool.expression_space.parse_expression(expression)
     if debug: print(expression)
 
-    expression = numbers_to_num(expression)
+    expression = numbers_to_num(expression, inplace=True)
     if debug: print(expression)
 
     return tuple(expression)
