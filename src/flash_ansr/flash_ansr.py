@@ -332,6 +332,7 @@ class FlashANSR(BaseEstimator):
                                 converge_error=converge_error)
 
                             if refiner.constants_values is None:  # Fit failed
+                                fvu = np.inf
                                 score = np.inf
                             else:
                                 fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
