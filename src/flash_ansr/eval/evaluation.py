@@ -1,5 +1,5 @@
 import time
-from typing import Any, Literal
+from typing import Any
 from collections import defaultdict
 import warnings
 
@@ -81,38 +81,23 @@ class Evaluation():
             n_support: int | None = None,
             noise_level: float = 0.0,
             beam_width: int = 1,
-            n_restarts: int = 1,
-            max_len: int = 20,
-            numeric_head: bool = False,
-            equivalence_pruning: bool = True,
             complexity: str | list[int | float] = 'none',
             preprocess: bool = False,
             pointwise_close_criterion: float = 0.95,
             pointwise_close_accuracy_rtol: float = 0.05,
             pointwise_close_accuracy_atol: float = 0.001,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: str = 'normal',
-            refiner_p0_noise_kwargs: dict[str, Any] | None = None,
             r2_close_criterion: float = 0.95,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
         self.noise_level = noise_level
         self.beam_width = beam_width
-        self.n_restarts = n_restarts
-        self.max_len = max_len
-        self.numeric_head = numeric_head
-        self.equivalence_pruning = equivalence_pruning
         self.complexity = complexity
         self.preprocess = preprocess
         self.pointwise_close_criterion = pointwise_close_criterion
         self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
         self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
         self.r2_close_criterion = r2_close_criterion
-
-        self.refiner_method = refiner_method
-        self.refiner_p0_noise = refiner_p0_noise
-        self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
 
         self.device = device
 
@@ -143,18 +128,11 @@ class Evaluation():
             n_support=config_["n_support"],
             noise_level=config_.get("noise_level", 0.0),
             beam_width=config_["beam_width"],
-            n_restarts=config_["n_restarts"],
-            max_len=config_["max_len"],
-            numeric_head=config_["numeric_head"],
-            equivalence_pruning=config_["equivalence_pruning"],
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
             pointwise_close_criterion=config_["pointwise_close_criterion"],
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
-            refiner_method=config_.get("refiner_method", 'curve_fit_lm'),
-            refiner_p0_noise=config_["refiner_p0_noise"],
-            refiner_p0_noise_kwargs=config_.get("refiner_p0_noise_kwargs", None),
             r2_close_criterion=config_["r2_close_criterion"],
             device=config_["device"]
         )
@@ -236,14 +214,14 @@ class Evaluation():
                 fit_time_start = time.time()
                 try:
                     if self.complexity == 'none':
-                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, numeric_head=self.numeric_head)
+                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor)
                         model.fit(X, y)
                     elif self.complexity == 'ground_truth':
-                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'], numeric_head=self.numeric_head)
+                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
                         model.fit(X, y, complexity=batch['complexity'])
                     elif isinstance(self.complexity, list):
                         raise NotImplementedError('Complexity list not implemented yet.')
-                        # logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'], numeric_head=self.numeric_head)
+                        # logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
                         model.fit(X, y, complexity=self.complexity)
                     else:
                         raise ValueError(f'Unknown complexity: {self.complexity}')

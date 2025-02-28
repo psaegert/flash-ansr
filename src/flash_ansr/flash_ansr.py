@@ -81,8 +81,8 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 1,
             max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
             verbose: bool = False):
@@ -96,8 +96,8 @@ class FlashANSR(BaseEstimator):
         self.n_restarts = n_restarts
         self.max_len = max_len
         self.refiner_method = refiner_method
-        self.p0_noise = p0_noise
-        self.p0_noise_kwargs = p0_noise_kwargs
+        self.refiner_p0_noise = refiner_p0_noise
+        self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
 
@@ -118,8 +118,8 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 1,
             max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
             verbose: bool = False) -> "FlashANSR":
@@ -144,8 +144,8 @@ class FlashANSR(BaseEstimator):
             n_restarts=n_restarts,
             max_len=max_len,
             refiner_method=refiner_method,
-            p0_noise=p0_noise,
-            p0_noise_kwargs=p0_noise_kwargs,
+            refiner_p0_noise=refiner_p0_noise,
+            refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
             parsimony=parsimony,
             verbose=verbose)
@@ -327,8 +327,8 @@ class FlashANSR(BaseEstimator):
                                 n_restarts=self.n_restarts,
                                 method=self.refiner_method,
                                 p0=numeric_prediction,
-                                p0_noise=self.p0_noise,
-                                p0_noise_kwargs=self.p0_noise_kwargs,
+                                p0_noise=self.refiner_p0_noise,
+                                p0_noise_kwargs=self.refiner_p0_noise_kwargs,
                                 converge_error=converge_error)
 
                             if refiner.constants_values is None:  # Fit failed
