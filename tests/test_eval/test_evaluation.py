@@ -38,8 +38,8 @@ class TestEvaluation(unittest.TestCase):
             numeric_head=False,
             equivalence_pruning=True,
             n_restarts=3,
-            p0_noise='uniform',
-            p0_noise_kwargs={'low': -5, 'high': 5},
+            refiner_p0_noise='uniform',
+            refiner_p0_noise_kwargs={'low': -5, 'high': 5},
         )
 
         val_dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
