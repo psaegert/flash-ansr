@@ -384,6 +384,192 @@ class FlashANSRTransformer(nn.Module):
         # Step 9: Return the top 'beam_size' sequences
         return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]]
 
+    def generate(
+            self, data: torch.Tensor, choices: int = 10, top_k: int = 0, top_p: float = 1, max_len: int = 100,
+            mini_batch_size: int = 128, complexity: int | float | None = None,
+            temperature: float = 1.0, valid_only: bool = True, simplify: bool = True, unique: bool = True, verbose: bool = False) -> tuple[list[int], list[float], list[bool]]:
+        '''
+        Top-k sampling algorithm to generate sequences.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The data tensor.
+        choices : int, optional
+            The number of sequences to generate, by default 10.
+        top_k : int, optional
+            The number of highest probability tokens to sample from, by default 0 (consider entire vocabulary).
+        top_p : float, optional
+            The probability mass to sample from (nuclues sampling), by default 1.0 (consider entire vocabulary).
+        max_len : int, optional
+            The maximum length of the sequences, by default 100.
+        mini_batch_size : int, optional
+            The mini-batch size for batch processing, by default 128.
+        complexity : int or float, optional
+            The desired complexity (length in tokens) of the generated expression.
+            If None, the complexity is not enforced, by default None.
+        temperature : float, optional
+            The temperature parameter for softmax. Higher values increase randomness, by default 1.0.
+        valid_only : bool, optional
+            Whether to only return valid expressions, by default True.
+        simplify : bool, optional
+            Whether to simplify the generated expressions, by default True.
+        unique : bool, optional
+            Whether to return only unique expressions, by default True.
+        verbose : bool, optional
+            Whether to print debug information, by default False.
+
+        Returns
+        -------
+        filtered_sequences : list[list[int]]
+            The list of generated sequences.
+        filtered_scores : list[float]
+            The list of sequence probabilities.
+        filtered_is_valid : list[bool]
+            A list of booleans indicating whether the sequence is a valid expression.
+
+        Notes
+        -----
+        https://gist.github.com/bsantraigi/5752667525d88d375207f099bd78818b
+        '''
+        # Prepare initial token based on complexity
+        if complexity is None:
+            initial_token, input_num = [self.expression_space.tokenizer['<bos>']], None
+        else:
+            initial_token, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']], complexity=complexity)
+
+        # Initialize sequences for generation
+        sequences = [initial_token.copy() for _ in range(choices)]
+        scores = [0.0] * choices
+
+        completed_sequences = []
+        completed_scores = []
+
+        pbar = tqdm(total=choices, disable=not verbose, desc=f"Generating {choices} sequences (max length: {max_len})")
+
+        # Continue until all sequences are completed or max length is reached
+        for _ in range(max_len):
+            new_sequences = []
+            new_scores = []
+
+            # Prepare batches for efficient processing
+            for start_idx in range(0, len(sequences), mini_batch_size):
+                end_idx = min(start_idx + mini_batch_size, len(sequences))
+                batch_sequences = sequences[start_idx:end_idx]
+                batch_scores = scores[start_idx:end_idx]
+
+                # Pad the input numbers
+                current_len = len(batch_sequences[0])
+                input_num_padded = input_num + [torch.nan] * (current_len - len(input_num)) if input_num is not None else None
+
+                # Convert to tensors
+                input_ids_tensor = torch.tensor(batch_sequences, device=data.device)
+                input_num_tensor = torch.tensor(input_num_padded, device=data.device).unsqueeze(-1) if input_num is not None else None
+
+                # Forward pass
+                batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
+                logits, _ = self.forward(input_ids_tensor, batch_data, input_num=input_num_tensor, numeric_head=False)
+
+                # Get logits for the next token
+                logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)
+
+                # Filter top k
+                top_k = min(top_k, logits.size(-1))  # Safety check
+                if top_k > 0:
+                    # Remove all tokens with a probability less than the last token of the top-k
+                    ignore_mask = logits < torch.topk(logits, top_k, dim=1)[0][..., -1, None]
+                    logits[ignore_mask] = - float('Inf')
+
+                # Apply temperature
+                if temperature != 1.0:
+                    logits = logits / temperature
+
+                if top_p < 1.0:
+                    sorted_logits, sorted_logit_indices = torch.sort(logits, descending=True, dim=-1)
+                    sorted_probs = torch.softmax(sorted_logits, dim=-1)
+                    cumulative_sorted_probs = torch.cumsum(sorted_probs, dim=-1)
+                    sorted_ignore_mask = cumulative_sorted_probs > top_p
+
+                    # Shift the indices to the right to keep also the first token above the threshold
+                    sorted_ignore_mask[..., 1:] = sorted_ignore_mask[..., :-1].clone()
+                    sorted_ignore_mask[..., 0] = False
+
+                    sorted_logits[sorted_ignore_mask] = - float('Inf')
+
+                    # Then reverse the sorting process by mapping back sorted_logits to their original position
+                    logits = torch.gather(sorted_logits, 1, sorted_logit_indices.argsort(-1))
+
+                internal_sampling_probs = torch.softmax(logits, dim=-1)
+                sampled_tokens = torch.multinomial(internal_sampling_probs, 1)
+
+                # Sample from top-k tokens
+                for i, (seq, score, sampled_token) in enumerate(zip(batch_sequences, batch_scores, sampled_tokens)):
+                    # Sample token from top-k distribution and append to sequence
+                    new_seq = seq + [sampled_token]
+                    new_score = score + logits[i][sampled_token].item()  # type: ignore
+
+                    # If token is <eos>, add to completed sequences
+                    if sampled_token == self.expression_space.tokenizer['<eos>']:
+                        completed_sequences.append(new_seq)
+                        completed_scores.append(new_score)
+                        pbar.update(1)
+                        continue
+
+                    # Append incomplete sequence for next iteration
+                    new_sequences.append(new_seq)
+                    new_scores.append(new_score)
+
+            # Filter out completed sequences for next iteration
+            sequences = new_sequences
+            scores = new_scores
+
+            # If all sequences are completed, break early
+            if len(sequences) == 0:
+                break
+
+        # Add any remaining incomplete sequences (truncate to max_len)
+        for seq, score in zip(sequences, scores):
+            completed_sequences.append(seq)
+            completed_scores.append(score)
+            pbar.update(1)
+
+        pbar.close()
+
+        # Simplify and filter for uniqueness
+        filtered_sequences = []
+        filtered_scores = []
+        filtered_is_valid = []
+        seen_expressions = set()
+
+        for seq, score in zip(completed_sequences, completed_scores):
+            # Decode the sequence
+            expression = self.expression_space.tokenizer.decode(seq, special_tokens='<num>')
+
+            # Only process valid expressions
+            if self.expression_space.is_valid(expression) and len(expression) > 1:
+                if simplify:
+                    # Simplify the expression
+                    expression = self.expression_space.simplify(expression)
+
+                    # Skip if we've already seen this simplified expression
+                if expression in seen_expressions and unique:
+                    continue
+
+                # Encode the simplified expression
+                filtered_sequence = self.expression_space.tokenizer.encode(expression, add_bos=True, add_eos=True)
+                filtered_sequences.append(filtered_sequence)
+                filtered_scores.append(score)
+                filtered_is_valid.append(True)
+
+                seen_expressions.add(expression)
+
+            elif not valid_only:
+                filtered_sequences.append(seq)
+                filtered_scores.append(score)
+                filtered_is_valid.append(False)
+
+        return filtered_sequences, filtered_scores, filtered_is_valid
+
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, errors: Literal['raise', 'warn', 'ignore'] = 'warn') -> None:
         '''
         Save the model to a directory.
