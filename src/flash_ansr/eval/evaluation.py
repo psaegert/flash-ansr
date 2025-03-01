@@ -391,6 +391,10 @@ class Evaluation():
                         results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
                         results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
                         results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
+                        results_dict[f'accuracy_beam_{j+1}'].extend([float('nan')] * len(logits))
+                        results_dict[f'f1_score_beam_{j+1}'].extend([float('nan')] * len(logits))
+                        results_dict[f'precision_beam_{j+1}'].extend([float('nan')] * len(logits))
+                        results_dict[f'recall_beam_{j+1}'].extend([float('nan')] * len(logits))
 
                         for metric in ['rouge1', 'rouge2', 'rougeL']:
                             results_dict[f'{metric}_precision_beam_{j+1}'].append(float('nan'))
@@ -408,7 +412,11 @@ class Evaluation():
                         results_dict[f'NSRTS_accuracy_r2_val_beam_{j+1}'].append(float('nan'))
                         results_dict[f'residuals_val_beam_{j+1}'].append(None)
 
-                assert len(set(len(v) for v in results_dict.values())) == 1  # Check that all lists have the same length
+                # Check that all lists have the same length
+                if not len(set(len(v) for v in results_dict.values())) == 1:
+                    for k, v in results_dict.items():
+                        print(f'{k}: {len(v)}')
+                    raise ValueError(f'Inconsistent lengths of the results_dict lists: {set(len(v) for v in results_dict.values())}')
 
                 current_size += 1
 
