@@ -60,7 +60,7 @@ class FlashANSR(BaseEstimator):
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'}, optional
         The behavior for numpy errors, by default 'ignore'.
     parsimony : float, optional
-        The parsimony coefficient, by default 0.01.
+        The parsimony coefficient, by default 1e-14.
     verbose : bool, optional
         Whether to print verbose output, by default False.
     '''
@@ -75,7 +75,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 1e-4,
+            parsimony: float = 1,
             verbose: bool = False):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
@@ -176,19 +176,17 @@ class FlashANSR(BaseEstimator):
 
         return beam[bos_position + 1:eos_position]
 
-    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+    def generate(self, data: torch.Tensor, complexity: int | float | None = None) -> tuple[list[list[int]], list[float], list[bool]]:
         match self.generation_config.method:
             case 'beam_search':
                 return self.flash_ansr_transformer.beam_search(
                     data=data,
                     complexity=complexity,
-                    verbose=verbose,
                     **self.generation_config)
             case 'softmax_sampling':
                 return self.flash_ansr_transformer.sample_top_kp(
                     data=data,
                     complexity=complexity,
-                    verbose=verbose,
                     **self.generation_config)
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
@@ -333,7 +331,7 @@ class FlashANSR(BaseEstimator):
             # --- INFERENCE ---
 
             for complexity in complexity_list:
-                raw_beams, _, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
+                raw_beams, _, _ = self.generate(data_tensor, complexity=complexity)
 
                 beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
 
@@ -368,7 +366,7 @@ class FlashANSR(BaseEstimator):
                                 score = np.inf
                             else:
                                 fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
-                                score = fvu + self.parsimony * len(beam_decoded)
+                                score = np.log10(fvu) + self.parsimony * len(beam_decoded)
 
                             self._results.append({
                                 'log_prob': log_prob,
