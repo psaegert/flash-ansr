@@ -2,7 +2,6 @@
 /src/flash_ansr/models/encoders/deep_sets2.py
 /src/flash_ansr/models/encoders/point_net.py
 /src/flash_ansr/models/encoders/point_net2.py
-/src/flash_ansr/models/encoders/set_transformer2.py
 
 # Models & Data
 /models
@@ -15,6 +14,9 @@ cloud.md
 
 # Wandb
 wandb
+
+# Profiling
+.prof
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
