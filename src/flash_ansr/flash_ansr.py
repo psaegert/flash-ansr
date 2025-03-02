@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 
-from flash_ansr.utils import substitute_root_path
+from flash_ansr.utils import substitute_root_path, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.models import FlashANSRTransformer
 from flash_ansr.expressions import ExpressionSpace
@@ -43,18 +43,12 @@ class FlashANSR(BaseEstimator):
         The expression space used for manipulating expressions.
     flash_ansr_transformer : FlashANSRTransformer
         The core transformer model.
-    generation_type : {'beam_search'}, optional
-        The type of generation to use, by default 'beam_search'.
-    beam_width : int, optional
-        The number of beams to generate, by default 1.
+    generation_config : GenerationConfig, optional
+        The generation configuration, by default None.
     numeric_head : bool, optional
         Whether to use the numeric head, by default False.
-    equivalence_pruning : bool, optional
-        Whether to use equivalence pruning, by default True.
     n_restarts : int, optional
         The number of restarts for the refiner, by default 1.
-    max_len : int, optional
-        The maximum length of the generated expression, by default 32.
     refiner_method : str, optional
         The optimization method to use. One of
         - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
@@ -74,12 +68,9 @@ class FlashANSR(BaseEstimator):
             self,
             expression_space: ExpressionSpace,
             flash_ansr_transformer: FlashANSRTransformer,
-            generation_type: Literal['beam_search'] = 'beam_search',
-            beam_width: int = 1,
+            generation_config: GenerationConfig | None = None,
             numeric_head: bool = False,
-            equivalence_pruning: bool = True,
             n_restarts: int = 1,
-            max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None = None,
@@ -89,12 +80,12 @@ class FlashANSR(BaseEstimator):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
 
-        self.generation_type = generation_type
-        self.beam_width = beam_width
+        if generation_config is None:
+            generation_config = GenerationConfig()
+
+        self.generation_config = generation_config
         self.numeric_head = numeric_head
-        self.equivalence_pruning = equivalence_pruning
         self.n_restarts = n_restarts
-        self.max_len = max_len
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
         self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
@@ -111,12 +102,9 @@ class FlashANSR(BaseEstimator):
     def load(
             cls,
             directory: str,
-            generation_type: Literal['beam_search'] = 'beam_search',
-            beam_width: int = 1,
+            generation_config: GenerationConfig | None = None,
             numeric_head: bool = False,
-            equivalence_pruning: bool = True,
             n_restarts: int = 1,
-            max_len: int = 32,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None = None,
@@ -137,12 +125,9 @@ class FlashANSR(BaseEstimator):
         return cls(
             expression_space=expression_space,
             flash_ansr_transformer=model,
-            generation_type=generation_type,
-            beam_width=beam_width,
+            generation_config=generation_config,
             numeric_head=numeric_head,
-            equivalence_pruning=equivalence_pruning,
             n_restarts=n_restarts,
-            max_len=max_len,
             refiner_method=refiner_method,
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
@@ -191,7 +176,30 @@ class FlashANSR(BaseEstimator):
 
         return beam[bos_position + 1:eos_position]
 
-    def fit(self, X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series, complexity: int | float | Iterable | None = None, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', converge_error: Literal['raise', 'ignore', 'print'] = 'ignore', verbose: bool = False) -> "FlashANSR":
+    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+        match self.generation_config.method:
+            case 'beam_search':
+                return self.flash_ansr_transformer.beam_search(
+                    data=data,
+                    complexity=complexity,
+                    verbose=verbose,
+                    **self.generation_config)
+            case 'softmax_sampling':
+                return self.flash_ansr_transformer.sample_top_kp(
+                    data=data,
+                    complexity=complexity,
+                    verbose=verbose,
+                    **self.generation_config)
+            case _:
+                raise ValueError(f"Invalid generation method: {self.generation_config.method}")
+
+    def fit(
+            self,
+            X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+            complexity: int | float | Iterable | None = None,
+            variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
+            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
+            verbose: bool = False) -> "FlashANSR":
         '''
         Perform symbolic regression on the input data.
 
@@ -288,7 +296,35 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
+            # Generate the beams
+            if self.generation_config.method == 'beam_search':
+                beams, log_probs, _ = self.flash_ansr_transformer.beam_search(
+                    data=data_tensor,
+                    beam_width=self.generation_config.beam_width,
+                    max_len=self.generation_config.max_len,
+                    mini_batch_size=self.generation_config.mini_batch_size,
+                    equivalence_pruning=self.generation_config.equivalence_pruning,
+                    complexity=complexity,
+                    verbose=verbose)
+            elif self.generation_config.method == 'softmax_sampling':
+                beams, log_probs, _ = self.flash_ansr_transformer.sample_top_kp(
+                    data=data_tensor,
+                    choices=self.generation_config.choices,
+                    top_k=self.generation_config.top_k,
+                    top_p=self.generation_config.top_p,
+                    max_len=self.generation_config.max_len,
+                    mini_batch_size=self.generation_config.mini_batch_size,
+                    complexity=complexity,
+                    temperature=self.generation_config.temperature,
+                    valid_only=self.generation_config.valid_only,
+                    simplify=self.generation_config.simplify,
+                    unique=self.generation_config.unique,
+                    verbose=verbose)
+            else:
+                raise ValueError(f"Invalid generation method: {self.generation_config.method}")
+
             self._results = []
+            beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
             # Silence numpy errors
             numpy_errors_before = np.geterr()
@@ -297,13 +333,9 @@ class FlashANSR(BaseEstimator):
             # --- INFERENCE ---
 
             for complexity in complexity_list:
-                # Generate the beams
-                match self.generation_type:
-                    case 'beam_search':
-                        raw_beams, log_probs = self.flash_ansr_transformer.beam_search(data_tensor, beam_width=self.beam_width, max_len=self.max_len, equivalence_pruning=self.equivalence_pruning, complexity=complexity, verbose=verbose)
-                        beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
-                    case _:
-                        raise ValueError(f"Generation type not supported. Expected one of ['beam_search'], got {self.generation_type}")
+                raw_beams, _, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
+
+                beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
 
                 raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
                 beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]

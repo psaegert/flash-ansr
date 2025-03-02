@@ -2,8 +2,7 @@ import unittest
 import shutil
 
 from flash_ansr.eval.evaluation import Evaluation
-from flash_ansr import get_path, FlashANSR
-from flash_ansr import FlashANSRTransformer
+from flash_ansr import get_path, FlashANSR, FlashANSRTransformer, GenerationConfig
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.expressions import SkeletonPool, ExpressionSpace
 
@@ -34,9 +33,8 @@ class TestEvaluation(unittest.TestCase):
         ansr = FlashANSR(
             expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
             flash_ansr_transformer=FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml')),
-            beam_width=2,
+            generation_config=GenerationConfig(method='beam_search', beam_width=2, ),
             numeric_head=False,
-            equivalence_pruning=True,
             n_restarts=3,
             refiner_p0_noise='uniform',
             refiner_p0_noise_kwargs={'low': -5, 'high': 5},

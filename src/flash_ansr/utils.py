@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Any, Generator, Callable
+from typing import Any, Generator, Callable, Literal, Iterator, Mapping
 
 import yaml
 
@@ -212,3 +212,83 @@ def traverse_dict(dict_: dict[str, Any]) -> Generator[tuple[str, Any], None, Non
             yield from traverse_dict(value)
         else:
             yield key, value
+
+
+class GenerationConfig(Mapping[str, Any]):
+    '''
+    A class to store generation configuration.
+
+    Parameters
+    ----------
+    method : str, optional, one of 'beam_search' or 'softmax_sampling'
+        The generation method to use, by default 'beam_search'.
+    **kwargs : Any
+        Additional configuration parameters.
+
+    Attributes
+    ----------
+    method : str
+        The generation method to use.
+    config : dict
+        The configuration dictionary.
+    '''
+    def __init__(self, method: Literal['beam_search', 'softmax_sampling'] = 'beam_search', **kwargs: Any) -> None:
+        self.defaults = {
+            'beam_search': {
+                'beam_width': 32,
+                'max_len': 32,
+                'mini_batch_size': 128,
+                'equivalence_pruning': True
+            },
+            'softmax_sampling': {
+                'choices': 32,
+                'top_k': 0,
+                'top_p': 1,
+                'max_len': 32,
+                'mini_batch_size': 128,
+                'temperature': 1,
+                'valid_only': True,
+                'simplify': True,
+                'unique': True
+            }
+        }
+
+        if method not in self.defaults:
+            raise ValueError(f'Invalid generation method: {method}')
+
+        self.method = method
+
+        self.config = dict(**kwargs)
+
+        # Set defaults if not provided
+        if method in self.defaults:
+            for key, value in self.defaults[method].items():
+                if key not in self.config:
+                    self.config[key] = value
+
+        for key, value in self.config.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.config[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.config[key] = value
+        setattr(self, key, value)
+
+    def __delitem__(self, key: str) -> None:
+        del self.config[key]
+        delattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.config)
+
+    def __len__(self) -> int:
+        return len(self.config)
+
+    # When printed, show the config as a dictionary
+    def __repr__(self) -> str:
+        return str(self.config)
+
+    def __str__(self) -> str:
+        return str(self.config)

@@ -245,7 +245,7 @@ class FlashANSRTransformer(nn.Module):
 
         return logits, num_out
 
-    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float]]:
+    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
         '''
         Beam search algorithm to generate sequences.
 
@@ -268,8 +268,12 @@ class FlashANSRTransformer(nn.Module):
 
         Returns
         -------
-        tuple[list[list[int]], list[float]]
-            The list of sequences and their scores.
+        filtered_sequences : list[list[int]]
+            The list of generated sequences.
+        filtered_scores : list[float]
+            The list of sequence probabilities.
+        filtered_is_valid : list[bool]
+            A list of booleans indicating whether the sequence is a valid expression.
         '''
         if complexity is None:
             initial_beam, input_num = [self.expression_space.tokenizer['<bos>']], None
@@ -323,21 +327,18 @@ class FlashANSRTransformer(nn.Module):
 
             # Concatenate logits from all mini-batches into one tensor
             next_token_logits = torch.cat(all_next_token_logits, dim=0)  # Shape: (total_beams, vocab_size)
-            next_token_probs = torch.softmax(next_token_logits, dim=-1)  # Shape: (total_beams, vocab_size)
+            next_token_log_probs = torch.log_softmax(next_token_logits, dim=-1)  # Shape: (total_beams, vocab_size)
 
             # Step 4: Collect all possible next beams
             all_candidates = []
 
             for i, (seq, score) in enumerate(zip(all_sequences, all_scores)):
                 # For each token, create a new beam
-                for token in range(next_token_probs.shape[1]):
-                    prob = next_token_probs[i, token].item()
-
-                    if prob <= 0:
-                        continue
+                for token in range(next_token_log_probs.shape[1]):
+                    log_prob = next_token_log_probs[i, token].item()
 
                     new_seq = seq + [token]
-                    new_score = score + torch.log(torch.tensor(prob)).item()
+                    new_score = score + log_prob
                     all_candidates.append((new_seq, new_score))
 
             # Step 5: Sort all candidates by score (highest scores first)
@@ -349,17 +350,13 @@ class FlashANSRTransformer(nn.Module):
                 for candidate in all_candidates:
                     if candidate[0][-1] == self.expression_space.tokenizer['<eos>']:
                         candidate_expression = self.expression_space.tokenizer.decode(candidate[0], special_tokens='<num>')
-                        # print(f'candidate_pure: {candidate_pure}')
                         if self.expression_space.is_valid(candidate_expression) and len(candidate_expression) > 1:
-                            # print(f'candidate_expression is valid: {candidate_expression}')
                             candidate_simplified = self.expression_space.tokenizer.encode(self.expression_space.simplify(candidate_expression), add_bos=True, add_eos=True)
-                            # print(f'candidate_simplified: {candidate_simplified}')
                             if candidate_simplified not in [seq for seq, _ in all_candidates_unique] and candidate_simplified not in [seq for seq, _ in completed_sequences]:
                                 all_candidates_unique.append((candidate_simplified, candidate[1]))
                             else:
                                 n_pruned += 1
                     else:
-                        # print(f'appending {self.expression_space.tokenizer.decode(candidate[0])}')
                         all_candidates_unique.append(candidate)
 
                 # Step 7: Select the top 'beam_size' candidates to be the new beams
@@ -382,9 +379,9 @@ class FlashANSRTransformer(nn.Module):
         completed_sequences = sorted(completed_sequences, key=lambda x: x[1], reverse=True)
 
         # Step 9: Return the top 'beam_size' sequences
-        return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]]
+        return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]], [True] * len(completed_sequences[:beam_width])
 
-    def generate(
+    def sample_top_kp(
             self, data: torch.Tensor, choices: int = 10, top_k: int = 0, top_p: float = 1, max_len: int = 100,
             mini_batch_size: int = 128, complexity: int | float | None = None,
             temperature: float = 1.0, valid_only: bool = True, simplify: bool = True, unique: bool = True, verbose: bool = False) -> tuple[list[int], list[float], list[bool]]:
@@ -473,6 +470,8 @@ class FlashANSRTransformer(nn.Module):
                 # Get logits for the next token
                 logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)
 
+                original_scores = torch.log_softmax(logits, dim=-1)
+
                 # Filter top k
                 top_k = min(top_k, logits.size(-1))  # Safety check
                 if top_k > 0:
@@ -505,8 +504,8 @@ class FlashANSRTransformer(nn.Module):
                 # Sample from top-k tokens
                 for i, (seq, score, sampled_token) in enumerate(zip(batch_sequences, batch_scores, sampled_tokens)):
                     # Sample token from top-k distribution and append to sequence
-                    new_seq = seq + [sampled_token]
-                    new_score = score + logits[i][sampled_token].item()  # type: ignore
+                    new_seq = seq + [sampled_token.item()]
+                    new_score = score + original_scores[i][sampled_token.item()].item()  # type: ignore
 
                     # If token is <eos>, add to completed sequences
                     if sampled_token == self.expression_space.tokenizer['<eos>']:
@@ -552,7 +551,7 @@ class FlashANSRTransformer(nn.Module):
                     expression = self.expression_space.simplify(expression)
 
                     # Skip if we've already seen this simplified expression
-                if expression in seen_expressions and unique:
+                if unique and tuple(expression) in seen_expressions:
                     continue
 
                 # Encode the simplified expression
@@ -561,12 +560,18 @@ class FlashANSRTransformer(nn.Module):
                 filtered_scores.append(score)
                 filtered_is_valid.append(True)
 
-                seen_expressions.add(expression)
+                if unique:
+                    seen_expressions.add(tuple(expression))
 
             elif not valid_only:
                 filtered_sequences.append(seq)
                 filtered_scores.append(score)
                 filtered_is_valid.append(False)
+
+        sorted_indices_by_score = sorted(range(len(filtered_scores)), key=lambda i: filtered_scores[i], reverse=True)
+        filtered_sequences = [filtered_sequences[i] for i in sorted_indices_by_score]
+        filtered_scores = [filtered_scores[i] for i in sorted_indices_by_score]
+        filtered_is_valid = [filtered_is_valid[i] for i in sorted_indices_by_score]
 
         return filtered_sequences, filtered_scores, filtered_is_valid
 
