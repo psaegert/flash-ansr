@@ -15,6 +15,7 @@ from flash_ansr.utils import substitute_root_path, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.models import FlashANSRTransformer
 from flash_ansr.expressions import ExpressionSpace
+from flash_ansr.train.train import OptimizerFactory
 
 
 class Result(TypedDict):
@@ -70,13 +71,12 @@ class FlashANSR(BaseEstimator):
             flash_ansr_transformer: FlashANSRTransformer,
             generation_config: GenerationConfig | None = None,
             numeric_head: bool = False,
-            n_restarts: int = 1,
+            n_restarts: int = 8,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            refiner_p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 1,
-            verbose: bool = False):
+            parsimony: float = 1):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
 
@@ -88,13 +88,12 @@ class FlashANSR(BaseEstimator):
         self.n_restarts = n_restarts
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
-        self.refiner_p0_noise_kwargs = refiner_p0_noise_kwargs
+        self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
 
         self._results: list[Result] = []
         self.results: pd.DataFrame = pd.DataFrame()
-        self.verbose = verbose
 
         self.variable_mapping: dict[str, str] = {}
 
@@ -133,8 +132,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
-            parsimony=parsimony,
-            verbose=verbose)
+            parsimony=parsimony)
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         if X.shape[-1] <= self.flash_ansr_transformer.encoder_max_n_variables - 1:
@@ -151,31 +149,6 @@ class FlashANSR(BaseEstimator):
                 return X[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
-
-    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> list[int] | list[str]:
-        '''
-        Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
-
-        Parameters
-        ----------
-        beam : list[int] | list[str]
-            The beam to extract the expression from.
-
-        Returns
-        -------
-        str
-            The extracted expression.
-        '''
-        if isinstance(beam[0], int):
-            bos_position = beam.index(self.expression_space.tokenizer["<bos>"])
-            eos_position = beam.index(self.expression_space.tokenizer["<eos>"])
-        elif isinstance(beam[0], str):
-            bos_position = beam.index('<bos>')  # type: ignore
-            eos_position = beam.index('<eos>')  # type: ignore
-        else:
-            raise ValueError("The beam must be a list of integers or strings")
-
-        return beam[bos_position + 1:eos_position]
 
     def generate(self, data: torch.Tensor, complexity: int | float | None = None) -> tuple[list[list[int]], list[float], list[bool]]:
         match self.generation_config.method:
@@ -194,11 +167,12 @@ class FlashANSR(BaseEstimator):
 
     def fit(
             self,
-            X: np.ndarray | torch.Tensor | pd.DataFrame, y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+            X: np.ndarray | torch.Tensor | pd.DataFrame,
+            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
             complexity: int | float | Iterable | None = None,
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-            verbose: bool = False) -> "FlashANSR":
+            verbose: bool = False) -> None:
         '''
         Perform symbolic regression on the input data.
 
@@ -224,11 +198,6 @@ class FlashANSR(BaseEstimator):
             The behavior for convergence errors, by default 'ignore'.
         verbose : bool, optional
             Whether to display a progress bar, by default False.
-
-        Returns
-        -------
-        FlashANSR
-            The fitted model.
         '''
         if y.ndim == 1:
             y = y.reshape(-1, 1)
@@ -310,7 +279,7 @@ class FlashANSR(BaseEstimator):
                 #     print(self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>'))
                 #     print()
 
-                beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
+                beams = [self.expression_space.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
 
                 raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
                 beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
@@ -362,7 +331,7 @@ class FlashANSR(BaseEstimator):
                             })
 
                         except ConvergenceError:
-                            if self.verbose and converge_error == 'print':
+                            if converge_error == 'print':
                                 print(f"Failed to converge for beam: {beam_decoded}")
 
             # --- /INFERENCE ---
@@ -390,8 +359,6 @@ class FlashANSR(BaseEstimator):
             self.results.drop(columns=['fits'], inplace=True)
 
             np.seterr(**numpy_errors_before)
-
-            return self
 
     def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
         '''
@@ -460,6 +427,152 @@ class FlashANSR(BaseEstimator):
             precision=precision,
             variable_mapping=self.variable_mapping if map_variables else None,
             **kwargs)
+
+    def specialize(
+            self,
+            X: np.ndarray | torch.Tensor | pd.DataFrame,
+            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+            generation_config: GenerationConfig | None = None,
+            numeric_head: bool = False,
+            n_restarts: int = 8,
+            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
+            numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
+            parsimony: float = 1,
+            optimizer: torch.optim.Optimizer | None = None,
+            n_iter: int = 100,
+            priority_queue_size: int = 16,
+            entropy_weight: float = 0.01,
+            gradient_norm_clip: float = 10.0,
+            verbose: bool = False) -> None:
+        '''
+        Specialize the model on the input data with Priority Queue Policy Gradient.
+        '''
+        # Defaults
+        if isinstance(refiner_p0_noise_kwargs, dict):
+            refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs)
+
+        if generation_config is None:
+            generation_config = GenerationConfig(method='softmax_sampling', choices=128, top_p=0.9, top_k=0, temperature=1.0)
+
+        agent = FlashANSR(
+            expression_space=self.expression_space,
+            flash_ansr_transformer=self.flash_ansr_transformer,
+            generation_config=generation_config,
+            numeric_head=numeric_head,
+            n_restarts=n_restarts,
+            refiner_method=refiner_method,
+            refiner_p0_noise=refiner_p0_noise,
+            refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
+            numpy_errors=numpy_errors,
+            parsimony=parsimony)
+
+        assert id(self.flash_ansr_transformer) == id(agent.flash_ansr_transformer)
+
+        if optimizer is None:
+            optimizer = OptimizerFactory.get_optimizer('AdamWScheduleFree', agent.flash_ansr_transformer.parameters(), lr=5e-5, weight_decay=0.01)
+
+        # Set the device for training
+        device = agent.flash_ansr_transformer.device
+
+        # Data preparation
+        x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+        y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
+        pad_length = agent.flash_ansr_transformer.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor.shape[-1]
+        if pad_length > 0:
+            x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0), value=0)
+        data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
+
+        history = []
+        pbar = tqdm(range(n_iter), desc="Specializing", disable=not verbose)
+
+        priority_queue_beams = []
+        priority_queue_objective = []
+
+        for _ in pbar:
+            try:
+                # Generate sequences and evaluate
+                agent.flash_ansr_transformer.eval()
+                agent.fit(X, y)
+
+                for _, df in agent.results.groupby('beam_id'):
+                    # Check if the beam can be used
+                    if not np.isfinite(df['fvu']).any():
+                        continue
+
+                    # Check if the beam is new
+                    new_beam_candidate = tuple(df['raw_beam'].iloc[0])
+                    if new_beam_candidate in priority_queue_beams:
+                        continue
+
+                    priority_queue_beams.append(new_beam_candidate)
+                    priority_queue_objective.append(np.nanmedian(df['score']))
+
+                # Sort by reward
+                sorted_indices = np.argsort(priority_queue_objective)
+                priority_queue_beams = [priority_queue_beams[i] for i in sorted_indices][:priority_queue_size]
+                priority_queue_objective = [priority_queue_objective[i] for i in sorted_indices][:priority_queue_size]
+
+                # Padding sequences to same length
+                max_length = max(len(beam) for beam in priority_queue_beams)
+                padded_beams = [list(beam) + [agent.expression_space.tokenizer['<pad>']] * (max_length - len(beam)) for beam in priority_queue_beams]
+
+                beam_tensor = torch.tensor(padded_beams, dtype=torch.long).to(device)
+
+                # Increase the log probability of the best expressions (in the priority queue)
+                agent.flash_ansr_transformer.train()
+                if hasattr(optimizer, 'train'):
+                    optimizer.train()
+                optimizer.zero_grad()
+
+                logits, _ = agent.flash_ansr_transformer.forward(beam_tensor, data_tensor.unsqueeze(0).repeat(len(priority_queue_beams), 1, 1))
+                log_probs = torch.log_softmax(logits, dim=-1)
+
+                # Get log probs for actions taken
+                taken_log_probs = log_probs.gather(2, beam_tensor[:, 1:].unsqueeze(-1)).squeeze(-1)
+
+                # Compute masks for padding and sequence endings
+                pad_mask = beam_tensor != agent.expression_space.tokenizer['<pad>']
+
+                # Increase average log likelihood (not weighted by reward)
+                policy_loss = -torch.mean(taken_log_probs[pad_mask[:, 1:]])
+
+                # Average loss over batch
+                policy_loss /= len(priority_queue_beams)
+
+                # Regularize the entropy of the taken actions (tokens) and ignore padding
+                entropy = - torch.sum(torch.exp(log_probs) * log_probs, dim=-1) * pad_mask
+                entropy = torch.mean(entropy)
+
+                loss = policy_loss - entropy_weight * entropy
+
+                # Backprop and update
+                loss.backward()
+                gradient_norms = torch.nn.utils.clip_grad_norm_(agent.flash_ansr_transformer.parameters(), gradient_norm_clip)
+                optimizer.step()
+
+                logs = {
+                    'NLL': policy_loss.item(),
+                    'H': entropy.item(),
+                    'max_gradient_norm': torch.max(gradient_norms).item(),
+                }
+
+            except ConvergenceError:
+                warnings.warn("Convergence error occurred during training. Skipping iteration.")
+                pass
+
+            history.append(logs)
+            pbar.set_postfix({
+                'NLL': f"{logs['policy_gradient_loss']:.2e}",
+                'H': f"{logs['H']:.2e}",
+                'Max Queue Objective': f"{np.nanmax(priority_queue_objective):.1f}",
+                'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}",
+                'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}",
+                'Best Expression': agent.get_expression(nth_best_beam=0, nth_best_constants=0, return_prefix=False, precision=2, map_variables=True)
+            })
+
+        pbar.close()
 
     def to(self, device: str) -> "FlashANSR":
         '''

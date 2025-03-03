@@ -598,6 +598,31 @@ class ExpressionSpace:
 
         return filtered_expression
 
+    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> list[int] | list[str]:
+        '''
+        Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
+
+        Parameters
+        ----------
+        beam : list[int] | list[str]
+            The beam to extract the expression from.
+
+        Returns
+        -------
+        str
+            The extracted expression.
+        '''
+        if isinstance(beam[0], int):
+            bos_position = beam.index(self.tokenizer["<bos>"])
+            eos_position = beam.index(self.tokenizer["<eos>"])
+        elif isinstance(beam[0], str):
+            bos_position = beam.index('<bos>')  # type: ignore
+            eos_position = beam.index('<eos>')  # type: ignore
+        else:
+            raise ValueError("The beam must be a list of integers or strings")
+
+        return beam[bos_position + 1:eos_position]
+
     # Compatibility
     def convert_variable_names(self, prefix_expr: list[str], too_many_variables: Literal['ignore', 'raise'] = 'ignore') -> list[str]:
         '''
