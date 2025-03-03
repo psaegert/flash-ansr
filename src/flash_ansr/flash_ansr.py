@@ -110,6 +110,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
+            device: str = 'cpu',
             verbose: bool = False) -> "FlashANSR":
         directory = substitute_root_path(directory)
 
@@ -119,7 +120,7 @@ class FlashANSR(BaseEstimator):
         expression_space = ExpressionSpace.from_config(expression_space_path)
 
         model = FlashANSRTransformer.from_config(flash_ansr_transformer_path)
-        model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
+        model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
         model.eval()
 
         return cls(
