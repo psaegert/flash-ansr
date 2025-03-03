@@ -8,7 +8,7 @@ from flash_ansr.utils import get_path
 
 def install_model(model: str, local_dir: str | None = None, verbose: bool = True) -> None:
     if verbose:
-        print(f"Installing model {model} to {get_path('models', model)}")
+        print(f"Installing model {model} to {get_path('models', model, create=True)}")
     snapshot_download(repo_id=model, repo_type="model", local_dir=local_dir or get_path('models', model))
     if verbose:
         print(f"Model {model} installed successfully!")
