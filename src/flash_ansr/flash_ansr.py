@@ -8,6 +8,7 @@ import pandas as pd
 import torch
 from torch import nn
 from tqdm import tqdm
+from collections import defaultdict
 
 from sklearn.base import BaseEstimator
 
@@ -76,7 +77,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
             refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 1):
+            parsimony: float = 0.3,):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
 
@@ -109,8 +110,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 1e-4,
-            device: str = 'cpu',
-            verbose: bool = False) -> "FlashANSR":
+            device: str = 'cpu') -> "FlashANSR":
         directory = substitute_root_path(directory)
 
         expression_space_path = os.path.join(directory, 'expression_space.yaml')
@@ -120,7 +120,7 @@ class FlashANSR(BaseEstimator):
 
         model = FlashANSRTransformer.from_config(flash_ansr_transformer_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
-        model.eval()
+        model.eval().to(device)
 
         return cls(
             expression_space=expression_space,
@@ -199,7 +199,10 @@ class FlashANSR(BaseEstimator):
         verbose : bool, optional
             Whether to display a progress bar, by default False.
         '''
-        if y.ndim == 1:
+
+        if len(X.shape) == 1:
+            X = X.reshape(-1, 1)
+        if len(y.shape) == 1:
             y = y.reshape(-1, 1)
         elif y.shape[-1] != 1:
             raise ValueError("The target data must have a single output dimension")
@@ -439,12 +442,12 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
             refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 1,
+            parsimony: float = 0.3,
             optimizer: torch.optim.Optimizer | None = None,
-            n_iter: int = 100,
+            n_iter: int = 1000,
             priority_queue_size: int = 16,
             entropy_weight: float = 0.01,
-            gradient_norm_clip: float = 10.0,
+            gradient_norm_clip: float = 1.0,
             verbose: bool = False) -> None:
         '''
         Specialize the model on the input data with Priority Queue Policy Gradient.
@@ -471,12 +474,16 @@ class FlashANSR(BaseEstimator):
         assert id(self.flash_ansr_transformer) == id(agent.flash_ansr_transformer)
 
         if optimizer is None:
-            optimizer = OptimizerFactory.get_optimizer('AdamWScheduleFree', agent.flash_ansr_transformer.parameters(), lr=5e-5, weight_decay=0.01)
+            optimizer = OptimizerFactory.get_optimizer('AdamWScheduleFree', agent.flash_ansr_transformer.parameters(), lr=1e-5, weight_decay=0.01)
 
         # Set the device for training
         device = agent.flash_ansr_transformer.device
 
         # Data preparation
+        if len(X.shape) == 1:
+            X = X.reshape(-1, 1)
+        if len(y.shape) == 1:
+            y = y.reshape(-1, 1)
         x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
         y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
         pad_length = agent.flash_ansr_transformer.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor.shape[-1]
@@ -484,11 +491,13 @@ class FlashANSR(BaseEstimator):
             x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0), value=0)
         data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
 
-        history = []
+        self.specialize_history = []
         pbar = tqdm(range(n_iter), desc="Specializing", disable=not verbose)
 
         priority_queue_beams = []
         priority_queue_objective = []
+
+        total_unique_generated: set[tuple[str]] = set()
 
         for _ in pbar:
             try:
@@ -496,6 +505,9 @@ class FlashANSR(BaseEstimator):
                 agent.flash_ansr_transformer.eval()
                 agent.fit(X, y)
 
+                statistics_lists = defaultdict(list)
+
+                n_new = 0
                 for _, df in agent.results.groupby('beam_id'):
                     # Check if the beam can be used
                     if not np.isfinite(df['fvu']).any():
@@ -506,8 +518,28 @@ class FlashANSR(BaseEstimator):
                     if new_beam_candidate in priority_queue_beams:
                         continue
 
+                    statistics_lists['fvu'].extend(df['fvu'])
+                    statistics_lists['complexity'].append(df['complexity'].iloc[0])
+
+                    total_unique_generated.add(new_beam_candidate)
                     priority_queue_beams.append(new_beam_candidate)
                     priority_queue_objective.append(np.nanmedian(df['score']))
+                    n_new += 1
+
+                if n_new == 0:
+                    # Sample again
+                    continue
+
+                statistics = {
+                    'min_fvu': np.nanmin(statistics_lists['fvu']),
+                    'max_fvu': np.nanmax(statistics_lists['fvu']),
+                    'mean_fvu': np.nanmean(statistics_lists['fvu']),
+                    'min_complexity': np.nanmin(statistics_lists['complexity']),
+                    'max_complexity': np.nanmax(statistics_lists['complexity']),
+                    'mean_complexity': np.nanmean(statistics_lists['complexity']),
+                    'n_total': len(total_unique_generated),
+                    'n_new': n_new,
+                }
 
                 # Sort by reward
                 sorted_indices = np.argsort(priority_queue_objective)
@@ -556,20 +588,22 @@ class FlashANSR(BaseEstimator):
                     'NLL': policy_loss.item(),
                     'H': entropy.item(),
                     'max_gradient_norm': torch.max(gradient_norms).item(),
+                    **statistics,
                 }
 
             except ConvergenceError:
                 warnings.warn("Convergence error occurred during training. Skipping iteration.")
                 pass
 
-            history.append(logs)
+            self.specialize_history.append(logs)
             pbar.set_postfix({
-                'NLL': f"{logs['policy_gradient_loss']:.2e}",
+                'NLL': f"{logs['NLL']:.2e}",
                 'H': f"{logs['H']:.2e}",
                 'Max Queue Objective': f"{np.nanmax(priority_queue_objective):.1f}",
                 'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}",
                 'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}",
-                'Best Expression': agent.get_expression(nth_best_beam=0, nth_best_constants=0, return_prefix=False, precision=2, map_variables=True)
+                'Explored': len(total_unique_generated),
+                'Best Expression': agent.expression_space.prefix_to_infix(agent.expression_space.tokenizer.decode(priority_queue_beams[0], special_tokens='<num>')),
             })
 
         pbar.close()
