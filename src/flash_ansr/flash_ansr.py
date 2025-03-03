@@ -294,44 +294,20 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
-            # Generate the beams
-            if self.generation_config.method == 'beam_search':
-                beams, log_probs, _ = self.flash_ansr_transformer.beam_search(
-                    data=data_tensor,
-                    beam_width=self.generation_config.beam_width,
-                    max_len=self.generation_config.max_len,
-                    mini_batch_size=self.generation_config.mini_batch_size,
-                    equivalence_pruning=self.generation_config.equivalence_pruning,
-                    complexity=complexity,
-                    verbose=verbose)
-            elif self.generation_config.method == 'softmax_sampling':
-                beams, log_probs, _ = self.flash_ansr_transformer.sample_top_kp(
-                    data=data_tensor,
-                    choices=self.generation_config.choices,
-                    top_k=self.generation_config.top_k,
-                    top_p=self.generation_config.top_p,
-                    max_len=self.generation_config.max_len,
-                    mini_batch_size=self.generation_config.mini_batch_size,
-                    complexity=complexity,
-                    temperature=self.generation_config.temperature,
-                    valid_only=self.generation_config.valid_only,
-                    simplify=self.generation_config.simplify,
-                    unique=self.generation_config.unique,
-                    verbose=verbose)
-            else:
-                raise ValueError(f"Invalid generation method: {self.generation_config.method}")
-
             self._results = []
-            beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
             # Silence numpy errors
             numpy_errors_before = np.geterr()
             np.seterr(all=self.numpy_errors)
 
             # --- INFERENCE ---
-
             for complexity in complexity_list:
-                raw_beams, _, _ = self.generate(data_tensor, complexity=complexity)
+                raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity)
+
+                # for raw_beam in raw_beams:
+                #     print(raw_beam)
+                #     print(self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>'))
+                #     print()
 
                 beams = [self.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
 

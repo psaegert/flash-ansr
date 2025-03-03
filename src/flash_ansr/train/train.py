@@ -281,6 +281,7 @@ class Trainer():
             contrastive_margin=self.config.get('contrastive_margin', 0.5),
             contrastive_temperature=self.config.get('contrastive_temperature', 0.5),
             steps=self.config["steps"],
+            preprocess=self.config.get("preprocess", False),
             device=self.config["device"],
             checkpoint_interval=checkpoint_interval,
             checkpoint_directory=checkpoint_directory,
@@ -302,6 +303,7 @@ class Trainer():
             contrastive_margin: float,
             contrastive_temperature: float,
             steps: int,
+            preprocess: bool = False,
             device: str = "cpu",
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
@@ -345,7 +347,7 @@ class Trainer():
                     verbose=verbose)
 
             # Train the model
-            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, n_per_equation=contrastive_n_per_class)):
+            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, n_per_equation=contrastive_n_per_class, preprocess=preprocess)):
                 pbar.set_description("Training")
 
                 # Train
@@ -520,7 +522,7 @@ class Trainer():
 
         return loss.item()
 
-    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, verbose: bool = False) -> float:
+    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, preprocess: bool = False, verbose: bool = False) -> float:
         self.model.eval()
 
         if hasattr(self.optimizer, "eval"):
@@ -537,7 +539,7 @@ class Trainer():
 
             pbar = tqdm(total=size // batch_size, leave=False, position=1, disable=not verbose, desc="Validating")
 
-            for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
+            for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class, preprocess=preprocess):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
                 batch = self.val_dataset.collate(batch, device=self.model.device)
 

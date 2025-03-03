@@ -208,7 +208,7 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')
             import os
-            from flash_ansr import FlashANSR
+            from flash_ansr import FlashANSR, GenerationConfig
             from flash_ansr.eval.evaluation import Evaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
@@ -246,11 +246,14 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 model=FlashANSR.load(
                     directory=substitute_root_path(args.model),
-                    beam_width=evaluation_config['beam_width'],
+                    generation_config=GenerationConfig(
+                        method='beam_search',
+                        beam_width=evaluation_config['beam_width'],
+                        equivalence_pruning=evaluation_config['equivalence_pruning'],
+                        max_len=evaluation_config['max_len'],
+                    ),
                     n_restarts=evaluation_config['n_restarts'],
                     numeric_head=evaluation_config['numeric_head'],
-                    equivalence_pruning=evaluation_config['equivalence_pruning'],
-                    max_len=evaluation_config['max_len'],
                     refiner_method=evaluation_config.get("refiner_method", 'curve_fit_lm'),
                     refiner_p0_noise=evaluation_config["refiner_p0_noise"],
                     refiner_p0_noise_kwargs=evaluation_config.get("refiner_p0_noise_kwargs", None),

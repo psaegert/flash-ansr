@@ -13,7 +13,7 @@ from nltk.translate.meteor_score import meteor_score
 from rouge_score import rouge_scorer, scoring
 
 from flash_ansr.flash_ansr import FlashANSR
-from flash_ansr.data import FlashANSRDataset
+from flash_ansr.data import FlashANSRDataset, FlashASNRPreprocessor
 from flash_ansr.refine import ConvergenceError
 from flash_ansr.eval.token_prediction import (
     correct_token_predictions_at_k,
@@ -170,6 +170,8 @@ class Evaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+        if self.preprocess:
+            dataset.preprocessor = FlashASNRPreprocessor(model.expression_space, format_probs={'complexity': 1.0})
 
         with torch.no_grad():
             current_size = 0
@@ -208,7 +210,7 @@ class Evaluation():
                 labels = batch['labels'][0].clone()
                 labels_decoded = model.expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
 
-                data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors_noisy']], dim=-1)
+                data_tensor = torch.cat([batch['x_tensors'][:, :self.n_support], batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
                 valid_results = True
                 try:
@@ -221,7 +223,8 @@ class Evaluation():
                     elif self.complexity == 'ground_truth':
                         logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
                         fit_time_start = time.time()
-                        model.fit(X, y, complexity=batch['complexity'])
+                        print('Complexity:', batch['complexities'])
+                        model.fit(X, y, complexity=batch['complexities'])
                         fit_time = time.time() - fit_time_start
                     elif isinstance(self.complexity, list):
                         raise NotImplementedError('Complexity list not implemented yet.')
@@ -233,6 +236,7 @@ class Evaluation():
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
+                    print('Error in the forward pass or fitting. Skipping this sample.')
                     valid_results = False
                     fit_time = float('nan')
 

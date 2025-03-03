@@ -280,6 +280,9 @@ class FlashANSRTransformer(nn.Module):
         else:
             initial_beam, input_num = self.preprocessor.format_complexity([self.expression_space.tokenizer['<bos>']], complexity=complexity)
 
+        print(initial_beam)
+        print(input_num)
+
         # Step 1: Initialize the beam with the initial input sequence
         beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
