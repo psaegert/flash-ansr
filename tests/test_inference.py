@@ -21,7 +21,6 @@ class TestInference(unittest.TestCase):
         nsr = FlashANSR.load(
             directory=get_path('models', MODEL),
             n_restarts=32,
-            verbose=True,
         ).to(device)
 
         assert isinstance(nsr, FlashANSR)
