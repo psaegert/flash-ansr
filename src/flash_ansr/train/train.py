@@ -344,6 +344,7 @@ class Trainer():
                     step=0,
                     size=validate_size,
                     batch_size=validate_batch_size,
+                    preprocess=preprocess,
                     verbose=verbose)
 
             # Train the model
@@ -369,6 +370,7 @@ class Trainer():
                         step=(step + 1),
                         size=validate_size,
                         batch_size=validate_batch_size,
+                        preprocess=preprocess,
                         verbose=verbose)
 
                 # Save the model
