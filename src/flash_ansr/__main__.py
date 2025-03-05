@@ -243,15 +243,20 @@ def main(argv: str = None) -> None:
 
             evaluation_config = load_config(substitute_root_path(args.config))
 
+            if 'generation_config' in evaluation_config:
+                generation_config = GenerationConfig(**evaluation_config['generation_config'])
+            else:
+                generation_config = GenerationConfig(
+                    method='beam_search',
+                    beam_width=evaluation_config['beam_width'],
+                    equivalence_pruning=evaluation_config['equivalence_pruning'],
+                    max_len=evaluation_config['max_len'],
+                )
+
             results_dict = evaluation.evaluate(
                 model=FlashANSR.load(
                     directory=substitute_root_path(args.model),
-                    generation_config=GenerationConfig(
-                        method='beam_search',
-                        beam_width=evaluation_config['beam_width'],
-                        equivalence_pruning=evaluation_config['equivalence_pruning'],
-                        max_len=evaluation_config['max_len'],
-                    ),
+                    generation_config=generation_config,
                     n_restarts=evaluation_config['n_restarts'],
                     numeric_head=evaluation_config['numeric_head'],
                     refiner_method=evaluation_config.get("refiner_method", 'curve_fit_lm'),

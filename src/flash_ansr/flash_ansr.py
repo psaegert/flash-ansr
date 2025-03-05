@@ -150,17 +150,19 @@ class FlashANSR(BaseEstimator):
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
-    def generate(self, data: torch.Tensor, complexity: int | float | None = None) -> tuple[list[list[int]], list[float], list[bool]]:
+    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
         match self.generation_config.method:
             case 'beam_search':
                 return self.flash_ansr_transformer.beam_search(
                     data=data,
                     complexity=complexity,
+                    verbose=verbose,
                     **self.generation_config)
             case 'softmax_sampling':
                 return self.flash_ansr_transformer.sample_top_kp(
                     data=data,
                     complexity=complexity,
+                    verbose=verbose,
                     **self.generation_config)
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
@@ -275,7 +277,7 @@ class FlashANSR(BaseEstimator):
 
             # --- INFERENCE ---
             for complexity in complexity_list:
-                raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity)
+                raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
 
                 # for raw_beam in raw_beams:
                 #     print(raw_beam)
