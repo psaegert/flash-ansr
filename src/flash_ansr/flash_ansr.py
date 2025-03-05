@@ -62,7 +62,7 @@ class FlashANSR(BaseEstimator):
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'}, optional
         The behavior for numpy errors, by default 'ignore'.
     parsimony : float, optional
-        The parsimony coefficient, by default 1e-14.
+        The parsimony coefficient, by default 0.2.
     verbose : bool, optional
         Whether to print verbose output, by default False.
     '''
@@ -77,7 +77,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
             refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.3,):
+            parsimony: float = 0.2):
         self.expression_space = expression_space
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
 
@@ -109,7 +109,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None = None,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 1e-4,
+            parsimony: float = 0.2,
             device: str = 'cpu') -> "FlashANSR":
         directory = substitute_root_path(directory)
 
