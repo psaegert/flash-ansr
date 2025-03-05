@@ -22,14 +22,7 @@ val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
 val_size: 100_000
 
-preprocess: True
-
-contrastive_n_per_class: 1
-contrastive_margin: 0.0
-contrastive_temperature: 0.5
-
 numeric_prediction_loss_weight: 0
-contrastive_loss_weight: 0
 
 steps: 1_500_000
 device: cuda

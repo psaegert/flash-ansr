@@ -256,15 +256,18 @@ class Evaluation():
 
                 if valid_results:
                     beams = [r['beam'] for r in model._results]
+                    log_probs = [r['log_prob'] for r in model._results]
 
                     beams_decoded = [model.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
 
                     for j in range(self.beam_width):
                         if j >= len(beams):
                             results_dict[f'free_beam_{j+1}'].append(None)
+                            results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
                         results_dict[f'free_beam_{j+1}'].append(beam)
+                        results_dict[f'log_prob_beam{j+1}'].append(log_probs[j])
 
                     results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
                     results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])

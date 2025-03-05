@@ -439,13 +439,14 @@ class FlashANSRTransformer(nn.Module):
         sequences = [initial_token.copy() for _ in range(choices)]
         scores = [0.0] * choices
 
-        completed_sequences = []
+        completed_sequences: list = []
         completed_scores = []
 
-        pbar = tqdm(total=choices, disable=not verbose, desc=f"Generating {choices} sequences (max length: {max_len})")
+        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating choices (-/{choices})")
 
         # Continue until all sequences are completed or max length is reached
-        for _ in range(max_len):
+        for current_length in range(max_len):
+            pbar.set_description(f"Generating choices ({len(completed_sequences)}/{choices})")
             new_sequences = []
             new_scores = []
 
@@ -511,7 +512,6 @@ class FlashANSRTransformer(nn.Module):
                     if sampled_token == self.expression_space.tokenizer['<eos>']:
                         completed_sequences.append(new_seq)
                         completed_scores.append(new_score)
-                        pbar.update(1)
                         continue
 
                     # Append incomplete sequence for next iteration
@@ -526,11 +526,12 @@ class FlashANSRTransformer(nn.Module):
             if len(sequences) == 0:
                 break
 
+            pbar.update(1)
+
         # Add any remaining incomplete sequences (truncate to max_len)
         for seq, score in zip(sequences, scores):
             completed_sequences.append(seq)
             completed_scores.append(score)
-            pbar.update(1)
 
         pbar.close()
 
