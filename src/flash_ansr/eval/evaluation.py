@@ -172,6 +172,9 @@ class Evaluation():
         dict
             Dictionary with the evaluation results.
         '''
+        if verbose:
+            print(f'Evaluating model with configuration: beam_width={self.beam_width}, noise_level={self.noise_level}, n_support={self.n_support}, complexity={self.complexity}')
+
         # Make sure the model is in evaluation mode
         model.to(self.device).eval()
 
@@ -273,11 +276,11 @@ class Evaluation():
                     for j in range(self.beam_width):
                         if j >= len(beams):
                             results_dict[f'free_beam_{j+1}'].append(None)
-                            results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
+                            results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
                         results_dict[f'free_beam_{j+1}'].append(beam)
-                        results_dict[f'log_prob_beam{j+1}'].append(log_probs[j])
+                        results_dict[f'log_prob_beam_{j+1}'].append(log_probs[j])
 
                     results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
                     results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
