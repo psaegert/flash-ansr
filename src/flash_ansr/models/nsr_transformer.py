@@ -351,7 +351,7 @@ class FlashANSRTransformer(nn.Module):
                     if candidate[0][-1] == self.expression_space.tokenizer['<eos>']:
                         candidate_expression, before, after = self.expression_space.extract_expression_from_beam(candidate[0])
                         candidate_expression_decoded = self.expression_space.tokenizer.decode(candidate_expression, special_tokens='<num>')
-                        
+
                         if self.expression_space.is_valid(candidate_expression_decoded) and len(candidate_expression_decoded) > 1:
                             candidate_simplified = self.expression_space.tokenizer.encode(self.expression_space.simplify(candidate_expression_decoded))
 
