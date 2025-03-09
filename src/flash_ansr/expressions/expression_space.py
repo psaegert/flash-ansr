@@ -598,7 +598,7 @@ class ExpressionSpace:
 
         return filtered_expression
 
-    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> list[int] | list[str]:
+    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> tuple[list[int] | list[str], list[int] | list[str], list[int] | list[str]]:
         '''
         Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
 
@@ -609,19 +609,26 @@ class ExpressionSpace:
 
         Returns
         -------
-        str
-            The extracted expression.
+        list[int] | list[str]
+            The expression
+        list[int] | list[str]
+            The prefix of the expression
+        list[int] | list[str]
+            The suffix of the expression
         '''
-        if isinstance(beam[0], int):
-            bos_position = beam.index(self.tokenizer["<bos>"])
-            eos_position = beam.index(self.tokenizer["<eos>"])
+        if not isinstance(beam, list):
+            beam = list(beam)
+
+        if isinstance(beam[0], (int, np.int64, np.int32)):
+            bos_position = beam.index(self.tokenizer["<bos>"]) if self.tokenizer["<bos>"] in beam else 0
+            eos_position = beam.index(self.tokenizer["<eos>"]) if self.tokenizer["<eos>"] in beam else len(beam)
         elif isinstance(beam[0], str):
-            bos_position = beam.index('<bos>')  # type: ignore
-            eos_position = beam.index('<eos>')  # type: ignore
+            bos_position = beam.index('<bos>') if '<bos>' in beam else 0  # type: ignore
+            eos_position = beam.index('<eos>') if '<eos>' in beam else len(beam)  # type: ignore
         else:
             raise ValueError("The beam must be a list of integers or strings")
 
-        return beam[bos_position + 1:eos_position]
+        return beam[bos_position + 1:eos_position], beam[:bos_position + 1], beam[eos_position:]
 
     # Compatibility
     def convert_variable_names(self, prefix_expr: list[str], too_many_variables: Literal['ignore', 'raise'] = 'ignore') -> list[str]:

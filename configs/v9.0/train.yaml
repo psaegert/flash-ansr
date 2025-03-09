@@ -20,7 +20,7 @@ batch_size: 128
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
-val_size: 100_000
+val_size: 1_000
 
 preprocess: True
 

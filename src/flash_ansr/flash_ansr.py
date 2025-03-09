@@ -279,12 +279,7 @@ class FlashANSR(BaseEstimator):
             for complexity in complexity_list:
                 raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
 
-                # for raw_beam in raw_beams:
-                #     print(raw_beam)
-                #     print(self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>'))
-                #     print()
-
-                beams = [self.expression_space.extract_expression_from_beam(raw_beam) for raw_beam in raw_beams]
+                beams = [self.expression_space.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
                 raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
                 beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]

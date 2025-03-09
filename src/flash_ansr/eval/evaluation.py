@@ -218,9 +218,13 @@ class Evaluation():
 
                 results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
-                # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
-                labels = batch['labels'][0].clone()
-                labels_decoded = model.expression_space.tokenizer.decode(labels.tolist(), special_tokens='<num>')
+                # target_expression = model.expression_space.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
+                # target_expression_decoded = model.expression_space.tokenizer.decode(target_expression, special_tokens='<num>')
+
+                # target_expression_labels = torch.tensor(target_expression + [model.expression_space.tokenizer['<eos>']], device=self.device)
+                # target_expression_labels_decoded = model.expression_space.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<num>', '<eos>'])
+
+                batch_size = len(batch['input_ids'])
 
                 data_tensor = torch.cat([batch['x_tensors'][:, :self.n_support], batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
@@ -228,14 +232,13 @@ class Evaluation():
                 try:
                     # Teacher forced forward pass
                     if self.complexity == 'none':
-                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor)
+                        next_token_logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor)
                         fit_time_start = time.time()
                         model.fit(X, y)
                         fit_time = time.time() - fit_time_start
                     elif self.complexity == 'ground_truth':
-                        logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
+                        next_token_logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
                         fit_time_start = time.time()
-                        print('Complexity:', batch['complexities'])
                         model.fit(X, y, complexity=batch['complexities'])
                         fit_time = time.time() - fit_time_start
                     elif isinstance(self.complexity, list):
@@ -246,6 +249,13 @@ class Evaluation():
                         # fit_time = time.time() - fit_time_start
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
+
+                    bos_position = torch.where(batch['input_ids'] == model.expression_space.tokenizer['<bos>'])[1][0].item()
+
+                    expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
+                    expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
+
+                    expresssion_labels_decoded = model.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
                     print('Error in the forward pass or fitting.')
@@ -269,11 +279,11 @@ class Evaluation():
                         results_dict[f'free_beam_{j+1}'].append(beam)
                         results_dict[f'log_prob_beam{j+1}'].append(log_probs[j])
 
-                    results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
-                    results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
-                    results_dict['correct_token_predictions_at_5'].extend([correct_token_predictions_at_k(log, lab, k=5, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
-                    results_dict['correct_token_predictions_at_10'].extend([correct_token_predictions_at_k(log, lab, k=10, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
-                    results_dict['reciprocal_rank'].extend([reciprocal_rank(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(logits[:, :-1], labels.unsqueeze(0))])
+                    results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
+                    results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
+                    results_dict['correct_token_predictions_at_5'].extend([correct_token_predictions_at_k(log, lab, k=5, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
+                    results_dict['correct_token_predictions_at_10'].extend([correct_token_predictions_at_k(log, lab, k=10, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
+                    results_dict['reciprocal_rank'].extend([reciprocal_rank(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
 
                     # Accuracy, precision, recall, F1 score
                     for j in range(self.beam_width):
@@ -285,11 +295,10 @@ class Evaluation():
                             continue
                         beam = beams[j]
                         beam_tensor = torch.tensor(beam, device=self.device).unsqueeze(0)
-                        labels_tensor = labels[:-1].unsqueeze(0)
-                        results_dict[f'recall_beam_{j+1}'].extend(recall(beam_tensor, labels_tensor.view(1, -1), ignore_index=0, reduction='none').cpu())
-                        results_dict[f'precision_beam_{j+1}'].extend(precision(beam_tensor, labels_tensor.view(1, -1), ignore_index=0, reduction='none').cpu())
-                        results_dict[f'f1_score_beam_{j+1}'].extend(f1_score(beam_tensor, labels_tensor.view(1, -1), ignore_index=0, reduction='none').cpu())
-                        results_dict[f'accuracy_beam_{j+1}'].extend(accuracy(beam_tensor, labels_tensor.view(1, -1), ignore_index=0, reduction='none').cpu())
+                        results_dict[f'recall_beam_{j+1}'].extend(recall(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'precision_beam_{j+1}'].extend(precision(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'f1_score_beam_{j+1}'].extend(f1_score(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'accuracy_beam_{j+1}'].extend(accuracy(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
 
                     # BLEU
                     for j in range(self.beam_width):
@@ -297,7 +306,7 @@ class Evaluation():
                             results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'bleu_beam_{j+1}'].append(sentence_bleu(references=[labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1))
+                        results_dict[f'bleu_beam_{j+1}'].append(sentence_bleu(references=[expresssion_labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1))
 
                     # ROUGE
                     for j in range(self.beam_width):
@@ -308,7 +317,7 @@ class Evaluation():
                                 results_dict[f'{metric}_fmeasure_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        scores = self.rouge_scorer.score(beam, labels_decoded)
+                        scores = self.rouge_scorer.score(beam, expresssion_labels_decoded)
                         for metric in ['rouge1', 'rouge2', 'rougeL']:
                             results_dict[f'{metric}_precision_beam_{j+1}'].append(scores[metric].precision)
                             results_dict[f'{metric}_recall_beam_{j+1}'].append(scores[metric].recall)
@@ -320,7 +329,7 @@ class Evaluation():
                             results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'meteor_beam_{j+1}'].append(meteor_score(references=[labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer()))
+                        results_dict[f'meteor_beam_{j+1}'].append(meteor_score(references=[expresssion_labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer()))
 
                     # Edit distance
                     for j in range(self.beam_width):
@@ -328,7 +337,7 @@ class Evaluation():
                             results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'edit_distance_beam_{j+1}'].append(editdistance.eval(beam, labels_decoded))
+                        results_dict[f'edit_distance_beam_{j+1}'].append(editdistance.eval(beam, expresssion_labels_decoded))
 
                     # Tree edit distance
                     for j in range(self.beam_width):
@@ -339,9 +348,9 @@ class Evaluation():
                         if not model.expression_space.is_valid(beam):
                             results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
                         else:
-                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(zss_tree_edit_distance(beam, labels_decoded, model.expression_space.operator_arity))
+                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.expression_space.operator_arity))
 
-                    # Structural accuracy using model.expression_space.check_valid(expression)
+                    # Structural accuracy
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
                             results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
@@ -422,23 +431,24 @@ class Evaluation():
 
                 else:
                     # Fill with NaNs
-                    results_dict['perplexity'].extend([float('nan')] * len(logits))
-                    results_dict['correct_token_predictions_at_1'].extend([float('nan')] * len(logits))
-                    results_dict['correct_token_predictions_at_5'].extend([float('nan')] * len(logits))
-                    results_dict['correct_token_predictions_at_10'].extend([float('nan')] * len(logits))
-                    results_dict['reciprocal_rank'].extend([float('nan')] * len(logits))
+                    results_dict['perplexity'].extend([float('nan')] * batch_size)
+                    results_dict['correct_token_predictions_at_1'].extend([float('nan')] * batch_size)
+                    results_dict['correct_token_predictions_at_5'].extend([float('nan')] * batch_size)
+                    results_dict['correct_token_predictions_at_10'].extend([float('nan')] * batch_size)
+                    results_dict['reciprocal_rank'].extend([float('nan')] * batch_size)
 
                     for j in range(self.beam_width):
                         results_dict[f'free_beam_{j+1}'].append([float('nan')])
+                        results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
                         results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
                         results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
                         results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
                         results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
                         results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'accuracy_beam_{j+1}'].extend([float('nan')] * len(logits))
-                        results_dict[f'f1_score_beam_{j+1}'].extend([float('nan')] * len(logits))
-                        results_dict[f'precision_beam_{j+1}'].extend([float('nan')] * len(logits))
-                        results_dict[f'recall_beam_{j+1}'].extend([float('nan')] * len(logits))
+                        results_dict[f'accuracy_beam_{j+1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'f1_score_beam_{j+1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'precision_beam_{j+1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'recall_beam_{j+1}'].extend([float('nan')] * batch_size)
 
                         for metric in ['rouge1', 'rouge2', 'rougeL']:
                             results_dict[f'{metric}_precision_beam_{j+1}'].append(float('nan'))

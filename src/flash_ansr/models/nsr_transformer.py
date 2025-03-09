@@ -349,9 +349,15 @@ class FlashANSRTransformer(nn.Module):
                 all_candidates_unique: list[tuple] = []
                 for candidate in all_candidates:
                     if candidate[0][-1] == self.expression_space.tokenizer['<eos>']:
-                        candidate_expression = self.expression_space.tokenizer.decode(candidate[0], special_tokens='<num>')
-                        if self.expression_space.is_valid(candidate_expression) and len(candidate_expression) > 1:
-                            candidate_simplified = self.expression_space.tokenizer.encode(self.expression_space.simplify(candidate_expression), add_bos=True, add_eos=True)
+                        candidate_expression, before, after = self.expression_space.extract_expression_from_beam(candidate[0])
+                        candidate_expression_decoded = self.expression_space.tokenizer.decode(candidate_expression, special_tokens='<num>')
+                        
+                        if self.expression_space.is_valid(candidate_expression_decoded) and len(candidate_expression_decoded) > 1:
+                            candidate_simplified = self.expression_space.tokenizer.encode(self.expression_space.simplify(candidate_expression_decoded))
+
+                            # Add back everything before <bos> and after <eos>
+                            candidate_simplified = before + candidate_simplified + after
+
                             if candidate_simplified not in [seq for seq, _ in all_candidates_unique] and candidate_simplified not in [seq for seq, _ in completed_sequences]:
                                 all_candidates_unique.append((candidate_simplified, candidate[1]))
                             else:
