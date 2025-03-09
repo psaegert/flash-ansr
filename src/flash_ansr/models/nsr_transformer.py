@@ -26,6 +26,8 @@ class FlashANSRTransformer(nn.Module):
         The maximum number of variables that the encoder can handle.
     size : int, optional
         The internal size of the model's hidden layers and attention, by default 512.
+    norm_first : bool, optional
+        Whether to use layer normalization before attention, by default False.
     pre_encoder_input_type : str, optional
         The type of input to the pre-encoder, by default "ieee-754".
     pre_encoder_support_nan : bool, optional
@@ -56,6 +58,7 @@ class FlashANSRTransformer(nn.Module):
             expression_space: ExpressionSpace,
             encoder_max_n_variables: int,
             size: int = 512,
+            norm_first: bool = False,
             pre_encoder_input_type: str = "ieee-754",
             pre_encoder_support_nan: bool = False,
             pre_encoder_exponent_scale: float | None = None,
@@ -112,7 +115,8 @@ class FlashANSRTransformer(nn.Module):
                 nhead=decoder_n_heads,
                 dim_feedforward=decoder_ff_size,
                 dropout=decoder_dropout,
-                batch_first=True
+                batch_first=True,
+                norm_first=norm_first
             ),
             num_layers=decoder_n_layers)
 
