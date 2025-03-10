@@ -173,6 +173,7 @@ class FlashANSRTransformer(nn.Module):
             expression_space=expression_space,
             encoder_max_n_variables=config_["encoder_max_n_variables"],
             size=config_["size"],
+            norm_first=config_["norm_first"],
             pre_encoder_input_type=config_["pre_encoder_input_type"],
             pre_encoder_support_nan=config_["pre_encoder_support_nan"],
             pre_encoder_exponent_scale=config_.get("pre_encoder_exponent_scale"),
