@@ -407,16 +407,16 @@ class Trainer():
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
-            batch = self.train_dataset.collate(micro_batch, device=self.model.device)
+            micro_batch = self.train_dataset.collate(micro_batch, device=self.model.device)
 
             # Concatenate x and y tensors as input to the set transformer
-            data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
+            data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
+            logits, num_output = self.model.forward(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-            flat_labels = batch['labels'].reshape(-1)
+            flat_labels = micro_batch['labels'].reshape(-1)
 
             # Calculate the loss
             ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -432,7 +432,7 @@ class Trainer():
 
             if numeric_prediction_loss_weight > 0:
                 n_tokens = 0.0
-                for i, (lbl, const) in enumerate(zip(batch['labels'], batch['constants'])):
+                for i, (lbl, const) in enumerate(zip(micro_batch['labels'], micro_batch['constants'])):
                     n_tokens += torch.sum(lbl != self.metrics_ignore_index).item()
                     if len(const) > 0:
                         num_loss += self.mse_loss(num_output[i, 1:, 0][lbl == self.numeric_token_index], const)
@@ -449,7 +449,7 @@ class Trainer():
 
             loss.backward()
 
-            tokens = logits.shape[1] * batch['x_tensors'].shape[0]
+            tokens = logits.shape[1] * micro_batch['x_tensors'].shape[0]
             self.cumulative_training_tokens += tokens
             self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15  # PFLOPS per token * number of tokens * batch size
 
@@ -461,20 +461,20 @@ class Trainer():
         try:
             if np.isnan(loss.item()):
                 print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
-                print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
-                print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
+                print(f'{np.sum(np.isnan(micro_batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+                print(f'{np.sum(np.isnan(micro_batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
                 print(f'{np.sum(np.isnan(logits.cpu().detach().numpy()))} NaNs in logits')
                 raise ValueError("Loss is NaN")
         except RuntimeError:
-            print(batch['input_ids'])
-            print(batch['labels'])
-            print(batch['constants'])
+            print(micro_batch['input_ids'])
+            print(micro_batch['labels'])
+            print(micro_batch['constants'])
             print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
             print(flat_logits)
             print(flat_labels)
             # Any nans in xtensor
-            print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
-            print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
+            print(f'{np.sum(np.isnan(micro_batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+            print(f'{np.sum(np.isnan(micro_batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
             raise
 
         gradient_norms = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1)
@@ -508,13 +508,13 @@ class Trainer():
             "train_num_loss": accumulated_num_loss,
             "train_loss": accumulated_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "batch_size": batch["x_tensors"].shape[0],
+            "batch_size": len(batch["x_tensors"]),
             "steps_per_second": 1 / (time.time() - start_time),
             "train_mean_reciprocal_rank": reciprocal_rank(flat_logits, flat_labels, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(flat_logits, flat_labels, k=1, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_5": correct_token_predictions_at_k(flat_logits, flat_labels, k=5, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_10": correct_token_predictions_at_k(flat_logits, flat_labels, k=10, reduction='mean', ignore_index=self.metrics_ignore_index),
-            "n_support": batch["x_tensors"].shape[1],
+            "n_support": micro_batch["x_tensors"].shape[1],
             "cumulative_training_tokens": self.cumulative_training_tokens,
             "cumulative_training_pflops": self.cumulative_training_pflops
         }, step=step)
@@ -538,6 +538,8 @@ class Trainer():
 
             if size is None:
                 size = len(val_dataset) * batch_size
+
+            n_validation_instances = 0
 
             pbar = tqdm(total=size // batch_size, leave=False, position=1, disable=not verbose, desc="Validating")
 
@@ -584,13 +586,15 @@ class Trainer():
                 val_num_loss += num_loss.item()
                 val_loss += loss.item()
 
+                n_validation_instances += batch['x_tensors'].shape[0]
+
                 pbar.update(1)
 
             # Calculate the average loss
-            val_ce_loss /= (size // batch_size)
-            val_contrastive_loss /= (size // batch_size)
-            val_num_loss /= (size // batch_size)
-            val_loss /= (size // batch_size)
+            val_ce_loss /= n_validation_instances
+            val_contrastive_loss /= n_validation_instances
+            val_num_loss /= n_validation_instances
+            val_loss /= n_validation_instances
 
             pbar.close()
 

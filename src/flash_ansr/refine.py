@@ -151,7 +151,7 @@ class Refiner:
                 else:
                     self.loss = np.mean(diff ** 2)
             except OverflowError:
-                self.loss = np.inf
+                self.loss = np.nan
 
             self._all_constants_values.append((self.constants_values, self.constants_cov, self.loss))  # type: ignore
 
@@ -167,6 +167,7 @@ class Refiner:
             try:
                 constants, constants_cov = self._fit(pred_function, X, y, p0, p0_noise, p0_noise_kwargs, method, no_constants_error, optimizer_kwargs)
             except (ConvergenceError, OverflowError):
+                self._all_constants_values.append((np.array([]), np.array([]), np.nan))
                 continue
 
             try:
@@ -176,7 +177,7 @@ class Refiner:
                 else:
                     loss = np.mean(diff ** 2)
             except OverflowError:
-                loss = np.inf
+                loss = np.nan
 
             self._all_constants_values.append((constants, constants_cov, loss))
 
@@ -184,6 +185,9 @@ class Refiner:
                 best_constants = constants
                 best_constants_cov = constants_cov
                 best_loss = loss
+
+        if not np.isfinite(best_loss):
+            best_loss = np.nan
 
         # Sort the constants by loss
         self._all_constants_values = sorted(self._all_constants_values, key=lambda x: x[-1])

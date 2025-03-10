@@ -308,10 +308,14 @@ class FlashANSR(BaseEstimator):
                                 converge_error=converge_error)
 
                             if refiner.constants_values is None:  # Fit failed
-                                fvu = np.inf
-                                score = np.inf
+                                fvu = np.nan
+                                score = np.nan
                             else:
-                                fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
+                                if y.shape[0] == 1:
+                                    # Cannot compute variance for a single sample. Use loss instead.
+                                    fvu = refiner._all_constants_values[0][-1]
+                                else:
+                                    fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
                                 score = np.log10(fvu) + self.parsimony * len(beam_decoded)
 
                             self._results.append({
