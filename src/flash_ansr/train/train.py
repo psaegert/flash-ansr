@@ -539,9 +539,9 @@ class Trainer():
             if size is None:
                 size = len(val_dataset) * batch_size
 
-            n_validation_instances = 0
+            steps = size // batch_size
 
-            pbar = tqdm(total=size // batch_size, leave=False, position=1, disable=not verbose, desc="Validating")
+            pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
 
             for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class, preprocess=preprocess):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
@@ -586,15 +586,13 @@ class Trainer():
                 val_num_loss += num_loss.item()
                 val_loss += loss.item()
 
-                n_validation_instances += batch['x_tensors'].shape[0]
-
                 pbar.update(1)
 
             # Calculate the average loss
-            val_ce_loss /= n_validation_instances
-            val_contrastive_loss /= n_validation_instances
-            val_num_loss /= n_validation_instances
-            val_loss /= n_validation_instances
+            val_ce_loss /= steps
+            val_contrastive_loss /= steps
+            val_num_loss /= steps
+            val_loss /= steps
 
             pbar.close()
 

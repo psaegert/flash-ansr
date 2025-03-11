@@ -96,7 +96,7 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Import flash_ansr
-from flash_ansr import FlashANSR, install_model, get_path
+from flash_ansr import FlashANSR, GenerationConfig, install_model, get_path
 
 # Specify the model
 # Here: https://huggingface.co/psaegert/flash-ansr-v7.0
@@ -109,8 +109,8 @@ install_model(MODEL)
 # Load the model
 ansr = FlashANSR.load(
     directory=get_path('models', MODEL),
-    beam_width=256,
-    n_restarts=32,
+    generation_config=GenerationConfig(method='beam_search', beam_width=32),  # optional
+    n_restarts=32,  # optional
 ).to(device)
 
 # Define data
