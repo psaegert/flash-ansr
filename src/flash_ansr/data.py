@@ -147,7 +147,7 @@ class FlashANSRDataset:
             value=pad_value
         )
 
-    def collate(self, batch: dict[str, Any], device: str | torch.device | int) -> dict[str, torch.Tensor]:
+    def collate(self, batch: dict[str, Any], device: str | torch.device | int = 'cpu') -> dict[str, torch.Tensor]:
         '''
         Collate a batch of data inplace.
 
@@ -155,8 +155,8 @@ class FlashANSRDataset:
         ----------
         batch : dict
             The batch of data.
-        device : str or torch.device or int
-            The device to move the data to.
+        device : str or torch.device or int, optional
+            The device to move the data to. If a string, it should be one of 'cpu', 'cuda', 'cuda:0', etc., by default 'cpu'.
 
         Returns
         -------
