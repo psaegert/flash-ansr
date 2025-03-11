@@ -107,7 +107,7 @@ class PySREvaluation():
                     },
                 )
 
-                batch = dataset.collate_batch(batch, device='cpu')
+                batch = dataset.collate(batch, device='cpu')
 
                 x_tensor = batch['x_tensors'].unsqueeze(0)
                 y_tensor = batch['y_tensors'].unsqueeze(0)

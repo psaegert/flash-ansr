@@ -242,7 +242,7 @@ class SkeletonPool:
         for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose):
             # Codify the Expression
             executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
+            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
 
@@ -294,7 +294,7 @@ class SkeletonPool:
             # Remove constants since permutations are not detected as duplicates
             no_constant_expression = self.expression_space.remove_num(skeleton)
             executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
+            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
 
@@ -330,7 +330,7 @@ class SkeletonPool:
             # Remove constants since permutations are not detected as duplicates
             no_constant_expression = self.expression_space.remove_num(skeleton)
             executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
+            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.expression_space.variables + constants)
 
@@ -541,11 +541,15 @@ class SkeletonPool:
 
                 skeleton = self._sample_skeleton(n_operators)
                 if self.simplify:
-                    skeleton = self.expression_space.simplify(skeleton)
+                    skeleton = self.expression_space.simplify(skeleton, inplace=True)
+
+                if self.expression_space.simplification == "sympy":
+                    if not self.expression_space.is_valid(skeleton):
+                        continue
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
-                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression)
+                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
                     code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     code = codify(code_string, self.expression_space.variables + constants)
 
@@ -678,7 +682,7 @@ class SkeletonPool:
                 continue
 
             if self.simplify:
-                simplified_skeleton = self.expression_space.simplify(skeleton)
+                simplified_skeleton = self.expression_space.simplify(skeleton, inplace=False)
             else:
                 simplified_skeleton = skeleton
 

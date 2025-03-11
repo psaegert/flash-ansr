@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 import torch
 import torch_optimizer
+import schedulefree
 import numpy as np
 
 import torch.nn.functional as F
@@ -25,11 +26,26 @@ import wandb
 class OptimizerFactory():
     @staticmethod
     def get_optimizer(name: str, *args: Any, **kwargs: Any) -> torch.optim.Optimizer:
+        if name.startswith('torch.optim.'):
+            if hasattr(torch.optim, name):
+                return getattr(torch.optim, name)(*args, **kwargs)
+        elif name.startswith('torch_optimizer.'):
+            if hasattr(torch_optimizer, name):
+                return getattr(torch_optimizer, name)(*args, **kwargs)
+        elif name.startswith('schedulefree.'):
+            if hasattr(schedulefree, name):
+                return getattr(schedulefree, name)(*args, **kwargs)
+
+        # Defaults
+
         if hasattr(torch.optim, name):
             return getattr(torch.optim, name)(*args, **kwargs)
 
         if hasattr(torch_optimizer, name):
             return getattr(torch_optimizer, name)(*args, **kwargs)
+
+        if hasattr(schedulefree, name):
+            return getattr(schedulefree, name)(*args, **kwargs)
 
         raise NotImplementedError(f"Optimizer {name} not found in torch.optim")
 
@@ -150,7 +166,7 @@ class Trainer():
             self,
             model: FlashANSRTransformer,
             optimizer: torch.optim.Optimizer,
-            lr_scheduler: LRScheduler,
+            lr_scheduler: LRScheduler | None,
             batch_size: int,
             train_dataset: FlashANSRDataset,
             val_dataset: FlashANSRDataset,
@@ -207,7 +223,10 @@ class Trainer():
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer']['kwargs'] if 'kwargs' in config_['optimizer'] else {})
 
         print(f'Loading lr_scheduler with config {config_["lr_scheduler"]}')
-        lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler']['kwargs'] if 'kwargs' in config_['lr_scheduler'] else {})
+        if config_["lr_scheduler"] is not None:
+            lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler']['kwargs'] if 'kwargs' in config_['lr_scheduler'] else {})
+        else:
+            lr_scheduler = None
 
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
@@ -262,6 +281,7 @@ class Trainer():
             contrastive_margin=self.config.get('contrastive_margin', 0.5),
             contrastive_temperature=self.config.get('contrastive_temperature', 0.5),
             steps=self.config["steps"],
+            preprocess=self.config.get("preprocess", False),
             device=self.config["device"],
             checkpoint_interval=checkpoint_interval,
             checkpoint_directory=checkpoint_directory,
@@ -283,6 +303,7 @@ class Trainer():
             contrastive_margin: float,
             contrastive_temperature: float,
             steps: int,
+            preprocess: bool = False,
             device: str = "cpu",
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
@@ -323,10 +344,11 @@ class Trainer():
                     step=0,
                     size=validate_size,
                     batch_size=validate_batch_size,
+                    preprocess=preprocess,
                     verbose=verbose)
 
             # Train the model
-            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, n_per_equation=contrastive_n_per_class)):
+            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, n_per_equation=contrastive_n_per_class, preprocess=preprocess)):
                 pbar.set_description("Training")
 
                 # Train
@@ -348,6 +370,7 @@ class Trainer():
                         step=(step + 1),
                         size=validate_size,
                         batch_size=validate_batch_size,
+                        preprocess=preprocess,
                         verbose=verbose)
 
                 # Save the model
@@ -368,6 +391,8 @@ class Trainer():
 
     def _train_batch(self, batch: dict[str, torch.Tensor], numeric_prediction_loss_weight: float, contrastive_loss_weight: float, step: int) -> float:
         self.model.train()
+        if hasattr(self.optimizer, "train"):
+            self.optimizer.train()
 
         start_time = time.time()
 
@@ -382,16 +407,16 @@ class Trainer():
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
-            batch = self.train_dataset.collate_batch(micro_batch, device=self.model.device)
+            micro_batch = self.train_dataset.collate(micro_batch, device=self.model.device)
 
             # Concatenate x and y tensors as input to the set transformer
-            data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
+            data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             # Forward pass
-            logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+            logits, num_output = self.model.forward(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
             flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-            flat_labels = batch['labels'].reshape(-1)
+            flat_labels = micro_batch['labels'].reshape(-1)
 
             # Calculate the loss
             ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -407,7 +432,7 @@ class Trainer():
 
             if numeric_prediction_loss_weight > 0:
                 n_tokens = 0.0
-                for i, (lbl, const) in enumerate(zip(batch['labels'], batch['constants'])):
+                for i, (lbl, const) in enumerate(zip(micro_batch['labels'], micro_batch['constants'])):
                     n_tokens += torch.sum(lbl != self.metrics_ignore_index).item()
                     if len(const) > 0:
                         num_loss += self.mse_loss(num_output[i, 1:, 0][lbl == self.numeric_token_index], const)
@@ -424,7 +449,7 @@ class Trainer():
 
             loss.backward()
 
-            tokens = logits.shape[1] * batch['x_tensors'].shape[0]
+            tokens = logits.shape[1] * micro_batch['x_tensors'].shape[0]
             self.cumulative_training_tokens += tokens
             self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15  # PFLOPS per token * number of tokens * batch size
 
@@ -436,20 +461,20 @@ class Trainer():
         try:
             if np.isnan(loss.item()):
                 print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
-                print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
-                print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
+                print(f'{np.sum(np.isnan(micro_batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+                print(f'{np.sum(np.isnan(micro_batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
                 print(f'{np.sum(np.isnan(logits.cpu().detach().numpy()))} NaNs in logits')
                 raise ValueError("Loss is NaN")
         except RuntimeError:
-            print(batch['input_ids'])
-            print(batch['labels'])
-            print(batch['constants'])
+            print(micro_batch['input_ids'])
+            print(micro_batch['labels'])
+            print(micro_batch['constants'])
             print(f'{ce_loss = }, {contrastive_loss = }, {num_loss = }, {loss = }')
             print(flat_logits)
             print(flat_labels)
             # Any nans in xtensor
-            print(f'{np.sum(np.isnan(batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
-            print(f'{np.sum(np.isnan(batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
+            print(f'{np.sum(np.isnan(micro_batch["x_tensors"].cpu().numpy()))} NaNs in x_tensor')
+            print(f'{np.sum(np.isnan(micro_batch["y_tensors"].cpu().numpy()))} NaNs in y_tensor')
             raise
 
         gradient_norms = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1)
@@ -483,23 +508,28 @@ class Trainer():
             "train_num_loss": accumulated_num_loss,
             "train_loss": accumulated_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "batch_size": batch["x_tensors"].shape[0],
+            "batch_size": len(batch["x_tensors"]),
             "steps_per_second": 1 / (time.time() - start_time),
             "train_mean_reciprocal_rank": reciprocal_rank(flat_logits, flat_labels, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(flat_logits, flat_labels, k=1, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_5": correct_token_predictions_at_k(flat_logits, flat_labels, k=5, reduction='mean', ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_10": correct_token_predictions_at_k(flat_logits, flat_labels, k=10, reduction='mean', ignore_index=self.metrics_ignore_index),
-            "n_support": batch["x_tensors"].shape[1],
+            "n_support": micro_batch["x_tensors"].shape[1],
             "cumulative_training_tokens": self.cumulative_training_tokens,
             "cumulative_training_pflops": self.cumulative_training_pflops
         }, step=step)
 
-        self.lr_scheduler.step()
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.step()
 
         return loss.item()
 
-    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, verbose: bool = False) -> float:
+    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, preprocess: bool = False, verbose: bool = False) -> float:
         self.model.eval()
+
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()
+
         with torch.no_grad():
             val_ce_loss = 0.0
             val_contrastive_loss = 0.0
@@ -509,17 +539,19 @@ class Trainer():
             if size is None:
                 size = len(val_dataset) * batch_size
 
-            pbar = tqdm(total=size // batch_size, leave=False, position=1, disable=not verbose, desc="Validating")
+            steps = size // batch_size
 
-            for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
+            pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
+
+            for batch in val_dataset.iterate(size=size, batch_size=batch_size, n_per_equation=contrastive_n_per_class, preprocess=preprocess):  # TODO: support both compiled dataset and non-compiled dataset that may use a custom batch size
                 # Forward
-                batch = self.val_dataset.collate_batch(batch, device=self.model.device)
+                batch = self.val_dataset.collate(batch, device=self.model.device)
 
                 # Concatenate x and y tensors as input to the set transformer
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Forward pass
-                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, numeric_head=numeric_prediction_loss_weight > 0)
+                logits, num_output = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), numeric_head=numeric_prediction_loss_weight > 0)
 
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = batch['labels'].reshape(-1)
@@ -557,10 +589,10 @@ class Trainer():
                 pbar.update(1)
 
             # Calculate the average loss
-            val_ce_loss /= (size // batch_size)
-            val_contrastive_loss /= (size // batch_size)
-            val_num_loss /= (size // batch_size)
-            val_loss /= (size // batch_size)
+            val_ce_loss /= steps
+            val_contrastive_loss /= steps
+            val_num_loss /= steps
+            val_loss /= steps
 
             pbar.close()
 

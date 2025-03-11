@@ -44,10 +44,24 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         x = torch.rand(13, 6)
 
-        beams, scores = nsr.beam_search(x, beam_width=4, max_len=10)
+        beams, scores, _ = nsr.beam_search(x, beam_width=4, max_len=10)
 
         assert len(beams) == 4
         assert len(scores) == 4
+
+    def test_nsr_sample_top_kp(self):
+        nsr = FlashANSRTransformer(
+            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            encoder_max_n_variables=6,
+            encoder='SetTransformer',
+            encoder_kwargs={'n_seeds': 10})
+
+        x = torch.rand(13, 6)
+
+        beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
+
+        assert len(beams) <= 4
+        assert len(scores) <= 4
 
     def test_nsr_from_config(self):
         nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', filename='nsr.yaml'))

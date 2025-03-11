@@ -32,7 +32,7 @@ from nesymres.architectures.model import Model
 nltk.download('wordnet', quiet=True)
 
 
-class NeSymResEvaluation():
+class NeSymReSEvaluation():
     def __init__(
             self,
             n_support: int | None = None,
@@ -58,7 +58,7 @@ class NeSymResEvaluation():
         self.rouge_scorer._tokenizer.tokenize = lambda x: x
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | str) -> "NeSymResEvaluation":
+    def from_config(cls, config: dict[str, Any] | str) -> "NeSymReSEvaluation":
         config_ = load_config(config)
 
         if "evaluation" in config_.keys():
@@ -96,7 +96,7 @@ class NeSymResEvaluation():
 
         with torch.no_grad():
             for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=True, verbose=verbose, tqdm_total=size, batch_size=1):
-                batch = dataset.collate_batch(batch, device=self.device)
+                batch = dataset.collate(batch, device=self.device)
 
                 results_dict['input_ids'].append(batch['input_ids'].cpu().numpy())
                 results_dict['labels'].append(batch['labels'].cpu().numpy())

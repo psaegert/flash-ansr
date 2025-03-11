@@ -574,13 +574,13 @@ class ExpressionSpace:
         parsed_expression = self.infix_to_prefix(infix_expression)
 
         if substitute_special_constants:
-            parsed_expression = self.numerify_special_constants(parsed_expression)
+            parsed_expression = self.numerify_special_constants(parsed_expression, inplace=True)
         if convert_variable_names:
             parsed_expression = self.convert_variable_names(parsed_expression, too_many_variables=too_many_variables)
         if convert_expression:
             parsed_expression = self.convert_expression(parsed_expression)
         if mask_numbers:
-            parsed_expression = numbers_to_num(parsed_expression)
+            parsed_expression = numbers_to_num(parsed_expression, inplace=True)
 
         return self.remove_pow1(parsed_expression)  # HACK: Find a better place to put this
 
@@ -597,6 +597,38 @@ class ExpressionSpace:
             filtered_expression.append(token)
 
         return filtered_expression
+
+    def extract_expression_from_beam(self, beam: list[int] | list[str]) -> tuple[list[int] | list[str], list[int] | list[str], list[int] | list[str]]:
+        '''
+        Extract the expression from a beam. The expression starts with the <bos> token and ends with the <eos> token.
+
+        Parameters
+        ----------
+        beam : list[int] | list[str]
+            The beam to extract the expression from.
+
+        Returns
+        -------
+        list[int] | list[str]
+            The expression
+        list[int] | list[str]
+            The prefix of the expression
+        list[int] | list[str]
+            The suffix of the expression
+        '''
+        if not isinstance(beam, list):
+            beam = list(beam)
+
+        if isinstance(beam[0], (int, np.int64, np.int32)):
+            bos_position = beam.index(self.tokenizer["<bos>"]) if self.tokenizer["<bos>"] in beam else 0
+            eos_position = beam.index(self.tokenizer["<eos>"]) if self.tokenizer["<eos>"] in beam else len(beam)
+        elif isinstance(beam[0], str):
+            bos_position = beam.index('<bos>') if '<bos>' in beam else 0  # type: ignore
+            eos_position = beam.index('<eos>') if '<eos>' in beam else len(beam)  # type: ignore
+        else:
+            raise ValueError("The beam must be a list of integers or strings")
+
+        return beam[bos_position + 1:eos_position], beam[:bos_position + 1], beam[eos_position:]
 
     # Compatibility
     def convert_variable_names(self, prefix_expr: list[str], too_many_variables: Literal['ignore', 'raise'] = 'ignore') -> list[str]:
@@ -638,7 +670,7 @@ class ExpressionSpace:
 
         return converted_prefix_expr
 
-    def numerify_special_constants(self, prefix_expression: list[str]) -> list[str]:
+    def numerify_special_constants(self, prefix_expression: list[str], inplace: bool = False) -> list[str]:
         '''
         Replace special constants with their numerical values
 
@@ -646,19 +678,24 @@ class ExpressionSpace:
         ----------
         prefix_expression : list[str]
             The prefix expression
+        inplace : bool, optional
+            Whether to modify the expression in place, by default False
 
         Returns
         -------
         list[str]
             The expression with special constants replaced by their numerical values
         '''
-        prefix_expression_copy = deepcopy(prefix_expression)
+        if inplace:
+            modified_prefix_expression = prefix_expression
+        else:
+            modified_prefix_expression = prefix_expression.copy()
 
-        for i, token in enumerate(prefix_expression_copy):
+        for i, token in enumerate(prefix_expression):
             if token in self.special_constants:
-                prefix_expression_copy[i] = str(self.special_constants[token])
+                modified_prefix_expression[i] = str(self.special_constants[token])
 
-        return prefix_expression_copy
+        return modified_prefix_expression
 
     def remove_num(self, expression: list[str], verbose: bool = False, debug: bool = False) -> list[str]:
         stack: list = []
@@ -709,7 +746,7 @@ class ExpressionSpace:
 
     # SIMPLIFICATION (Sympy)
     def simplify_sympy(self, prefix_expression: list[str], ratio: float | None = None, timeout: int = 1) -> list[str]:
-        prefix_expression, constants = num_to_constants(list(prefix_expression))
+        prefix_expression, constants = num_to_constants(list(prefix_expression), inplace=True)
 
         infix_expression = self.prefix_to_infix(prefix_expression, power='**')
 
@@ -721,7 +758,7 @@ class ExpressionSpace:
         signal.alarm(timeout)
         try:
             simplified_expression = str(simplify(sympy_expression, ratio=ratio) if ratio is not None else simplify(sympy_expression))
-        except TimeoutError:
+        except (TimeoutError, OverflowError):
             return prefix_expression
 
         translations = {
@@ -733,7 +770,7 @@ class ExpressionSpace:
 
         parsed_expression = self.parse_expression(simplified_expression)
 
-        return numbers_to_num(parsed_expression)
+        return numbers_to_num(parsed_expression, inplace=True)
 
     def simplify(self, prefix_expression: list[str], *args: Any, **kwargs: Any) -> list[str]:
         match self.simplification:
@@ -745,18 +782,20 @@ class ExpressionSpace:
                 raise ValueError(f'Invalid simplification method: {self.simplification}')
 
     # SIMPLIFICATION
-    def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, verbose: bool = False, debug: bool = False) -> list[str]:
+    def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, inplace: bool = False, verbose: bool = False, debug: bool = False) -> list[str]:
         '''
         Simplify an expression
 
         Parameters
         ----------
-        prefix_expression : list[str]
+        prefix_expression : list[str] | tuple[str]
             The prefix expression
         mask_elementary_literals : bool, optional
             Whether to mask elementary literals such as <0> and <1> with <num>, by default True
         max_iter : int, optional
             The maximum number of iterations, by default 5
+        inplace : bool, optional
+            Whether to modify the expression in place, by default False
         verbose : bool, optional
             Whether to print verbose output, by default False
         debug : bool, optional
@@ -767,25 +806,32 @@ class ExpressionSpace:
         list[str]
             The simplified expression
         '''
-        prefix_expression_copy = deepcopy(prefix_expression)
-        new_prefix_expression_copy = prefix_expression_copy
+        if not isinstance(prefix_expression, list):
+            prefix_expression = list(prefix_expression)
+
+        if inplace:
+            modified_prefix_expression = prefix_expression
+        else:
+            modified_prefix_expression = prefix_expression.copy()
+
+        new_modified_prefix_expression = prefix_expression.copy()
 
         for _ in range(max_iter):
             for __ in range(max_iter):
-                new_prefix_expression_copy = self._simplify(new_prefix_expression_copy, verbose=verbose, debug=debug)
-                if new_prefix_expression_copy == prefix_expression_copy:
+                new_modified_prefix_expression = self._simplify(new_modified_prefix_expression, verbose=verbose, debug=debug)
+                if new_modified_prefix_expression == modified_prefix_expression:
                     break
-                prefix_expression_copy = new_prefix_expression_copy
+                modified_prefix_expression = new_modified_prefix_expression
 
             if mask_elementary_literals:
-                new_prefix_expression_copy = self.mask_elementary_literals(new_prefix_expression_copy)
+                new_modified_prefix_expression = self.mask_elementary_literals(new_modified_prefix_expression, inplace=inplace)
 
-            if new_prefix_expression_copy == prefix_expression_copy:
+            if new_modified_prefix_expression == modified_prefix_expression:
                 break
 
-        return new_prefix_expression_copy
+        return new_modified_prefix_expression
 
-    def mask_elementary_literals(self, prefix_expression: list[str]) -> list[str]:
+    def mask_elementary_literals(self, prefix_expression: list[str], inplace: bool = False) -> list[str]:
         '''
         Mask elementary literals such as <0> and <1> with <num>
 
@@ -793,19 +839,24 @@ class ExpressionSpace:
         ----------
         prefix_expression : list[str]
             The prefix expression
+        inplace : bool, optional
+            Whether to modify the expression in place, by default False
 
         Returns
         -------
         list[str]
             The expression with elementary literals masked
         '''
-        prefix_expression_copy = deepcopy(prefix_expression)
+        if inplace:
+            modified_prefix_expression = prefix_expression
+        else:
+            modified_prefix_expression = prefix_expression.copy()
 
-        for i, token in enumerate(prefix_expression_copy):
+        for i, token in enumerate(prefix_expression):
             if token in ['<1>', '<0>']:
-                prefix_expression_copy[i] = '<num>'
+                modified_prefix_expression[i] = '<num>'
 
-        return prefix_expression_copy
+        return modified_prefix_expression
 
     def _simplify(self, expression: list[str], verbose: bool = False, debug: bool = False) -> list[str]:
         '''
@@ -1677,7 +1728,7 @@ class ExpressionSpace:
                         # print(f'Sorting operands of commutative subtree with operator {operator}: {[flatten_nested_list(op)[::-1] for op in operands]}', end='')
                         print(f'Sorting operands of commutative subtree with operator {operator}: {operands}', end='')
 
-                    subtree = deepcopy([operator, operands])
+                    subtree = [operator, operands]
 
                     # Traverse through the tree in breadth-first order
                     queue = [subtree]

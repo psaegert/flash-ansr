@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Any, Generator
+from typing import Any, Generator, Callable, Literal, Iterator, Mapping
 
 import yaml
 
@@ -70,6 +70,7 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
     dict
         The configuration dictionary.
     '''
+
     if isinstance(config, str):
         config_path = substitute_root_path(config)
         config_base_path = os.path.dirname(config_path)
@@ -82,15 +83,53 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
         else:
             raise ValueError(f'Config file {config_path} is not a valid file.')
 
+        def resolve_path(value: Any) -> str:
+            if isinstance(value, str) and value.endswith('.yaml') and value.startswith('.'):
+                return os.path.join(config_base_path, value)
+            return value
+
         if resolve_paths:
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml') and value.startswith('.'):
-                    # Convert the relative path to an absolute path
-                    config_[key] = os.path.join(config_base_path, value)
+            config_ = apply_on_nested(config_, resolve_path)
+
     else:
         config_ = config
 
     return config_
+
+
+def apply_on_nested(structure: list | dict, func: Callable) -> list | dict:
+    '''
+    Apply a function to all values in a nested dictionary.
+
+    Parameters
+    ----------
+    d : list or dict
+        The dictionary to apply the function to.
+    func : Callable
+        The function to apply to the dictionary values.
+
+    Returns
+    -------
+    dict
+        The dictionary with the function applied to all values.
+    '''
+    if isinstance(structure, list):
+        for i, value in enumerate(structure):
+            if isinstance(value, dict):
+                structure[i] = apply_on_nested(value, func)
+            else:
+                structure[i] = func(value)
+        return structure
+
+    if isinstance(structure, dict):
+        for key, value in structure.items():
+            if isinstance(value, dict):
+                structure[key] = apply_on_nested(value, func)
+            else:
+                structure[key] = func(value)
+        return structure
+
+    return structure
 
 
 def save_config(config: dict[str, Any], directory: str, filename: str, reference: str = 'relative', recursive: bool = True, resolve_paths: bool = False) -> None:
@@ -112,28 +151,43 @@ def save_config(config: dict[str, Any], directory: str, filename: str, reference
         - 'absolute': absolute paths
     recursive : bool, optional
         Save any referenced configs too
-    '''
+    # '''
     config_ = copy.deepcopy(config)
 
+    def save_config_relative_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = os.path.join('.', os.path.basename(value))
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
+    def save_config_project_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = value.replace(get_path(), '{{ROOT}}')
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
+    def save_config_absolute_func(value: Any) -> Any:
+        if isinstance(value, str) and value.endswith('.yaml'):
+            relative_path = value
+            if not value.startswith('.'):
+                relative_path = os.path.abspath(substitute_root_path(value))
+            save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        return value
+
     if recursive:
-        if reference == 'relative':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    # First, convert project paths to absolute paths
-                    config_[key] = os.path.join('.', os.path.basename(config_[key]))
-                    save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-
-        elif reference == 'project':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    config_[key] = value.replace(get_path(), '{{ROOT}}')
-                    save_config(load_config(config_[key], resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-
-        elif reference == 'absolute':
-            for key, value in traverse_dict(config_):
-                if isinstance(value, str) and value.endswith('.yaml'):
-                    config_[key] = os.path.abspath(substitute_root_path(value))
-                    save_config(load_config(config_[key], resolve_paths=resolve_paths), directory, os.path.basename(config_[key]), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
+        match reference:
+            case 'relative':
+                apply_on_nested(config_, save_config_relative_func)
+            case 'project':
+                apply_on_nested(config_, save_config_project_func)
+            case 'absolute':
+                apply_on_nested(config_, save_config_absolute_func)
+            case _:
+                raise ValueError(f'Invalid reference type: {reference}')
 
     with open(get_path(directory, filename=filename, create=True), 'w') as config_file:
         yaml.dump(config_, config_file, sort_keys=False)
@@ -158,3 +212,83 @@ def traverse_dict(dict_: dict[str, Any]) -> Generator[tuple[str, Any], None, Non
             yield from traverse_dict(value)
         else:
             yield key, value
+
+
+class GenerationConfig(Mapping[str, Any]):
+    '''
+    A class to store generation configuration.
+
+    Parameters
+    ----------
+    method : str, optional, one of 'beam_search' or 'softmax_sampling'
+        The generation method to use, by default 'beam_search'.
+    **kwargs : Any
+        Additional configuration parameters.
+
+    Attributes
+    ----------
+    method : str
+        The generation method to use.
+    config : dict
+        The configuration dictionary.
+    '''
+    def __init__(self, method: Literal['beam_search', 'softmax_sampling'] = 'beam_search', **kwargs: Any) -> None:
+        self.defaults = {
+            'beam_search': {
+                'beam_width': 32,
+                'max_len': 32,
+                'mini_batch_size': 128,
+                'equivalence_pruning': True
+            },
+            'softmax_sampling': {
+                'choices': 32,
+                'top_k': 0,
+                'top_p': 1,
+                'max_len': 32,
+                'mini_batch_size': 128,
+                'temperature': 1,
+                'valid_only': True,
+                'simplify': True,
+                'unique': True
+            }
+        }
+
+        if method not in self.defaults:
+            raise ValueError(f'Invalid generation method: {method}')
+
+        self.method = method
+
+        self.config = dict(**kwargs)
+
+        # Set defaults if not provided
+        if method in self.defaults:
+            for key, value in self.defaults[method].items():
+                if key not in self.config:
+                    self.config[key] = value
+
+        for key, value in self.config.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.config[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.config[key] = value
+        setattr(self, key, value)
+
+    def __delitem__(self, key: str) -> None:
+        del self.config[key]
+        delattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.config)
+
+    def __len__(self) -> int:
+        return len(self.config)
+
+    # When printed, show the config as a dictionary
+    def __repr__(self) -> str:
+        return str(self.config)
+
+    def __str__(self) -> str:
+        return str(self.config)

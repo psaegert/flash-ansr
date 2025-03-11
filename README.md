@@ -1,18 +1,54 @@
-<h1 align="center" style="margin-top: 0px;">🏗️Work In Progress🏗️</h1>
-
 <h1 align="center" style="margin-top: 0px;">⚡ANSR:<br>Flash Amortized Neural Symbolic Regression</h1>
 
 <div align="center">
 
 [![pytest](https://github.com/psaegert/flash-ansr/actions/workflows/pytest.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/pytest.yml)
 [![quality checks](https://github.com/psaegert/flash-ansr/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/pre-commit.yml)
-[![CodeQL Advanced](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yml)
+[![CodeQL Advanced](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yaml/badge.svg)](https://github.com/psaegert/flash-ansr/actions/workflows/codeql.yaml)
 
 </div>
 
 <!-- TODO: Visual Abstract -->
 
+<img src="./assets/images/nsr-training.drawio.svg" width="100%">
+
+> **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
+
 # Introduction
+
+TODO
+
+<img src="./assets/images/results.png" width="100%">
+
+> **Model Comparison.** Up to 3 variables. Default Model Configurations (32 threads / beams).\
+> Bootstrapped Median, 5p, 95p and AR-p ([Noreen 1989](https://scholar.google.com/scholar?hl=en&q=Computer-intensive+methods+for+testing+hypotheses)) values (n=1000).\
+> N = 5000 ([⚡ v7.0](#usage)), 1000 ([PySR](https://github.com/MilesCranmer/PySR), [NeSymReS 100M](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)).\
+> AMD 9950X (16C32T), RTX 4090.
+
+# Table of Contents
+- [Introduction](#introduction)
+- [Table of Contents](#table-of-contents)
+- [Requirements](#requirements)
+  - [Hardware](#hardware)
+  - [Software](#software)
+- [Getting Started](#getting-started)
+  - [1. Clone the repository](#1-clone-the-repository)
+  - [2. Install the package](#2-install-the-package)
+- [Usage](#usage)
+- [Training](#training)
+  - [Express](#express)
+  - [Manual](#manual)
+    - [0. Prerequisites](#0-prerequisites)
+    - [1. Import test data](#1-import-test-data)
+    - [2. Generate validation data](#2-generate-validation-data)
+    - [3. Train the model](#3-train-the-model)
+    - [4. Evaluate the model](#4-evaluate-the-model)
+      - [4.1 Evaluate NeSymReS](#41-evaluate-nesymres)
+      - [4.2 Evaluate PySR](#42-evaluate-pysr)
+- [Development](#development)
+  - [Setup](#setup)
+  - [Tests](#tests)
+- [Citation](#citation)
 
 # Requirements
 
@@ -37,7 +73,7 @@ cd flash-ansr
 
 ## 2. Install the package
 
-Optional: Create a virtual environment:
+Create a virtual environment (optional):
 
 **conda:**
 
@@ -50,19 +86,17 @@ Then, install the package via
 
 ```sh
 pip install -e .
-pip install -e nsrops
+pip install -e ./nsrops
 ```
 
 # Usage
-
-## Use a pre-trained model
 
 ```python
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Import flash_ansr
-from flash_ansr import FlashANSR, install_model, get_path
+from flash_ansr import FlashANSR, GenerationConfig, install_model, get_path
 
 # Specify the model
 # Here: https://huggingface.co/psaegert/flash-ansr-v7.0
@@ -75,8 +109,8 @@ install_model(MODEL)
 # Load the model
 ansr = FlashANSR.load(
     directory=get_path('models', MODEL),
-    beam_width=256,
-    n_restarts=32,
+    generation_config=GenerationConfig(method='beam_search', beam_width=32),  # optional
+    n_restarts=32,  # optional
 ).to(device)
 
 # Define data
@@ -227,12 +261,12 @@ with
 - `-o` the output file for results
 - `-v` verbose output
 
-#### 4.1 Evaluate NeSymRes
+#### 4.1 Evaluate NeSymReS
 1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) to a directory of your choice.
 2. Download the `100M` model as described [here](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)
 3. Move the `100M` model into `flash-ansr/models/nesymres/`
 4. Create a Python 3.10 (!) environment and install flash-ansr as in the previous steps.
-5. Install NeSymRes in the same environment:
+5. Install NeSymReS in the same environment:
 ```sh
 cd NeuralSymbolicRegressionThatScales
 pip install -e src/
@@ -264,13 +298,7 @@ pre-commit install
 
 ## Tests
 
-Test the package with
-
-```sh
-./scripts/pytest.sh
-```
-
-for convenience.
+Test the package with `./scripts/pytest.sh`. Run pylint with `./scripts/pylint.sh`.
 
 # Citation
 ```bibtex
@@ -279,7 +307,7 @@ for convenience.
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.1.0},
+    version = {0.3.0},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```

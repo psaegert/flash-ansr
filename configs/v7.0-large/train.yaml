@@ -15,7 +15,7 @@ lr_scheduler:
     warmup_steps: 10_000
     total_steps: 1_500_000
 
-batch_size: 32
+batch_size: 128
 
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
@@ -24,7 +24,7 @@ val_size: 100_000
 
 numeric_prediction_loss_weight: 0
 
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 12
 
 steps: 1_500_000
 device: cuda

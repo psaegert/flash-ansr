@@ -4,7 +4,8 @@ import shutil
 
 from unittest import mock
 
-from flash_ansr import Trainer, SkeletonPool, get_path
+from flash_ansr import SkeletonPool, get_path
+from flash_ansr.train import Trainer
 
 
 class TestTrain(unittest.TestCase):
