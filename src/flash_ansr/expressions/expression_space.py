@@ -258,7 +258,7 @@ class ExpressionSpace:
 
         infix_expression = stack.pop()
 
-        return self._deparenthesize(infix_expression)
+        return self._deparenthesize(infix_expression)  # FIXME: Sometimes result in "1 + x) / (2 * x" instead of "(1 + x) / (2 * x)"
 
     def infix_to_prefix(self, infix_expression: str) -> list[str]:
         '''

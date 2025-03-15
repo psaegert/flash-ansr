@@ -307,7 +307,7 @@ class FlashANSR(BaseEstimator):
                                 p0_noise_kwargs=self.refiner_p0_noise_kwargs,
                                 converge_error=converge_error)
 
-                            if refiner.constants_values is None:  # Fit failed
+                            if not refiner.valid_fit:  # Fit failed
                                 fvu = np.nan
                                 score = np.nan
                             else:
