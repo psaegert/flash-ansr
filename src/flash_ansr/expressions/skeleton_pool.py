@@ -66,7 +66,7 @@ class SkeletonPool:
         self.sample_strategy = sample_strategy
 
         np.random.default_rng(seed=0)
-        self.holdout_X = np.random.uniform(-10, 10, (512, 3))
+        self.holdout_X = np.random.uniform(-10, 10, (512, 100))  # HACK: Hardcoded large number that is sliced as needed
         self.holdout_C = np.random.uniform(-10, 10, (512, 100))
         self.holdout_y: set[tuple] = set()
         self.holdout_skeletons: set[tuple[str]] = set()
@@ -302,7 +302,7 @@ class SkeletonPool:
         f = self.expression_space.code_to_lambda(code)
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
+        X_with_constants = np.concatenate([self.holdout_X[:, :self.expression_space.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
         try:
             expression_image = f(*X_with_constants.T).round(4)
             expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
@@ -328,15 +328,15 @@ class SkeletonPool:
 
         for skeleton in holdout_pool.skeletons:
             # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
-            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
+            no_constant_expression = holdout_pool.expression_space.remove_num(skeleton)
+            executable_prefix_expression = holdout_pool.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-            code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, self.expression_space.variables + constants)
+            code_string = holdout_pool.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, holdout_pool.expression_space.variables + constants)
 
             # Evaluate the Expression and store the result
-            f = self.expression_space.code_to_lambda(code)
-            X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
+            f = holdout_pool.expression_space.code_to_lambda(code)
+            X_with_constants = np.concatenate([self.holdout_X[:, :holdout_pool.expression_space.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
                 expression_image = f(*X_with_constants.T).round(4)
