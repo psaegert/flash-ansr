@@ -1,6 +1,6 @@
 expression_space: './expression_space.yaml'
 holdout_pools: [
-  "{{ROOT}}/data/ansr-data/v7.11-mini/skeleton_pool_val/",
+  "{{ROOT}}/data/ansr-data/v7.12/skeleton_pool_val/",
   "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
@@ -8,12 +8,11 @@ holdout_pools: [
 ]
 
 sample_strategy:
-  n_operator_distribution: "length_exponential"
+  n_operator_distribution: "length_proportional"
   min_operators: 0
-  max_operators: 15
+  max_operators: 10
   power: 1
-  lambda: 1
-  max_length: 31
+  max_length: 21
   max_tries: 1
   independent_dimensions: True
 
