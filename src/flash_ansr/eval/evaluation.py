@@ -442,7 +442,7 @@ class Evaluation():
 
                     for j in range(self.beam_width):
                         results_dict[f'free_beam_{j+1}'].append([float('nan')])
-                        results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
+                        results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
                         results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
                         results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
                         results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
