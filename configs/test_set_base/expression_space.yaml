@@ -1,10 +1,8 @@
 operators:
-  +:
-    realization: +
-    alias:
-    - add
-    - plus
-    inverse: '-'
+  "+":
+    realization: "+"
+    alias: ["add", "plus"]
+    inverse: "-"
     arity: 2
     weight: 10
     precedence: 1
@@ -12,12 +10,10 @@ operators:
     symmetry: 0
     positive: false
     monotonicity: 0
-  '-':
-    realization: '-'
-    alias:
-    - sub
-    - minus
-    inverse: +
+  "-":
+    realization: "-"
+    alias: ["sub", "minus"]
+    inverse: "+"
     arity: 2
     weight: 5
     precedence: 1
@@ -26,24 +22,20 @@ operators:
     positive: false
     monotonicity: 0
   neg:
-    realization: nsrops.neg
-    wolfram: Negative
-    alias:
-    - negative
-    inverse: neg
+    realization: "nsrops.neg"
+    alias: ["negative"]
+    inverse: "neg"
     arity: 1
     weight: 5
     precedence: 2.5
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: -1
-  '*':
-    realization: '*'
-    alias:
-    - mul
-    - times
-    inverse: /
+  "*":
+    realization: "*"
+    alias: ["mul", "times"]
+    inverse: "/"
     arity: 2
     weight: 10
     precedence: 2
@@ -51,12 +43,10 @@ operators:
     symmetry: 0
     positive: false
     monotonicity: 0
-  /:
-    realization: /
-    alias:
-    - div
-    - divide
-    inverse: '*'
+  "/":
+    realization: "/"
+    alias: ["div", "divide"]
+    inverse: "*"
     arity: 2
     weight: 5
     precedence: 2
@@ -65,57 +55,51 @@ operators:
     positive: false
     monotonicity: 0
   abs:
-    realization: abs
-    wolfram: Abs
-    alias:
-    - absolute
+    realization: "abs"
+    alias: ["absolute"]
     inverse: null
     arity: 1
     weight: 4
     precedence: 3
     commutative: false
-    symmetry: 1
+    symmetry: 1 # symmetric
     positive: true
     monotonicity: 0
   inv:
-    realization: nsrops.inv
-    wolfram: Inverse
-    alias:
-    - inverse
-    inverse: inv
+    realization: "nsrops.inv"
+    alias: ["inverse"]
+    inverse: "inv"
     arity: 1
     weight: 4
     precedence: 4
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: -1
   pow2:
-    realization: nsrops.pow2
-    alias:
-    - square
+    realization: "nsrops.pow2"
+    alias: ["square"]
     inverse: null
     arity: 1
     weight: 4
     precedence: 3
     commutative: false
-    symmetry: 1
+    symmetry: 1 # symmetric
     positive: true
     monotonicity: 0
   pow3:
-    realization: nsrops.pow3
-    alias:
-    - cube
-    inverse: pow1_3
+    realization: "nsrops.pow3"
+    alias: ["cube"]
+    inverse: "pow1_3"
     arity: 1
     weight: 2
     precedence: 3
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   pow4:
-    realization: nsrops.pow4
+    realization: "nsrops.pow4"
     alias: []
     inverse: null
     arity: 1
@@ -126,20 +110,19 @@ operators:
     positive: true
     monotonicity: 0
   pow5:
-    realization: nsrops.pow5
+    realization: "nsrops.pow5"
     alias: []
-    inverse: pow1_5
+    inverse: "pow1_5"
     arity: 1
     weight: 1
     precedence: 3
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   pow1_2:
-    realization: nsrops.pow1_2
-    alias:
-    - sqrt
+    realization: "nsrops.pow1_2"
+    alias: ["sqrt"]
     inverse: null
     arity: 1
     weight: 4
@@ -149,18 +132,18 @@ operators:
     positive: true
     monotonicity: 1
   pow1_3:
-    realization: nsrops.pow1_3
+    realization: "nsrops.pow1_3"
     alias: []
     inverse: null
     arity: 1
     weight: 2
     precedence: 3
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   pow1_4:
-    realization: nsrops.pow1_4
+    realization: "nsrops.pow1_4"
     alias: []
     inverse: null
     arity: 1
@@ -171,71 +154,64 @@ operators:
     positive: true
     monotonicity: 1
   pow1_5:
-    realization: nsrops.pow1_5
+    realization: "nsrops.pow1_5"
     alias: []
     inverse: null
     arity: 1
     weight: 1
     precedence: 3
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   sin:
-    realization: numpy.sin
-    wolfram: Sin
+    realization: "numpy.sin"
     alias: []
-    inverse: asin
+    inverse: "asin"
     arity: 1
     weight: 4
     precedence: 2
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 0
   cos:
-    realization: numpy.cos
-    wolfram: Cos
+    realization: "numpy.cos"
     alias: []
-    inverse: acos
+    inverse: "acos"
     arity: 1
     weight: 4
     precedence: 2
     commutative: false
-    symmetry: 1
+    symmetry: 1 # symmetric
     positive: false
     monotonicity: 0
   tan:
-    realization: numpy.tan
-    wolfram: Tan
+    realization: "numpy.tan"
     alias: []
-    inverse: atan
+    inverse: "atan"
     arity: 1
     weight: 4
     precedence: 2
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 0
   asin:
-    realization: numpy.arcsin
-    wolfram: ArcSin
-    alias:
-    - arcsin
-    inverse: sin
+    realization: "numpy.arcsin"
+    alias: ["arcsin"]
+    inverse: "sin"
     arity: 1
     weight: 2
     precedence: 2
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   acos:
-    realization: numpy.arccos
-    wolfram: ArcCos
-    alias:
-    - arccos
-    inverse: cos
+    realization: "numpy.arccos"
+    alias: ["arccos"]
+    inverse: "cos"
     arity: 1
     weight: 2
     precedence: 2
@@ -244,23 +220,20 @@ operators:
     positive: true
     monotonicity: 1
   atan:
-    realization: numpy.arctan
-    wolfram: ArcTan
-    alias:
-    - arctan
-    inverse: tan
+    realization: "numpy.arctan"
+    alias: ["arctan"]
+    inverse: "tan"
     arity: 1
     weight: 2
     precedence: 2
     commutative: false
-    symmetry: -1
+    symmetry: -1 # anti-symmetric
     positive: false
     monotonicity: 1
   exp:
-    realization: numpy.exp
-    wolfram: Exp
+    realization: "numpy.exp"
     alias: []
-    inverse: log
+    inverse: "log"
     arity: 1
     weight: 4
     precedence: 3
@@ -269,11 +242,9 @@ operators:
     positive: true
     monotonicity: 1
   log:
-    realization: numpy.log
-    wolfram: Log
-    alias:
-    - ln
-    inverse: exp
+    realization: "numpy.log"
+    alias: ["ln"]
+    inverse: "exp"
     arity: 1
     weight: 4
     precedence: 2
@@ -281,4 +252,5 @@ operators:
     symmetry: 0
     positive: false
     monotonicity: 1
+
 variables: 3

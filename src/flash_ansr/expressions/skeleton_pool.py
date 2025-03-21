@@ -597,7 +597,6 @@ class SkeletonPool:
                 # Sample each dimension independently
                 x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
             else:
-                #
                 x_support = support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
 
             with warnings.catch_warnings():
