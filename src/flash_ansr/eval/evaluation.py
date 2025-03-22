@@ -235,6 +235,8 @@ class Evaluation():
 
                 if pad_length > 0:
                     x_tensor_padded = nn.functional.pad(batch['x_tensors'][:, :self.n_support], (0, pad_length, 0, 0), value=0)
+                else:
+                    x_tensor_padded = batch['x_tensors'][:, :self.n_support]
 
                 data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
