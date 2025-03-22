@@ -253,4 +253,4 @@ operators:
     positive: false
     monotonicity: 1
 
-variables: 3
+variables: 16
