@@ -1,0 +1,25 @@
+encoder_max_n_variables: 4  # includes the dependent variable
+size: 192
+
+pre_encoder_input_type: "ieee-754"
+pre_encoder_support_nan: False
+
+encoder: "SetTransformer"
+encoder_kwargs:
+  hidden_size: 192
+  n_enc_isab: 3
+  n_dec_sab: 2
+  n_induce: 32
+  n_heads: 4
+  layer_norm: False
+  n_seeds: 32
+
+decoder_n_heads: 4
+decoder_ff_size: 192
+decoder_dropout: 0.1
+decoder_n_layers: 3
+
+learnable_positional_embeddings: False
+max_input_length: null
+
+expression_space: './expression_space.yaml'

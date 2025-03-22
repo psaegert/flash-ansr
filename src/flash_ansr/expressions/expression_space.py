@@ -82,6 +82,7 @@ class ExpressionSpace:
         self.max_power = max([int(op[3:]) for op in self.operator_tokens if re.match(r'pow\d+(?!\_)', op)] + [0])
         self.max_fractional_power = max([int(op[5:]) for op in self.operator_tokens if re.match(r'pow1_\d+', op)] + [0])
 
+        self.n_variables = variables
         self.variables = [f'x{i + 1}' for i in range(variables)]
 
         self.tokenizer = Tokenizer(vocab=self.operator_tokens + self.variables, special_tokens=special_tokens)
@@ -258,7 +259,7 @@ class ExpressionSpace:
 
         infix_expression = stack.pop()
 
-        return self._deparenthesize(infix_expression)
+        return self._deparenthesize(infix_expression)  # FIXME: Sometimes result in "1 + x) / (2 * x" instead of "(1 + x) / (2 * x)"
 
     def infix_to_prefix(self, infix_expression: str) -> list[str]:
         '''

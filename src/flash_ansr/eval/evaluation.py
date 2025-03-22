@@ -6,6 +6,7 @@ import warnings
 import torch
 import numpy as np
 import editdistance
+from torch import nn
 
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -229,7 +230,15 @@ class Evaluation():
 
                 batch_size = len(batch['input_ids'])
 
-                data_tensor = torch.cat([batch['x_tensors'][:, :self.n_support], batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
+                # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
+                pad_length = model.flash_ansr_transformer.encoder_max_n_variables - batch['x_tensors'][:, :self.n_support].shape[-1] - y.shape[-1]
+
+                if pad_length > 0:
+                    x_tensor_padded = nn.functional.pad(batch['x_tensors'][:, :self.n_support], (0, pad_length, 0, 0), value=0)
+                else:
+                    x_tensor_padded = batch['x_tensors'][:, :self.n_support]
+
+                data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
                 valid_results = True
                 try:
@@ -442,7 +451,7 @@ class Evaluation():
 
                     for j in range(self.beam_width):
                         results_dict[f'free_beam_{j+1}'].append([float('nan')])
-                        results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
+                        results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
                         results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
                         results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
                         results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))

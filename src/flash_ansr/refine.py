@@ -40,8 +40,7 @@ class Refiner:
 
         self.import_modules()
 
-        self.constants_values: np.ndarray | None = None
-        self.loss: float | None = None
+        self.valid_fit: bool = False
 
         self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []
 
@@ -134,16 +133,15 @@ class Refiner:
 
         # Forget all previous results
         self._all_constants_values = []
-        self.constants_values = None
-        self.constants_cov = None
-        self.loss = None
+        constants_values = None
+        constants_cov = None
 
         if len(self.constants_symbols) == 0:
             if no_constants_error == 'raise':
                 raise ValueError("The expression does not contain any constants")
 
-            self.constants_values = np.array([])
-            self.constants_cov = np.array([])
+            constants_values = np.array([])
+            constants_cov = np.array([])
             try:
                 diff = pred_function(X) - y[:, 0]
                 if np.isnan(diff).any():
@@ -153,15 +151,12 @@ class Refiner:
             except OverflowError:
                 self.loss = np.nan
 
-            self._all_constants_values.append((self.constants_values, self.constants_cov, self.loss))  # type: ignore
+            self._all_constants_values.append((constants_values, constants_cov, self.loss))  # type: ignore
 
             return self
 
-        best_constants: np.ndarray | None = None
-        best_constants_cov: np.ndarray | None = None
-        best_loss = np.inf
-
         self._all_constants_values = []
+        self.valid_fit = False
 
         for _ in range(n_restarts):
             try:
@@ -181,23 +176,13 @@ class Refiner:
 
             self._all_constants_values.append((constants, constants_cov, loss))
 
-            if loss < best_loss:
-                best_constants = constants
-                best_constants_cov = constants_cov
-                best_loss = loss
-
-        if not np.isfinite(best_loss):
-            best_loss = np.nan
+            self.valid_fit = self.valid_fit or np.isfinite(loss)
 
         # Sort the constants by loss
         self._all_constants_values = sorted(self._all_constants_values, key=lambda x: x[-1])
 
-        if best_constants is None and converge_error == 'raise':
+        if not self.valid_fit and converge_error == 'raise':
             raise ConvergenceError(f"The optimization did not converge after {n_restarts} restarts")
-
-        self.constants_values = best_constants
-        self.constants_cov = best_constants_cov  # type: ignore
-        self.loss = best_loss
 
         return self
 
@@ -318,12 +303,12 @@ class Refiner:
         np.ndarray
             The predicted output
         '''
-        if self.constants_values is None and len(self.constants_symbols) > 0:
-            raise ValueError("The constants have not been fitted yet. Please call the fit method first")
-
         constants_values = self._all_constants_values[nth_best_constants][0]
 
-        if len(self.constants_symbols) == 0:
+        if len(constants_values) != len(self.constants_symbols):
+            return np.full((X.shape[0], 1), np.nan)
+
+        if len(self.constants_symbols) == 0 or len(constants_values) == 0:
             y = self.expression_lambda(*X.T)
         else:
             y = self.expression_lambda(*X.T, *constants_values)  # type: ignore
@@ -365,10 +350,10 @@ class Refiner:
         list[str] or str
             The transformed expression
         '''
-        if self.constants_values is None and len(self.constants_symbols) > 0:
-            raise ValueError("The constants have not been fitted yet. Please call the fit method first")
-
         constants_values = self._all_constants_values[nth_best_constants][0]
+
+        if len(constants_values) != len(self.constants_symbols) > 0:
+            constants_values = np.full(len(self.constants_symbols), np.nan)
 
         expression_with_values = substitude_constants(expression, np.round(constants_values, precision))
 
@@ -390,4 +375,4 @@ class Refiner:
         str
             The string representation
         '''
-        return f"Refiner(expression={self.input_expression}, best_constants={self.constants_values}, best_loss={self.loss})"
+        return f"Refiner(expression={self.input_expression}, best_constants={self._all_constants_values[0][0]}, best_loss={self.loss})"
