@@ -8,6 +8,7 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
 from flash_ansr.expressions import ExpressionSpace
 from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
+from flash_ansr.utils import pad_input_set
 
 
 class ConvergenceError(Exception):
@@ -307,6 +308,8 @@ class Refiner:
 
         if len(constants_values) != len(self.constants_symbols):
             return np.full((X.shape[0], 1), np.nan)
+
+        X = pad_input_set(X, self.expression_space.n_variables)
 
         if len(self.constants_symbols) == 0 or len(constants_values) == 0:
             y = self.expression_lambda(*X.T)

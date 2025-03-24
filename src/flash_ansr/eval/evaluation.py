@@ -6,7 +6,6 @@ import warnings
 import torch
 import numpy as np
 import editdistance
-from torch import nn
 
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -27,7 +26,7 @@ from flash_ansr.eval.token_prediction import (
 )
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
-from flash_ansr.utils import load_config
+from flash_ansr.utils import load_config, pad_input_set
 
 
 nltk.download('wordnet', quiet=True)
@@ -230,13 +229,7 @@ class Evaluation():
 
                 batch_size = len(batch['input_ids'])
 
-                # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-                pad_length = model.flash_ansr_transformer.encoder_max_n_variables - batch['x_tensors'][:, :self.n_support].shape[-1] - y.shape[-1]
-
-                if pad_length > 0:
-                    x_tensor_padded = nn.functional.pad(batch['x_tensors'][:, :self.n_support], (0, pad_length, 0, 0), value=0)
-                else:
-                    x_tensor_padded = batch['x_tensors'][:, :self.n_support]
+                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.expression_space.n_variables)
 
                 data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
@@ -406,6 +399,7 @@ class Evaluation():
                                 residuals_val = y_pred_val - y_val
 
                             except (ConvergenceError, OverflowError, TypeError, ValueError):
+                                print('Error in the constant fitting.')
                                 beam_valid_results = False
 
                         else:

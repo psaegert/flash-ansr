@@ -6,13 +6,12 @@ import warnings
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
 from tqdm import tqdm
 from collections import defaultdict
 
 from sklearn.base import BaseEstimator
 
-from flash_ansr.utils import substitute_root_path, GenerationConfig
+from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.models import FlashANSRTransformer
 from flash_ansr.expressions import ExpressionSpace
@@ -260,11 +259,7 @@ class FlashANSR(BaseEstimator):
 
             y_variance = y.var(dim=0).item()
 
-            # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-            pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - y.shape[-1]
-
-            if pad_length > 0:
-                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
+            X = pad_input_set(X, self.expression_space.n_variables)
 
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
@@ -387,14 +382,7 @@ class FlashANSR(BaseEstimator):
         if isinstance(X, pd.DataFrame):
             X = X.values
 
-        # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-        pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - 1
-
-        if pad_length > 0:
-            if isinstance(X, torch.Tensor):
-                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
-            elif isinstance(X, np.ndarray):
-                X = np.pad(X, ((0, 0), (0, pad_length)), mode='constant', constant_values=0)
+        X = pad_input_set(X, self.expression_space.n_variables)
 
         if len(self._results) == 0:
             raise ValueError("The model has not been fitted yet. Please call the fit method first.")
@@ -487,9 +475,7 @@ class FlashANSR(BaseEstimator):
             y = y.reshape(-1, 1)
         x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
         y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
-        pad_length = agent.flash_ansr_transformer.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor.shape[-1]
-        if pad_length > 0:
-            x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0), value=0)
+        X = pad_input_set(x_tensor, self.expression_space.n_variables)
         data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
 
         self.specialize_history = []

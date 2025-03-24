@@ -3,6 +3,9 @@ import os
 from typing import Any, Generator, Callable, Literal, Iterator, Mapping
 
 import yaml
+import numpy as np
+import torch
+from torch import nn
 
 
 def get_path(*args: str, filename: str | None = None, create: bool = False) -> str:
@@ -292,3 +295,15 @@ class GenerationConfig(Mapping[str, Any]):
 
     def __str__(self) -> str:
         return str(self.config)
+
+
+def pad_input_set(X: np.ndarray | torch.Tensor, length: int) -> np.ndarray | torch.Tensor:
+    pad_length = length - X.shape[-1]
+    if pad_length > 0:
+        # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
+        if isinstance(X, torch.Tensor):
+            X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
+        elif isinstance(X, np.ndarray):
+            X = np.pad(X, ((0, 0), (0, pad_length)), mode='constant', constant_values=0)  # type: ignore
+
+    return X
