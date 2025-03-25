@@ -1,0 +1,21 @@
+expression_space: ./expression_space.yaml
+holdout_pools: []
+sample_strategy:
+  max_tries: 100
+  independent_dimensions: True
+allow_nan: false
+simplify: True
+literal_prior: uniform
+literal_prior_kwargs:
+  low: -5
+  high: 5
+support_prior: uniform_intervals
+support_prior_kwargs:
+  low: -10
+  high: 10
+n_support_prior: uniform
+n_support_prior_kwargs:
+  low: 16
+  high: 512
+  min_value: 16
+  max_value: 512

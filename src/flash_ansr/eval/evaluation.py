@@ -185,6 +185,15 @@ class Evaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+
+        # HACK: Ensure compatibility of tokenization and input variables
+        print('Recompiling skeleton and holdout codes to ensure compatibility...')
+        dataset.skeleton_pool.expression_space = model.expression_space
+        dataset.skeleton_pool.skeleton_codes = dataset.skeleton_pool.compile_codes(verbose=verbose)
+        for holdout_pool in dataset.skeleton_pool.holdout_pools:
+            holdout_pool.expression_space = model.expression_space
+            holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=verbose)
+
         if self.preprocess:
             dataset.preprocessor = FlashASNRPreprocessor(model.expression_space, format_probs={'complexity': 1.0})
 
@@ -255,12 +264,12 @@ class Evaluation():
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
 
-                    bos_position = torch.where(batch['input_ids'] == model.expression_space.tokenizer['<bos>'])[1][0].item()
+                    bos_position = torch.where(batch['input_ids'] == dataset.expression_space.tokenizer['<bos>'])[1][0].item()
 
                     expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
                     expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
 
-                    expresssion_labels_decoded = model.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
+                    expresssion_labels_decoded = dataset.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
                     print('Error in the forward pass or fitting.')
