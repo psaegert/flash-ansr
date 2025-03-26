@@ -553,8 +553,10 @@ class FlashANSRTransformer(nn.Module):
         seen_expressions = set()
 
         for seq, score in zip(completed_sequences, completed_scores):
+            encoded_expression, before, after = self.expression_space.extract_expression_from_beam(seq)
+
             # Decode the sequence
-            expression = self.expression_space.tokenizer.decode(seq, special_tokens='<num>')
+            expression = self.expression_space.tokenizer.decode(encoded_expression, special_tokens='<num>')
 
             # Only process valid expressions
             if self.expression_space.is_valid(expression) and len(expression) > 1:
