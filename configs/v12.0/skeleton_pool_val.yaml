@@ -10,7 +10,7 @@ sample_strategy:
   n_operator_distribution: "length_exponential"
   min_operators: 0
   max_operators: 15
-  power: 1
+  power: 0.8
   lambda: 1
   max_length: 31
   max_tries: 1
