@@ -553,7 +553,7 @@ class SkeletonPool:
                     code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     code = codify(code_string, self.expression_space.variables + constants)
 
-                    if not self.is_held_out(skeleton, constants, code):
+                    if not self.is_held_out(skeleton, constants):
                         return tuple(skeleton), code, constants   # type: ignore
         else:
             skeleton = random.choice(tuple(self.skeletons))  # type: ignore
