@@ -18,4 +18,4 @@ class TestSkeletonPool(unittest.TestCase):
             except NoValidSampleFoundError:
                 continue
             assert skeleton not in pool_1.skeletons
-            pool_2.is_held_out(skeleton, constants, code)
+            pool_2.is_held_out(skeleton, constants)

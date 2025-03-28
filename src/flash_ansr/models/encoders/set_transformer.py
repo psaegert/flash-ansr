@@ -102,8 +102,9 @@ class SetTransformer(SetEncoder):
     # https://github.com/juho-lee/set_transformer
     def __init__(
             self,
-            input_size: int,
-            output_size: int,
+            input_embedding_size: int,
+            input_dimension_size: int,
+            output_embedding_size: int,
             n_seeds: int,
             hidden_size: int = 512,
             n_enc_isab: int = 2,
@@ -125,13 +126,19 @@ class SetTransformer(SetEncoder):
                 f"Number of inducing points `n_induce` ({n_induce}) must be an integer or a list of length {n_enc_isab}")
 
         self.enc = nn.Sequential(
-            ISAB(input_size, hidden_size, n_heads, n_induce[0], layer_norm),
+            ISAB(input_embedding_size * input_dimension_size, hidden_size, n_heads, n_induce[0], layer_norm),
             *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], layer_norm) for i in range(n_enc_isab - 1)])
 
         self.dec = nn.Sequential(
             PMA(hidden_size, n_heads, n_seeds, layer_norm),
             *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
-            nn.Linear(hidden_size, output_size))
+            nn.Linear(hidden_size, output_embedding_size))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        # X: (B, M, D, E)
+        B, M, D, E = X.size()
+
+        # X (B, M, D, E) -> (B, M, D * E)
+        X = X.reshape(B, M, D * E)
+
         return self.dec(self.enc(X))

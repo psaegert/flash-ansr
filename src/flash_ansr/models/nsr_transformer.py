@@ -85,8 +85,9 @@ class FlashANSRTransformer(nn.Module):
         if isinstance(encoder, str):
             self.encoder = ModelFactory.get_model(
                 encoder,
-                input_size=self.pre_encoder.output_size,
-                output_size=size,
+                input_embedding_size=self.pre_encoder.encoding_size,
+                input_dimension_size=encoder_max_n_variables,
+                output_embedding_size=size,
                 **encoder_kwargs or {})
         else:
             self.encoder = encoder
@@ -224,8 +225,13 @@ class FlashANSRTransformer(nn.Module):
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
 
+        B, M, D = data.size()
         data_pre_encodings = self.pre_encoder(data)
+        data_pre_encodings = data_pre_encodings.view(B, M, D, self.pre_encoder.encoding_size)
         self.memory = self.encoder(data_pre_encodings)
+
+        if self.memory.ndim > 3:
+            self.memory = self.memory.view(B, -1, self.memory.size(-1))
 
         attn_mask = nn.Transformer.generate_square_subsequent_mask(input_tokens.shape[1], device=input_tokens.device)
         padding_mask = (input_tokens == self.expression_space.tokenizer["<pad>"]).float().masked_fill(input_tokens == self.expression_space.tokenizer["<pad>"], 1e-9)

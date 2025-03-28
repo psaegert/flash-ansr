@@ -102,25 +102,29 @@ class PreEncoder(nn.Module):
         self.exponent_scale = exponent_scale
 
     @property
-    def output_size(self) -> int:
+    def encoding_size(self) -> int:
         # Increase the number of dimensions from d * (number) to d * ({sign,} mantissa, exponent, {nan_flag})
-        output_size = self.input_size
+        output_size = 1
 
         if self.mode == "frexp":
-            output_size += self.input_size
+            output_size += 1
         elif self.mode == "sfrexp":
-            output_size += self.input_size * 2
+            output_size += 2
         elif self.mode == "ieee-754":
-            output_size += self.input_size * 15
+            output_size += 15
 
         if self.mode != "ieee-754" and self.support_nan:
-            output_size += self.input_size
+            output_size += 1
 
         return output_size
 
+    @property
+    def output_size(self) -> int:
+        return self.encoding_size * self.input_size
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 1:
-            x = x.unsqueeze(-1)  # Make room for the bit representation of each number
+            x = x.unsqueeze(-1)  # Make room for the representation of each number
 
         if self.mode == "ieee-754":
             x_bit = float2bit(x)
