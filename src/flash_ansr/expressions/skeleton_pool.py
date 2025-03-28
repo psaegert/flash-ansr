@@ -287,12 +287,12 @@ class SkeletonPool:
         if constants is None:
             raise ValueError("Need constants for test of functional equivalence")
 
-        if tuple(skeleton) in self.holdout_skeletons:  # (symbolic equivalence)
+        no_constant_expression = self.expression_space.remove_num(skeleton)
+        if tuple(no_constant_expression) in self.holdout_skeletons:  # (symbolic equivalence)
             return True
 
         if code is None:
             # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
             executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
