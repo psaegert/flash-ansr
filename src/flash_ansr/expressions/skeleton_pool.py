@@ -342,10 +342,10 @@ class SkeletonPool:
                 expression_image = f(*X_with_constants.T).round(4)
                 expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
-                self.holdout_skeletons.add(skeleton)
+                self.holdout_skeletons.add(tuple(no_constant_expression))
                 continue
 
-            self.holdout_skeletons.add(skeleton)
+            self.holdout_skeletons.add(tuple(no_constant_expression))
             self.holdout_y.add(tuple(expression_image))
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
@@ -503,7 +503,7 @@ class SkeletonPool:
 
         return stack  # type: ignore
 
-    def sample_skeleton(self, new: bool = False) -> tuple[tuple[str], CodeType, list[str]]:
+    def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str]]:
         '''
         Sample a skeleton from the pool.
 
@@ -553,7 +553,7 @@ class SkeletonPool:
                     code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     code = codify(code_string, self.expression_space.variables + constants)
 
-                    if not self.is_held_out(skeleton, constants):
+                    if not decontaminate or not self.is_held_out(skeleton, constants):
                         return tuple(skeleton), code, constants   # type: ignore
         else:
             skeleton = random.choice(tuple(self.skeletons))  # type: ignore
