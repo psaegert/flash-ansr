@@ -9,10 +9,10 @@ holdout_pools: [
 sample_strategy:
   n_operator_distribution: "length_exponential"
   min_operators: 0
-  max_operators: 15
+  max_operators: 10
   power: 0.8
   lambda: 1
-  max_length: 31
+  max_length: 21
   max_tries: 1
   independent_dimensions: True
 

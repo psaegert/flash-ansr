@@ -253,4 +253,14 @@ operators:
     positive: false
     monotonicity: 1
 
-variables: 16
+variables: 11
+
+special_tokens: [
+  "<pad>",
+  "<bos>",
+  "<eos>",
+  "<unk>",
+  "<cls>",
+  "<mask>",
+  "<num>",
+  "<ctrl_complexity>"]
