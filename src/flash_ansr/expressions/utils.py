@@ -148,7 +148,7 @@ def numbers_to_num(prefix_expression: list[str], inplace: bool = False) -> list[
     return modified_prefix_expression
 
 
-def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None, inplace: bool = False) -> tuple[list[str], list[str]]:
+def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None, inplace: bool = False, convert_numbers_to_constant: bool = True) -> tuple[list[str], list[str]]:
     '''
     Replace all '<num>' tokens in a prefix expression with constants named 'C_i'.
     This allows the expression to be compiled into a function.
@@ -179,7 +179,7 @@ def num_to_constants(prefix_expression: list[str], constants: list[str] | None =
         constants = list(constants)
 
     for i, token in enumerate(prefix_expression):
-        if token == "<num>" or re.match(r"C_\d+", token) or token.isnumeric():
+        if token == "<num>" or (convert_numbers_to_constant and (re.match(r"C_\d+", token) or token.isnumeric())):
             if constants is not None and len(constants) > constant_index:
                 modified_prefix_expression[i] = constants[constant_index]
             else:
