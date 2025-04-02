@@ -442,7 +442,7 @@ class SkeletonPool:
             The leaf node.
         '''
         if random.random() < self.variable_probability:
-            return [random.choice(self.expression_space.variables)]
+            return [str(random.choice(self.expression_space.variables))]
 
         return ['<num>']
 
@@ -485,7 +485,7 @@ class SkeletonPool:
 
             # update tree
             pos = [i for i, v in enumerate(stack) if v is None][l_leaves]
-            stack = stack[:pos] + [op] + [None for _ in range(self.expression_space.operator_arity[op])] + stack[pos + 1:]
+            stack = stack[:pos] + [str(op)] + [None for _ in range(self.expression_space.operator_arity[op])] + stack[pos + 1:]
 
         # sanity check
         assert len([1 for v in stack if v in self.expression_space.operator_arity.keys()]) == n_operators
@@ -493,7 +493,6 @@ class SkeletonPool:
 
         # create leaves
         leaves = [self.get_leaf() for _ in range(t_leaves)]
-        np.random.shuffle(leaves)
 
         # insert leaves into tree
         for pos in range(len(stack) - 1, -1, -1):
@@ -680,12 +679,10 @@ class SkeletonPool:
             except NoValidSampleFoundError:
                 continue
 
-            if self.simplify:
-                simplified_skeleton = self.expression_space.simplify(skeleton, inplace=False)
-            else:
-                simplified_skeleton = skeleton
+            if not self.expression_space.is_valid(skeleton):
+                raise ValueError(f"Invalid skeleton: {skeleton}")
 
-            if not self.expression_space.is_valid(simplified_skeleton):
+            if not self.expression_space.is_valid(skeleton):
                 n_invalid += 1
                 pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
                 continue
@@ -696,9 +693,10 @@ class SkeletonPool:
                 pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
                 continue
 
-            h = tuple(simplified_skeleton)
-            self.skeletons.add(h)
-            self.skeleton_codes[h] = (code, constants)
+            if not isinstance(skeleton, tuple):
+                skeleton = tuple(skeleton)
+            self.skeletons.add(skeleton)
+            self.skeleton_codes[skeleton] = (code, constants)
             n_created += 1
 
             pbar.update(1)

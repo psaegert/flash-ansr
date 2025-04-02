@@ -856,7 +856,7 @@ class ExpressionSpace:
 
         return rules_trees
 
-    def pattern_match(self, tree: list, pattern: list, mapping: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
+    def match_pattern(self, tree: list, pattern: list, mapping: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
         if mapping is None:
             mapping = {}
 
@@ -907,7 +907,7 @@ class ExpressionSpace:
                     return False, mapping
             else:
                 # Recursively match the tree operand with the pattern operand
-                does_match, mapping = self.pattern_match(tree_operand, pattern_operand, mapping)
+                does_match, mapping = self.match_pattern(tree_operand, pattern_operand, mapping)
 
                 # If the tree operand does not match the pattern operand, the tree does not match the pattern
                 if not does_match:
@@ -920,11 +920,11 @@ class ExpressionSpace:
         # If the tree is a leaf node, replace the placeholder with the actual subtree defined in the mapping
         if len(tree) == 1 and isinstance(tree[0], str):
             if tree[0].startswith('_'):
-                return mapping[tree[0]]
+                return mapping[tree[0]]  # TODO: I put a bracket here. Find out why this is necessary
             return tree
 
         operator, operands = tree
-        return [operator] + [self.apply_mapping(operand, mapping) for operand in operands]
+        return [operator, [self.apply_mapping(operand, mapping) for operand in operands]]
 
     def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[int, list[tuple[list[str], list[str]]]]) -> list[str]:
         stack: list = []
@@ -943,10 +943,10 @@ class ExpressionSpace:
                 arity = self.operator_arity_compat[operator]
                 operands = list(reversed(stack[-arity:]))
 
+                subtree = [operator, operands]
                 # Check if a pattern matches the current subtree
                 for rule in rules_trees.get(arity, []):
-                    subtree = [operator, operands]
-                    does_match, mapping = self.pattern_match(subtree, rule[0], mapping=None)
+                    does_match, mapping = self.match_pattern(subtree, rule[0], mapping=None)
                     if does_match:
                         # Replace the placeholders (keys of the mapping) with the actual subtrees (values of the mapping) in the entire subtree at any depth
                         _ = [stack.pop() for _ in range(arity)]
@@ -969,7 +969,7 @@ class ExpressionSpace:
         # Unroll the tree into a flat expression in the correct order
         return flatten_nested_list(stack)[::-1]
 
-    def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 1) -> list[str] | tuple[str, ...]:
+    def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
         if isinstance(expression, tuple):
             was_tuple = True
             new_expression = list(expression)
@@ -982,6 +982,9 @@ class ExpressionSpace:
             if new_expression == expression:
                 break
             expression = new_expression
+
+        if mask_elementary_literals:
+            new_expression = self.mask_elementary_literals(new_expression, inplace=inplace)
 
         if was_tuple:
             return tuple(new_expression)
@@ -1092,7 +1095,7 @@ class ExpressionSpace:
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
                 # Create all leaf nodes
                 for leaf in leaf_nodes[:max_n_rules]:
-                    simplified_skeleton = self.simplify_auto_flash([leaf], max_simplify_steps)
+                    simplified_skeleton = self.simplify_auto_flash([leaf], max_simplify_steps, mask_elementary_literals=False)
 
                     executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
                     prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
@@ -1105,7 +1108,7 @@ class ExpressionSpace:
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
-                            simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps)
+                            simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps, mask_elementary_literals=False)
                             simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
                     hashes_of_size = simplified_hashes_of_size
 
@@ -1120,7 +1123,7 @@ class ExpressionSpace:
                             break
                         # TODO: Think about when to simplify the rules
                         for i, rule in enumerate(self.simplification_rules):
-                            self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+                            self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
 
                         self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
 
@@ -1129,7 +1132,7 @@ class ExpressionSpace:
                             with open(output_file, 'w') as file:
                                 json.dump(self.simplification_rules, file, indent=4)
 
-                        simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps)
+                        simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
                         pbar.set_postfix_str(f"Rules found: {len(self.simplification_rules):,}{max_rules_string}, Current Expression: {combination} -> {simplified_skeleton} -> ...")
@@ -1193,7 +1196,7 @@ class ExpressionSpace:
 
                 # Simplify the rules one last time
                 for i, rule in enumerate(self.simplification_rules):
-                    self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+                    self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
 
                 self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
 
@@ -1281,7 +1284,7 @@ class ExpressionSpace:
             modified_prefix_expression = prefix_expression.copy()
 
         for i, token in enumerate(prefix_expression):
-            if token in ['<1>', '<0>']:
+            if token not in self.variables and token not in self.operator_arity_compat and token not in self.operator_aliases and token not in self.special_constants:
                 modified_prefix_expression[i] = '<num>'
 
         return modified_prefix_expression
