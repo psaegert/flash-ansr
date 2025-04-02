@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.utils import load_config
-from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants, codify, safe_f
+from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants, codify, safe_f, deduplicate_rules
 from flash_ansr.expressions.simplify import _simplify_flash
 
 
@@ -28,33 +28,6 @@ def timeout_handler(signum: Any, frame: Any) -> None:
 
 
 signal.signal(signal.SIGALRM, timeout_handler)
-
-
-def remap_expression(source_expression: list[str], dummy_variables: list[str], variable_mapping: dict | None = None) -> tuple[list[str], dict]:
-    source_expression = deepcopy(source_expression)
-    if variable_mapping is None:
-        variable_mapping = {}
-        for i, token in enumerate(source_expression):
-            if token in dummy_variables:
-                if token not in variable_mapping:
-                    variable_mapping[token] = f'_{len(variable_mapping)}'
-
-    for i, token in enumerate(source_expression):
-        if token in dummy_variables:
-            source_expression[i] = variable_mapping[token]
-
-    return source_expression, variable_mapping
-
-
-def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    deduplicated_rules: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
-    for rule in rules_list:
-        # Rename variables in the source expression
-        remapped_source, variable_mapping = remap_expression(list(rule[0]), dummy_variables=dummy_variables)
-        remapped_target, _ = remap_expression(list(rule[1]), dummy_variables, variable_mapping)
-        deduplicated_rules.add((tuple(remapped_source), tuple(remapped_target)))
-
-    return list(deduplicated_rules)
 
 
 class ExpressionSpace:
@@ -128,8 +101,8 @@ class ExpressionSpace:
 
         if simplification == 'auto_flash':
             with open(self.simplification_kwargs['rules_file'], 'r') as f:
-                self.simplification_kwargs['rules'] = json.load(f)
-                self.simplification_kwargs['rules_trees'] = self.rules_trees_from_rules_list(self.simplification_kwargs['rules'], dummy_variables=[f'x{i}' for i in range(100)])  # HACK
+                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = json.load(f)
+                self.simplification_tules_trees: dict[int, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_kwargs['rules'], dummy_variables=[f'x{i}' for i in range(100)])  # HACK
 
     def import_modules(self) -> None:  # TODO. Still necessary?
         for module in self.modules:
@@ -953,7 +926,7 @@ class ExpressionSpace:
         operator, operands = tree
         return [operator] + [self.apply_mapping(operand, mapping) for operand in operands]
 
-    def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[int, set[tuple[list[str], list[str]]]]) -> list[str]:
+    def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[int, list[tuple[list[str], list[str]]]]) -> list[str]:
         stack: list = []
         i = len(expression) - 1
 
@@ -1005,7 +978,7 @@ class ExpressionSpace:
             new_expression = expression
 
         for _ in range(max_iter):
-            new_expression = self._simplify_auto_flash(new_expression, self.simplification_kwargs["rules_trees"])
+            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
             if new_expression == expression:
                 break
             expression = new_expression
@@ -1014,16 +987,17 @@ class ExpressionSpace:
             return tuple(new_expression)
         return new_expression
 
-    def construct_expressions(self, hashes_of_size: dict[int, list[tuple[str]]], non_leaf_nodes: dict[str, int]) -> Generator[tuple[str, ...], None, None]:
+    def construct_expressions(self, hashes_of_size: dict[int, set[tuple[str, ...]]], non_leaf_nodes: dict[str, int]) -> Generator[tuple[str, ...], None, None]:
+        hashes_of_size_with_lists = {k: list(v) for k, v in hashes_of_size.items()}
         # Append existing trees to every operator
         for new_root_operator, arity in non_leaf_nodes.items():
             # Start with the smallest arity-tuples of trees
-            for child_lengths in sorted(itertools.product(list(hashes_of_size.keys()), repeat=arity), key=lambda x: sum(x)):
+            for child_lengths in sorted(itertools.product(list(hashes_of_size_with_lists.keys()), repeat=arity), key=lambda x: sum(x)):
                 # Check all possible combinations of child trees
-                for child_combination in itertools.product(*[hashes_of_size[child_length] for child_length in child_lengths]):
+                for child_combination in itertools.product(*[hashes_of_size_with_lists[child_length] for child_length in child_lengths]):
                     yield (new_root_operator,) + tuple(itertools.chain.from_iterable(child_combination))
 
-    def exist_constants_that_fit(self, expression: list[str] | tuple[str], variables: list[str], X: np.ndarray, y_target: np.ndarray) -> bool:
+    def exist_constants_that_fit(self, expression: list[str] | tuple[str, ...], variables: list[str], X: np.ndarray, y_target: np.ndarray) -> bool:
         if isinstance(expression, tuple):
             expression = list(expression)
 
@@ -1035,8 +1009,8 @@ class ExpressionSpace:
 
         def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float | np.ndarray:
             if len(constants) == 0:
-                y = f(*X.T)
-            y = f(*X.T, *constants)
+                y = safe_f(f, X)
+            y = safe_f(f, X, constants)
 
             # If the numbers are complex, return nan
             if np.iscomplexobj(y):
@@ -1047,6 +1021,9 @@ class ExpressionSpace:
         p0 = np.random.normal(loc=0, scale=5, size=len(constants))
 
         is_valid = np.isfinite(X).all(axis=1) & np.isfinite(y_target)
+
+        if not np.any(is_valid):
+            return False
 
         try:
             with warnings.catch_warnings():
@@ -1072,15 +1049,20 @@ class ExpressionSpace:
             C: np.ndarray | int | None = None,
             constants_fit_retries: int = 5,
             output_file: str | None = None,
-            save_every: int = 100) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+            save_every: int = 100,
+            reset_rules: bool = True,
+            verbose: bool = False) -> None:
 
-        rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-        hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
+        hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
 
         if dummy_variables is None:
             dummy_variables = [f"x{i}" for i in range(10)]
         elif isinstance(dummy_variables, int):
             dummy_variables = [f"x{i}" for i in range(dummy_variables)]
+
+        if reset_rules:
+            self.simplification_rules = []
+            self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
 
         if X is None:
             X = np.random.normal(loc=0, scale=5, size=(1024, len(dummy_variables)))
@@ -1098,10 +1080,12 @@ class ExpressionSpace:
         leaf_nodes = dummy_variables + additional_leaf_nodes
         non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
 
-        pbar = tqdm(total=max_n_rules)
+        pbar = tqdm(disable=not verbose)
         n_scanned = 0
 
         start_time = time.time()
+
+        max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
 
         try:
             with warnings.catch_warnings():
@@ -1117,34 +1101,38 @@ class ExpressionSpace:
 
                     hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
 
-                while (max_n_rules is not None and n_scanned < max_n_rules) or timeout is not None:
-
-                    simplified_hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
+                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) or timeout is not None:
+                    simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
                             simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps)
                             simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
-                    hashes_of_size_sorted = {length: sorted(hashes_list, key=lambda x: len(x)) for length, hashes_list in simplified_hashes_of_size.items()}  # type: ignore
+                    hashes_of_size = simplified_hashes_of_size
 
-                    new_hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
-                    for combination in self.construct_expressions(hashes_of_size_sorted, non_leaf_nodes):
+                    if len(hashes_of_size[1]) == 1:
+                        exit()
+
+                    new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
+                    for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes):
                         if timeout is not None and time.time() - start_time > timeout:
+                            if verbose:
+                                print('Reached timeout')
                             break
                         # TODO: Think about when to simplify the rules
-                        for i, rule in enumerate(rules):
-                            rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+                        for i, rule in enumerate(self.simplification_rules):
+                            self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
 
-                        rules = deduplicate_rules(rules, dummy_variables)
+                        self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
 
                         # Write the rules to a file to check the progress
                         if output_file is not None and n_scanned % save_every == 0:
                             with open(output_file, 'w') as file:
-                                json.dump(rules, file, indent=4)
+                                json.dump(self.simplification_rules, file, indent=4)
 
                         simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps)
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
-                        pbar.set_postfix_str(f"Rules found: {len(rules):,}, Current Expression: {combination} -> {simplified_skeleton} -> ...")
+                        pbar.set_postfix_str(f"Rules found: {len(self.simplification_rules):,}{max_rules_string}, Current Expression: {combination} -> {simplified_skeleton} -> ...")
 
                         executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
                         prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
@@ -1157,7 +1145,7 @@ class ExpressionSpace:
 
                         # Record the image
                         new_rule_candidates = []
-                        for candidate_hashes_of_size in (hashes_of_size_sorted, new_hashes_of_size):
+                        for candidate_hashes_of_size in (hashes_of_size, new_hashes_of_size):
                             for length, candidate_hashes_list in candidate_hashes_of_size.items():  # type: ignore
                                 # Ignore simplification candidates that do not shorten the expression
                                 if length >= len(simplified_skeleton_hash):
@@ -1193,30 +1181,38 @@ class ExpressionSpace:
                             new_rule_candidates_of_minimum_length_without_num = [c for c in new_rule_candidates_of_minimum_length if '<num>' not in c[1]]
                             if len(new_rule_candidates_of_minimum_length_without_num) > 0:
                                 new_rule_candidates_of_minimum_length = new_rule_candidates_of_minimum_length_without_num
-                            rules.append(new_rule_candidates_of_minimum_length[0])
+                            self.simplification_rules.append(new_rule_candidates_of_minimum_length[0])
 
-                        new_hashes_of_size[len(h)].add(h)
+                        # print(simplified_skeleton_hash in new_hashes_of_size[len(simplified_skeleton_hash)])
+                        new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
 
                         n_scanned += 1
                         pbar.update(1)
 
-                        if max_n_rules is not None and n_scanned >= max_n_rules:
+                        if max_n_rules is not None and len(self.simplification_rules) >= max_n_rules:
+                            if verbose:
+                                print('Max rules reached')
                             break
 
                     hashes_of_size.update(new_hashes_of_size)
 
                 # Simplify the rules one last time
-                for i, rule in enumerate(rules):
-                    rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+                for i, rule in enumerate(self.simplification_rules):
+                    self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+
+                self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
+
+            pbar.close()
 
         except KeyboardInterrupt:
+            pbar.close()
             if output_file is not None:
-                print('Interrupted. Trying to save the rules...')
+                if verbose:
+                    print('Interrupted. Trying to save the rules...')
+                time.sleep(1)  # Allow the user to interrupt the process
                 with open(output_file, 'w') as file:
-                    json.dump(rules, file, indent=4)
+                    json.dump(self.simplification_rules, file, indent=4)
             raise
-
-        return rules
 
     # SIMPLIFICATION
     def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, inplace: bool = False, verbose: bool = False, debug: bool = False) -> list[str]:

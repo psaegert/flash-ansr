@@ -4,6 +4,7 @@ from types import CodeType
 from typing import Any, Callable
 from functools import partial
 import math
+from copy import deepcopy
 
 import numpy as np
 
@@ -451,3 +452,30 @@ def safe_f(f: Callable, X: np.ndarray, constants: np.ndarray | None = None) -> n
         return y
     except ZeroDivisionError:
         return np.full(X.shape[0], np.nan)
+
+
+def remap_expression(source_expression: list[str], dummy_variables: list[str], variable_mapping: dict | None = None) -> tuple[list[str], dict]:
+    source_expression = deepcopy(source_expression)
+    if variable_mapping is None:
+        variable_mapping = {}
+        for i, token in enumerate(source_expression):
+            if token in dummy_variables:
+                if token not in variable_mapping:
+                    variable_mapping[token] = f'_{len(variable_mapping)}'
+
+    for i, token in enumerate(source_expression):
+        if token in dummy_variables:
+            source_expression[i] = variable_mapping[token]
+
+    return source_expression, variable_mapping
+
+
+def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    deduplicated_rules: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+    for rule in rules_list:
+        # Rename variables in the source expression
+        remapped_source, variable_mapping = remap_expression(list(rule[0]), dummy_variables=dummy_variables)
+        remapped_target, _ = remap_expression(list(rule[1]), dummy_variables, variable_mapping)
+        deduplicated_rules.add((tuple(remapped_source), tuple(remapped_target)))
+
+    return list(deduplicated_rules)
