@@ -1,20 +1,25 @@
 import re
 import importlib
 import fractions
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Generator
 from copy import deepcopy
 from types import CodeType, FunctionType
 from math import prod
 import signal
+import itertools
 from collections import defaultdict
+import warnings
+import time
 
 import numpy as np
 import json
 from sympy import simplify, parse_expr
+from scipy.optimize import curve_fit, OptimizeWarning
+from tqdm import tqdm
 
 from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.utils import load_config
-from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants
+from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants, codify, safe_f
 from flash_ansr.expressions.simplify import _simplify_flash
 
 
@@ -41,7 +46,7 @@ def remap_expression(source_expression: list[str], dummy_variables: list[str], v
     return source_expression, variable_mapping
 
 
-def deduplicate_rules(rules_list: list[tuple[list[str], list[str]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
     deduplicated_rules: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
     for rule in rules_list:
         # Rename variables in the source expression
@@ -853,16 +858,22 @@ class ExpressionSpace:
 
         return result
 
-    def rules_trees_from_rules_list(self, rules_list: list[tuple[list[str], list[str]]], dummy_variables: list[str]) -> dict[int, list[tuple[list, list]]]:
+    def rules_trees_from_rules_list(self, rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> dict[int, list[tuple[list, list]]]:
+        # Deduplicate the rules (remove patterns that are represented by other patterns, e.g. with other variables)
         deduplicated_rules = deduplicate_rules(rules_list, dummy_variables)
 
+        # Group the rules by arity
         deduplicated_rules_of_arity = defaultdict(list)
         for rule in deduplicated_rules:
             arity = self.operator_arity[rule[0][0]]
             deduplicated_rules_of_arity[arity].append(rule)
-
         deduplicated_rules_of_arity: dict[int, Any] = dict(deduplicated_rules_of_arity)  # type: ignore
 
+        # Sort the rules by length of the left-hand side to make matching more efficient
+        for arity, deduplicated_rules_of_arity_list in deduplicated_rules_of_arity.items():
+            deduplicated_rules_of_arity[arity] = sorted(deduplicated_rules_of_arity_list, key=lambda x: len(x[0]))
+
+        # Construct the trees for pattern matching
         rules_trees = {a: [
             (
                 self.prefix_to_tree(list(rule[0])),
@@ -876,41 +887,64 @@ class ExpressionSpace:
         if mapping is None:
             mapping = {}
 
+        # Th leaf node is a variable but the pattern is not
         if len(tree) == 1 and isinstance(tree[0], str) and len(pattern) != 1:
             return False, mapping
 
+        # Elementary pattern
         if len(pattern) == 1 and isinstance(pattern[0], str):
+            # Check if the pattern is a placeholder to be filled with the tree
             if pattern[0].startswith('_'):
+                # Try to match the tree with the placeholder pattern
                 if pattern[0] not in mapping:
+                    # Placeholder is not yet filled, can be filled with the tree
                     mapping[pattern[0]] = tree
                 elif mapping[pattern[0]] != tree:
+                    # Placeholder is occupied by another tree, the tree does not match the pattern
                     return False, mapping
+
+                # Placeholder is filled with the tree, the tree matches the pattern
                 return True, mapping
 
+            # The literal pattern must match the tree
             if tree != pattern:
                 return False, mapping
+
+            # The tree matches the pattern
             return True, mapping
 
+        # The pattern is tree-structured
         tree_operator, tree_operands = tree
         pattern_operator, pattern_operands = pattern
 
+        # If the operators do not match, the tree does not match the pattern
         if tree_operator != pattern_operator:
             return False, mapping
 
+        # Try to recursively match the operands
         for tree_operand, pattern_operand in zip(tree_operands, pattern_operands):
+            # If the pattern operand is a leaf node
             if isinstance(pattern_operand, str):
+                # Check if the pattern operand is a placeholder to be filled with the tree operand
                 if pattern_operand not in mapping:
+                    # Placeholder is not yet filled, can be filled with the tree operand
                     mapping[pattern_operand] = tree_operand
                 elif mapping[pattern_operand] != tree_operand:
+                    # Placeholder is occupied by another tree, the tree does not match the pattern
                     return False, mapping
             else:
+                # Recursively match the tree operand with the pattern operand
                 does_match, mapping = self.pattern_match(tree_operand, pattern_operand, mapping)
+
+                # If the tree operand does not match the pattern operand, the tree does not match the pattern
                 if not does_match:
                     return False, mapping
 
+        # The tree matches the pattern
         return True, mapping
 
     def apply_mapping(self, tree: list, mapping: dict[str, Any]) -> list:
+        # If the tree is a leaf node, replace the placeholder with the actual subtree defined in the mapping
         if len(tree) == 1 and isinstance(tree[0], str):
             if tree[0].startswith('_'):
                 return mapping[tree[0]]
@@ -919,14 +953,18 @@ class ExpressionSpace:
         operator, operands = tree
         return [operator] + [self.apply_mapping(operand, mapping) for operand in operands]
 
-    def _simplify_auto_flash(self, expression: list[str], rules_trees: dict[int, set[tuple[list[str], list[str]]]]) -> list[str]:
+    def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[int, set[tuple[list[str], list[str]]]]) -> list[str]:
         stack: list = []
         i = len(expression) - 1
 
+        # Traverse the expression from right to left
         while i >= 0:
             token = expression[i]
+
+            # Remember if a rule was applied in this iteration
             applied_rule = False
 
+            # If the token is an operator, check for rules that can be applied
             if token in self.operator_arity_compat or token in self.operator_aliases:
                 operator = self.operator_aliases.get(token, token)
                 arity = self.operator_arity_compat[operator]
@@ -937,7 +975,6 @@ class ExpressionSpace:
                     subtree = [operator, operands]
                     does_match, mapping = self.pattern_match(subtree, rule[0], mapping=None)
                     if does_match:
-
                         # Replace the placeholders (keys of the mapping) with the actual subtrees (values of the mapping) in the entire subtree at any depth
                         _ = [stack.pop() for _ in range(arity)]
                         stack.append(self.apply_mapping(deepcopy(rule[1]), mapping))
@@ -956,16 +993,230 @@ class ExpressionSpace:
                 stack.append([token])
                 i -= 1
 
+        # Unroll the tree into a flat expression in the correct order
         return flatten_nested_list(stack)[::-1]
 
-    def simplify_auto_flash(self, expression: list[str], max_iter: int = 1) -> list[str]:
-        new_expression = expression
+    def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 1) -> list[str] | tuple[str, ...]:
+        if isinstance(expression, tuple):
+            was_tuple = True
+            new_expression = list(expression)
+        else:
+            was_tuple = False
+            new_expression = expression
+
         for _ in range(max_iter):
             new_expression = self._simplify_auto_flash(new_expression, self.simplification_kwargs["rules_trees"])
             if new_expression == expression:
                 break
             expression = new_expression
+
+        if was_tuple:
+            return tuple(new_expression)
         return new_expression
+
+    def construct_expressions(self, hashes_of_size: dict[int, list[tuple[str]]], non_leaf_nodes: dict[str, int]) -> Generator[tuple[str, ...], None, None]:
+        # Append existing trees to every operator
+        for new_root_operator, arity in non_leaf_nodes.items():
+            # Start with the smallest arity-tuples of trees
+            for child_lengths in sorted(itertools.product(list(hashes_of_size.keys()), repeat=arity), key=lambda x: sum(x)):
+                # Check all possible combinations of child trees
+                for child_combination in itertools.product(*[hashes_of_size[child_length] for child_length in child_lengths]):
+                    yield (new_root_operator,) + tuple(itertools.chain.from_iterable(child_combination))
+
+    def exist_constants_that_fit(self, expression: list[str] | tuple[str], variables: list[str], X: np.ndarray, y_target: np.ndarray) -> bool:
+        if isinstance(expression, tuple):
+            expression = list(expression)
+
+        executable_prefix_expression = self.operators_to_realizations(expression)
+        prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
+        code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
+        code = codify(code_string, variables + constants)
+        f = self.code_to_lambda(code)
+
+        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float | np.ndarray:
+            if len(constants) == 0:
+                y = f(*X.T)
+            y = f(*X.T, *constants)
+
+            # If the numbers are complex, return nan
+            if np.iscomplexobj(y):
+                return np.full(X.shape[0], np.nan)
+
+            return y
+
+        p0 = np.random.normal(loc=0, scale=5, size=len(constants))
+
+        is_valid = np.isfinite(X).all(axis=1) & np.isfinite(y_target)
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=OptimizeWarning)
+                popt, _ = curve_fit(pred_function, X[is_valid], y_target[is_valid].flatten(), p0=p0)
+        except RuntimeError:
+            return False
+
+        y = f(*X.T, *popt)
+        if not isinstance(y, np.ndarray):
+            y = np.full(X.shape[0], y)  # type: ignore
+
+        return np.allclose(y_target, y, equal_nan=True)
+
+    def find_rules(
+            self,
+            max_n_rules: int | None = None,
+            timeout: float | None = None,
+            dummy_variables: int | list[str] | None = None,
+            additional_leaf_nodes: list[str] | None = None,
+            max_simplify_steps: int = 1,
+            X: np.ndarray | int | None = None,
+            C: np.ndarray | int | None = None,
+            constants_fit_retries: int = 5,
+            output_file: str | None = None,
+            save_every: int = 100) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+
+        rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+        hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
+
+        if dummy_variables is None:
+            dummy_variables = [f"x{i}" for i in range(10)]
+        elif isinstance(dummy_variables, int):
+            dummy_variables = [f"x{i}" for i in range(dummy_variables)]
+
+        if X is None:
+            X = np.random.normal(loc=0, scale=5, size=(1024, len(dummy_variables)))
+        elif isinstance(X, int):
+            X = np.random.normal(loc=0, scale=5, size=(X, len(dummy_variables)))
+
+        if C is None:
+            C = np.random.normal(loc=0, scale=5, size=128)
+        elif isinstance(C, int):
+            C = np.random.normal(loc=0, scale=5, size=C)
+
+        if additional_leaf_nodes is None:
+            additional_leaf_nodes = ['<num>', '0', '1', '2', '(-1)', '(-2)', 'float("inf")', 'float("-inf")', 'float("nan")']
+
+        leaf_nodes = dummy_variables + additional_leaf_nodes
+        non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
+
+        pbar = tqdm(total=max_n_rules)
+        n_scanned = 0
+
+        start_time = time.time()
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                # Create all leaf nodes
+                for leaf in leaf_nodes[:max_n_rules]:
+                    simplified_skeleton = self.simplify_auto_flash([leaf], max_simplify_steps)
+
+                    executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
+                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
+                    code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                    code = codify(code_string, dummy_variables + constants)
+
+                    hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
+
+                while (max_n_rules is not None and n_scanned < max_n_rules) or timeout is not None:
+
+                    simplified_hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
+                    for length, hashes_list in hashes_of_size.items():
+                        for h in hashes_list:
+                            simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps)
+                            simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
+                    hashes_of_size_sorted = {length: sorted(hashes_list, key=lambda x: len(x)) for length, hashes_list in simplified_hashes_of_size.items()}  # type: ignore
+
+                    new_hashes_of_size: defaultdict[int, set[tuple[str]]] = defaultdict(set)
+                    for combination in self.construct_expressions(hashes_of_size_sorted, non_leaf_nodes):
+                        if timeout is not None and time.time() - start_time > timeout:
+                            break
+                        # TODO: Think about when to simplify the rules
+                        for i, rule in enumerate(rules):
+                            rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+
+                        rules = deduplicate_rules(rules, dummy_variables)
+
+                        # Write the rules to a file to check the progress
+                        if output_file is not None and n_scanned % save_every == 0:
+                            with open(output_file, 'w') as file:
+                                json.dump(rules, file, indent=4)
+
+                        simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps)
+                        simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
+
+                        pbar.set_postfix_str(f"Rules found: {len(rules):,}, Current Expression: {combination} -> {simplified_skeleton} -> ...")
+
+                        executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
+                        prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
+                        code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                        code = codify(code_string, dummy_variables + constants)
+
+                        f = self.code_to_lambda(code)
+
+                        y = safe_f(f, X, C[:len(constants)])  # type: ignore
+
+                        # Record the image
+                        new_rule_candidates = []
+                        for candidate_hashes_of_size in (hashes_of_size_sorted, new_hashes_of_size):
+                            for length, candidate_hashes_list in candidate_hashes_of_size.items():  # type: ignore
+                                # Ignore simplification candidates that do not shorten the expression
+                                if length >= len(simplified_skeleton_hash):
+                                    continue
+
+                                for candidate_hash in candidate_hashes_list:
+                                    if candidate_hash == simplified_skeleton_hash:
+                                        continue
+                                    executable_prefix_candidate_hash = self.operators_to_realizations(candidate_hash)
+                                    prefix_candidate_hash_with_constants, constants_candidate_hash = num_to_constants(executable_prefix_candidate_hash, convert_numbers_to_constant=False)
+                                    code_string_candidate_hash = self.prefix_to_infix(prefix_candidate_hash_with_constants, realization=True)
+                                    code_candidate_hash = codify(code_string_candidate_hash, dummy_variables + constants_candidate_hash)
+
+                                    f_candidate = self.code_to_lambda(code_candidate_hash)
+
+                                    # Record the image
+                                    if len(constants_candidate_hash) == 0:
+                                        y_candidate = safe_f(f_candidate, X)
+                                        if not isinstance(y_candidate, np.ndarray):
+                                            y_candidate = np.full(X.shape[0], y_candidate)  # type: ignore
+
+                                        if np.allclose(y, y_candidate, equal_nan=True):
+                                            new_rule_candidates.append((simplified_skeleton_hash, candidate_hash))
+                                    else:
+                                        if any([self.exist_constants_that_fit(candidate_hash, dummy_variables, X, y) for _ in range(constants_fit_retries)]):
+                                            new_rule_candidates.append((simplified_skeleton_hash, candidate_hash))
+
+                        # Find the shortest rule
+                        if len(new_rule_candidates) > 0:
+                            new_rule_candidates = sorted(new_rule_candidates, key=lambda x: len(x[1]))
+                            new_rule_candidates_of_minimum_length = [c for c in new_rule_candidates if len(c[1]) == len(new_rule_candidates[0][1])]
+                            # If there are rules with and without <num>, prefer the ones without
+                            new_rule_candidates_of_minimum_length_without_num = [c for c in new_rule_candidates_of_minimum_length if '<num>' not in c[1]]
+                            if len(new_rule_candidates_of_minimum_length_without_num) > 0:
+                                new_rule_candidates_of_minimum_length = new_rule_candidates_of_minimum_length_without_num
+                            rules.append(new_rule_candidates_of_minimum_length[0])
+
+                        new_hashes_of_size[len(h)].add(h)
+
+                        n_scanned += 1
+                        pbar.update(1)
+
+                        if max_n_rules is not None and n_scanned >= max_n_rules:
+                            break
+
+                    hashes_of_size.update(new_hashes_of_size)
+
+                # Simplify the rules one last time
+                for i, rule in enumerate(rules):
+                    rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps)))
+
+        except KeyboardInterrupt:
+            if output_file is not None:
+                print('Interrupted. Trying to save the rules...')
+                with open(output_file, 'w') as file:
+                    json.dump(rules, file, indent=4)
+            raise
+
+        return rules
 
     # SIMPLIFICATION
     def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, inplace: bool = False, verbose: bool = False, debug: bool = False) -> list[str]:
@@ -1077,7 +1328,7 @@ class ExpressionSpace:
         raise ValueError(f'None of the criteria matched for operands {operands}:\n1. ({len(operands) > 1}, {isinstance(operands[0], str)}, {operands[0] in self.operator_arity_compat or operands[0] in self.operator_aliases})\n2. ({len(operands) == 1}, {isinstance(operands[0], str)})\n3. ({isinstance(operands, str)})')
 
     # CODIFYING
-    def operators_to_realizations(self, prefix_expression: list[str]) -> list[str]:
+    def operators_to_realizations(self, prefix_expression: list[str] | tuple[str, ...]) -> list[str] | tuple[str, ...]:
         '''
         Converts a prefix expression from operators to realizations.
 

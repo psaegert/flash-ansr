@@ -438,3 +438,16 @@ def get_distribution(distribution: str | Callable[..., np.ndarray], distribution
         return partial(distribution, **distribution_kwargs)
 
     raise ValueError(f'Distribution must be a function (int -> float) or one of ["uniform", "log_uniform", "normal"], got {distribution}')
+
+
+def safe_f(f: Callable, X: np.ndarray, constants: np.ndarray | None = None) -> np.ndarray:
+    try:
+        if constants is None:
+            y = f(*X.T)
+        else:
+            y = f(*X.T, *constants)
+        if not isinstance(y, np.ndarray) or y.shape[0] == 1:
+            y = np.full(X.shape[0], y)
+        return y
+    except ZeroDivisionError:
+        return np.full(X.shape[0], np.nan)
