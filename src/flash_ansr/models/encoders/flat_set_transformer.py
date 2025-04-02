@@ -49,10 +49,11 @@ class FlatSetTransformer(SetEncoder):
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         B, M, D, E = X.shape
-        out = self.dec(self.enc(X.reshape(B, M * D, E)))
-        out = out.reshape(B, -1, D, self.output_embedding_size)
 
         if self.add_positional_encoding:
-            out = out + self.positional_encoding_out(shape=(D, self.output_embedding_size), device=out.device)
+            X = X + self.positional_encoding_out(shape=(D, E), device=X.device)
+
+        out = self.dec(self.enc(X.reshape(B, M * D, E)))
+        out = out.reshape(B, -1, D, self.output_embedding_size)
 
         return out

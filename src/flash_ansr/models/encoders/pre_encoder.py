@@ -86,12 +86,21 @@ def integer2bit(integer: torch.Tensor, num_bits: int = 8) -> torch.Tensor:
     return (out - (out % 1)) % 2
 
 
+def hamming(x: torch.Tensor) -> torch.Tensor:
+    mask = torch.abs(x) < 1
+    y = torch.zeros_like(x)
+    y[mask] = torch.cos(x[mask] * torch.pi) + 1
+    return y
+
+
 class PreEncoder(nn.Module):
-    def __init__(self, input_size: int, mode: Literal["ieee-754", "numeric", "frexp", "sfrexp"] = "numeric", support_nan: bool = False, exponent_scale: float | None = None) -> None:
+    def __init__(self, input_size: int, mode: Literal["ieee-754", "numeric", "special_frexp", "frexp", "sfrexp"] = "numeric", support_nan: bool = False, exponent_scale: float | None = None) -> None:
         super().__init__()
 
-        if mode not in ["ieee-754", "numeric", "frexp", "sfrexp"]:
-            raise ValueError(f"Invalid mode: {mode}, expected one of ['ieee-754', 'numeric', 'frexp', 'sfrexp']")
+        self.supported_modes = ["ieee-754", "special_frexp", "numeric", "frexp", "sfrexp"]
+
+        if mode not in self.supported_modes:
+            raise ValueError(f"Invalid mode: {mode}, expected one of {self.supported_modes}")
 
         if exponent_scale is not None and mode not in ["frexp", "sfrexp"]:
             raise ValueError(f"exponent_scale is only valid for modes ['frexp', 'sfrexp'], got mode: {mode}")
@@ -100,6 +109,8 @@ class PreEncoder(nn.Module):
         self.mode = mode
         self.support_nan = support_nan
         self.exponent_scale = exponent_scale
+
+        self.special_logs_factors = - torch.arange(-45, 39, dtype=torch.float32)
 
     @property
     def encoding_size(self) -> int:
@@ -112,6 +123,8 @@ class PreEncoder(nn.Module):
             output_size += 2
         elif self.mode == "ieee-754":
             output_size += 15
+        elif self.mode == "special_frexp":
+            output_size += len(self.special_logs_factors) * 2
 
         if self.mode != "ieee-754" and self.support_nan:
             output_size += 1
@@ -123,12 +136,14 @@ class PreEncoder(nn.Module):
         return self.encoding_size * self.input_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 1:
-            x = x.unsqueeze(-1)  # Make room for the representation of each number
+        # if x.dim() == 1:
+        #     x = x.unsqueeze(-1)  # Make room for the representation of each number
 
         if self.mode == "ieee-754":
             x_bit = float2bit(x)
-            return (x_bit.view(*x_bit.shape[:-2], self.output_size) - 0.5) * 2
+            return (x_bit - 0.5) * 2
+        else:
+            x = x.unsqueeze(-1)  # Make room for the representation of each number
 
         x_isnan = torch.isnan(x)
         x_isinf = torch.isinf(x)
@@ -146,11 +161,26 @@ class PreEncoder(nn.Module):
         x_isinf = torch.isinf(x)
 
         mantissa_valid, exponent_valid = torch.frexp(x[~x_isnan & ~x_isinf])
+
         mantissa[~x_isnan & ~x_isinf] = mantissa_valid
         exponent[~x_isnan & ~x_isinf] = exponent_valid.float()
 
         mantissa[x_isnan | x_isinf] = 0
         exponent[x_isnan | x_isinf] = 0
+
+        if self.mode == "special_frexp":
+            if self.special_logs_factors.device != x.device:
+                self.special_logs_factors = self.special_logs_factors.to(mantissa.device)
+            mantissa_convolved = torch.log10(torch.abs(mantissa)) + self.special_logs_factors
+            mantissa = hamming(mantissa_convolved) * 2 - 1
+            exponent_convolved = torch.log10(torch.abs(exponent)) + self.special_logs_factors
+            exponent = hamming(exponent_convolved) * 2 - 1
+            sign = torch.sign(x) * 2 - 1
+            x = torch.cat([sign, mantissa, exponent], dim=-1)
+            if self.support_nan:
+                x_with_nan_mask = torch.cat((x, (x_isnan | x_isinf).float()), dim=-1)
+                return x_with_nan_mask
+            return x
 
         if self.mode == "frexp":
             x_frexp = torch.cat([mantissa, exponent / self.exponent_scale], dim=-1)
@@ -169,4 +199,4 @@ class PreEncoder(nn.Module):
                 return x_with_nan_mask
             return x_sfrexp
 
-        raise ValueError(f"Invalid mode: {self.mode}, expected one of ['numeric', 'frexp', 'sfrexp']")
+        raise ValueError(f"Invalid mode: {self.mode}, expected one of {self.supported_modes}")

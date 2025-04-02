@@ -134,11 +134,12 @@ class SetTransformer(SetEncoder):
             *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
             nn.Linear(hidden_size, output_embedding_size))
 
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # X: (B, M, D, E)
-        B, M, D, E = X.size()
+        self.input_embedding_size = input_embedding_size
+        self.input_dimension_size = input_dimension_size
+        self.output_embedding_size = output_embedding_size
+        self.n_seeds = n_seeds
 
-        # X (B, M, D, E) -> (B, M, D * E)
-        X = X.reshape(B, M, D * E)
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        # X: (B, M, D * E)
 
         return self.dec(self.enc(X))

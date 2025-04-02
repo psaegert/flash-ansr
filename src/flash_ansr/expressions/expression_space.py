@@ -18,7 +18,7 @@ from scipy.optimize import curve_fit, OptimizeWarning
 from tqdm import tqdm
 
 from flash_ansr.models.transformer_utils import Tokenizer
-from flash_ansr.utils import load_config
+from flash_ansr.utils import load_config, substitute_root_path
 from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants, codify, safe_f, deduplicate_rules
 from flash_ansr.expressions.simplify import _simplify_flash
 
@@ -100,9 +100,9 @@ class ExpressionSpace:
         self.import_modules()
 
         if simplification == 'auto_flash':
-            with open(self.simplification_kwargs['rules_file'], 'r') as f:
+            with open(substitute_root_path(self.simplification_kwargs['rules_file']), 'r') as f:
                 self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = json.load(f)
-                self.simplification_tules_trees: dict[int, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_kwargs['rules'], dummy_variables=[f'x{i}' for i in range(100)])  # HACK
+                self.simplification_rules_trees: dict[int, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=[f'x{i}' for i in range(100)])  # HACK
 
     def import_modules(self) -> None:  # TODO. Still necessary?
         for module in self.modules:
@@ -1101,7 +1101,7 @@ class ExpressionSpace:
 
                     hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
 
-                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) or timeout is not None:
+                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) and timeout is not None:
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
@@ -1188,11 +1188,6 @@ class ExpressionSpace:
 
                         n_scanned += 1
                         pbar.update(1)
-
-                        if max_n_rules is not None and len(self.simplification_rules) >= max_n_rules:
-                            if verbose:
-                                print('Max rules reached')
-                            break
 
                     hashes_of_size.update(new_hashes_of_size)
 

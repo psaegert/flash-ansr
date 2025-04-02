@@ -87,7 +87,7 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
             raise ValueError(f'Config file {config_path} is not a valid file.')
 
         def resolve_path(value: Any) -> str:
-            if isinstance(value, str) and value.endswith('.yaml') and value.startswith('.'):
+            if isinstance(value, str) and (value.endswith('.yaml') or value.endswith('.json')) and value.startswith('.'):  # HACK: Find a way to check if a string is a path
                 return os.path.join(config_base_path, value)
             return value
 

@@ -482,10 +482,11 @@ class Trainer():
                 pbar.update(1)
 
             # Calculate the average loss
-            val_ce_loss /= steps
-            val_contrastive_loss /= steps
-            val_num_loss /= steps
-            val_loss /= steps
+            if steps > 0:
+                val_ce_loss /= steps
+                val_contrastive_loss /= steps
+                val_num_loss /= steps
+                val_loss /= steps
 
             pbar.close()
 

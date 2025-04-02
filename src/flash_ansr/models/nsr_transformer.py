@@ -59,6 +59,7 @@ class FlashANSRTransformer(nn.Module):
             encoder_max_n_variables: int,
             size: int = 512,
             norm_first: bool = False,
+            activation: str = "ReLU",
             pre_encoder_input_type: str = "ieee-754",
             pre_encoder_support_nan: bool = False,
             pre_encoder_exponent_scale: float | None = None,
@@ -117,6 +118,7 @@ class FlashANSRTransformer(nn.Module):
                 dim_feedforward=decoder_ff_size,
                 dropout=decoder_dropout,
                 batch_first=True,
+                activation=ModelFactory.get_model(activation),
                 norm_first=norm_first
             ),
             num_layers=decoder_n_layers)
@@ -225,10 +227,9 @@ class FlashANSRTransformer(nn.Module):
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
 
-        B, M, D = data.size()
-        data_pre_encodings = self.pre_encoder(data)
-        data_pre_encodings = data_pre_encodings.view(B, M, D, self.pre_encoder.encoding_size)
-        self.memory = self.encoder(data_pre_encodings)
+        data_pre_encodings: torch.Tensor = self.pre_encoder(data)
+        B, M, D, E = data_pre_encodings.size()
+        self.memory = self.encoder(data_pre_encodings.view(B, M, D * E))
 
         if self.memory.ndim > 3:
             self.memory = self.memory.view(B, -1, self.memory.size(-1))
@@ -459,11 +460,11 @@ class FlashANSRTransformer(nn.Module):
         completed_sequences: list = []
         completed_scores = []
 
-        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating choices (-/{choices})")
+        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating choices (-/{choices:,})")
 
         # Continue until all sequences are completed or max length is reached
         for current_length in range(max_len):
-            pbar.set_description(f"Generating choices ({len(completed_sequences)}/{choices})")
+            pbar.set_description(f"Generating choices ({len(completed_sequences):,}/{choices:,})")
             new_sequences = []
             new_scores = []
 
@@ -516,8 +517,7 @@ class FlashANSRTransformer(nn.Module):
                     # Then reverse the sorting process by mapping back sorted_logits to their original position
                     logits = torch.gather(sorted_logits, 1, sorted_logit_indices.argsort(-1))
 
-                internal_sampling_probs = torch.softmax(logits, dim=-1)
-                sampled_tokens = torch.multinomial(internal_sampling_probs, 1)
+                sampled_tokens = torch.multinomial(torch.softmax(logits, dim=-1), 1)
 
                 # Sample from top-k tokens
                 for i, (seq, score, sampled_token) in enumerate(zip(batch_sequences, batch_scores, sampled_tokens)):

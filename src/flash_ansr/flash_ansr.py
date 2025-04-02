@@ -16,6 +16,7 @@ from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.models import FlashANSRTransformer
 from flash_ansr.expressions import ExpressionSpace
 from flash_ansr.train.train import OptimizerFactory
+from flash_ansr.train.scheduler import LRSchedulerFactory
 
 
 class Result(TypedDict):
@@ -431,13 +432,17 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
             refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.3,
+            parsimony: float = 0.05,
             optimizer: torch.optim.Optimizer | None = None,
+            optimizer_kwargs: dict | None = None,
+            lr_scheduler: torch.optim.lr_scheduler.LRScheduler | None | bool = None,
+            lr_scheduler_kwargs: dict | None = None,
             n_iter: int = 1000,
             priority_queue_size: int = 16,
             entropy_weight: float = 0.01,
             gradient_norm_clip: float = 1.0,
-            verbose: bool = False) -> None:
+            verbose: bool = False,
+            debug_no_optimizer_step: bool = False) -> None:
         '''
         Specialize the model on the input data with Priority Queue Policy Gradient.
         '''
@@ -462,8 +467,27 @@ class FlashANSR(BaseEstimator):
 
         assert id(self.flash_ansr_transformer) == id(agent.flash_ansr_transformer)
 
+        if optimizer_kwargs is None:
+            optimizer_kwargs = {}
+
         if optimizer is None:
-            optimizer = OptimizerFactory.get_optimizer('AdamWScheduleFree', agent.flash_ansr_transformer.parameters(), lr=1e-5, weight_decay=0.01)
+            optimizer = OptimizerFactory.get_optimizer(
+                'AdamWScheduleFree',
+                agent.flash_ansr_transformer.parameters(),
+                lr=optimizer_kwargs.get('lr', 1e-6),
+                weight_decay=optimizer_kwargs.get('weight_decay', 0.0))
+
+        if lr_scheduler_kwargs is None:
+            lr_scheduler_kwargs = {}
+
+        if lr_scheduler is None:
+            lr_scheduler = LRSchedulerFactory.get_scheduler(
+                'Warmup',
+                optimizer,
+                min_lr=lr_scheduler_kwargs.get('min_lr', 0),
+                max_lr=lr_scheduler_kwargs.get('max_lr', 1),
+                warmup_steps=lr_scheduler_kwargs.get('warmup_steps', 100),
+                total_steps=n_iter)
 
         # Set the device for training
         device = agent.flash_ansr_transformer.device
@@ -473,8 +497,20 @@ class FlashANSR(BaseEstimator):
             X = X.reshape(-1, 1)
         if len(y.shape) == 1:
             y = y.reshape(-1, 1)
-        x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
-        y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
+        if not isinstance(X, torch.Tensor):
+            if isinstance(X, pd.DataFrame):
+                x_tensor = torch.tensor(X.values, dtype=torch.float32, device=device)
+            else:
+                x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+        else:
+            x_tensor = X.to(device)
+        if not isinstance(y, torch.Tensor):
+            if isinstance(y, (pd.DataFrame, pd.Series)):
+                y_tensor = torch.tensor(y.values, dtype=torch.float32, device=device)
+            else:
+                y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
+        else:
+            y_tensor = y.to(device)
         X = pad_input_set(x_tensor, self.expression_space.n_variables)
         data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
 
@@ -517,6 +553,11 @@ class FlashANSR(BaseEstimator):
                     # Sample again
                     continue
 
+                # Sort by reward
+                sorted_indices = np.argsort(priority_queue_objective)
+                priority_queue_beams = [priority_queue_beams[i] for i in sorted_indices][:priority_queue_size]
+                priority_queue_objective = [priority_queue_objective[i] for i in sorted_indices][:priority_queue_size]
+
                 statistics = {
                     'min_fvu': np.nanmin(statistics_lists['fvu']),
                     'max_fvu': np.nanmax(statistics_lists['fvu']),
@@ -524,14 +565,12 @@ class FlashANSR(BaseEstimator):
                     'min_complexity': np.nanmin(statistics_lists['complexity']),
                     'max_complexity': np.nanmax(statistics_lists['complexity']),
                     'mean_complexity': np.nanmean(statistics_lists['complexity']),
+                    'min_queue_objective': np.nanmin(priority_queue_objective),
+                    'max_queue_objective': np.nanmax(priority_queue_objective),
+                    'mean_queue_objective': np.nanmean(priority_queue_objective),
                     'n_total': len(total_unique_generated),
                     'n_new': n_new,
                 }
-
-                # Sort by reward
-                sorted_indices = np.argsort(priority_queue_objective)
-                priority_queue_beams = [priority_queue_beams[i] for i in sorted_indices][:priority_queue_size]
-                priority_queue_objective = [priority_queue_objective[i] for i in sorted_indices][:priority_queue_size]
 
                 # Padding sequences to same length
                 max_length = max(len(beam) for beam in priority_queue_beams)
@@ -566,10 +605,14 @@ class FlashANSR(BaseEstimator):
 
                 loss = policy_loss - entropy_weight * entropy
 
-                # Backprop and update
                 loss.backward()
                 gradient_norms = torch.nn.utils.clip_grad_norm_(agent.flash_ansr_transformer.parameters(), gradient_norm_clip)
-                optimizer.step()
+
+                # Backprop and update
+                if not debug_no_optimizer_step:
+                    optimizer.step()
+                    if lr_scheduler is not False:
+                        lr_scheduler.step()  # type: ignore
 
                 logs = {
                     'NLL': policy_loss.item(),
