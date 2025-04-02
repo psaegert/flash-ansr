@@ -8,6 +8,6 @@ else
     CONFIG=$1
 fi
 
-echo "Finding Simplifications with ${CONFIG}"
+echo "Finding simplifications with ${CONFIG}"
 
-flash_ansr find-simplifications -e "{{ROOT}}/configs/${CONFIG}/expression_space.yaml" -n 1000 -t 10800 -m 5 -r 5 -s 1000 -o {{ROOT}}/data/ansr-data/simplification_rules/${CONFIG}.json --reset-rules -v
+flash_ansr find-simplifications -e "{{ROOT}}/configs/${CONFIG}/expression_space.yaml" -n 10000 -t 10800 -m 5 -r 5 -s 1000 -o {{ROOT}}/data/ansr-data/simplification_rules/${CONFIG}.json --reset-rules -v
