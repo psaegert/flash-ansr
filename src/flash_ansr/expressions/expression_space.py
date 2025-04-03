@@ -1099,6 +1099,8 @@ class ExpressionSpace:
         pbar = tqdm(disable=not verbose)
         n_scanned = 0
 
+        simplify_rules_every = 1000
+
         start_time = time.time()
 
         max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
@@ -1133,34 +1135,37 @@ class ExpressionSpace:
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
-                    new_hashes_of_size_lengths: dict[int, int] = {}
                     for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes):
                         if timeout is not None and time.time() - start_time > timeout:
                             if verbose:
                                 print('Reached timeout')
                             break
 
-                        for i, rule in enumerate(self.simplification_rules):
-                            self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
+                        if n_scanned % simplify_rules_every == 0:
+                            for i, rule in enumerate(self.simplification_rules):
+                                self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
 
-                        self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
+                            self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
+                            self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
 
                         # Write the rules to a file to check the progress
                         if output_file is not None and n_scanned % save_every == 0:
                             with open(output_file, 'w') as file:
                                 json.dump(self.simplification_rules, file, indent=4)
 
+                        if max_n_rules is not None and len(self.simplification_rules) >= max_n_rules:
+                            break
+
                         simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
-                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths} / {new_hashes_of_size_lengths}, Current: {combination}")
+                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths}, Current: {combination}")
 
                         # Check if all leaf nodes are <num> (i.e. if the skeleton is purely numerical)
-                        if all([t == '<num>' or t in self. operator_arity for t in simplified_skeleton]):
+                        if all([t == '<num>' or t in self.operator_arity for t in simplified_skeleton]) and len(simplified_skeleton) > 1:
                             # Simplify the skeleton to a single <num>
                             new_rule_candidates: list[tuple[tuple[str, ...], tuple[str, ...]]] = [(simplified_skeleton_hash, ('<num>',))]
                         else:
-
                             executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
                             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
                             code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
@@ -1210,11 +1215,7 @@ class ExpressionSpace:
                                 new_rule_candidates_of_minimum_length = new_rule_candidates_of_minimum_length_without_num
                             self.simplification_rules.append(new_rule_candidates_of_minimum_length[0])
 
-                        # print(simplified_skeleton_hash in new_hashes_of_size[len(simplified_skeleton_hash)])
                         new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
-                        if not len(simplified_skeleton_hash) in new_hashes_of_size_lengths:
-                            new_hashes_of_size_lengths[len(simplified_skeleton_hash)] = 0
-                        new_hashes_of_size_lengths[len(simplified_skeleton_hash)] += 1
 
                         n_scanned += 1
                         pbar.update(1)

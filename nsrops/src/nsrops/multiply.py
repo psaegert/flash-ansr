@@ -1,5 +1,42 @@
+from typing import Iterable
+
+
 def inv(x: float) -> float:
+    # numpy will handle the x = 0 case
+    if isinstance(x, Iterable):
+        return 1 / x
+
+    # Manually handle scalar case
+    if x == 0:
+        return float('inf')
+
+    # All safe
     return 1 / x
+
+
+def div(x: float, y: float) -> float:
+    # numpy will handle the x = 0 case
+    if isinstance(y, Iterable):
+        return x / y
+
+    # Manually handle scalar case
+    if y == 0:
+        # When x is an iterable, multiply with infinity to let the sign determine the result
+        if isinstance(x, Iterable):
+            return x * float('inf')
+
+        # When x is a scalar, return inf or -inf depending on the sign of x
+        if x > 0:
+            return float('inf')
+        elif x < 0:
+            return float('-inf')
+
+        # Both x and y are zero.
+        # Return NaN to indicate an undefined result
+        return float('nan')
+
+    # All safe
+    return x / y
 
 
 def mult2(x: float) -> float:

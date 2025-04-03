@@ -44,7 +44,7 @@ operators:
     positive: false
     monotonicity: 0
   "/":
-    realization: "/"
+    realization: "nsrops.div"
     alias: ["div", "divide"]
     inverse: "*"
     arity: 2
@@ -257,4 +257,4 @@ variables: 3
 
 simplification: "auto_flash"
 simplification_kwargs:
-  rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v7.0.json"
+  rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v7.20.json"
