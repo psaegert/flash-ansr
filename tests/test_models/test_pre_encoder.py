@@ -15,7 +15,7 @@ class TestPreEncoder(unittest.TestCase):
         x = torch.randn(67, 10)
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 10)
+        assert y.shape == (67, 10, 1)
 
     def test_frexp(self):
         pre_encoder = PreEncoder(10, mode="frexp", support_nan=False, exponent_scale=1)
@@ -27,7 +27,7 @@ class TestPreEncoder(unittest.TestCase):
         x = torch.randn(67, 10)
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 20)
+        assert y.shape == (67, 10, 2)
 
     def test_sfrexp(self):
         pre_encoder = PreEncoder(10, mode="sfrexp", support_nan=False, exponent_scale=1)
@@ -39,7 +39,7 @@ class TestPreEncoder(unittest.TestCase):
         x = torch.randn(67, 10)
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 30)
+        assert y.shape == (67, 10, 3)
 
     def test_numeric_nan(self):
         pre_encoder = PreEncoder(10, mode="numeric", support_nan=True)
@@ -52,7 +52,7 @@ class TestPreEncoder(unittest.TestCase):
         x[0, 0] = float("nan")
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 20)
+        assert y.shape == (67, 10, 2)
 
     def test_frexp_nan(self):
         pre_encoder = PreEncoder(10, mode="frexp", support_nan=True, exponent_scale=1)
@@ -65,10 +65,11 @@ class TestPreEncoder(unittest.TestCase):
         x[0, 0] = float("nan")
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 30)
+        assert y.shape == (67, 10, 3)
         assert (~torch.isnan(y)).all()
-        assert y[0, 20] == 1  # 10 + 10 + 0 should be flagged as nan
-        assert y[0, 21] == 0
+        print(y)
+        assert y[0, 0, -1] == 1  # 10 + 10 + 0 should be flagged as nan
+        assert y[0, 1, -1] == 0
 
     def test_sfrexp_nan(self):
         pre_encoder = PreEncoder(10, mode="sfrexp", support_nan=True, exponent_scale=1)
@@ -81,7 +82,7 @@ class TestPreEncoder(unittest.TestCase):
         x[0, 0] = float("nan")
         y = pre_encoder.forward(x)
 
-        assert y.shape == (67, 40)
+        assert y.shape == (67, 10, 4)
         assert (~torch.isnan(y)).all()
-        assert y[0, 30] == 1  # 10 + 10 10 + 0 should be flagged as nan
-        assert y[0, 31] == 0
+        assert y[0, 0, -1] == 1  # 10 + 10 10 + 0 should be flagged as nan
+        assert y[0, 1, -1] == 0
