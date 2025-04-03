@@ -6,6 +6,7 @@ from copy import deepcopy
 from types import CodeType, FunctionType
 from math import prod
 import signal
+import os
 import itertools
 from collections import defaultdict
 import warnings
@@ -100,10 +101,14 @@ class ExpressionSpace:
         self.import_modules()
 
         if simplification == 'auto_flash':
-            with open(substitute_root_path(self.simplification_kwargs['rules_file']), 'r') as f:
-                dummy_variables = [f'x{i}' for i in range(100)]  # HACK
-                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = deduplicate_rules(json.load(f), dummy_variables=dummy_variables)
-                self.simplification_rules_trees: dict[tuple, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=dummy_variables)  # HACK
+            dummy_variables = [f'x{i}' for i in range(100)]  # HACK
+            if not os.path.exists(substitute_root_path(self.simplification_kwargs['rules_file'])):
+                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+            else:
+                with open(substitute_root_path(self.simplification_kwargs['rules_file']), 'r') as f:
+                    self.simplification_rules = deduplicate_rules(json.load(f), dummy_variables=dummy_variables)
+
+            self.simplification_rules_trees: dict[tuple, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=dummy_variables)  # HACK
 
     def import_modules(self) -> None:  # TODO. Still necessary?
         for module in self.modules:
@@ -1145,6 +1150,10 @@ class ExpressionSpace:
                     hashes_of_size_lengths = {k: len(v) for k, v in hashes_of_size.items()}
 
                     if len(hashes_of_size[1]) == 1:
+                        # Should not happen since the leaf nodes cannot disappear
+                        print(hashes_of_size[1])
+                        print(hashes_of_size_lengths)
+                        print(self.simplification_rules)
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
@@ -1167,6 +1176,7 @@ class ExpressionSpace:
                                 json.dump(self.simplification_rules, file, indent=4)
 
                         if max_n_rules is not None and len(self.simplification_rules) >= max_n_rules:
+                            print(f'Reached maximum number of rules: {len(self.simplification_rules)}')
                             break
 
                         simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
@@ -1233,7 +1243,13 @@ class ExpressionSpace:
                         n_scanned += 1
                         pbar.update(1)
 
-                    hashes_of_size.update(new_hashes_of_size)
+                    # hashes_of_size.update(new_hashes_of_size)  # This breaks the code because the length 1 set gets overwritten by a set of a single item {('<num>',)}
+                    for new_length, new_hashes in new_hashes_of_size.items():
+                        hashes_of_size[new_length].update(new_hashes)
+
+                else:
+                    if verbose:
+                        print('Reached maximum number of rules or timeout')
 
                 # Simplify the rules one last time
                 for i, rule in enumerate(self.simplification_rules):
@@ -1242,6 +1258,15 @@ class ExpressionSpace:
                 self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
 
             pbar.close()
+
+            if verbose:
+                print('Finished.')
+
+            if output_file is not None:
+                if verbose:
+                    print('Saving the rules...')
+                with open(output_file, 'w') as file:
+                    json.dump(self.simplification_rules, file, indent=4)
 
         except KeyboardInterrupt:
             pbar.close()

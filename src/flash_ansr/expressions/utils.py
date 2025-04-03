@@ -477,8 +477,8 @@ def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]],
         remapped_source_key = tuple(remapped_source)
         remapped_target_value = tuple(remapped_target)
 
-        existing_rule = deduplicated_rules.get(remapped_source_key)
-        if existing_rule is None or len(remapped_target_value) < len(existing_rule[1]):
+        existing_replacement = deduplicated_rules.get(remapped_source_key)
+        if existing_replacement is None or len(remapped_target_value) < len(existing_replacement):
             # Found a better (shorter) target expression for the same source
             deduplicated_rules[remapped_source_key] = remapped_target_value
 
