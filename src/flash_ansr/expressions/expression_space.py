@@ -101,8 +101,9 @@ class ExpressionSpace:
 
         if simplification == 'auto_flash':
             with open(substitute_root_path(self.simplification_kwargs['rules_file']), 'r') as f:
-                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = json.load(f)
-                self.simplification_rules_trees: dict[tuple, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=[f'x{i}' for i in range(100)])  # HACK
+                dummy_variables = [f'x{i}' for i in range(100)]  # HACK
+                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = deduplicate_rules(json.load(f), dummy_variables=dummy_variables)
+                self.simplification_rules_trees: dict[tuple, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=dummy_variables)  # HACK
 
     def import_modules(self) -> None:  # TODO. Still necessary?
         for module in self.modules:
@@ -842,8 +843,8 @@ class ExpressionSpace:
         deduplicated_rules_of_operator = dict(deduplicated_rules_of_operator)  # type: ignore
 
         # Sort the rules by length of the left-hand side to make matching more efficient
-        for arity, deduplicated_rules_of_operator_list in deduplicated_rules_of_operator.items():
-            deduplicated_rules_of_operator[rule[0][0]] = sorted(deduplicated_rules_of_operator_list, key=lambda x: len(x[0]))
+        for operator, deduplicated_rules_of_operator_list in deduplicated_rules_of_operator.items():
+            deduplicated_rules_of_operator[operator] = sorted(deduplicated_rules_of_operator_list, key=lambda x: len(x[0]))
 
         # Construct the trees for pattern matching
         rules_trees = {operator: [
@@ -936,6 +937,9 @@ class ExpressionSpace:
         return [operator, [self.apply_mapping(operand, mapping) for operand in operands]]
 
     def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[tuple, list[tuple[list[str], list[str]]]]) -> list[str]:
+        if all(t == '<num>' or t in self.operator_arity for t in expression):
+            return ['<num>']
+
         stack: list = []
         i = len(expression) - 1
 
@@ -953,6 +957,13 @@ class ExpressionSpace:
                 operands = list(reversed(stack[-arity:]))
                 operands_heads = [operand[0] for operand in operands]
                 rules_key = (operator, *operands_heads)
+
+                if all(operand[0] == '<num>' for operand in operands):
+                    # All operands are constants
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append(['<num>'])
+                    i -= 1
+                    continue
 
                 # TODO: Optimize by hashing operands. e.g. rules_trees[(operator, operand1_type, operand2_type, ...)]
 
@@ -985,7 +996,8 @@ class ExpressionSpace:
     def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
         if isinstance(expression, tuple):
             was_tuple = True
-            new_expression = list(expression)
+            expression = list(expression)
+            new_expression = expression.copy()
         else:
             was_tuple = False
             new_expression = expression
@@ -1091,6 +1103,7 @@ class ExpressionSpace:
             C = np.random.normal(loc=0, scale=5, size=C)
 
         if additional_leaf_nodes is None:
+            # TODO: Think about more special constants like pi, e, 2, 3, 1/2, etc.
             additional_leaf_nodes = ['<num>', '0', '1', '(-1)', 'float("inf")', 'float("-inf")', 'float("nan")']
 
         leaf_nodes = dummy_variables + additional_leaf_nodes

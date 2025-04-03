@@ -468,11 +468,18 @@ def remap_expression(source_expression: list[str], dummy_variables: list[str], v
 
 
 def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    deduplicated_rules: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+    deduplicated_rules: dict[tuple[str, ...], tuple[str, ...]] = {}
     for rule in rules_list:
         # Rename variables in the source expression
         remapped_source, variable_mapping = remap_expression(list(rule[0]), dummy_variables=dummy_variables)
         remapped_target, _ = remap_expression(list(rule[1]), dummy_variables, variable_mapping)
-        deduplicated_rules.add((tuple(remapped_source), tuple(remapped_target)))
 
-    return list(deduplicated_rules)
+        remapped_source_key = tuple(remapped_source)
+        remapped_target_value = tuple(remapped_target)
+
+        existing_rule = deduplicated_rules.get(remapped_source_key)
+        if existing_rule is None or len(remapped_target_value) < len(existing_rule[1]):
+            # Found a better (shorter) target expression for the same source
+            deduplicated_rules[remapped_source_key] = remapped_target_value
+
+    return list(deduplicated_rules.items())
