@@ -1091,7 +1091,7 @@ class ExpressionSpace:
             C = np.random.normal(loc=0, scale=5, size=C)
 
         if additional_leaf_nodes is None:
-            additional_leaf_nodes = ['<num>', '0', '1', '2', '(-1)', '(-2)', 'float("inf")', 'float("-inf")', 'float("nan")']
+            additional_leaf_nodes = ['<num>', '0', '1', '(-1)', 'float("inf")', 'float("-inf")', 'float("nan")']
 
         leaf_nodes = dummy_variables + additional_leaf_nodes
         non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
@@ -1118,7 +1118,7 @@ class ExpressionSpace:
 
                     hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
 
-                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) and timeout is not None:
+                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) and (timeout is not None and time.time() - start_time <= timeout):
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
@@ -1126,10 +1126,14 @@ class ExpressionSpace:
                             simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
                     hashes_of_size = simplified_hashes_of_size
 
+                    # For logging
+                    hashes_of_size_lengths = {k: len(v) for k, v in hashes_of_size.items()}
+
                     if len(hashes_of_size[1]) == 1:
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
+                    new_hashes_of_size_lengths: dict[int, int] = {}
                     for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes):
                         if timeout is not None and time.time() - start_time > timeout:
                             if verbose:
@@ -1149,7 +1153,7 @@ class ExpressionSpace:
                         simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
-                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Current Expression: {combination} -> {simplified_skeleton} -> ...")
+                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths} / {new_hashes_of_size_lengths}, Current: {combination}")
 
                         # Check if all leaf nodes are <num> (i.e. if the skeleton is purely numerical)
                         if all([t == '<num>' or t in self. operator_arity for t in simplified_skeleton]):
@@ -1208,6 +1212,9 @@ class ExpressionSpace:
 
                         # print(simplified_skeleton_hash in new_hashes_of_size[len(simplified_skeleton_hash)])
                         new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
+                        if not len(simplified_skeleton_hash) in new_hashes_of_size_lengths:
+                            new_hashes_of_size_lengths[len(simplified_skeleton_hash)] = 0
+                        new_hashes_of_size_lengths[len(simplified_skeleton_hash)] += 1
 
                         n_scanned += 1
                         pbar.update(1)
