@@ -3,15 +3,15 @@ encoder_max_n_variables: 4  # includes the dependent variable
 pre_encoder_input_type: "ieee-754"
 pre_encoder_support_nan: False
 
-encoder: "SetTransformer"
+encoder: "AlternatingSetTransformer"
 encoder_kwargs:
-  hidden_size: 512
-  n_enc_isab: 5
-  n_dec_sab: 2
+  hidden_size: 256
+  n_enc_isab: 10
+  n_dec_sab: 4
   n_induce: 64
   n_heads: 8
   layer_norm: False
-  n_seeds: 64
+  n_seeds: 16
 
 size: 512
 decoder_n_heads: 8

@@ -1,6 +1,6 @@
 encoder_max_n_variables: 4  # includes the dependent variable
 
-pre_encoder_input_type: "ieee-754"
+pre_encoder_input_type: "special_frexp"
 pre_encoder_support_nan: False
 
 encoder: "SetTransformer"

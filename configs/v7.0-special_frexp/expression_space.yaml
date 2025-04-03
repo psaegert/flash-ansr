@@ -254,7 +254,3 @@ operators:
     monotonicity: 1
 
 variables: 3
-
-simplification: "auto_flash"
-simplification_kwargs:
-  rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v7.0.json"

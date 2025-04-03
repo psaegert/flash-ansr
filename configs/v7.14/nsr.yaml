@@ -6,18 +6,18 @@ pre_encoder_support_nan: False
 encoder: "SetTransformer"
 encoder_kwargs:
   hidden_size: 512
-  n_enc_isab: 5
-  n_dec_sab: 2
-  n_induce: 64
+  n_enc_isab: 8
+  n_dec_sab: 3
+  n_induce: 96
   n_heads: 8
   layer_norm: False
-  n_seeds: 64
+  n_seeds: 96
 
-size: 512
+size: 384
 decoder_n_heads: 8
-decoder_ff_size: 512
+decoder_ff_size: 384
 decoder_dropout: 0.1
-decoder_n_layers: 5
+decoder_n_layers: 4
 
 learnable_positional_embeddings: False
 max_input_length: null

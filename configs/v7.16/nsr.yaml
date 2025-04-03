@@ -15,7 +15,7 @@ encoder_kwargs:
 
 size: 512
 decoder_n_heads: 8
-decoder_ff_size: 512
+decoder_ff_size: 2048
 decoder_dropout: 0.1
 decoder_n_layers: 5
 
