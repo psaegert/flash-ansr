@@ -1,4 +1,4 @@
-encoder_max_n_variables: 17  # includes the dependent variable
+encoder_max_n_variables: 12  # includes the dependent variable
 size: 512
 
 pre_encoder_input_type: "ieee-754"
