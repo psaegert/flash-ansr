@@ -19,7 +19,11 @@ def pow1_2(x: float) -> float:
 
 
 def pow1_3(x: float) -> float:
-    return x ** (1 / 3)
+    if x < 0:
+        # Discard imaginary component
+        return - (-x) ** (1 / 3)
+    else:
+        return x ** (1 / 3)
 
 
 def pow1_4(x: float) -> float:
@@ -27,4 +31,8 @@ def pow1_4(x: float) -> float:
 
 
 def pow1_5(x: float) -> float:
-    return x ** 0.2
+    if x < 0:
+        # Discard imaginary component
+        return - (-x) ** (1 / 5)
+    else:
+        return x ** (1 / 5)
