@@ -1020,13 +1020,20 @@ class ExpressionSpace:
             return tuple(new_expression)
         return new_expression
 
-    def construct_expressions(self, hashes_of_size: dict[int, set[tuple[str, ...]]], non_leaf_nodes: dict[str, int]) -> Generator[tuple[str, ...], None, None]:
+    def construct_expressions(self, hashes_of_size: dict[int, set[tuple[str, ...]]], non_leaf_nodes: dict[str, int], must_have_sizes: list | set | None = None) -> Generator[tuple[str, ...], None, None]:
         hashes_of_size_with_lists = {k: list(v) for k, v in hashes_of_size.items()}
+
+        filter_sizes = must_have_sizes is not None and not len(must_have_sizes) == 0
+        if must_have_sizes is not None and filter_sizes:
+            must_have_sizes_set = set(must_have_sizes)
+
         # Append existing trees to every operator
         for new_root_operator, arity in non_leaf_nodes.items():
             # Start with the smallest arity-tuples of trees
             for child_lengths in sorted(itertools.product(list(hashes_of_size_with_lists.keys()), repeat=arity), key=lambda x: sum(x)):
                 # Check all possible combinations of child trees
+                if filter_sizes and not any(length in must_have_sizes_set for length in child_lengths):
+                    continue
                 for child_combination in itertools.product(*[hashes_of_size_with_lists[child_length] for child_length in child_lengths]):
                     yield (new_root_operator,) + tuple(itertools.chain.from_iterable(child_combination))
 
@@ -1089,7 +1096,7 @@ class ExpressionSpace:
         hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
 
         if dummy_variables is None:
-            dummy_variables = [f"x{i}" for i in range(3)]
+            dummy_variables = [f"x{i}" for i in range(3)]  # Room for up to 3 different terms in simplification patterns
         elif isinstance(dummy_variables, int):
             dummy_variables = [f"x{i}" for i in range(dummy_variables)]
 
@@ -1124,6 +1131,11 @@ class ExpressionSpace:
         max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
         max_time_string = f'/{timeout/60:.1f}' if timeout is not None else ''
 
+        debug_file = os.path.dirname(output_file) + '/debug.txt'  # type: ignore
+        with open(debug_file, 'w') as debug_file_handle:
+            debug_file_handle.write('')
+        debug_file_handle = open(debug_file, 'a')
+
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -1137,6 +1149,8 @@ class ExpressionSpace:
                     code = codify(code_string, dummy_variables + constants)
 
                     hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
+
+                new_sizes: set[int] = set()
 
                 while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) and (timeout is not None and time.time() - start_time <= timeout):
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
@@ -1157,7 +1171,12 @@ class ExpressionSpace:
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
-                    for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes):
+                    debug_file_handle.write(f'{"-" * 100}\n')
+
+                    debug_file_handle.write(f'Hashes of size: {hashes_of_size_lengths}\n')
+                    debug_file_handle.write(f'Must include sizes: {new_sizes}\n')
+                    for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes, must_have_sizes=new_sizes):
+                        debug_file_handle.write(f'{combination}\n')
                         if timeout is not None and time.time() - start_time > timeout:
                             if verbose:
                                 print('Reached timeout')
@@ -1182,7 +1201,8 @@ class ExpressionSpace:
                         simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
-                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths}, Current: {combination}")
+                        new_hashes_of_size_lengths = {k: len(v) for k, v in new_hashes_of_size.items()}
+                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths} <- {new_hashes_of_size_lengths}, Current: {combination} -> {simplified_skeleton_hash}")
 
                         # Check if all leaf nodes are <num> (i.e. if the skeleton is purely numerical)
                         if all([t == '<num>' or t in self.operator_arity for t in simplified_skeleton]) and len(simplified_skeleton) > 1:
@@ -1198,15 +1218,19 @@ class ExpressionSpace:
 
                             y = safe_f(f, X, C[:len(constants)])  # type: ignore
 
-                            # Record the image
+                            all_sizes = set(hashes_of_size.keys()) | set(new_hashes_of_size.keys())
                             new_rule_candidates = []
-                            for candidate_hashes_of_size in (hashes_of_size, new_hashes_of_size):
-                                for length, candidate_hashes_list in candidate_hashes_of_size.items():  # type: ignore
+                            for length in all_sizes:
+                                for candidate_hashes_of_size in (hashes_of_size, new_hashes_of_size):
+                                    if length not in candidate_hashes_of_size:
+                                        continue
+
                                     # Ignore simplification candidates that do not shorten the expression
                                     if length >= len(simplified_skeleton_hash):
                                         continue
 
-                                    for candidate_hash in candidate_hashes_list:
+                                    # TODO: If we traverse the candidates from short to long, we can stop early once we found a match
+                                    for candidate_hash in candidate_hashes_of_size[length]:
                                         if candidate_hash == simplified_skeleton_hash:
                                             continue
                                         executable_prefix_candidate_hash = self.operators_to_realizations(candidate_hash)
@@ -1228,24 +1252,34 @@ class ExpressionSpace:
                                             if any([self.exist_constants_that_fit(candidate_hash, dummy_variables, X, y) for _ in range(constants_fit_retries)]):
                                                 new_rule_candidates.append((simplified_skeleton_hash, candidate_hash))
 
+                                if len(new_rule_candidates) > 0:
+                                    # Found a match that is shorter than other futher candidates could ever be
+                                    break
+
                         # Find the shortest rule
                         if len(new_rule_candidates) > 0:
-                            new_rule_candidates = sorted(new_rule_candidates, key=lambda x: len(x[1]))
-                            new_rule_candidates_of_minimum_length = [c for c in new_rule_candidates if len(c[1]) == len(new_rule_candidates[0][1])]
                             # If there are rules with and without <num>, prefer the ones without
-                            new_rule_candidates_of_minimum_length_without_num = [c for c in new_rule_candidates_of_minimum_length if '<num>' not in c[1]]
-                            if len(new_rule_candidates_of_minimum_length_without_num) > 0:
-                                new_rule_candidates_of_minimum_length = new_rule_candidates_of_minimum_length_without_num
-                            self.simplification_rules.append(new_rule_candidates_of_minimum_length[0])
-
-                        new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
+                            new_rule_candidates_without_num = [c for c in new_rule_candidates if '<num>' not in c[1]]
+                            if len(new_rule_candidates_without_num) > 0:
+                                new_rule_candidates = new_rule_candidates_without_num
+                            self.simplification_rules.append(new_rule_candidates[0])
+                            new_hashes_of_size[len(simplified_skeleton_hash)].add(new_rule_candidates[0][1])
+                        else:
+                            new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
 
                         n_scanned += 1
                         pbar.update(1)
 
-                    # hashes_of_size.update(new_hashes_of_size)  # This breaks the code because the length 1 set gets overwritten by a set of a single item {('<num>',)}
+                    new_sizes = set()
+
+                    hashes_of_size_lengths_before = {k: len(v) for k, v in hashes_of_size.items()}
                     for new_length, new_hashes in new_hashes_of_size.items():
                         hashes_of_size[new_length].update(new_hashes)
+                    hashes_of_size_lengths_after = {k: len(v) for k, v in hashes_of_size.items()}
+
+                    for size in hashes_of_size_lengths_after.keys():
+                        if size not in hashes_of_size_lengths_before or hashes_of_size_lengths_after[size] > hashes_of_size_lengths_before[size]:
+                            new_sizes.add(size)
 
                 else:
                     if verbose:
@@ -1268,7 +1302,10 @@ class ExpressionSpace:
                 with open(output_file, 'w') as file:
                     json.dump(self.simplification_rules, file, indent=4)
 
+            debug_file_handle.close()
+
         except KeyboardInterrupt:
+            debug_file_handle.close()
             pbar.close()
             if output_file is not None:
                 if verbose:
@@ -1276,6 +1313,8 @@ class ExpressionSpace:
                 time.sleep(1)  # Allow the user to interrupt the process
                 with open(output_file, 'w') as file:
                     json.dump(self.simplification_rules, file, indent=4)
+                if verbose:
+                    print('Rules saved.')
             raise
 
     # SIMPLIFICATION
