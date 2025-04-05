@@ -98,6 +98,20 @@ class ExpressionSpace:
 
         self.modules = get_used_modules(''.join(f"{op}(" for op in self.operator_realizations.values()))  # HACK: This can be done more elegantly for sure
 
+        self.connection_classes = {
+            'add': (set(['+', '-']), "0"),
+            'mult': (set(['*', '/']), "1"),
+        }
+
+        self.operator_to_class = {
+            '+': 'add',
+            '-': 'add',
+            '*': 'mult',
+            '/': 'mult'
+        }
+
+        self.connectable_operators = set(['+', '-', '*', '/'])
+
         self.import_modules()
 
         if simplification == 'auto_flash':
@@ -998,6 +1012,125 @@ class ExpressionSpace:
         # Unroll the tree into a flat expression in the correct order
         return flatten_nested_list(stack)[::-1]
 
+    def find_connected_num_paths(self, expression: list[str] | tuple[str, ...]) -> tuple[list, list]:
+        stack: list = []
+        stack_annotations: list = []
+
+        i = len(expression) - 1
+
+        # Traverse the expression from right to left
+        while i >= 0:
+            token = expression[i]
+
+            if token in self.connectable_operators:
+                operator = token
+                arity = 2
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_sets = list(reversed(stack_annotations[-arity:]))
+
+                if all(operand[0] == '<num>' for operand in operands):
+                    # All operands are constants. Simplify to a single constant
+                    _ = [stack.pop() for _ in range(arity)]
+                    _ = [stack_annotations.pop() for _ in range(arity)]
+                    stack.append(['<num>'])
+                    stack_annotations.append([set('<num>')])  # A node can have multiple annotations
+                    i -= 1
+                    continue
+
+                operator_annotation_set = set()
+                num_in_operands = '<num>' in [operand[0] for operand in operands]
+                connection_class = self.operator_to_class[operator]
+                if num_in_operands:
+                    if any(any(operand_an.startswith(connection_class) for operand_an in operand_ans[0]) for operand_ans in operands_annotations_sets):
+                        # Both operands are connected by a path of + or -
+                        operator_annotation_set.add(f'{connection_class}_connected')
+                    else:
+                        operator_annotation_set.add(connection_class)
+                elif all(any(operand_an.startswith(connection_class) for operand_an in operand_ans[0]) for operand_ans in operands_annotations_sets):
+                    operator_annotation_set.add(f'{connection_class}_connected')
+
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([operator_annotation_set, operands_annotations_sets])
+                i -= 1
+                continue
+
+            if token == '<num>':
+                # If the token is a number, push it onto the stack
+                stack.append([token])
+                stack_annotations.append([set(['<num>'])])
+                i -= 1
+                continue
+
+            stack.append([token])
+            stack_annotations.append([set()])
+            i -= 1
+
+        return stack, stack_annotations
+
+    def cancel_nums(self, expression_tree: list, expression_annotations_tree: list) -> list[str]:
+        stack = expression_tree
+        stack_annotations = expression_annotations_tree
+
+        expression: list[str] = []
+
+        while len(stack) > 0:
+            # Traverse in dfs
+            subtree = stack.pop()
+            subtree_annotation = stack_annotations.pop()
+
+            # Leaf node
+            if len(subtree) == 1:
+                operand = subtree[0]
+                operand_annotation = subtree_annotation[0]
+
+                if operand == '<num>':
+                    pruned = False
+                    for connection_class in self.connection_classes:
+                        if f'{connection_class}_prune' in operand_annotation:
+                            expression.append(self.connection_classes[connection_class][1])  # Neural element
+                            pruned = True
+                            break
+                    if pruned:
+                        continue
+
+                expression.append(operand)
+                continue
+
+            # Non-leaf node
+            operator, operands = subtree
+            operator_annotation_set, operands_annotations_sets = subtree_annotation
+
+            for connection_class in self.connection_classes:
+                if f'{connection_class}_prune' in operator_annotation_set:
+                    # Promote children to '_prune'
+                    for operand_an in operands_annotations_sets:
+                        operand_an[0].add(f'{connection_class}_prune')
+                    continue
+
+                if f'{connection_class}_connected' in operator_annotation_set:
+                    # Promote children to 'connected'
+                    for operand_an in operands_annotations_sets:
+                        if connection_class in operand_an[0] or '<num>' in operand_an[0]:
+                            operand_an[0].add(f'{connection_class}_connected')
+
+                    # If both children are connected, promote the left child to '_prune'
+                    if all(any(operand_an.startswith(f'{connection_class}_connected') for operand_an in operand_ans[0]) for operand_ans in operands_annotations_sets):
+                        # operands_annotations_sets[0][0].remove(f'{connection_class}_connected')  # Not neecessary because prune is checked first
+                        operands_annotations_sets[0][0].add(f'{connection_class}_prune')
+                    continue
+
+            # Add the operator to the expression
+            expression.append(operator)
+
+            # Add the children to the stack
+            for operand, operand_an in zip(reversed(operands), reversed(operands_annotations_sets)):
+                stack.append(operand)
+                stack_annotations.append(operand_an)
+
+        return expression
+
     def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
         if isinstance(expression, tuple):
             was_tuple = True
@@ -1009,6 +1142,12 @@ class ExpressionSpace:
 
         for _ in range(max_iter):
             new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
+            print(f'New expression: {new_expression}')
+            expression_tree, annotated_expression_tree = self.find_connected_num_paths(new_expression)
+            print(f'Expression tree: {expression_tree}')
+            print(f'Annotated expression tree: {annotated_expression_tree}')
+            new_expression = self.cancel_nums(expression_tree, annotated_expression_tree)
+            print(f'New expression after canceling: {new_expression}')
             if new_expression == expression:
                 break
             expression = new_expression
