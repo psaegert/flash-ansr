@@ -103,6 +103,7 @@ def main(argv: str = None) -> None:
     find_simplifications_parser = subparsers.add_parser("find-simplifications")
     find_simplifications_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
     find_simplifications_parser.add_argument('-n', '--max_n_rules', type=int, default=None, help='Maximum number of rules to find')
+    find_simplifications_parser.add_argument('-l', '--max_pattern_length', type=int, default=7, help='Maximum length of the patterns to find')
     find_simplifications_parser.add_argument('-t', '--timeout', type=int, default=None, help='Timeout for the search of simplifications in seconds')
     find_simplifications_parser.add_argument('-d', '--dummy-variables', type=int, nargs='+', default=None, help='Dummy variables to use in the simplifications')
     find_simplifications_parser.add_argument('-a', '--additional-leaf-nodes', type=str, nargs='+', default=None, help='Additional leaf nodes to use in the simplifications')
@@ -136,6 +137,7 @@ def main(argv: str = None) -> None:
 
             expression_space.find_rules(
                 max_n_rules=args.max_n_rules,
+                max_pattern_length=args.max_pattern_length,
                 timeout=args.timeout,
                 dummy_variables=args.dummy_variables,
                 additional_leaf_nodes=args.additional_leaf_nodes,

@@ -110,6 +110,11 @@ class ExpressionSpace:
             '/': 'mult'
         }
 
+        self.connection_classes_inverse = {
+            'add': "neg",
+            'mult': "inv",
+        }
+
         self.connectable_operators = set(['+', '-', '*', '/'])
 
         self.import_modules()
@@ -1131,6 +1136,195 @@ class ExpressionSpace:
 
         return expression
 
+    def collect_multiplicities(self, expression: list[str] | tuple[str, ...]) -> tuple[list, list, list]:
+        stack: list = []
+        stack_annotations: list = []
+        stack_labels: list = []
+
+        i = len(expression) - 1
+
+        # Traverse the expression from right to left
+        while i >= 0:
+            token = expression[i]
+
+            if token in self.connectable_operators:
+                operator = token
+                arity = 2
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_dicts = list(reversed(stack_annotations[-arity:]))
+                operands_labels = list(reversed(stack_labels[-arity:]))
+
+                operator_annotation_dict: dict[str, dict[tuple[str, ...], list[int]]] = {cc: {} for cc in self.connection_classes}
+
+                cc = self.operator_to_class[operator]
+
+                # Carry over annotations from operand nodes
+                for operand_annotations_dict in operands_annotations_dicts:
+                    for subtree_hash in operand_annotations_dict[0][cc]:
+                        if subtree_hash not in operator_annotation_dict[cc]:
+                            operator_annotation_dict[cc][subtree_hash] = [0, 0]
+
+                        for p in range(2):
+                            operator_annotation_dict[cc][subtree_hash][p] += operand_annotations_dict[0][cc][subtree_hash][p]
+
+                        if operator in {'-', '/'}:
+                            operator_annotation_dict[cc][subtree_hash][0], operator_annotation_dict[cc][subtree_hash][1] = operator_annotation_dict[cc][subtree_hash][1], operator_annotation_dict[cc][subtree_hash][0]
+
+                # Add subtree hashes for both operand subtrees
+                operand_tuple_0 = tuple(flatten_nested_list(operands[0])[::-1])
+                operand_tuple_1 = tuple(flatten_nested_list(operands[1])[::-1])
+
+                if operand_tuple_0 not in operator_annotation_dict[cc]:
+                    operator_annotation_dict[cc][operand_tuple_0] = [1, 0]
+                else:
+                    operator_annotation_dict[cc][operand_tuple_0][0] += 1
+
+                index = int(operator in {'+', '*'})
+                if operand_tuple_1 not in operator_annotation_dict[cc]:
+                    operator_annotation_dict[cc][operand_tuple_1] = [index, index - 1]
+                else:
+                    operator_annotation_dict[cc][operand_tuple_1][index - 1] += 1
+
+                # Label each subtree with its own hash to know which to prune later
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                _ = [stack_labels.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([operator_annotation_dict, operands_annotations_dicts])
+                new_label = tuple(flatten_nested_list([operator, operands])[::-1])
+                stack_labels.append([new_label, operands_labels])
+                i -= 1
+                continue
+
+            stack.append([token])
+            stack_annotations.append([{cc: {tuple([token]): [0, 0]} for cc in self.connection_classes}])
+            stack_labels.append([tuple([token])])
+            i -= 1
+
+        return stack, stack_annotations, stack_labels
+
+    def cancel_terms(self, expression_tree: list, expression_annotations_tree: list, stack_labels: list) -> list[str]:
+        stack = expression_tree
+        stack_annotations = expression_annotations_tree
+        stack_parity = [{cc: 1 for cc in self.connection_classes} for _ in range(len(stack_labels))]
+
+        expression: list[str] = []
+
+        argmax_candidate = None
+        max_subtree_length = 0
+        n_replaced = 0
+
+        while len(stack) > 0:
+            subtree = stack.pop()
+            subtree_annotation = stack_annotations.pop()
+            subtree_labels = stack_labels.pop()
+            subtree_parities = stack_parity.pop()
+
+            if argmax_candidate is not None:
+                argmax_class, argmax_subtree, argmax_multiplicity_sum = argmax_candidate
+
+                if argmax_subtree == subtree_labels[0]:
+                    current_parity = subtree_parities[argmax_class]
+                    inverse_operator = self.connection_classes_inverse[argmax_class]
+
+                    if current_parity * argmax_multiplicity_sum < 0:
+                        inverse_operator_prefix = (inverse_operator,)
+                        double_inverse_operator_prefix = ()
+                    else:
+                        inverse_operator_prefix = ()
+                        double_inverse_operator_prefix = (inverse_operator,)
+
+                    neutral_element = self.connection_classes[argmax_class][1]
+                    if argmax_multiplicity_sum == 0:
+                        # Term is cancelled entirely. Replace all occurences with the neutral element
+                        first_replacement = (neutral_element,)
+                        other_replacements = neutral_element
+
+                    if argmax_multiplicity_sum == 1:
+                        # Term occurs once. Replace every occurence after the first one with the neutral element
+                        first_replacement = inverse_operator_prefix + argmax_subtree
+                        other_replacements = (neutral_element,)
+
+                    if argmax_multiplicity_sum == -1:
+                        # Term occurs once but inverted. Replace the first occurence with the inverse of the term. Replace every occurence after the first one with the neutral element
+                        first_replacement = double_inverse_operator_prefix + argmax_subtree
+                        other_replacements = (neutral_element,)
+
+                    if argmax_multiplicity_sum > 1:
+                        # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
+                        if argmax_class == 'mult':
+                            if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                                powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                                first_replacement = inverse_operator_prefix + ('*',) + tuple(f'pow_{p}' for p in powers) + argmax_subtree + argmax_subtree
+                            else:
+                                powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                                first_replacement = inverse_operator_prefix + tuple(f'pow_{p}' for p in powers) + argmax_subtree
+                        else:
+                            first_replacement = ('*', '<num>',) + argmax_subtree
+
+                        other_replacements = (neutral_element,)
+
+                    if argmax_multiplicity_sum < -1:
+                        # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
+                        if argmax_class == 'mult':
+                            if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                                powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                                first_replacement = double_inverse_operator_prefix + ('*',) + tuple(f'pow_{p}' for p in powers) + argmax_subtree + argmax_subtree
+                            else:
+                                powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                                first_replacement = double_inverse_operator_prefix + tuple(f'pow_{p}' for p in powers) + argmax_subtree
+                        else:
+                            first_replacement = ('*', '<num>',) + argmax_subtree
+
+                        other_replacements = (neutral_element,)
+
+                    if n_replaced == 0:
+                        expression.extend(first_replacement)
+                    else:
+                        expression.extend(other_replacements)
+                    n_replaced += 1
+                    continue
+
+            # Leaf node
+            if len(subtree) == 1:
+                expression.append(subtree[0])
+                continue
+
+            # Non-leaf node
+            operator, operands = subtree
+            _, operands_annotations_sets = subtree_annotation
+            _, operands_labels = subtree_labels
+            operator_parity = subtree_parities  # No operand parity information yet
+
+            if len(operands) == 2:
+                propagated_operand_parities: list[dict[str, int]] = [{}, {}]
+                for cc, (operator_set, _) in self.connection_classes.items():
+                    if operator in operator_set:
+                        propagated_operand_parities[0][cc] = operator_parity[cc]
+                        propagated_operand_parities[1][cc] = operator_parity[cc] * (-1 if operator in {'-', '/'} else 1)
+                    else:
+                        propagated_operand_parities[0][cc] = operator_parity[cc]
+                        propagated_operand_parities[1][cc] = operator_parity[cc]
+
+                # If no cancellation candidate has been identified yet, try to find one in the current subtree
+                if argmax_candidate is None:
+                    for cc in self.connection_classes:
+                        for subtree_hash, multiplicity in subtree_annotation[0][cc].items():
+                            if len(subtree_hash) > max_subtree_length and sum(abs(m) for m in multiplicity) > 1 and not all(term == '<num>' or term in self.operator_arity for term in subtree_hash):
+                                argmax_candidate = (cc, subtree_hash, multiplicity[0] - multiplicity[1])
+
+            # Add the operator to the expression
+            expression.append(operator)
+
+            # Add the children to the stack
+            for operand, operand_an, operand_label, propagated_operand_parity in zip(reversed(operands), reversed(operands_annotations_sets), reversed(operands_labels), reversed(propagated_operand_parities)):
+                stack.append(operand)
+                stack_annotations.append(operand_an)
+                stack_labels.append(operand_label)
+                stack_parity.append(propagated_operand_parity)
+
+        return expression
+
     def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
         if isinstance(expression, tuple):
             was_tuple = True
@@ -1141,13 +1335,24 @@ class ExpressionSpace:
             new_expression = expression
 
         for _ in range(max_iter):
-            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
-            print(f'New expression: {new_expression}')
+            # Cancel constants
             expression_tree, annotated_expression_tree = self.find_connected_num_paths(new_expression)
-            print(f'Expression tree: {expression_tree}')
-            print(f'Annotated expression tree: {annotated_expression_tree}')
             new_expression = self.cancel_nums(expression_tree, annotated_expression_tree)
-            print(f'New expression after canceling: {new_expression}')
+            # print(f'Cancelled constants: {new_expression}')
+
+            # Apply simplification rules
+            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
+            # print(f'Applied rules 1: {new_expression}')
+
+            # Cancel any terms
+            expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
+            new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
+            # print(f'Cancelled terms: {new_expression}')
+
+            # Apply simplification rules
+            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
+            # print(f'Applied rules 2: {new_expression}')
+
             if new_expression == expression:
                 break
             expression = new_expression
@@ -1220,6 +1425,7 @@ class ExpressionSpace:
     def find_rules(
             self,
             max_n_rules: int | None = None,
+            max_pattern_length: int | None = None,
             timeout: float | None = None,
             dummy_variables: int | list[str] | None = None,
             additional_leaf_nodes: list[str] | None = None,
@@ -1270,10 +1476,10 @@ class ExpressionSpace:
         max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
         max_time_string = f'/{timeout/60:.1f}' if timeout is not None else ''
 
-        debug_file = os.path.dirname(output_file) + '/debug.txt'  # type: ignore
-        with open(debug_file, 'w') as debug_file_handle:
-            debug_file_handle.write('')
-        debug_file_handle = open(debug_file, 'a')
+        # debug_file = os.path.dirname(output_file) + '/debug.txt'  # type: ignore
+        # with open(debug_file, 'w') as debug_file_handle:
+        #     debug_file_handle.write('')
+        # debug_file_handle = open(debug_file, 'a')
 
         try:
             with warnings.catch_warnings():
@@ -1291,13 +1497,19 @@ class ExpressionSpace:
 
                 new_sizes: set[int] = set()
 
-                while (max_n_rules is not None and len(self.simplification_rules) < max_n_rules) and (timeout is not None and time.time() - start_time <= timeout):
+                while (max_n_rules is None or len(self.simplification_rules) < max_n_rules) and (timeout is None or time.time() - start_time <= timeout):
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
                             simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps, mask_elementary_literals=False)
                             simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
                     hashes_of_size = simplified_hashes_of_size
+
+                    if max_pattern_length is not None and max(hashes_of_size.keys()) > max_pattern_length:
+                        # If the maximum pattern length is exceeded, stop searching
+                        if verbose:
+                            print(f'Maximum pattern length reached: {max_pattern_length}')
+                        break
 
                     # For logging
                     hashes_of_size_lengths = {k: len(v) for k, v in hashes_of_size.items()}
@@ -1310,12 +1522,12 @@ class ExpressionSpace:
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
-                    debug_file_handle.write(f'{"-" * 100}\n')
+                    # debug_file_handle.write(f'{"-" * 100}\n')
 
-                    debug_file_handle.write(f'Hashes of size: {hashes_of_size_lengths}\n')
-                    debug_file_handle.write(f'Must include sizes: {new_sizes}\n')
+                    # debug_file_handle.write(f'Hashes of size: {hashes_of_size_lengths}\n')
+                    # debug_file_handle.write(f'Must include sizes: {new_sizes}\n')
                     for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes, must_have_sizes=new_sizes):
-                        debug_file_handle.write(f'{combination}\n')
+                        # debug_file_handle.write(f'{combination}\n')
                         if timeout is not None and time.time() - start_time > timeout:
                             if verbose:
                                 print('Reached timeout')
@@ -1441,10 +1653,10 @@ class ExpressionSpace:
                 with open(output_file, 'w') as file:
                     json.dump(self.simplification_rules, file, indent=4)
 
-            debug_file_handle.close()
+            # debug_file_handle.close()
 
         except KeyboardInterrupt:
-            debug_file_handle.close()
+            # debug_file_handle.close()
             pbar.close()
             if output_file is not None:
                 if verbose:
