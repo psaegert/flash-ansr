@@ -960,7 +960,7 @@ class ExpressionSpace:
         operator, operands = tree
         return [operator, [self.apply_mapping(operand, mapping) for operand in operands]]
 
-    def _simplify_auto_flash(self, expression: list[str] | tuple[str, ...], rules_trees: dict[tuple, list[tuple[list[str], list[str]]]]) -> list[str]:
+    def _apply_auto_flash_simplifcation_rules(self, expression: list[str] | tuple[str, ...], rules_trees: dict[tuple, list[tuple[list[str], list[str]]]]) -> list[str]:
         if all(t == '<num>' or t in self.operator_arity for t in expression):
             return ['<num>']
 
@@ -1325,6 +1325,89 @@ class ExpressionSpace:
 
         return expression
 
+    def sort_operands(self, expression: list[str] | tuple[str, ...]) -> list[str]:
+        stack: list = []
+        i = len(expression) - 1
+
+        while i >= 0:
+            token = expression[i]
+
+            if token in self.operator_arity_compat or token in self.operator_aliases:
+                operator = self.operator_aliases.get(token, token)
+                arity = self.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+
+                if operator in self.commutative_operators:
+                    # Check for the pattern [*, *, A, B, C] -> [*, A, *, B, C] or [+, +, A, B, C] -> [+, A, +, B, C]
+                    if len(operands[0]) == 2 and operator == operands[0][0]:
+                        _ = [stack.pop() for _ in range(arity)]
+                        stack.append([operator, [operands[0][1][0], [operator, [operands[0][1][1], operands[1]]]]])
+                        i -= 1
+                        continue
+
+                    subtree = [operator, operands]
+
+                    # Traverse through the tree in breadth-first order
+                    queue = [subtree]
+                    commutative_paths: list[tuple] = [tuple()]
+                    commutative_positions = []
+                    while queue:
+                        node = queue.pop(0)
+                        current_path = commutative_paths.pop(0)
+                        for child_index, child in enumerate(node[1]):  # I conclude that using `i` as a variable name here is not very clever
+                            if len(child) > 1:
+                                if child[0] == node[0]:
+                                    # Continue: Same commutative perator
+                                    queue.append(child)
+                                    commutative_paths.append(current_path + (child_index,))
+                                else:
+                                    # Stop: Different operator
+                                    commutative_positions.append(current_path + (child_index,))
+                            else:
+                                # Stop: Leaf
+                                commutative_positions.append(current_path + (child_index,))
+
+                    # Sort the positions
+                    sorted_indices = sorted(range(len(commutative_positions)), key=lambda x: commutative_positions[x])
+
+                    commutative_paths = [commutative_positions[i] for i in sorted_indices]
+                    commutative_positions = [commutative_positions[i] for i in sorted_indices]
+
+                    operands_to_sort = []
+                    for position in commutative_positions:
+                        node = subtree
+                        for position_index in position:
+                            node = node[1][position_index]
+                        operands_to_sort.append(node)
+
+                    sorted_operands = sorted(operands_to_sort, key=self.operand_key)
+
+                    # Replace the operands in the tree
+                    new_subtree: list = deepcopy(subtree)
+
+                    for position, operand in zip(commutative_positions, sorted_operands):
+                        node = new_subtree
+                        for position_index in position:
+                            node = node[1][position_index]
+                        node[:] = operand
+
+                    operands = new_subtree[1]
+
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([operator, operands])
+                    i -= 1
+                    continue
+
+                _ = [stack.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+
+            else:
+                stack.append([token])
+
+            i -= 1
+
+        return flatten_nested_list(stack)[::-1]
+
     def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
         if isinstance(expression, tuple):
             was_tuple = True
@@ -1335,13 +1418,16 @@ class ExpressionSpace:
             new_expression = expression
 
         for _ in range(max_iter):
+            # Sort operands
+            new_expression = self.sort_operands(new_expression)
+
             # Cancel constants
             expression_tree, annotated_expression_tree = self.find_connected_num_paths(new_expression)
             new_expression = self.cancel_nums(expression_tree, annotated_expression_tree)
             # print(f'Cancelled constants: {new_expression}')
 
             # Apply simplification rules
-            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
+            new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
             # print(f'Applied rules 1: {new_expression}')
 
             # Cancel any terms
@@ -1350,7 +1436,7 @@ class ExpressionSpace:
             # print(f'Cancelled terms: {new_expression}')
 
             # Apply simplification rules
-            new_expression = self._simplify_auto_flash(new_expression, self.simplification_rules_trees)
+            new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
             # print(f'Applied rules 2: {new_expression}')
 
             if new_expression == expression:

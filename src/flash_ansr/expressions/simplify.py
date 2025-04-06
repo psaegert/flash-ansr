@@ -898,7 +898,7 @@ def _simplify_flash(self: Any, expression: list[str], verbose: bool = False, deb
                                 # Stop: Different operator
                                 commutative_positions.append(current_path + (child_index,))
                         else:
-                            # Steop: Leaf
+                            # Stop: Leaf
                             commutative_positions.append(current_path + (child_index,))
 
                 # Sort the positions
