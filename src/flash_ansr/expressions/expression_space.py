@@ -115,6 +115,11 @@ class ExpressionSpace:
             'mult': "inv",
         }
 
+        self.connection_classes_hyper = {
+            'add': "mult",
+            'mult': "pow",
+        }
+
         self.connectable_operators = set(['+', '-', '*', '/'])
 
         self.import_modules()
@@ -1061,6 +1066,20 @@ class ExpressionSpace:
                 i -= 1
                 continue
 
+            if token in self.operator_arity:
+                operator = token
+                arity = self.operator_arity[token]
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_sets = list(reversed(stack_annotations[-arity:]))
+
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([set(), operands_annotations_sets])
+                i -= 1
+                continue
+
+
             if token == '<num>':
                 # If the token is a number, push it onto the stack
                 stack.append([token])
@@ -1107,14 +1126,14 @@ class ExpressionSpace:
             operator, operands = subtree
             operator_annotation_set, operands_annotations_sets = subtree_annotation
 
-            for connection_class in self.connection_classes:
+            if operator in self.connectable_operators:
+                connection_class = self.operator_to_class[operator]
                 if f'{connection_class}_prune' in operator_annotation_set:
                     # Promote children to '_prune'
                     for operand_an in operands_annotations_sets:
                         operand_an[0].add(f'{connection_class}_prune')
-                    continue
 
-                if f'{connection_class}_connected' in operator_annotation_set:
+                elif f'{connection_class}_connected' in operator_annotation_set:
                     # Promote children to 'connected'
                     for operand_an in operands_annotations_sets:
                         if connection_class in operand_an[0] or '<num>' in operand_an[0]:
@@ -1122,9 +1141,7 @@ class ExpressionSpace:
 
                     # If both children are connected, promote the left child to '_prune'
                     if all(any(operand_an.startswith(f'{connection_class}_connected') for operand_an in operand_ans[0]) for operand_ans in operands_annotations_sets):
-                        # operands_annotations_sets[0][0].remove(f'{connection_class}_connected')  # Not neecessary because prune is checked first
                         operands_annotations_sets[0][0].add(f'{connection_class}_prune')
-                    continue
 
             # Add the operator to the expression
             expression.append(operator)
@@ -1196,6 +1213,24 @@ class ExpressionSpace:
                 i -= 1
                 continue
 
+            if token in self.operator_arity:
+                operator = token
+                arity = self.operator_arity[token]
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_dicts = list(reversed(stack_annotations[-arity:]))
+                operands_labels = list(reversed(stack_labels[-arity:]))
+
+                # Label each subtree with its own hash to know which to prune later
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                _ = [stack_labels.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([{cc: {} for cc in self.connection_classes}, operands_annotations_dicts])
+                new_label = tuple(flatten_nested_list([operator, operands])[::-1])
+                stack_labels.append([new_label, operands_labels])
+                i -= 1
+                continue
+
             stack.append([token])
             stack_annotations.append([{cc: {tuple([token]): [0, 0]} for cc in self.connection_classes}])
             stack_labels.append([tuple([token])])
@@ -1252,29 +1287,24 @@ class ExpressionSpace:
 
                     if argmax_multiplicity_sum > 1:
                         # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
-                        if argmax_class == 'mult':
-                            if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
-                                powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
-                                first_replacement = inverse_operator_prefix + ('*',) + tuple(f'pow_{p}' for p in powers) + argmax_subtree + argmax_subtree
-                            else:
-                                powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
-                                first_replacement = inverse_operator_prefix + tuple(f'pow_{p}' for p in powers) + argmax_subtree
+                        hyper_operator = self.connection_classes_hyper[argmax_class]
+                        if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                            powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                            first_replacement = inverse_operator_prefix + ('*',) + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree + argmax_subtree
                         else:
-                            first_replacement = ('*', '<num>',) + argmax_subtree
+                            powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                            first_replacement = inverse_operator_prefix + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree
 
                         other_replacements = (neutral_element,)
 
                     if argmax_multiplicity_sum < -1:
                         # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
-                        if argmax_class == 'mult':
-                            if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
-                                powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
-                                first_replacement = double_inverse_operator_prefix + ('*',) + tuple(f'pow_{p}' for p in powers) + argmax_subtree + argmax_subtree
-                            else:
-                                powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
-                                first_replacement = double_inverse_operator_prefix + tuple(f'pow_{p}' for p in powers) + argmax_subtree
+                        if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                            powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                            first_replacement = double_inverse_operator_prefix + ('*',) + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree + argmax_subtree
                         else:
-                            first_replacement = ('*', '<num>',) + argmax_subtree
+                            powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                            first_replacement = double_inverse_operator_prefix + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree
 
                         other_replacements = (neutral_element,)
 
@@ -1296,7 +1326,9 @@ class ExpressionSpace:
             _, operands_labels = subtree_labels
             operator_parity = subtree_parities  # No operand parity information yet
 
-            if len(operands) == 2:
+            # TODO: Propagate parities of unary inverse operators
+
+            if operator in self.connectable_operators:
                 propagated_operand_parities: list[dict[str, int]] = [{}, {}]
                 for cc, (operator_set, _) in self.connection_classes.items():
                     if operator in operator_set:
@@ -1313,15 +1345,30 @@ class ExpressionSpace:
                             if len(subtree_hash) > max_subtree_length and sum(abs(m) for m in multiplicity) > 1 and not all(term == '<num>' or term in self.operator_arity for term in subtree_hash):
                                 argmax_candidate = (cc, subtree_hash, multiplicity[0] - multiplicity[1])
 
-            # Add the operator to the expression
-            expression.append(operator)
+                # Add the operator to the expression
+                expression.append(operator)
 
-            # Add the children to the stack
-            for operand, operand_an, operand_label, propagated_operand_parity in zip(reversed(operands), reversed(operands_annotations_sets), reversed(operands_labels), reversed(propagated_operand_parities)):
-                stack.append(operand)
-                stack_annotations.append(operand_an)
-                stack_labels.append(operand_label)
-                stack_parity.append(propagated_operand_parity)
+                # Add the children to the stack
+                for operand, operand_an, operand_label, propagated_operand_parity in zip(
+                        reversed(operands),
+                        reversed(operands_annotations_sets),
+                        reversed(operands_labels),
+                        reversed(propagated_operand_parities)):
+                    stack.append(operand)
+                    stack_annotations.append(operand_an)
+                    stack_labels.append(operand_label)
+                    stack_parity.append(propagated_operand_parity)
+
+            else:
+                # Add the operator to the expression
+                expression.append(operator)
+
+                # Add the children to the stack
+                for operand, operand_an, operand_label in zip(reversed(operands), reversed(operands_annotations_sets), reversed(operands_labels)):
+                    stack.append(operand)
+                    stack_annotations.append(operand_an)
+                    stack_labels.append(operand_label)
+                    stack_parity.append({cc: 1 for cc in self.connection_classes})
 
         return expression
 
@@ -1418,26 +1465,25 @@ class ExpressionSpace:
             new_expression = expression
 
         for _ in range(max_iter):
-            # Sort operands
-            new_expression = self.sort_operands(new_expression)
-
             # Cancel constants
             expression_tree, annotated_expression_tree = self.find_connected_num_paths(new_expression)
             new_expression = self.cancel_nums(expression_tree, annotated_expression_tree)
-            # print(f'Cancelled constants: {new_expression}')
 
             # Apply simplification rules
             new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
-            # print(f'Applied rules 1: {new_expression}')
+
+            # Sort operands
+            new_expression = self.sort_operands(new_expression)
 
             # Cancel any terms
             expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
             new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
-            # print(f'Cancelled terms: {new_expression}')
 
             # Apply simplification rules
             new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
-            # print(f'Applied rules 2: {new_expression}')
+
+            # Sort operands
+            new_expression = self.sort_operands(new_expression)
 
             if new_expression == expression:
                 break
