@@ -1191,10 +1191,10 @@ class ExpressionSpace:
                             if argmax_multiplicity_sum < -1:
                                 # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
                                 if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
-                                    powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                                    powers = self.factorize_to_at_most(-argmax_multiplicity_sum - 1, self.max_power)
                                     first_replacement = double_inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
                                 else:
-                                    powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                                    powers = self.factorize_to_at_most(-argmax_multiplicity_sum, self.max_power)
                                     first_replacement = double_inverse_operator_prefix + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree
 
                             other_replacements = (neutral_element,)
