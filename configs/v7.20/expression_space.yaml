@@ -252,6 +252,94 @@ operators:
     symmetry: 0
     positive: false
     monotonicity: 1
+  mult2:
+    realization: "nsrops.mult2"
+    alias: []
+    inverse: div2
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  mult3:
+    realization: "nsrops.mult3"
+    alias: []
+    inverse: div3
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  mult4:
+    realization: "nsrops.mult4"
+    alias: []
+    inverse: div4
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  mult5:
+    realization: "nsrops.mult5"
+    alias: []
+    inverse: div5
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  div2:
+    realization: "nsrops.div2"
+    alias: []
+    inverse: mult2
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  div3:
+    realization: "nsrops.div3"
+    alias: []
+    inverse: mult3
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  div4:
+    realization: "nsrops.div4"
+    alias: []
+    inverse: mult4
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
+  div5:
+    realization: "nsrops.div5"
+    alias: []
+    inverse: mult5
+    arity: 1
+    weight: 1
+    precedence: 3
+    commutative: false
+    symmetry: 0
+    positive: false
+    monotonicity: 1
 
 variables: 3
 
