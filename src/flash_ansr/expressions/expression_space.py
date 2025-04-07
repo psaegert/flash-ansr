@@ -974,7 +974,10 @@ class ExpressionSpace:
 
         # Traverse the expression from right to left
         while i >= 0:
+            # print()
             token = expression[i]
+            # print(f'Stack: {stack}')
+            # print(f'Token: {token}')
 
             # Remember if a rule was applied in this iteration
             applied_rule = False
@@ -986,6 +989,10 @@ class ExpressionSpace:
                 operands = list(reversed(stack[-arity:]))
                 operands_heads = [operand[0] for operand in operands]
                 rules_key = (operator, *operands_heads)
+
+                # print(f'Operator: {operator}')
+                # print(f'Operands: {operands}')
+                # print(f'Arity: {arity}')
 
                 if all(operand[0] == '<num>' for operand in operands):
                     # All operands are constants
@@ -1010,14 +1017,18 @@ class ExpressionSpace:
                         break
 
                 if not applied_rule:
+                    # print(f'No rule applied for {[operator, operands]}')
                     _ = [stack.pop() for _ in range(arity)]
                     stack.append([operator, operands])
                     i -= 1
                     continue
 
             if not applied_rule:
+                # print(f'Nothing applied for {token}')
                 stack.append([token])
                 i -= 1
+
+        # print(f'Final Stack: {stack}')
 
         # Unroll the tree into a flat expression in the correct order
         return flatten_nested_list(stack)[::-1]
@@ -1121,7 +1132,6 @@ class ExpressionSpace:
         still_connected = False
 
         while len(stack) > 0:
-            # print(stack_still_connected)
             subtree = stack.pop()
             subtree_annotation = stack_annotations.pop()
             subtree_labels = stack_labels.pop()
@@ -1130,19 +1140,13 @@ class ExpressionSpace:
 
             if argmax_candidate is not None:
                 argmax_class, argmax_subtree, argmax_multiplicity_sum = argmax_candidate
-
-                # print(subtree[0], self.connection_classes[argmax_class][0])
-                # print(still_connected, subtree[0] in self.connection_classes[argmax_class][0], subtree[0] not in self.operator_arity)
                 still_connected = still_connected and (subtree[0] in self.connection_classes[argmax_class][0] or subtree[0] not in self.operator_arity)
-                # print(still_connected)
 
                 if still_connected:
-                    # print('Still connected')
                     if argmax_subtree == subtree_labels[0]:
                         neutral_element = self.connection_classes[argmax_class][1]
 
                         if argmax_subtree == ('<num>',):
-                            # print('Setting up replacement')
                             first_replacement = ('<num>',)
                             other_replacements = neutral_element
                         else:
@@ -1177,10 +1181,10 @@ class ExpressionSpace:
                                 operator = self.connection_classes[argmax_class][0][0]  # Positive multiplicity
                                 if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
                                     powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
-                                    first_replacement = inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree + argmax_subtree
+                                    first_replacement = inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
                                 else:
                                     powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
-                                    first_replacement = inverse_operator_prefix + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree
+                                    first_replacement = inverse_operator_prefix + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree
 
                                 other_replacements = (neutral_element,)
 
@@ -1188,18 +1192,16 @@ class ExpressionSpace:
                                 # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
                                 if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
                                     powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
-                                    first_replacement = double_inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree + argmax_subtree
+                                    first_replacement = double_inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
                                 else:
                                     powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
-                                    first_replacement = double_inverse_operator_prefix + tuple(f'{hyper_operator}_{p}' for p in powers) + argmax_subtree
+                                    first_replacement = double_inverse_operator_prefix + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree
 
                             other_replacements = (neutral_element,)
 
                         if n_replaced == 0:
-                            # print(f'Replacing {argmax_subtree} with {first_replacement}')
                             expression.extend(first_replacement)
                         else:
-                            # print(f'Replacing {argmax_subtree} with {other_replacements}')
                             expression.extend(other_replacements)
                         n_replaced += 1
                         continue
@@ -1234,8 +1236,6 @@ class ExpressionSpace:
                             if len(subtree_hash) > max_subtree_length and sum(abs(m) for m in multiplicity) > 1:
                                 argmax_candidate = (cc, subtree_hash, multiplicity[0] - multiplicity[1])
                                 still_connected = True
-
-                # print(operator, operands, argmax_candidate)
 
                 # Add the operator to the expression
                 expression.append(operator)
@@ -1358,22 +1358,25 @@ class ExpressionSpace:
             was_tuple = False
             new_expression = expression
 
+        # Apply simplification rules and sort operands to get started
+        new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+        # print('1', new_expression)
+        new_expression = self.sort_operands(new_expression)
+        # print('2', new_expression)
+
         for _ in range(max_iter):
-            # Apply simplification rules
-            # new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
-
-            # Sort operands
-            # new_expression = self.sort_operands(new_expression)
-
             # Cancel any terms
             expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
             new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
+            # print('3', new_expression)
 
             # Apply simplification rules
             new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+            # print('4', new_expression)
 
             # Sort operands
             new_expression = self.sort_operands(new_expression)
+            # print('5', new_expression)
 
             if new_expression == expression:
                 break
@@ -1571,7 +1574,11 @@ class ExpressionSpace:
                             print(f'Reached maximum number of rules: {len(self.simplification_rules)}')
                             break
 
-                        simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
+                        try:
+                            simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
+                        except IndexError:
+                            print(combination)
+                            raise
                         simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
 
                         new_hashes_of_size_lengths = {k: len(v) for k, v in new_hashes_of_size.items()}
