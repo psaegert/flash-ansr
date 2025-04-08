@@ -10,4 +10,4 @@ fi
 
 echo "Finding simplifications with ${CONFIG}"
 
-flash_ansr find-simplifications -e "{{ROOT}}/configs/${CONFIG}/expression_space.yaml" -n 1000000 -t 36000 -m 5 -r 5 -s 1000 -o {{ROOT}}/data/ansr-data/simplification_rules/${CONFIG}.json --reset-rules -v
+flash_ansr find-simplifications -e "{{ROOT}}/configs/${CONFIG}/expression_space.yaml" -m 5 -r 5 -s 1000 -o {{ROOT}}/data/ansr-data/simplification_rules/${CONFIG}.json --reset-rules -v
