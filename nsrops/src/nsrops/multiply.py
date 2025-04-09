@@ -26,7 +26,7 @@ def div(x: float, y: float) -> float:
             return x * float('inf')
 
         # When x is a scalar, return inf or -inf depending on the sign of x
-        if not not isinstance(x, complex):
+        if not isinstance(x, complex):
             if x > 0:
                 return float('inf')
             elif x < 0:
