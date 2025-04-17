@@ -1531,7 +1531,7 @@ class ExpressionSpace:
                             simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
                     hashes_of_size = simplified_hashes_of_size
 
-                    if max_pattern_length is not None and max(hashes_of_size.keys()) > max_pattern_length:
+                    if max_pattern_length is not None and max(hashes_of_size.keys()) >= max_pattern_length:
                         # If the maximum pattern length is exceeded, stop searching
                         if verbose:
                             print(f'Maximum pattern length reached: {max_pattern_length}')
