@@ -540,7 +540,11 @@ class SkeletonPool:
 
                 skeleton = self._sample_skeleton(n_operators)
                 if self.simplify:
-                    skeleton = self.expression_space.simplify(skeleton, inplace=True)
+                    try:
+                        skeleton = self.expression_space.simplify(skeleton, inplace=True)
+                    except Exception as e:
+                        print(f"Failed to simplify skeleton: {skeleton}")
+                        raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e
 
                 if self.expression_space.simplification == "sympy":
                     if not self.expression_space.is_valid(skeleton):
