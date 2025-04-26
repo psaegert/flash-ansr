@@ -3,9 +3,9 @@ encoder_max_n_variables: 4  # includes the dependent variable
 pre_encoder_input_type: "ieee-754"
 pre_encoder_support_nan: False
 
-encoder: "FlatSetTransformer"
+encoder: "SetTransformer"
 encoder_kwargs:
-  hidden_size: 256
+  hidden_size: 512
   n_enc_isab: 5
   n_dec_sab: 2
   n_induce: 64
