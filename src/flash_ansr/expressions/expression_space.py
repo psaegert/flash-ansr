@@ -1191,7 +1191,7 @@ class ExpressionSpace:
                             if argmax_multiplicity_sum < -1:
                                 # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
                                 hyper_operator = self.connection_classes_hyper[argmax_class]
-                                if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                                if argmax_multiplicity_sum < -5 and is_prime(-argmax_multiplicity_sum):
                                     powers = self.factorize_to_at_most(-argmax_multiplicity_sum - 1, self.max_power)
                                     first_replacement = double_inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
                                 else:
@@ -1361,23 +1361,23 @@ class ExpressionSpace:
 
         # Apply simplification rules and sort operands to get started
         new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
-        # print('1', new_expression)
+        print('1', new_expression)
         new_expression = self.sort_operands(new_expression)
-        # print('2', new_expression)
+        print('2', new_expression)
 
         for _ in range(max_iter):
             # Cancel any terms
             expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
             new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
-            # print('3', new_expression)
+            print('3', new_expression)
 
             # Apply simplification rules
             new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
-            # print('4', new_expression)
+            print('4', new_expression)
 
             # Sort operands
             new_expression = self.sort_operands(new_expression)
-            # print('5', new_expression)
+            print('5', new_expression)
 
             if new_expression == expression:
                 break
