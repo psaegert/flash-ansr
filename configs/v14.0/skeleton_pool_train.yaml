@@ -3,6 +3,7 @@ holdout_pools: [
   "{{ROOT}}/data/ansr-data/v14.0/skeleton_pool_val/",
   "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/feynman_full/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/pool_15/skeleton_pool/"
 ]
