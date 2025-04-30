@@ -343,16 +343,16 @@ operators:
 
 variables: 11
 
-# special_tokens: [
-#   "<pad>",
-#   "<bos>",
-#   "<eos>",
-#   "<unk>",
-#   "<cls>",
-#   "<mask>",
-#   "<num>",
-#   "<ctrl_complexity>"]
+special_tokens: [
+  "<pad>",
+  "<bos>",
+  "<eos>",
+  "<unk>",
+  "<cls>",
+  "<mask>",
+  "<num>",
+  "<ctrl_complexity>"]
 
 simplification: "auto_flash"
 simplification_kwargs:
-  rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v7.20.json"
+  rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v14.0.json"

@@ -1487,7 +1487,7 @@ class ExpressionSpace:
 
         if additional_leaf_nodes is None:
             # TODO: Think about more special constants like pi, e, 2, 3, 1/2, etc.
-            additional_leaf_nodes = ['<num>', '0', '1', '2', '3', '(-1)', '(-2)', '(-3)', 'numpy.pi', 'numpy.e', 'numpy.sqrt(2)' 'float("inf")', 'float("-inf")', 'float("nan")']
+            additional_leaf_nodes = ['<num>', '0', '1', '2', '3', '(-1)', '(-2)', '(-3)', 'numpy.pi', 'numpy.e', 'numpy.sqrt(2)', 'float("inf")', 'float("-inf")', 'float("nan")']
 
         leaf_nodes = dummy_variables + additional_leaf_nodes
         non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
