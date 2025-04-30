@@ -1361,18 +1361,23 @@ class ExpressionSpace:
 
         # Apply simplification rules and sort operands to get started
         new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+        # print('1', new_expression)
         new_expression = self.sort_operands(new_expression)
+        # print('2', new_expression)
 
         for _ in range(max_iter):
             # Cancel any terms
             expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
             new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
+            # print('3', new_expression)
 
             # Apply simplification rules
             new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+            # print('4', new_expression)
 
             # Sort operands
             new_expression = self.sort_operands(new_expression)
+            # print('5', new_expression)
 
             if new_expression == expression:
                 break
@@ -1446,7 +1451,7 @@ class ExpressionSpace:
     def find_rules(
             self,
             max_n_rules: int | None = None,
-            max_pattern_length: int | None = None,
+            max_pattern_length: int | None = 7,
             timeout: float | None = None,
             dummy_variables: int | list[str] | None = None,
             additional_leaf_nodes: list[str] | None = None,
@@ -1462,7 +1467,7 @@ class ExpressionSpace:
         hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
 
         if dummy_variables is None:
-            dummy_variables = [f"x{i}" for i in range(3)]  # Room for up to 3 different terms in simplification patterns
+            dummy_variables = [f"x{i}" for i in range(4)]  # Room for up to 4 different terms in simplification patterns
         elif isinstance(dummy_variables, int):
             dummy_variables = [f"x{i}" for i in range(dummy_variables)]
 
@@ -1482,7 +1487,7 @@ class ExpressionSpace:
 
         if additional_leaf_nodes is None:
             # TODO: Think about more special constants like pi, e, 2, 3, 1/2, etc.
-            additional_leaf_nodes = ['<num>', '0', '1', '(-1)', 'float("inf")', 'float("-inf")', 'float("nan")']
+            additional_leaf_nodes = ['<num>', '0', '1', '2', '3', '(-1)', '(-2)', '(-3)', 'numpy.pi', 'numpy.e', 'numpy.sqrt(2)' 'float("inf")', 'float("-inf")', 'float("nan")']
 
         leaf_nodes = dummy_variables + additional_leaf_nodes
         non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))

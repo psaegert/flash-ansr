@@ -11,11 +11,9 @@ class MAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
     def __init__(
             self,
-            size_Q: int,
-            size_KV: int,
             size: int,
             n_heads: int,
-            layer_norm: bool = False) -> None:
+            clean_path: bool = False) -> None:
         super().__init__()
         if size % n_heads != 0:
             raise ValueError(f"size_V ({size}) must be divisible by n_heads ({n_heads})")
@@ -23,15 +21,12 @@ class MAB(nn.Module):
         self.size = size
         self.head_size = size // n_heads
         self.n_heads = n_heads
-        self.layer_norm = layer_norm
+        self.clean_path = clean_path
+        self.attn_scaling = 1 / math.sqrt(self.head_size)
 
-        self.W_q = nn.Linear(size_Q, size)
-        self.W_k = nn.Linear(size_KV, size)
-        self.W_v = nn.Linear(size_KV, size)
-
-        if layer_norm:
-            self.layer_norm_0 = nn.LayerNorm(size)
-            self.layer_norm_1 = nn.LayerNorm(size)
+        self.W_q = nn.Linear(size, size)
+        self.W_k = nn.Linear(size, size)
+        self.W_v = nn.Linear(size, size)
 
         self.fc_o = nn.Linear(size, size)
 
@@ -40,29 +35,28 @@ class MAB(nn.Module):
         k: torch.Tensor = self.W_k(key_value)
         v: torch.Tensor = self.W_v(key_value)
 
-        Q_ = torch.cat(q.split(self.head_size, dim=2), 0)
-        K_ = torch.cat(k.split(self.head_size, dim=2), 0)
-        V_ = torch.cat(v.split(self.head_size, dim=2), 0)
+        q_head = torch.cat(q.split(self.head_size, dim=2), 0)
+        k_head = torch.cat(k.split(self.head_size, dim=2), 0)
+        v_head = torch.cat(v.split(self.head_size, dim=2), 0)
 
-        A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.size), 2)
-        output = torch.cat((Q_ + A.bmm(V_)).split(query.size(0), 0), 2)
+        A = torch.softmax(q_head.bmm(k_head.transpose(1, 2)) * self.attn_scaling, 2)
 
-        if self.layer_norm:
-            output = self.layer_norm_0(output)
-
-        output = output + F.relu(self.fc_o(output))
-
-        if self.layer_norm:
-            output = self.layer_norm_1(output)
+        if self.clean_path:
+            clean_query_head = torch.cat(query.split(self.head_size, dim=2), 0)
+            output = torch.cat((clean_query_head + A.bmm(v_head)).split(query.size(0), 0), 2)
+            output = query + F.relu(self.fc_o(output))
+        else:
+            output = torch.cat((q_head + A.bmm(v_head)).split(query.size(0), 0), 2)
+            output = output + F.relu(self.fc_o(output))
 
         return output
 
 
 class SAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, input_size: int, output_size: int, n_heads: int, layer_norm: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, clean_path: bool = False) -> None:
         super().__init__()
-        self.mab = MAB(input_size, input_size, output_size, n_heads, layer_norm)
+        self.mab = MAB(size, n_heads, clean_path)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(X, X)
@@ -70,14 +64,14 @@ class SAB(nn.Module):
 
 class ISAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, input_size: int, output_size: int, n_heads: int, n_induce: int, layer_norm: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, n_induce: int, clean_path: bool = False) -> None:
         super().__init__()
 
-        self.inducing_points = nn.Parameter(torch.Tensor(1, n_induce, output_size))
+        self.inducing_points = nn.Parameter(torch.Tensor(1, n_induce, size))
         nn.init.xavier_uniform_(self.inducing_points)
 
-        self.mab0 = MAB(output_size, input_size, output_size, n_heads, layer_norm)
-        self.mab1 = MAB(input_size, output_size, output_size, n_heads, layer_norm)
+        self.mab0 = MAB(size, n_heads, clean_path)
+        self.mab1 = MAB(size, n_heads, clean_path)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         H = self.mab0(self.inducing_points.repeat(X.size(0), 1, 1), X)
@@ -86,13 +80,13 @@ class ISAB(nn.Module):
 
 class PMA(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, size: int, n_heads: int, n_seeds: int, layer_norm: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, n_seeds: int, clean_path: bool = False) -> None:
         super().__init__()
 
         self.S = nn.Parameter(torch.Tensor(1, n_seeds, size))
         nn.init.xavier_uniform_(self.S)
 
-        self.mab = MAB(size, size, size, n_heads, layer_norm)
+        self.mab = MAB(size, n_heads, clean_path)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(self.S.repeat(X.size(0), 1, 1), X)
@@ -111,6 +105,7 @@ class SetTransformer(SetEncoder):
             n_dec_sab: int = 2,
             n_induce: int | list[int] = 64,
             n_heads: int = 4,
+            clean_path: bool = False,
             layer_norm: bool = False) -> None:
         super().__init__()
         if n_enc_isab < 1:
@@ -126,12 +121,12 @@ class SetTransformer(SetEncoder):
                 f"Number of inducing points `n_induce` ({n_induce}) must be an integer or a list of length {n_enc_isab}")
 
         self.enc = nn.Sequential(
-            ISAB(input_embedding_size * input_dimension_size, hidden_size, n_heads, n_induce[0], layer_norm),
-            *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], layer_norm) for i in range(n_enc_isab - 1)])
+            nn.Linear(input_embedding_size * input_dimension_size, hidden_size),
+            *[ISAB(hidden_size, n_heads, n_induce[i], clean_path) for i in range(n_enc_isab)])
 
         self.dec = nn.Sequential(
-            PMA(hidden_size, n_heads, n_seeds, layer_norm),
-            *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
+            PMA(hidden_size, n_heads, n_seeds, clean_path),
+            *[SAB(hidden_size, n_heads, clean_path) for _ in range(n_dec_sab)],
             nn.Linear(hidden_size, output_embedding_size))
 
         self.input_embedding_size = input_embedding_size

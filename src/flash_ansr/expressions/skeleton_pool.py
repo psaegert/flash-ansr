@@ -671,8 +671,7 @@ class SkeletonPool:
         verbose : bool, optional
             Whether to display a progress bar.
         '''
-        n_duplicates = 0
-        n_invalid = 0
+        n_skipped = 0
         n_created = len(self.skeletons)
 
         pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
@@ -681,21 +680,12 @@ class SkeletonPool:
             try:
                 skeleton, code, constants = self.sample_skeleton(new=True)
             except NoValidSampleFoundError:
+                n_skipped += 1
+                pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
                 continue
 
             if not self.expression_space.is_valid(skeleton):
                 raise ValueError(f"Invalid skeleton: {skeleton}")
-
-            if not self.expression_space.is_valid(skeleton):
-                n_invalid += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
-                # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
-
-            if skeleton in self.skeletons:
-                n_duplicates += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
 
             if not isinstance(skeleton, tuple):
                 skeleton = tuple(skeleton)
@@ -704,7 +694,7 @@ class SkeletonPool:
             n_created += 1
 
             pbar.update(1)
-            pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+            pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
 
             if n_created >= size:
                 break
