@@ -93,11 +93,24 @@ def hamming(x: torch.Tensor) -> torch.Tensor:
     return y
 
 
+def float32_to_ieee754_bits(x: torch.Tensor) -> torch.Tensor:
+    # reinterpret bits as int32
+    i = x.view(torch.int32)
+
+    # build indices [31, 30, …, 0]
+    bit_idx = torch.arange(31, -1, -1, device=x.device, dtype=torch.int32)
+
+    # shift, mask, and cast to int8
+    bits = ((i.unsqueeze(-1) >> bit_idx) & 1).to(torch.int8)
+
+    return bits
+
+
 class PreEncoder(nn.Module):
-    def __init__(self, input_size: int, mode: Literal["ieee-754", "numeric", "special_frexp", "frexp", "sfrexp"] = "numeric", support_nan: bool = False, exponent_scale: float | None = None) -> None:
+    def __init__(self, input_size: int, mode: Literal["ieee-754", "ieee-754-32", "numeric", "special_frexp", "frexp", "sfrexp"] = "numeric", support_nan: bool = False, exponent_scale: float | None = None) -> None:
         super().__init__()
 
-        self.supported_modes = ["ieee-754", "special_frexp", "numeric", "frexp", "sfrexp"]
+        self.supported_modes = ["ieee-754", "ieee-754-32", "special_frexp", "numeric", "frexp", "sfrexp"]
 
         if mode not in self.supported_modes:
             raise ValueError(f"Invalid mode: {mode}, expected one of {self.supported_modes}")
@@ -123,6 +136,8 @@ class PreEncoder(nn.Module):
             output_size += 2
         elif self.mode == "ieee-754":
             output_size += 15
+        elif self.mode == "ieee-754-32":
+            output_size += 31
         elif self.mode == "special_frexp":
             output_size += len(self.special_logs_factors) * 2
 
@@ -141,6 +156,9 @@ class PreEncoder(nn.Module):
 
         if self.mode == "ieee-754":
             x_bit = float2bit(x)
+            return (x_bit - 0.5) * 2
+        elif self.mode == "ieee-754-32":
+            x_bit = float32_to_ieee754_bits(x)
             return (x_bit - 0.5) * 2
         else:
             x = x.unsqueeze(-1)  # Make room for the representation of each number

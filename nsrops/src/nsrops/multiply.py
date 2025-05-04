@@ -1,9 +1,9 @@
-import numpy as np
+from typing import Iterable
 
 
 def inv(x: float) -> float:
     # numpy will handle the x = 0 case
-    if isinstance(x, np.ndarray):
+    if isinstance(x, Iterable):
         return 1 / x
 
     # Manually handle scalar case
@@ -16,13 +16,13 @@ def inv(x: float) -> float:
 
 def div(x: float, y: float) -> float:
     # numpy will handle the x = 0 case
-    if isinstance(y, np.ndarray):
+    if isinstance(y, Iterable):
         return x / y
 
     # Manually handle scalar case
     if y == 0:
         # When x is an iterable, multiply with infinity to let the sign determine the result
-        if isinstance(x, np.ndarray):
+        if isinstance(x, Iterable):
             return x * float('inf')
 
         # When x is a scalar, return inf or -inf depending on the sign of x
