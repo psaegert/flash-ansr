@@ -432,6 +432,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
             refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
+            convergence_errors: Literal['raise', 'ignore', 'warn'] = 'ignore',
             parsimony: float = 0.05,
             optimizer: torch.optim.Optimizer | None = None,
             optimizer_kwargs: dict | None = None,
@@ -559,15 +560,15 @@ class FlashANSR(BaseEstimator):
                 priority_queue_objective = [priority_queue_objective[i] for i in sorted_indices][:priority_queue_size]
 
                 statistics = {
-                    'min_fvu': np.nanmin(statistics_lists['fvu']),
-                    'max_fvu': np.nanmax(statistics_lists['fvu']),
-                    'mean_fvu': np.nanmean(statistics_lists['fvu']),
+                    'min_fvu': np.nanmin(statistics_lists['fvu']) if np.any(np.isfinite(statistics_lists['fvu'])) else np.nan,
+                    'max_fvu': np.nanmax(statistics_lists['fvu']) if np.any(np.isfinite(statistics_lists['fvu'])) else np.nan,
+                    'mean_fvu': np.nanmean(statistics_lists['fvu']) if np.any(np.isfinite(statistics_lists['fvu'])) else np.nan,
                     'min_complexity': np.nanmin(statistics_lists['complexity']),
                     'max_complexity': np.nanmax(statistics_lists['complexity']),
                     'mean_complexity': np.nanmean(statistics_lists['complexity']),
-                    'min_queue_objective': np.nanmin(priority_queue_objective),
-                    'max_queue_objective': np.nanmax(priority_queue_objective),
-                    'mean_queue_objective': np.nanmean(priority_queue_objective),
+                    'min_queue_objective': np.nanmin(priority_queue_objective) if np.any(np.isfinite(priority_queue_objective)) else np.nan,
+                    'max_queue_objective': np.nanmax(priority_queue_objective) if np.any(np.isfinite(priority_queue_objective)) else np.nan,
+                    'mean_queue_objective': np.nanmean(priority_queue_objective) if np.any(np.isfinite(priority_queue_objective)) else np.nan,
                     'n_total': len(total_unique_generated),
                     'n_new': n_new,
                 }
@@ -622,18 +623,28 @@ class FlashANSR(BaseEstimator):
                 }
 
             except ConvergenceError:
-                warnings.warn("Convergence error occurred during training. Skipping iteration.")
+                if convergence_errors == 'raise':
+                    raise
+                elif convergence_errors == 'warn':
+                    warnings.warn("Convergence error occurred during training. Skipping iteration.")
+
+                logs = {
+                    'NLL': np.nan,
+                    'H': np.nan,
+                    'max_gradient_norm': np.nan,
+                    **{k: np.nan for k in ['min_fvu', 'max_fvu', 'mean_fvu', 'min_complexity', 'max_complexity', 'mean_complexity', 'min_queue_objective', 'max_queue_objective', 'mean_queue_objective', 'n_total', 'n_new']},
+                }
                 pass
 
             self.specialize_history.append(logs)
             pbar.set_postfix({
-                'NLL': f"{logs['NLL']:.2e}",
-                'H': f"{logs['H']:.2e}",
-                'Max Queue Objective': f"{np.nanmax(priority_queue_objective):.1f}",
-                'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}",
-                'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}",
+                'NLL': f"{logs['NLL']:.2e}" if np.isfinite(logs['NLL']) else "N/A",
+                'H': f"{logs['H']:.2e}" if np.isfinite(logs['H']) else "N/A",
+                'Max Queue Objective': f"{np.nanmax(priority_queue_objective):.1f}" if len(priority_queue_objective) > 0 and np.any(np.isfinite(priority_queue_objective)) else "N/A",
+                'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}" if len(priority_queue_objective) > 0 and np.any(np.isfinite(priority_queue_objective)) else "N/A",
+                'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}" if len(agent.results) > 0 and np.any(np.isfinite(agent.results['fvu'])) else "N/A",
                 'Explored': len(total_unique_generated),
-                'Best Expression': agent.expression_space.prefix_to_infix(agent.expression_space.tokenizer.decode(priority_queue_beams[0], special_tokens='<num>')),
+                'Best Expression': agent.expression_space.prefix_to_infix(agent.expression_space.tokenizer.decode(priority_queue_beams[0], special_tokens='<num>')) if len(priority_queue_beams) > 0 else "N/A",
             })
 
         pbar.close()
