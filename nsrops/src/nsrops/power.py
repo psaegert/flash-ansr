@@ -25,7 +25,7 @@ def pow1_2(x: float) -> float:
 def pow1_3(x: float) -> float:
     if isinstance(x, np.ndarray):
         # Handle numpy arrays
-        if x.dtype == np.complexfloating:
+        if np.iscomplexobj(x):
             # Handle complex numbers
             return np.cbrt(x)
         x = np.asarray(x)
@@ -54,7 +54,7 @@ def pow1_4(x: float) -> float:
 def pow1_5(x: float) -> float:
     if isinstance(x, np.ndarray):
         # Handle numpy arrays
-        if x.dtype == np.complexfloating:
+        if np.iscomplexobj(x):
             # Handle complex numbers
             return x ** (1 / 5)
         x = np.asarray(x)

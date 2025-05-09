@@ -99,8 +99,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import FlashANSR, GenerationConfig, install_model, get_path
 
 # Specify the model
-# Here: https://huggingface.co/psaegert/flash-ansr-v7.0
-MODEL = "psaegert/flash-ansr-v7.0"
+# Here: https://huggingface.co/psaegert/flash-ansr-v7.20
+MODEL = "psaegert/flash-ansr-v7.20"
 
 # Download the latest snapshot of the model
 # By default, the model is downloaded to the directory `./models/` in the package root
