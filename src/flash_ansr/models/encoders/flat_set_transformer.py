@@ -1,6 +1,6 @@
 from flash_ansr.models.encoders.set_encoder import SetEncoder
 from flash_ansr.models.encoders.set_transformer import ISAB, PMA, SAB
-from flash_ansr.models.transformer_utils import PositionalEncoding
+from flash_ansr.models.encoders.pre_encoder import PreEncoder
 import torch
 from torch import nn
 
@@ -33,25 +33,38 @@ class FlatSetTransformer(SetEncoder):
             raise ValueError(
                 f"Number of inducing points `n_induce` ({n_induce}) must be an integer or a list of length {n_enc_isab}")
 
-        self.enc = nn.Sequential(
-            ISAB(input_embedding_size, hidden_size, n_heads, n_induce[0], layer_norm),
-            *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], layer_norm) for i in range(n_enc_isab - 1)])
-
-        self.dec = nn.Sequential(
-            PMA(hidden_size, n_heads, n_seeds, layer_norm),
-            *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
-            nn.Linear(hidden_size, output_embedding_size))
-
-        self.output_embedding_size = output_embedding_size
-
         self.add_positional_encoding = add_positional_encoding
-        self.positional_encoding_out = PositionalEncoding()
-
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
-        B, M, D, E = X.shape
 
         if self.add_positional_encoding:
-            X = X + self.positional_encoding_out(shape=(D, E), device=X.device)
+            self.dim_pre_encoder = PreEncoder(1, mode='ieee-754')
+            total_input_size = input_embedding_size + self.dim_pre_encoder.output_size
+        else:
+            total_input_size = input_embedding_size
+
+        self.enc = nn.Sequential(
+            nn.Linear(total_input_size, hidden_size),
+            *[ISAB(hidden_size, n_heads, n_induce[i]) for i in range(n_enc_isab)])
+
+        self.dec = nn.Sequential(
+            PMA(hidden_size, n_heads, n_seeds),
+            *[SAB(hidden_size, n_heads) for _ in range(n_dec_sab)],
+            nn.Linear(hidden_size, output_embedding_size))
+
+        self.input_embedding_size = input_embedding_size
+        self.output_embedding_size = output_embedding_size
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        B, M, DE = X.shape
+        D = DE // self.input_embedding_size
+        E = self.input_embedding_size
+
+        X = X.reshape(B, M, D, E)
+
+        if self.add_positional_encoding:
+            dimension_encodings = self.dim_pre_encoder(torch.arange(D, device=X.device).unsqueeze(0).expand(B, M, -1))
+            X = torch.cat((X, dimension_encodings), dim=-1)
+
+        B, M, D, E = X.shape
 
         out = self.dec(self.enc(X.reshape(B, M * D, E)))
         out = out.reshape(B, -1, D, self.output_embedding_size)

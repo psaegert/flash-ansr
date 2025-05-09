@@ -8,56 +8,43 @@ from flash_ansr.models.encoders.set_encoder import SetEncoder
 
 
 class MAB(nn.Module):
-    # https://github.com/juho-lee/set_transformer
     def __init__(
             self,
             size: int,
             n_heads: int,
-            clean_path: bool = False,
-    ) -> None:
+            dim_feedforward: int | None = None,
+            dropout: float = 0.0) -> None:
         super().__init__()
-        if size % n_heads != 0:
-            raise ValueError(f"size_V ({size}) must be divisible by n_heads ({n_heads})")
 
-        self.size = size
-        self.head_size = size // n_heads
-        self.n_heads = n_heads
-        self.clean_path = clean_path
-        self.attn_scaling = 1 / math.sqrt(self.head_size)
+        self.mha = nn.MultiheadAttention(embed_dim=size, num_heads=n_heads, batch_first=True)
 
-        self.W_q = nn.Linear(size, size)
-        self.W_k = nn.Linear(size, size)
-        self.W_v = nn.Linear(size, size)
+        self.dim_feedforward = dim_feedforward or size * 4
 
-        self.fc_o = nn.Linear(size, size)
+        self.ff = nn.Sequential(
+            nn.Linear(size, self.dim_feedforward),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(self.dim_feedforward, size)
+        )
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
-        q: torch.Tensor = self.W_q(query)
-        k: torch.Tensor = self.W_k(key_value)
-        v: torch.Tensor = self.W_v(key_value)
+        attn_output = self.mha(query, key_value, key_value)[0]
+        query = query + self.dropout(attn_output)
 
-        q_head = torch.cat(q.split(self.head_size, dim=2), 0)
-        k_head = torch.cat(k.split(self.head_size, dim=2), 0)
-        v_head = torch.cat(v.split(self.head_size, dim=2), 0)
+        # Apply feed-forward network with residual connection
+        ff_output = self.ff(query)
+        query = query + self.dropout(ff_output)
 
-        A = torch.softmax(q_head.bmm(k_head.transpose(1, 2)) * self.attn_scaling, 2)
-
-        if self.clean_path:
-            clean_query_head = torch.cat(query.split(self.head_size, dim=2), 0)
-            output = torch.cat((clean_query_head + A.bmm(v_head)).split(query.size(0), 0), 2)
-            output = query + F.relu(self.fc_o(output))
-        else:
-            output = torch.cat((q_head + A.bmm(v_head)).split(query.size(0), 0), 2)
-            output = output + F.relu(self.fc_o(output))
-
-        return output
+        return query
 
 
 class SAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, size: int, n_heads: int, clean_path: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int) -> None:
         super().__init__()
-        self.mab = MAB(size, n_heads, clean_path)
+        self.mab = MAB(size, n_heads)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(X, X)
@@ -65,14 +52,14 @@ class SAB(nn.Module):
 
 class ISAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, size: int, n_heads: int, n_induce: int, clean_path: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, n_induce: int) -> None:
         super().__init__()
 
         self.inducing_points = nn.Parameter(torch.Tensor(1, n_induce, size))
         nn.init.xavier_uniform_(self.inducing_points)
 
-        self.mab0 = MAB(size, n_heads, clean_path)
-        self.mab1 = MAB(size, n_heads, clean_path)
+        self.mab0 = MAB(size, n_heads)
+        self.mab1 = MAB(size, n_heads)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         H = self.mab0(self.inducing_points.repeat(X.size(0), 1, 1), X)
@@ -81,13 +68,13 @@ class ISAB(nn.Module):
 
 class PMA(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, size: int, n_heads: int, n_seeds: int, clean_path: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, n_seeds: int) -> None:
         super().__init__()
 
         self.S = nn.Parameter(torch.Tensor(1, n_seeds, size))
         nn.init.xavier_uniform_(self.S)
 
-        self.mab = MAB(size, n_heads, clean_path)
+        self.mab = MAB(size, n_heads)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(self.S.repeat(X.size(0), 1, 1), X)
@@ -106,11 +93,10 @@ class SetTransformer(SetEncoder):
             n_dec_sab: int = 2,
             n_induce: int | list[int] = 64,
             n_heads: int = 4,
-            clean_path: bool = False,
             layer_norm: bool = False) -> None:
         super().__init__()
-        if n_enc_isab < 0:
-            raise ValueError(f"Number of ISABs in encoder `n_enc_isab` ({n_enc_isab}) cannot be negative")
+        if n_enc_isab < 1:
+            raise ValueError(f"Number of ISABs in encoder `n_enc_isab` ({n_enc_isab}) must be greater than 0")
 
         if n_dec_sab < 0:
             raise ValueError(f"Number of SABs in decoder `n_dec_sab` ({n_dec_sab}) cannot be negative")
@@ -123,11 +109,11 @@ class SetTransformer(SetEncoder):
 
         self.enc = nn.Sequential(
             nn.Linear(input_embedding_size * input_dimension_size, hidden_size),
-            *[ISAB(hidden_size, n_heads, n_induce[i], clean_path) for i in range(n_enc_isab)])
+            *[ISAB(hidden_size, n_heads, n_induce[i]) for i in range(n_enc_isab)])
 
         self.dec = nn.Sequential(
-            PMA(hidden_size, n_heads, n_seeds, clean_path),
-            *[SAB(hidden_size, n_heads, clean_path) for _ in range(n_dec_sab)],
+            PMA(hidden_size, n_heads, n_seeds),
+            *[SAB(hidden_size, n_heads) for _ in range(n_dec_sab)],
             nn.Linear(hidden_size, output_embedding_size))
 
         self.input_embedding_size = input_embedding_size
