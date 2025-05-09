@@ -77,16 +77,25 @@ class FlashANSRTransformer(nn.Module):
         self.expression_space = expression_space
         self.encoder_max_n_variables = encoder_max_n_variables
 
-        self.pre_encoder = PreEncoder(
-            input_size=encoder_max_n_variables,
-            mode=pre_encoder_input_type,
-            support_nan=pre_encoder_support_nan,
-            exponent_scale=pre_encoder_exponent_scale)
+        if pre_encoder_input_type != "none":
+            self.do_pre_encoding = True
+            self.pre_encoder = PreEncoder(
+                input_size=encoder_max_n_variables,
+                mode=pre_encoder_input_type,
+                support_nan=pre_encoder_support_nan,
+                exponent_scale=pre_encoder_exponent_scale)
+        else:
+            self.do_pre_encoding = False
 
         if isinstance(encoder, str):
+            if self.do_pre_encoding:
+                input_embedding_size = self.pre_encoder.encoding_size
+            else:
+                input_embedding_size = encoder_max_n_variables
+
             self.encoder = ModelFactory.get_model(
                 encoder,
-                input_embedding_size=self.pre_encoder.encoding_size,
+                input_embedding_size=input_embedding_size,
                 input_dimension_size=encoder_max_n_variables,
                 output_embedding_size=size,
                 **encoder_kwargs or {})
@@ -227,9 +236,12 @@ class FlashANSRTransformer(nn.Module):
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             embeddings = embeddings + self.numeric_embedding(input_num_pre_encodings)
 
-        data_pre_encodings: torch.Tensor = self.pre_encoder(data)
-        B, M, D, E = data_pre_encodings.size()
-        self.memory = self.encoder(data_pre_encodings.view(B, M, D * E))
+        if self.do_pre_encoding:
+            data = self.pre_encoder(data)
+            B, M, D, E = data.size()
+            data = data.view(B, M, D * E)
+
+        self.memory = self.encoder(data)
 
         if self.memory.ndim > 3:
             self.memory = self.memory.view(B, -1, self.memory.size(-1))
