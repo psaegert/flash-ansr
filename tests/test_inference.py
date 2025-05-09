@@ -8,7 +8,7 @@ from flash_ansr.expressions.utils import codify, num_to_constants
 import unittest
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL = "psaegert/flash-ansr-v7.0"
+MODEL = "psaegert/flash-ansr-v7.20"
 
 
 class TestInference(unittest.TestCase):
