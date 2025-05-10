@@ -2,7 +2,6 @@ from typing import Any, Union
 
 import torch
 from torch import nn
-import numpy as np
 
 from flash_ansr.models.encoders.set_transformer import SAB, MAB
 from flash_ansr.models.encoders.set_encoder import SetEncoder
@@ -13,14 +12,52 @@ def split_mask_batched(X: torch.Tensor) -> torch.Tensor:
     if X.ndim != 3:
         raise ValueError(f"Expected 3D tensor, got {X.ndim}D tensor of shape {X.shape}")
 
+    batch_size, num_points, _ = X.shape
+
+    # Find dimension with max range for each batch
     mins = X.min(dim=1).values
     maxs = X.max(dim=1).values
     ranges = maxs - mins
     max_range_dim = ranges.argmax(dim=1)
 
-    split_value = torch.median(X[np.arange(X.shape[0]), :, max_range_dim], dim=1).values
+    # Initialize result mask
+    result_mask = torch.zeros((batch_size, num_points), dtype=torch.bool, device=X.device)
 
-    return X[np.arange(X.shape[0]), :, max_range_dim] < split_value.unsqueeze(1)
+    # Process each batch independently
+    for i in range(batch_size):
+        # Extract values along the max range dimension for this batch
+        values = X[i, :, max_range_dim[i]]
+
+        # Calculate target size for the first half
+        target_size = num_points // 2
+
+        # Find median value (equivalent to finding kth element)
+        median_value = torch.kthvalue(values, target_size + 1).values
+
+        # Create masks for each category
+        less_mask = values < median_value
+        equal_mask = values == median_value
+
+        # Count elements in each category
+        less_count = torch.sum(less_mask).item()
+        equal_count = torch.sum(equal_mask).item()
+
+        # Calculate how many median elements go to first half to maintain balance
+        median_in_first = max(0, target_size - less_count)
+
+        # If we need to split the median elements
+        if 0 < median_in_first < equal_count:
+            # Get indices of the median elements
+            equal_indices = torch.nonzero(equal_mask, as_tuple=True)[0]
+
+            # Add the required number of median elements to the less mask
+            result_mask[i, less_mask] = True
+            result_mask[i, equal_indices[:median_in_first]] = True  # type: ignore
+        else:
+            # Simple case: all less than median, and possibly some equal to median
+            result_mask[i] = values <= median_value if less_count < target_size else less_mask
+
+    return result_mask
 
 
 class AABBNode:
@@ -41,8 +78,11 @@ def create_tree_batched(X: torch.Tensor, max_depth: int = 5, depth: int = 0) -> 
     if depth + 1 >= max_depth:
         return AABBNode(X)
 
+    # print(f"Creating tree at depth {depth + 1} with shape {X.shape}")
+
     if X.shape[1] > 1:
         mask_batched = split_mask_batched(X)
+        # print(f"Mask shape: {mask_batched.shape}")
         X_left = torch.stack([X[i][mask_batched[i]] for i in range(X.shape[0])], dim=0)
         X_right = torch.stack([X[i][~mask_batched[i]] for i in range(X.shape[0])], dim=0)
         return AABBNode(X, create_tree_batched(X_left, max_depth, depth + 1), create_tree_batched(X_right, max_depth, depth + 1))
