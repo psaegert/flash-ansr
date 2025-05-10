@@ -3,4 +3,4 @@ padding: 'zero'
 preprocessor:
   expression_space: './expression_space.yaml'
   format_probs:
-    complexity: 1.0
+    complexity: 0.5
