@@ -26,7 +26,7 @@ from flash_ansr.eval.token_prediction import (
 )
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
-from flash_ansr.utils import load_config
+from flash_ansr.utils import load_config, pad_input_set
 
 
 nltk.download('wordnet', quiet=True)
@@ -185,6 +185,15 @@ class Evaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+
+        # HACK: Ensure compatibility of tokenization and input variables
+        print('Recompiling skeleton and holdout codes to ensure compatibility...')
+        dataset.skeleton_pool.expression_space = model.expression_space
+        dataset.skeleton_pool.skeleton_codes = dataset.skeleton_pool.compile_codes(verbose=verbose)
+        for holdout_pool in dataset.skeleton_pool.holdout_pools:
+            holdout_pool.expression_space = model.expression_space
+            holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=verbose)
+
         if self.preprocess:
             dataset.preprocessor = FlashASNRPreprocessor(model.expression_space, format_probs={'complexity': 1.0})
 
@@ -229,7 +238,9 @@ class Evaluation():
 
                 batch_size = len(batch['input_ids'])
 
-                data_tensor = torch.cat([batch['x_tensors'][:, :self.n_support], batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
+                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.expression_space.n_variables)
+
+                data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
                 valid_results = True
                 try:
@@ -253,12 +264,12 @@ class Evaluation():
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
 
-                    bos_position = torch.where(batch['input_ids'] == model.expression_space.tokenizer['<bos>'])[1][0].item()
+                    bos_position = torch.where(batch['input_ids'] == dataset.expression_space.tokenizer['<bos>'])[1][0].item()
 
                     expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
                     expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
 
-                    expresssion_labels_decoded = model.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
+                    expresssion_labels_decoded = dataset.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
                     print('Error in the forward pass or fitting.')
@@ -397,6 +408,7 @@ class Evaluation():
                                 residuals_val = y_pred_val - y_val
 
                             except (ConvergenceError, OverflowError, TypeError, ValueError):
+                                print('Error in the constant fitting.')
                                 beam_valid_results = False
 
                         else:
@@ -442,7 +454,7 @@ class Evaluation():
 
                     for j in range(self.beam_width):
                         results_dict[f'free_beam_{j+1}'].append([float('nan')])
-                        results_dict[f'log_prob_beam{j+1}'].append(float('nan'))
+                        results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
                         results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
                         results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
                         results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))

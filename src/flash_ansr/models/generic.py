@@ -2,6 +2,7 @@ from typing import Any
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from flash_ansr.models.factory import ModelFactory
 
@@ -46,3 +47,24 @@ class ConfigurableSequential(nn.Sequential):
             The output tensor.
         '''
         return self.layers(X)
+
+
+class ReLU2(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.relu(x) ** 2
+
+
+class SwiGLU(nn.Module):
+    def __init__(self, in_features: int, hidden_features: int | None = None, out_features: int | None = None, bias: bool = True):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.w12 = nn.Linear(in_features, 2 * hidden_features, bias=bias)
+        self.w3 = nn.Linear(hidden_features, out_features, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Split the output of the combined linear layer
+        x12: torch.Tensor = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2  # SwiGLU activation
+        return self.w3(hidden)
