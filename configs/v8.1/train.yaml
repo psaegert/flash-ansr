@@ -27,7 +27,7 @@ contrastive_margin: 0.0
 contrastive_temperature: 0.5
 
 numeric_prediction_loss_weight: 0
-contrastive_loss_weight: 0.2
+contrastive_loss_weight: 0.01
 
 steps: 1_500_000
 device: cuda
