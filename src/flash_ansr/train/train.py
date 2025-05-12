@@ -18,7 +18,7 @@ from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.scheduler import LRSchedulerFactory
-from flash_ansr.train.loss import ContrastiveLoss
+from flash_ansr.train.loss import ContrastiveLoss, CosineSimilarityLogFVUMatchLoss
 
 import wandb
 
@@ -87,6 +87,7 @@ class Trainer():
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
         self.mse_loss = nn.MSELoss(reduction='sum')
         self.contrastive_loss_fn = ContrastiveLoss()
+        self.cosine_similarity_loss_fn = CosineSimilarityLogFVUMatchLoss(expression_space=self.model.expression_space)
 
         self.config = config or {}
 
@@ -173,6 +174,7 @@ class Trainer():
             contrastive_n_per_class=self.config.get('contrastive_n_per_class', 1),
             contrastive_margin=self.config.get('contrastive_margin', 0.5),
             contrastive_temperature=self.config.get('contrastive_temperature', 0.5),
+            cosine_log_fvu_match_loss_weight=self.config.get('cosine_log_fvu_match_loss_weight', 0),
             steps=self.config["steps"],
             preprocess=self.config.get("preprocess", False),
             device=self.config["device"],
@@ -195,6 +197,7 @@ class Trainer():
             contrastive_n_per_class: int,
             contrastive_margin: float,
             contrastive_temperature: float,
+            cosine_log_fvu_match_loss_weight: float,
             steps: int,
             preprocess: bool = False,
             device: str = "cpu",
@@ -216,6 +219,7 @@ class Trainer():
                 wandb_config[key] = value
 
         self.contrastive_loss_fn = ContrastiveLoss(margin=contrastive_margin, temperature=contrastive_temperature)
+        self.cosine_similarity_loss_fn = CosineSimilarityLogFVUMatchLoss(expression_space=self.model.expression_space)
 
         self.model.to(device)
         self.cumulative_training_pflops = 0.0
@@ -234,6 +238,7 @@ class Trainer():
                     numeric_prediction_loss_weight=numeric_prediction_loss_weight,
                     contrastive_loss_weight=contrastive_loss_weight,
                     contrastive_n_per_class=contrastive_n_per_class,
+                    cosine_log_fvu_match_loss_weight=cosine_log_fvu_match_loss_weight,
                     step=0,
                     size=validate_size,
                     batch_size=validate_batch_size,
@@ -249,6 +254,7 @@ class Trainer():
                     batch,
                     numeric_prediction_loss_weight=numeric_prediction_loss_weight,
                     contrastive_loss_weight=contrastive_loss_weight,
+                    cosine_log_fvu_match_loss_weight=cosine_log_fvu_match_loss_weight,
                     step=step)
 
                 pbar.update(1)
@@ -260,6 +266,7 @@ class Trainer():
                         numeric_prediction_loss_weight=numeric_prediction_loss_weight,
                         contrastive_loss_weight=contrastive_loss_weight,
                         contrastive_n_per_class=contrastive_n_per_class,
+                        cosine_log_fvu_match_loss_weight=cosine_log_fvu_match_loss_weight,
                         step=(step + 1),
                         size=validate_size,
                         batch_size=validate_batch_size,
@@ -282,7 +289,7 @@ class Trainer():
 
         return self.model
 
-    def _train_batch(self, batch: dict[str, torch.Tensor], numeric_prediction_loss_weight: float, contrastive_loss_weight: float, step: int) -> float:
+    def _train_batch(self, batch: dict[str, torch.Tensor], numeric_prediction_loss_weight: float, contrastive_loss_weight: float, cosine_log_fvu_match_loss_weight: float, step: int) -> float:
         self.model.train()
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
@@ -293,6 +300,7 @@ class Trainer():
 
         accumulated_ce_loss = 0.0
         accumulated_contrastive_loss = 0.0
+        accumulated_cosine_log_fvu_match_loss = 0.0
         accumulated_num_loss = 0.0
         accumulated_loss = 0.0
 
@@ -320,6 +328,16 @@ class Trainer():
                 # Use memory (embeddings of encoder) that the model cached during the forward pass
                 contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
+            cosine_log_fvu_match_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
+
+            if cosine_log_fvu_match_loss_weight > 0:
+                cosine_log_fvu_match_loss = self.cosine_similarity_loss_fn(
+                    micro_batch['x_tensors'],
+                    micro_batch['y_tensors'],
+                    batch['skeleton_hashes'],
+                    self.model.memory.reshape(self.model.memory.shape[0], -1)
+                )
+
             # Compare the num_output at the positions where the labels are `<num>`
             num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
@@ -333,10 +351,11 @@ class Trainer():
                 if n_tokens > 0:
                     num_loss /= n_tokens
 
-            loss = (ce_loss + numeric_prediction_loss_weight * num_loss + contrastive_loss_weight * contrastive_loss) / (1 + numeric_prediction_loss_weight + contrastive_loss_weight)
+            loss = (ce_loss + numeric_prediction_loss_weight * num_loss + contrastive_loss_weight * contrastive_loss + cosine_log_fvu_match_loss_weight * cosine_log_fvu_match_loss) / (1 + numeric_prediction_loss_weight + contrastive_loss_weight + cosine_log_fvu_match_loss_weight)
 
             accumulated_ce_loss += ce_loss.item()
             accumulated_contrastive_loss += contrastive_loss.item()
+            accumulated_cosine_log_fvu_match_loss += cosine_log_fvu_match_loss.item()
             accumulated_num_loss += num_loss.item()
             accumulated_loss += loss.item()
 
@@ -348,6 +367,7 @@ class Trainer():
 
         accumulated_ce_loss /= self.gradient_accumulation_steps
         accumulated_contrastive_loss /= self.gradient_accumulation_steps
+        accumulated_cosine_log_fvu_match_loss /= self.gradient_accumulation_steps
         accumulated_num_loss /= self.gradient_accumulation_steps
         accumulated_loss /= self.gradient_accumulation_steps
 
@@ -398,6 +418,7 @@ class Trainer():
             "effective_parameter_distance": (new_parameters_list - self.initial_parameters_list).norm().item(),
             "train_ce_loss": accumulated_ce_loss,
             "train_contrastive_loss": accumulated_contrastive_loss,
+            "train_cosine_log_fvu_match_loss": accumulated_cosine_log_fvu_match_loss,
             "train_num_loss": accumulated_num_loss,
             "train_loss": accumulated_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
@@ -417,7 +438,7 @@ class Trainer():
 
         return loss.item()
 
-    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, step: int, size: int | None = None, batch_size: int = 128, preprocess: bool = False, verbose: bool = False) -> float:
+    def _validate(self, val_dataset: FlashANSRDataset, numeric_prediction_loss_weight: float, contrastive_loss_weight: float, contrastive_n_per_class: int, cosine_log_fvu_match_loss_weight: float, step: int, size: int | None = None, batch_size: int = 128, preprocess: bool = False, verbose: bool = False) -> float:
         self.model.eval()
 
         if hasattr(self.optimizer, "eval"):
@@ -426,6 +447,7 @@ class Trainer():
         with torch.no_grad():
             val_ce_loss = 0.0
             val_contrastive_loss = 0.0
+            val_cosine_log_fvu_match_loss = 0.0
             val_num_loss = 0.0
             val_loss = 0.0
 
@@ -458,6 +480,16 @@ class Trainer():
                     # Use memory (embeddings of encoder) that the model cached during the forward pass
                     contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
+                cosine_log_fvu_match_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
+
+                if cosine_log_fvu_match_loss_weight > 0:
+                    cosine_log_fvu_match_loss = self.cosine_similarity_loss_fn(
+                        batch['x_tensors'],
+                        batch['y_tensors'],
+                        batch['skeleton_hashes'],
+                        self.model.memory.reshape(self.model.memory.shape[0], -1)
+                    )
+
                 # Compare the num_output at the positions where the labels are `<num>`
                 num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
@@ -472,10 +504,11 @@ class Trainer():
                     if n_tokens > 0:
                         num_loss /= n_tokens
 
-                loss = (ce_loss + numeric_prediction_loss_weight * num_loss + contrastive_loss_weight * contrastive_loss) / (1 + numeric_prediction_loss_weight + contrastive_loss_weight)
+                loss = (ce_loss + numeric_prediction_loss_weight * num_loss + contrastive_loss_weight * contrastive_loss + cosine_log_fvu_match_loss_weight * cosine_log_fvu_match_loss) / (1 + numeric_prediction_loss_weight + contrastive_loss_weight + cosine_log_fvu_match_loss_weight)
 
                 val_ce_loss += ce_loss.item()
                 val_contrastive_loss += contrastive_loss.item()
+                val_cosine_log_fvu_match_loss += cosine_log_fvu_match_loss.item()
                 val_num_loss += num_loss.item()
                 val_loss += loss.item()
 
@@ -485,6 +518,7 @@ class Trainer():
             if steps > 0:
                 val_ce_loss /= steps
                 val_contrastive_loss /= steps
+                val_cosine_log_fvu_match_loss /= steps
                 val_num_loss /= steps
                 val_loss /= steps
 
@@ -493,6 +527,7 @@ class Trainer():
         wandb.log({  # type: ignore
             "val_ce_loss": val_ce_loss,
             "val_contrastive_loss": val_contrastive_loss,
+            "val_cosine_log_fvu_match_loss": val_cosine_log_fvu_match_loss,
             "val_num_loss": val_num_loss,
             "val_loss": val_loss,
             "val_mean_reciprocal_rank": reciprocal_rank(flat_logits, flat_labels, reduction='mean', ignore_index=self.metrics_ignore_index),
