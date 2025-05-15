@@ -12,7 +12,7 @@ flash_ansr evaluate-nesymres \
     -c "{{ROOT}}/configs/nesymres-100M/evaluation.yaml" \
     -ce "{{ROOT}}/configs/nesymres-100M/eq_config.json" \
     -cm "{{ROOT}}/configs/nesymres-100M/config.yaml" \
-    -e "{{ROOT}}/configs/test_set_base/expression_space.yaml" \
+    -e "{{ROOT}}/configs/test_set/expression_space.yaml" \
     -m "{{ROOT}}/models/nesymres/100M.ckpt" \
     -d "{{ROOT}}/data/ansr-data/test_set/$TEST_SET/dataset.yaml" \
     -n 1000 \
