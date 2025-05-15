@@ -14,7 +14,7 @@ class TestSkeletonPool(unittest.TestCase):
 
         for _ in range(10000):
             try:
-                skeleton, code, constants = pool_2.sample_skeleton(new=True)
+                skeleton, code, constants, _ = pool_2.sample_skeleton(new=True)
             except NoValidSampleFoundError:
                 continue
             assert skeleton not in pool_1.skeletons

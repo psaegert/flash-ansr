@@ -502,7 +502,7 @@ class SkeletonPool:
 
         return stack  # type: ignore
 
-    def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str]]:
+    def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str], int]:
         '''
         Sample a skeleton from the pool.
 
@@ -535,6 +535,13 @@ class SkeletonPool:
                         n_operators = np.random.choice(
                             range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
                             p=self.operator_probs)
+                    case "adaptive_softmax":
+                        if self.operator_probs is None:
+                            self.operator_probs = np.ones(self.sample_strategy['max_operators'] - self.sample_strategy['min_operators'] + 1)
+                            self.operator_probs = self.operator_probs / self.operator_probs.sum()
+                        n_operators = np.random.choice(
+                            range(self.sample_strategy['min_operators'], self.sample_strategy['max_operators'] + 1),
+                            p=self.operator_probs)
                     case _:
                         raise ValueError(f"Invalid n_operator_distribution: {self.sample_strategy['n_operator_distribution']}")
 
@@ -557,12 +564,12 @@ class SkeletonPool:
                     code = codify(code_string, self.expression_space.variables + constants)
 
                     if not decontaminate or not self.is_held_out(skeleton, constants):
-                        return tuple(skeleton), code, constants   # type: ignore
+                        return tuple(skeleton), code, constants, n_operators   # type: ignore
         else:
             skeleton = random.choice(tuple(self.skeletons))  # type: ignore
             code, constants = self.skeleton_codes[skeleton]  # type: ignore
 
-            return skeleton, code, constants  # type: ignore
+            return skeleton, code, constants, n_operators  # type: ignore
 
         raise NoValidSampleFoundError(f"Failed to sample a non-contaminated skeleton after {self.sample_strategy['max_tries']} retries")
 
@@ -648,13 +655,14 @@ class SkeletonPool:
         dict
             A dictionary containing the skeleton hash, code, constants, support points, and literals.
         '''
-        skeleton_hash, skeleton_code, skeleton_constants = self.sample_skeleton()
+        skeleton_hash, skeleton_code, skeleton_constants, skeleton_n_operators = self.sample_skeleton()
         x_support, y_support, literals = self.sample_data(skeleton_code, len(skeleton_constants), n_support)
 
         return {
             'skeleton_hash': skeleton_hash,
             'skeleton_code': skeleton_code,
             'skeleton_constants': skeleton_constants,
+            'skeleton_n_operators': skeleton_n_operators,
             'x_support': x_support,
             'y_support': y_support,
             'literals': literals
@@ -678,7 +686,7 @@ class SkeletonPool:
 
         while n_created < size:
             try:
-                skeleton, code, constants = self.sample_skeleton(new=True)
+                skeleton, code, constants, skeleton_n_operators = self.sample_skeleton(new=True)
             except NoValidSampleFoundError:
                 n_skipped += 1
                 pbar.set_postfix_str(f"Skipped: {n_skipped:,}")

@@ -221,6 +221,9 @@ class Trainer():
         self.cumulative_training_pflops = 0.0
         self.cumulative_training_tokens = 0
 
+        self.running_loss_per_n_operators = {n_operators: 0.0 for n_operators in range(self.train_dataset.skeleton_pool.sample_strategy['min_operators'], self.train_dataset.skeleton_pool.sample_strategy['max_operators'] + 1)}
+        self.running_loss_alpha = 0.999
+
         self.last_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
         self.initial_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
 
@@ -313,6 +316,21 @@ class Trainer():
 
             # Calculate the loss
             ce_loss: torch.Tensor = self.cross_entropy_loss(flat_logits, flat_labels)
+
+            # Calculate the loss for each instance
+            ce_loss_per_instance = [self.cross_entropy_loss(logits.detach()[i, :-1], micro_batch['labels'][i]) for i in range(len(micro_batch['labels']))]
+            for i, ce_loss_of_instance in enumerate(ce_loss_per_instance):
+                n_operators = micro_batch['skeleton_n_operators'][i].item()
+                self.running_loss_per_n_operators[n_operators] += (1 - self.running_loss_alpha) * (ce_loss_of_instance.item() - self.running_loss_per_n_operators[n_operators])
+
+            self.train_dataset.operator_probs = torch.softmax(torch.tensor(list(self.running_loss_per_n_operators.values()), device=self.model.device), dim=0)
+            self.train_dataset.operator_probs = self.train_dataset.operator_probs / torch.sum(self.train_dataset.operator_probs)
+
+            self.val_dataset.operator_probs = self.train_dataset.operator_probs
+            self.train_dataset.operator_probs = self.train_dataset.operator_probs / torch.sum(self.train_dataset.operator_probs)
+
+            if step % 100 == 0:
+                print(f"Step {step}: {np.round(np.array(list(self.running_loss_per_n_operators.values())), 2)} -- {np.round(self.train_dataset.operator_probs.tolist(), 2)}")
 
             contrastive_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 

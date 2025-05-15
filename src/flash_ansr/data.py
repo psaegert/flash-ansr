@@ -191,6 +191,8 @@ class FlashANSRDataset:
 
                 batch['input_num'] = torch.stack(batch['input_num']).to(device=device, dtype=torch.float32).unsqueeze(-1)
 
+            batch['skeleton_n_operators'] = torch.tensor(batch['skeleton_n_operators'], device=device, dtype=torch.float32)
+
             if 'complexities' in batch:
                 batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]
 
@@ -218,6 +220,9 @@ class FlashANSRDataset:
             if 'input_num' in batch:
                 max_length_input_num = len(batch['input_num'])
                 batch['input_num'] = self._pad_sequence(batch['input_num'], max_length_input_num, torch.nan, device=device, dtype=torch.float32).unsqueeze(-1)
+
+            if isinstance(batch['skeleton_n_operators'], torch.Tensor):
+                batch['skeleton_n_operators'] = batch['skeleton_n_operators'].to(device)
 
             if 'complexities' in batch:
                 if batch['complexities'] is not None:
@@ -372,6 +377,7 @@ class FlashANSRDataset:
                 'n_rejected': [],
                 'skeletons': [],
                 'skeleton_hashes': [],
+                'skeleton_n_operators': [],
                 'expressions': [],
                 'constants': [],
                 'input_ids': [],
@@ -455,7 +461,7 @@ class FlashANSRDataset:
 
             try:
                 # sample = self.skeleton_pool.sample(n_support=n_support_frag)
-                skeleton_hash, skeleton_code, skeleton_constants = self.skeleton_pool.sample_skeleton()
+                skeleton_hash, skeleton_code, skeleton_constants, skeleton_n_operators = self.skeleton_pool.sample_skeleton()
                 skeleton = list(skeleton_hash)
 
                 buffer = []
@@ -479,6 +485,7 @@ class FlashANSRDataset:
                             'n_rejected': [n_rejected],
                             'skeletons': skeleton,
                             'skeleton_hashes': skeleton_hash,
+                            'skeleton_n_operators': skeleton_n_operators,
                             'expressions': substitude_constants(skeleton, values=literals, inplace=False),
                             'constants': torch.tensor(literals, dtype=torch.float32),
                             'input_ids': input_ids,
