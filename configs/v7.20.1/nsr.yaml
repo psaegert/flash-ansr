@@ -6,12 +6,11 @@ pre_encoder_support_nan: False
 encoder: "SetTransformer"
 encoder_kwargs:
   hidden_size: 512
-  n_enc_isab: 5
+  n_enc_isab: 6
   n_dec_sab: 2
   n_induce: 64
   n_heads: 8
   layer_norm: False
-  clean_path: True
   n_seeds: 64
 
 size: 512
