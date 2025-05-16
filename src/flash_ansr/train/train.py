@@ -222,7 +222,7 @@ class Trainer():
         self.cumulative_training_tokens = 0
 
         self.running_loss_per_n_operators = {n_operators: 0.0 for n_operators in range(self.train_dataset.skeleton_pool.sample_strategy['min_operators'], self.train_dataset.skeleton_pool.sample_strategy['max_operators'] + 1)}
-        self.running_loss_alpha = 0.999
+        self.running_loss_alpha = 0.9999
 
         self.last_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
         self.initial_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
@@ -320,17 +320,21 @@ class Trainer():
             # Calculate the loss for each instance
             ce_loss_per_instance = [self.cross_entropy_loss(logits.detach()[i, :-1], micro_batch['labels'][i]) for i in range(len(micro_batch['labels']))]
             for i, ce_loss_of_instance in enumerate(ce_loss_per_instance):
-                n_operators = micro_batch['skeleton_n_operators'][i].item()
+                n_operators = int(micro_batch['skeleton_n_operators'][i].item())
                 self.running_loss_per_n_operators[n_operators] += (1 - self.running_loss_alpha) * (ce_loss_of_instance.item() - self.running_loss_per_n_operators[n_operators])
 
-            self.train_dataset.operator_probs = torch.softmax(torch.tensor(list(self.running_loss_per_n_operators.values()), device=self.model.device), dim=0)
-            self.train_dataset.operator_probs = self.train_dataset.operator_probs / torch.sum(self.train_dataset.operator_probs)
+            temperature = 0.3
 
-            self.val_dataset.operator_probs = self.train_dataset.operator_probs
-            self.train_dataset.operator_probs = self.train_dataset.operator_probs / torch.sum(self.train_dataset.operator_probs)
+            if self.train_dataset.skeleton_pool.sample_strategy['n_operator_distribution'] == 'adaptive_softmax':
+                self.train_dataset.skeleton_pool.operator_probs = torch.softmax(torch.tensor(list(self.running_loss_per_n_operators.values())) / temperature, dim=0).numpy()
+                self.train_dataset.skeleton_pool.operator_probs = self.train_dataset.skeleton_pool.operator_probs / np.sum(self.train_dataset.skeleton_pool.operator_probs)
 
-            if step % 100 == 0:
-                print(f"Step {step}: {np.round(np.array(list(self.running_loss_per_n_operators.values())), 2)} -- {np.round(self.train_dataset.operator_probs.tolist(), 2)}")
+            if self.train_dataset.skeleton_pool.sample_strategy['n_operator_distribution'] == 'adaptive_softmax':
+                self.val_dataset.skeleton_pool.operator_probs = torch.softmax(torch.tensor(list(self.running_loss_per_n_operators.values())) / temperature, dim=0).numpy()
+                self.train_dataset.skeleton_pool.operator_probs = self.train_dataset.skeleton_pool.operator_probs / np.sum(self.train_dataset.skeleton_pool.operator_probs)
+
+            # if step % 100 == 0:
+            #     print(f"Step {step}: {np.round(np.array(list(self.running_loss_per_n_operators.values())), 2)} -- {np.round(self.train_dataset.operator_probs.tolist(), 2)}")
 
             contrastive_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
@@ -427,7 +431,9 @@ class Trainer():
             "train_correct_token_predictions_at_10": correct_token_predictions_at_k(flat_logits, flat_labels, k=10, reduction='mean', ignore_index=self.metrics_ignore_index),
             "n_support": micro_batch["x_tensors"].shape[1],
             "cumulative_training_tokens": self.cumulative_training_tokens,
-            "cumulative_training_pflops": self.cumulative_training_pflops
+            "cumulative_training_pflops": self.cumulative_training_pflops,
+            **{f"train_running_ce_loss_{k}_operators": self.running_loss_per_n_operators[k] for k in self.running_loss_per_n_operators.keys()},
+            **{f"train_{k}_operators_prob": self.train_dataset.skeleton_pool.operator_probs[i] for i, k in enumerate(range(self.train_dataset.skeleton_pool.sample_strategy['min_operators'], self.train_dataset.skeleton_pool.sample_strategy['max_operators'] + 1))},
         }, step=step)
 
         if self.lr_scheduler is not None:
