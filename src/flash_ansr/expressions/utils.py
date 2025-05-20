@@ -4,6 +4,7 @@ from types import CodeType
 from typing import Any, Callable
 from functools import partial
 import math
+from copy import deepcopy
 
 import numpy as np
 
@@ -148,7 +149,7 @@ def numbers_to_num(prefix_expression: list[str], inplace: bool = False) -> list[
     return modified_prefix_expression
 
 
-def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None, inplace: bool = False) -> tuple[list[str], list[str]]:
+def num_to_constants(prefix_expression: list[str], constants: list[str] | None = None, inplace: bool = False, convert_numbers_to_constant: bool = True) -> tuple[list[str], list[str]]:
     '''
     Replace all '<num>' tokens in a prefix expression with constants named 'C_i'.
     This allows the expression to be compiled into a function.
@@ -179,7 +180,7 @@ def num_to_constants(prefix_expression: list[str], constants: list[str] | None =
         constants = list(constants)
 
     for i, token in enumerate(prefix_expression):
-        if token == "<num>" or re.match(r"C_\d+", token) or token.isnumeric():
+        if token == "<num>" or (convert_numbers_to_constant and (re.match(r"C_\d+", token) or token.isnumeric())):
             if constants is not None and len(constants) > constant_index:
                 modified_prefix_expression[i] = constants[constant_index]
             else:
@@ -438,3 +439,47 @@ def get_distribution(distribution: str | Callable[..., np.ndarray], distribution
         return partial(distribution, **distribution_kwargs)
 
     raise ValueError(f'Distribution must be a function (int -> float) or one of ["uniform", "log_uniform", "normal"], got {distribution}')
+
+
+def safe_f(f: Callable, X: np.ndarray, constants: np.ndarray | None = None) -> np.ndarray:
+    if constants is None:
+        y = f(*X.T)
+    else:
+        y = f(*X.T, *constants)
+    if not isinstance(y, np.ndarray) or y.shape[0] == 1:
+        y = np.full(X.shape[0], y)
+    return y
+
+
+def remap_expression(source_expression: list[str], dummy_variables: list[str], variable_mapping: dict | None = None) -> tuple[list[str], dict]:
+    source_expression = deepcopy(source_expression)
+    if variable_mapping is None:
+        variable_mapping = {}
+        for i, token in enumerate(source_expression):
+            if token in dummy_variables:
+                if token not in variable_mapping:
+                    variable_mapping[token] = f'_{len(variable_mapping)}'
+
+    for i, token in enumerate(source_expression):
+        if token in dummy_variables:
+            source_expression[i] = variable_mapping[token]
+
+    return source_expression, variable_mapping
+
+
+def deduplicate_rules(rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    deduplicated_rules: dict[tuple[str, ...], tuple[str, ...]] = {}
+    for rule in rules_list:
+        # Rename variables in the source expression
+        remapped_source, variable_mapping = remap_expression(list(rule[0]), dummy_variables=dummy_variables)
+        remapped_target, _ = remap_expression(list(rule[1]), dummy_variables, variable_mapping)
+
+        remapped_source_key = tuple(remapped_source)
+        remapped_target_value = tuple(remapped_target)
+
+        existing_replacement = deduplicated_rules.get(remapped_source_key)
+        if existing_replacement is None or len(remapped_target_value) < len(existing_replacement):
+            # Found a better (shorter) target expression for the same source
+            deduplicated_rules[remapped_source_key] = remapped_target_value
+
+    return list(deduplicated_rules.items())

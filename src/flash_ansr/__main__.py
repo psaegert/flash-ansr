@@ -100,16 +100,61 @@ def main(argv: str = None) -> None:
     remove_parser = subparsers.add_parser("remove", help="Remove a model")
     remove_parser.add_argument("path", type=str, help="Path to the model to remove")
 
+    find_simplifications_parser = subparsers.add_parser("find-simplifications")
+    find_simplifications_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
+    find_simplifications_parser.add_argument('-n', '--max_n_rules', type=int, default=None, help='Maximum number of rules to find')
+    find_simplifications_parser.add_argument('-l', '--max_pattern_length', type=int, default=7, help='Maximum length of the patterns to find')
+    find_simplifications_parser.add_argument('-t', '--timeout', type=int, default=None, help='Timeout for the search of simplifications in seconds')
+    find_simplifications_parser.add_argument('-d', '--dummy-variables', type=int, nargs='+', default=None, help='Dummy variables to use in the simplifications')
+    find_simplifications_parser.add_argument('-a', '--additional-leaf-nodes', type=str, nargs='+', default=None, help='Additional leaf nodes to use in the simplifications')
+    find_simplifications_parser.add_argument('-m', '--max-simplify-steps', type=int, default=5, help='Maximum number of simplification steps')
+    find_simplifications_parser.add_argument('-x', '--X', type=int, default=1024, help='Number of samples to use for comparison of images')
+    find_simplifications_parser.add_argument('-c', '--C', type=int, default=1024, help='Number of samples of constants to put in to placeholders')
+    find_simplifications_parser.add_argument('-r', '--constants-fit-retries', type=int, default=5, help='Number of retries for fitting the constants')
+    find_simplifications_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output json file')
+    find_simplifications_parser.add_argument('-s', '--save-every', type=int, default=100, help='Save the simplifications every n rules')
+    find_simplifications_parser.add_argument('--reset-rules', action='store_true', help='Reset the rules before finding new ones')
+    find_simplifications_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
+
     # Evaluate input
     args = parser.parse_args(argv)
 
     # Execute the command
     match args.command_name:
+        case 'find-simplifications':
+            if args.verbose:
+                print(f'Finding simplifications with expression space {args.expression_space}')
+            import os
+            from flash_ansr.expressions import ExpressionSpace
+            from flash_ansr.utils import substitute_root_path
+
+            expression_space = ExpressionSpace.from_config(substitute_root_path(args.expression_space))
+
+            resolved_output_file = substitute_root_path(args.output_file)
+
+            if not os.path.exists(os.path.dirname(resolved_output_file)):
+                os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
+
+            expression_space.find_rules(
+                max_n_rules=args.max_n_rules,
+                max_pattern_length=args.max_pattern_length,
+                timeout=args.timeout,
+                dummy_variables=args.dummy_variables,
+                additional_leaf_nodes=args.additional_leaf_nodes,
+                max_simplify_steps=args.max_simplify_steps,
+                X=args.X,
+                C=args.C,
+                constants_fit_retries=args.constants_fit_retries,
+                output_file=resolved_output_file,
+                save_every=args.save_every,
+                reset_rules=args.reset_rules,
+                verbose=args.verbose)
+
         case 'compile-data':
             print('Deprecation Warning: The compile-data function is deprecated in favor of procedurally generated datasets.')
 
             if args.verbose:
-                print(f'[NSR] Compiling data from {args.config}')
+                print(f'Compiling data from {args.config}')
             from flash_ansr.data import FlashANSRDataset
 
             dataset = FlashANSRDataset.from_config(args.config)
@@ -118,7 +163,7 @@ def main(argv: str = None) -> None:
 
         case 'generate-skeleton-pool':
             if args.verbose:
-                print(f'[NSR] Generating skeleton pool from {args.config}')
+                print(f'Generating skeleton pool from {args.config}')
             from flash_ansr.expressions import SkeletonPool
 
             skeleton_pool = SkeletonPool.from_config(args.config)
@@ -130,7 +175,7 @@ def main(argv: str = None) -> None:
 
         case 'import-data':
             if args.verbose:
-                print(f'[NSR] Importing data from {args.input}')
+                print(f'Importing data from {args.input}')
             from flash_ansr.expressions import SkeletonPool, ExpressionSpace
             from flash_ansr.compat import ParserFactory
             from flash_ansr.utils import substitute_root_path
@@ -150,7 +195,7 @@ def main(argv: str = None) -> None:
             test_skeleton_pool.save(directory=args.output_dir, config=args.base_skeleton_pool, reference='relative', recursive=True)
 
         case 'split-skeleton-pool':
-            print(f'[NSR] Splitting skeleton pool from {args.input}')
+            print(f'Splitting skeleton pool from {args.input}')
             import os
             from flash_ansr.expressions import SkeletonPool
 
@@ -173,7 +218,7 @@ def main(argv: str = None) -> None:
 
         case 'train':
             if args.verbose:
-                print(f'[NSR] Training model from {args.config}')
+                print(f'Training model from {args.config}')
             from flash_ansr.train.train import Trainer
             from flash_ansr.utils import substitute_root_path, load_config, save_config
 
@@ -206,7 +251,7 @@ def main(argv: str = None) -> None:
 
         case 'evaluate':
             if args.verbose:
-                print(f'[NSR] Evaluating config {args.config} with model {args.model} on {args.dataset}')
+                print(f'Evaluating config {args.config} with model {args.model} on {args.dataset}')
             import os
             from flash_ansr import FlashANSR, GenerationConfig
             from flash_ansr.eval.evaluation import Evaluation
@@ -237,7 +282,8 @@ def main(argv: str = None) -> None:
                 raise ValueError(f"Invalid dataset configuration: {args.dataset}")
 
             # Use the same expression space as the model for correct tokenization
-            dataset.skeleton_pool.expression_space = model.expression_space
+            # FIXME: Is this necessary?
+            # dataset.skeleton_pool.expression_space = model.expression_space
 
             evaluation = Evaluation.from_config(substitute_root_path(args.config))
 
@@ -282,7 +328,7 @@ def main(argv: str = None) -> None:
 
         case 'evaluate-nesymres':
             if args.verbose:
-                print(f'[NSR] Evaluating model from {args.model} on {args.dataset}')
+                print(f'Evaluating model from {args.model} on {args.dataset}')
             import os
             from flash_ansr import ExpressionSpace
             from flash_ansr.compat.evaluation_nesymres import NeSymReSEvaluation
@@ -336,7 +382,7 @@ def main(argv: str = None) -> None:
 
         case 'evaluate-pysr':
             if args.verbose:
-                print(f'[NSR] Evaluating PySR on {args.dataset}')
+                print(f'Evaluating PySR on {args.dataset}')
             import os
             from flash_ansr import ExpressionSpace
             from flash_ansr.compat.evaluation_pysr import PySREvaluation
@@ -377,7 +423,7 @@ def main(argv: str = None) -> None:
                 print(f"Saved evaluation results to {args.output_file}")
 
         case 'wandb-stats':
-            print(f'[NSR] Fetching stats from wandb project {args.project} and entity {args.entity}')
+            print(f'Fetching stats from wandb project {args.project} and entity {args.entity}')
             import os
             import wandb
             import pandas as pd
@@ -405,7 +451,7 @@ def main(argv: str = None) -> None:
 
         case 'benchmark':
             if args.verbose:
-                print(f'[NSR] Benchmarking dataset {args.config}')
+                print(f'Benchmarking dataset {args.config}')
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.utils import substitute_root_path, load_config, save_config
             import pandas as pd

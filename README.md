@@ -101,8 +101,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import FlashANSR, GenerationConfig, install_model, get_path
 
 # Specify the model
-# Here: https://huggingface.co/psaegert/flash-ansr-v7.0
-MODEL = "psaegert/flash-ansr-v7.0"
+# Here: https://huggingface.co/psaegert/flash-ansr-v7.20
+MODEL = "psaegert/flash-ansr-v7.20"
 
 # Download the latest snapshot of the model
 # By default, the model is downloaded to the directory `./models/` in the package root
@@ -184,9 +184,9 @@ git clone https://huggingface.co/psaegert/ansr-data data/ansr-data
 External datasets must be imported into the ANSR format:
 
 ```sh
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/soose_nc/nc.csv" -p "soose" -e "{{ROOT}}/configs/test_set_base/expression_space.yaml" -b "{{ROOT}}/configs/test_set_base/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/feynman/FeynmanEquations.csv" -p "feynman" -e "{{ROOT}}/configs/test_set_base/expression_space.yaml" -b "{{ROOT}}/configs/test_set_base/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/nguyen/nguyen.csv" -p "nguyen" -e "{{ROOT}}/configs/test_set_base/expression_space.yaml" -b "{{ROOT}}/configs/test_set_base/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/soose_nc/nc.csv" -p "soose" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/feynman/FeynmanEquations.csv" -p "feynman" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/nguyen/nguyen.csv" -p "nguyen" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool" -v
 ```
 
 with
