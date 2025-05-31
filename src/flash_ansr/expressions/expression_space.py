@@ -1,19 +1,27 @@
 import re
 import importlib
 import fractions
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Generator
 from copy import deepcopy
 from types import CodeType, FunctionType
 from math import prod
-from fractions import Fraction
 import signal
+import os
+import itertools
+from collections import defaultdict
+import warnings
+import time
 
 import numpy as np
+import json
 from sympy import simplify, parse_expr
+from scipy.optimize import curve_fit, OptimizeWarning
+from tqdm import tqdm
 
 from flash_ansr.models.transformer_utils import Tokenizer
-from flash_ansr.utils import load_config
-from flash_ansr.expressions.utils import get_used_modules, codify, numbers_to_num, flatten_nested_list, is_prime, num_to_constants
+from flash_ansr.utils import load_config, substitute_root_path
+from flash_ansr.expressions.utils import get_used_modules, numbers_to_num, flatten_nested_list, is_prime, num_to_constants, codify, safe_f, deduplicate_rules
+from flash_ansr.expressions.simplify import _simplify_flash
 
 
 def timeout_handler(signum: Any, frame: Any) -> None:
@@ -34,8 +42,9 @@ class ExpressionSpace:
     variables : int
         The number of variables
     """
-    def __init__(self, operators: dict[str, dict[str, Any]], variables: int, simplification: Literal['flash', 'sympy'] = 'flash', special_tokens: list[str] | None = None) -> None:
+    def __init__(self, operators: dict[str, dict[str, Any]], variables: int, simplification: Literal['flash', 'auto_flash', 'sympy'] = 'flash', simplification_kwargs: dict[str, Any] | None = None, special_tokens: list[str] | None = None) -> None:
         self.simplification = simplification
+        self.simplification_kwargs = simplification_kwargs or {}
 
         self.special_constants = {"pi": np.pi}
 
@@ -82,13 +91,48 @@ class ExpressionSpace:
         self.max_power = max([int(op[3:]) for op in self.operator_tokens if re.match(r'pow\d+(?!\_)', op)] + [0])
         self.max_fractional_power = max([int(op[5:]) for op in self.operator_tokens if re.match(r'pow1_\d+', op)] + [0])
 
+        self.n_variables = variables
         self.variables = [f'x{i + 1}' for i in range(variables)]
 
         self.tokenizer = Tokenizer(vocab=self.operator_tokens + self.variables, special_tokens=special_tokens)
 
         self.modules = get_used_modules(''.join(f"{op}(" for op in self.operator_realizations.values()))  # HACK: This can be done more elegantly for sure
 
+        self.connection_classes = {
+            'add': (['+', '-'], "0"),
+            'mult': (['*', '/'], "1"),
+        }
+
+        self.operator_to_class = {
+            '+': 'add',
+            '-': 'add',
+            '*': 'mult',
+            '/': 'mult'
+        }
+
+        self.connection_classes_inverse = {
+            'add': "neg",
+            'mult': "inv",
+        }
+
+        self.connection_classes_hyper = {
+            'add': "mult",
+            'mult': "pow",
+        }
+
+        self.connectable_operators = set(['+', '-', '*', '/'])
+
         self.import_modules()
+
+        if simplification == 'auto_flash':
+            dummy_variables = [f'x{i}' for i in range(100)]  # HACK
+            if not os.path.exists(substitute_root_path(self.simplification_kwargs['rules_file'])):
+                self.simplification_rules: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+            else:
+                with open(substitute_root_path(self.simplification_kwargs['rules_file']), 'r') as f:
+                    self.simplification_rules = deduplicate_rules(json.load(f), dummy_variables=dummy_variables)
+
+            self.simplification_rules_trees: dict[tuple, list[tuple[list, list]]] = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables=dummy_variables)  # HACK
 
     def import_modules(self) -> None:  # TODO. Still necessary?
         for module in self.modules:
@@ -110,12 +154,12 @@ class ExpressionSpace:
         ExpressionSpace
             The ExpressionSpace object.
         '''
-        config_ = load_config(config)
+        config_ = load_config(config, resolve_paths=True)
 
         if "expressions" in config_.keys():
             config_ = config_["expressions"]
 
-        return cls(operators=config_["operators"], variables=config_["variables"], simplification=config_.get("simplification", 'flash'), special_tokens=config_.get("special_tokens", None))
+        return cls(operators=config_["operators"], variables=config_["variables"], simplification=config_.get("simplification", 'flash'), simplification_kwargs=config_.get("simplification_kwargs"), special_tokens=config_.get("special_tokens", None))
 
     def is_valid(self, prefix_expression: list[str], verbose: bool = False) -> bool:
         '''
@@ -231,7 +275,7 @@ class ExpressionSpace:
 
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
-                elif '.' in operator_realization or self.operator_arity_compat[operator] > 2:
+                elif '.' in write_operator or self.operator_arity_compat[operator] > 2:
                     # No need for parentheses here
                     stack.append(f'{write_operator}({", ".join([self._deparenthesize(operand) for operand in write_operands])})')
 
@@ -258,7 +302,7 @@ class ExpressionSpace:
 
         infix_expression = stack.pop()
 
-        return self._deparenthesize(infix_expression)
+        return self._deparenthesize(infix_expression)  # FIXME: Sometimes result in "1 + x) / (2 * x" instead of "(1 + x) / (2 * x)"
 
     def infix_to_prefix(self, infix_expression: str) -> list[str]:
         '''
@@ -778,8 +822,846 @@ class ExpressionSpace:
                 return self.simplify_flash(prefix_expression, *args, **kwargs)
             case 'sympy':
                 return self.simplify_sympy(prefix_expression, *args, **kwargs)
+            case 'auto_flash':
+                return self.simplify_auto_flash(prefix_expression, *args, **kwargs)  # type: ignore
             case _:
                 raise ValueError(f'Invalid simplification method: {self.simplification}')
+
+    # AUTO SIMPLIFICATION
+    def prefix_to_tree(self, expression: list[str]) -> list:
+        def build_tree(index: int) -> tuple[list | None, int]:
+            if index >= len(expression):
+                return None, index
+
+            token = expression[index]
+
+            # If token is not an operator or is an operator with arity 0
+            if isinstance(token, dict) or token not in self.operator_arity or self.operator_arity[token] == 0:
+                return [token], index + 1
+
+            # If token is an operator
+            operands = []
+            current_index = index + 1
+
+            # Process operands based on the operator's arity
+            for _ in range(self.operator_arity[token]):
+                if current_index >= len(expression):
+                    break
+
+                subtree, current_index = build_tree(current_index)
+                if subtree:
+                    operands.append(subtree)
+
+            return [token, operands], current_index
+
+        result, _ = build_tree(0)
+
+        if result is None:
+            raise ValueError(f'Failed to build tree from expression {expression}')
+
+        return result
+
+    def rules_trees_from_rules_list(self, rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]], dummy_variables: list[str]) -> dict[tuple, list[tuple[list, list]]]:
+        # Deduplicate the rules (remove patterns that are represented by other patterns, e.g. with other variables)
+        deduplicated_rules = deduplicate_rules(rules_list, dummy_variables)
+
+        # Group the rules by arity
+        deduplicated_rules_of_operator: defaultdict[str, list] = defaultdict(list)
+        for rule in deduplicated_rules:
+            deduplicated_rules_of_operator[rule[0][0]].append(rule)
+        deduplicated_rules_of_operator = dict(deduplicated_rules_of_operator)  # type: ignore
+
+        # Sort the rules by length of the left-hand side to make matching more efficient
+        for operator, deduplicated_rules_of_operator_list in deduplicated_rules_of_operator.items():
+            deduplicated_rules_of_operator[operator] = sorted(deduplicated_rules_of_operator_list, key=lambda x: len(x[0]))
+
+        # Construct the trees for pattern matching
+        rules_trees = {operator: [
+            (
+                self.prefix_to_tree(list(rule[0])),
+                self.prefix_to_tree(list(rule[1]))
+            )
+            for rule in deduplicated_rules_of_operator_a] for operator, deduplicated_rules_of_operator_a in deduplicated_rules_of_operator.items()}
+
+        rules_trees_organized: defaultdict[tuple, list] = defaultdict(list)
+        for operator, rules in rules_trees.items():
+            for (pattern, replacement) in rules:
+                operands_heads: list[str] = [operand[0] for operand in pattern[1]]
+                if any(head.startswith('_') for head in operands_heads):
+                    rules_trees_organized[(operator,)].append((pattern, replacement))
+                else:
+                    # More specific structure possible
+                    rules_key = (operator, *operands_heads)
+                    rules_trees_organized[rules_key].append((pattern, replacement))
+
+        return rules_trees_organized
+
+    def match_pattern(self, tree: list, pattern: list, mapping: dict[str, Any] | None = None) -> tuple[bool, dict[str, Any]]:
+        if mapping is None:
+            mapping = {}
+
+        pattern_length = len(pattern)
+
+        # The leaf node is a variable but the pattern is not
+        if len(tree) == 1 and isinstance(tree[0], str) and pattern_length != 1:
+            return False, mapping
+
+        # Elementary pattern
+        pattern_key = pattern[0]
+        if pattern_length == 1 and isinstance(pattern_key, str):
+            # Check if the pattern is a placeholder to be filled with the tree
+            if pattern_key.startswith('_'):
+                # Try to match the tree with the placeholder pattern
+                existing_value = mapping.get(pattern_key)
+                if existing_value is None:
+                    # Placeholder is not yet filled, can be filled with the tree
+                    mapping[pattern_key] = tree
+                    return True, mapping
+                else:
+                    # Placeholder is occupied by another tree, the tree does not match the pattern
+                    return (existing_value == tree), mapping
+            # The literal pattern must match the tree
+            return (tree == pattern), mapping
+
+        # The pattern is tree-structured
+        tree_operator, tree_operands = tree
+        pattern_operator, pattern_operands = pattern
+
+        # If the operators do not match, the tree does not match the pattern
+        if tree_operator != pattern_operator:
+            return False, mapping
+
+        # Try to recursively match the operands
+        for tree_operand, pattern_operand in zip(tree_operands, pattern_operands):
+            # If the pattern operand is a leaf node
+            if isinstance(pattern_operand, str):
+                # Check if the pattern operand is a placeholder to be filled with the tree operand
+                existing_value = mapping.get(pattern_operand)
+                if existing_value is None:
+                    # Placeholder is not yet filled, can be filled with the tree operand
+                    mapping[pattern_operand] = tree_operand
+                    return True, mapping
+                elif existing_value != tree_operand:
+                    # Placeholder is occupied by another tree, the tree does not match the pattern
+                    return False, mapping
+            else:
+                # Recursively match the tree operand with the pattern operand
+                does_match, mapping = self.match_pattern(tree_operand, pattern_operand, mapping)
+
+                # If the tree operand does not match the pattern operand, the tree does not match the pattern
+                if not does_match:
+                    return False, mapping
+
+        # The tree matches the pattern
+        return True, mapping
+
+    def apply_mapping(self, tree: list, mapping: dict[str, Any]) -> list:
+        # If the tree is a leaf node, replace the placeholder with the actual subtree defined in the mapping
+        if len(tree) == 1 and isinstance(tree[0], str):
+            if tree[0].startswith('_'):
+                return mapping[tree[0]]  # TODO: I put a bracket here. Find out why this is necessary
+            return tree
+
+        operator, operands = tree
+        return [operator, [self.apply_mapping(operand, mapping) for operand in operands]]
+
+    def _apply_auto_flash_simplifcation_rules(self, expression: list[str] | tuple[str, ...], rules_trees: dict[tuple, list[tuple[list[str], list[str]]]]) -> list[str]:
+        if all(t == '<num>' or t in self.operator_arity for t in expression):
+            return ['<num>']
+
+        stack: list = []
+        i = len(expression) - 1
+
+        # Traverse the expression from right to left
+        while i >= 0:
+            # print()
+            token = expression[i]
+            # print(f'Stack: {stack}')
+            # print(f'Token: {token}')
+
+            # Remember if a rule was applied in this iteration
+            applied_rule = False
+
+            # If the token is an operator, check for rules that can be applied
+            if token in self.operator_arity_compat or token in self.operator_aliases:
+                operator = self.operator_aliases.get(token, token)
+                arity = self.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+                operands_heads = [operand[0] for operand in operands]
+                rules_key = (operator, *operands_heads)
+
+                # print(f'Operator: {operator}')
+                # print(f'Operands: {operands}')
+                # print(f'Arity: {arity}')
+
+                if all(operand[0] == '<num>' for operand in operands):
+                    # All operands are constants
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append(['<num>'])
+                    i -= 1
+                    continue
+
+                # TODO: Optimize by hashing operands. e.g. rules_trees[(operator, operand1_type, operand2_type, ...)]
+
+                subtree = [operator, operands]
+                # Check if a pattern matches the current subtree
+                for rule in rules_trees.get(rules_key, rules_trees.get((operator,), [])):
+                    does_match, mapping = self.match_pattern(subtree, rule[0], mapping=None)
+                    if does_match:
+                        # print(f'Applying rule {rule}')
+                        # Replace the placeholders (keys of the mapping) with the actual subtrees (values of the mapping) in the entire subtree at any depth
+                        _ = [stack.pop() for _ in range(arity)]
+                        stack.append(self.apply_mapping(deepcopy(rule[1]), mapping))
+                        i -= 1
+                        applied_rule = True
+                        break
+
+                if not applied_rule:
+                    # print(f'No rule applied for {[operator, operands]}')
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([operator, operands])
+                    i -= 1
+                    continue
+
+            if not applied_rule:
+                # print(f'Nothing applied for {token}')
+                stack.append([token])
+                i -= 1
+
+        # print(f'Final Stack: {stack}')
+
+        # Unroll the tree into a flat expression in the correct order
+        return flatten_nested_list(stack)[::-1]
+
+    def collect_multiplicities(self, expression: list[str] | tuple[str, ...]) -> tuple[list, list, list]:
+        stack: list = []
+        stack_annotations: list = []
+        stack_labels: list = []
+
+        i = len(expression) - 1
+
+        # Traverse the expression from right to left
+        while i >= 0:
+            token = expression[i]
+
+            if token in self.connectable_operators:
+                operator = token
+                arity = 2
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_dicts = list(reversed(stack_annotations[-arity:]))
+                operands_labels = list(reversed(stack_labels[-arity:]))
+
+                operator_annotation_dict: dict[str, dict[tuple[str, ...], list[int]]] = {cc: {} for cc in self.connection_classes}
+
+                cc = self.operator_to_class[operator]
+
+                # Carry over annotations from operand nodes
+                for operand_annotations_dict in operands_annotations_dicts:
+                    for subtree_hash in operand_annotations_dict[0][cc]:
+                        if subtree_hash not in operator_annotation_dict[cc]:
+                            operator_annotation_dict[cc][subtree_hash] = [0, 0]
+
+                        for p in range(2):
+                            operator_annotation_dict[cc][subtree_hash][p] += operand_annotations_dict[0][cc][subtree_hash][p]
+
+                        if operator in {'-', '/'}:
+                            operator_annotation_dict[cc][subtree_hash][0], operator_annotation_dict[cc][subtree_hash][1] = operator_annotation_dict[cc][subtree_hash][1], operator_annotation_dict[cc][subtree_hash][0]
+
+                # Add subtree hashes for both operand subtrees
+                operand_tuple_0 = tuple(flatten_nested_list(operands[0])[::-1])
+                operand_tuple_1 = tuple(flatten_nested_list(operands[1])[::-1])
+
+                if operand_tuple_0 not in operator_annotation_dict[cc]:
+                    operator_annotation_dict[cc][operand_tuple_0] = [1, 0]
+                else:
+                    operator_annotation_dict[cc][operand_tuple_0][0] += 1
+
+                index = int(operator in {'+', '*'})
+                if operand_tuple_1 not in operator_annotation_dict[cc]:
+                    operator_annotation_dict[cc][operand_tuple_1] = [index, index - 1]
+                else:
+                    operator_annotation_dict[cc][operand_tuple_1][index - 1] += 1
+
+                # Label each subtree with its own hash to know which to prune later
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                _ = [stack_labels.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([operator_annotation_dict, operands_annotations_dicts])
+                new_label = tuple(flatten_nested_list([operator, operands])[::-1])
+                stack_labels.append([new_label, operands_labels])
+                i -= 1
+                continue
+
+            if token in self.operator_arity:
+                operator = token
+                arity = self.operator_arity[token]
+                operands = list(reversed(stack[-arity:]))
+                operands_annotations_dicts = list(reversed(stack_annotations[-arity:]))
+                operands_labels = list(reversed(stack_labels[-arity:]))
+
+                # Label each subtree with its own hash to know which to prune later
+                _ = [stack.pop() for _ in range(arity)]
+                _ = [stack_annotations.pop() for _ in range(arity)]
+                _ = [stack_labels.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+                stack_annotations.append([{cc: {} for cc in self.connection_classes}, operands_annotations_dicts])
+                new_label = tuple(flatten_nested_list([operator, operands])[::-1])
+                stack_labels.append([new_label, operands_labels])
+                i -= 1
+                continue
+
+            stack.append([token])
+            stack_annotations.append([{cc: {tuple([token]): [0, 0]} for cc in self.connection_classes}])
+            stack_labels.append([tuple([token])])
+            i -= 1
+
+        return stack, stack_annotations, stack_labels
+
+    def cancel_terms(self, expression_tree: list, expression_annotations_tree: list, stack_labels: list) -> list[str]:
+        stack = expression_tree
+        stack_annotations = expression_annotations_tree
+        stack_parity = [{cc: 1 for cc in self.connection_classes} for _ in range(len(stack_labels))]
+        stack_still_connected = [False]
+
+        expression: list[str] = []
+
+        argmax_candidate = None
+        max_subtree_length = 0
+        n_replaced = 0
+        still_connected = False
+
+        while len(stack) > 0:
+            subtree = stack.pop()
+            subtree_annotation = stack_annotations.pop()
+            subtree_labels = stack_labels.pop()
+            subtree_parities = stack_parity.pop()
+            still_connected = stack_still_connected.pop()
+
+            if argmax_candidate is not None:
+                argmax_class, argmax_subtree, argmax_multiplicity_sum = argmax_candidate
+                still_connected = still_connected and (subtree[0] in self.connection_classes[argmax_class][0] or subtree[0] not in self.operator_arity)
+
+                if still_connected:
+                    if argmax_subtree == subtree_labels[0]:
+                        neutral_element = self.connection_classes[argmax_class][1]
+
+                        if argmax_subtree == ('<num>',):
+                            first_replacement = ('<num>',)
+                            other_replacements = neutral_element
+                        else:
+                            current_parity = subtree_parities[argmax_class]
+                            inverse_operator = self.connection_classes_inverse[argmax_class]
+
+                            if current_parity * argmax_multiplicity_sum < 0:
+                                inverse_operator_prefix = (inverse_operator,)
+                                double_inverse_operator_prefix = ()
+                            else:
+                                inverse_operator_prefix = ()
+                                double_inverse_operator_prefix = (inverse_operator,)
+
+                            if argmax_multiplicity_sum == 0:
+                                # Term is cancelled entirely. Replace all occurences with the neutral element
+                                first_replacement = (neutral_element,)
+                                other_replacements = neutral_element
+
+                            if argmax_multiplicity_sum == 1:
+                                # Term occurs once. Replace every occurence after the first one with the neutral element
+                                first_replacement = inverse_operator_prefix + argmax_subtree
+                                other_replacements = (neutral_element,)
+
+                            if argmax_multiplicity_sum == -1:
+                                # Term occurs once but inverted. Replace the first occurence with the inverse of the term. Replace every occurence after the first one with the neutral element
+                                first_replacement = double_inverse_operator_prefix + argmax_subtree
+                                other_replacements = (neutral_element,)
+
+                            if argmax_multiplicity_sum > 1:
+                                # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
+                                hyper_operator = self.connection_classes_hyper[argmax_class]
+                                operator = self.connection_classes[argmax_class][0][0]  # Positive multiplicity
+                                if argmax_multiplicity_sum > 5 and is_prime(argmax_multiplicity_sum):
+                                    powers = self.factorize_to_at_most(argmax_multiplicity_sum - 1, self.max_power)
+                                    first_replacement = inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
+                                else:
+                                    powers = self.factorize_to_at_most(argmax_multiplicity_sum, self.max_power)
+                                    first_replacement = inverse_operator_prefix + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree
+
+                                other_replacements = (neutral_element,)
+
+                            if argmax_multiplicity_sum < -1:
+                                # Term occurs multiple times. Replace the first occurence with a multiplication or power of the term. Replace every occurence after the first one with the neutral element
+                                hyper_operator = self.connection_classes_hyper[argmax_class]
+                                if argmax_multiplicity_sum < -5 and is_prime(-argmax_multiplicity_sum):
+                                    powers = self.factorize_to_at_most(-argmax_multiplicity_sum - 1, self.max_power)
+                                    first_replacement = double_inverse_operator_prefix + (operator,) + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree + argmax_subtree
+                                else:
+                                    powers = self.factorize_to_at_most(-argmax_multiplicity_sum, self.max_power)
+                                    first_replacement = double_inverse_operator_prefix + tuple(f'{hyper_operator}{p}' for p in powers) + argmax_subtree
+
+                            other_replacements = (neutral_element,)
+
+                        if n_replaced == 0:
+                            expression.extend(first_replacement)
+                        else:
+                            expression.extend(other_replacements)
+                        n_replaced += 1
+                        continue
+
+            # Leaf node
+            if len(subtree) == 1:
+                expression.append(subtree[0])
+                continue
+
+            # Non-leaf node
+            operator, operands = subtree
+            _, operands_annotations_sets = subtree_annotation
+            _, operands_labels = subtree_labels
+            operator_parity = subtree_parities  # No operand parity information yet
+
+            # TODO: Propagate parities of unary inverse operators
+
+            if operator in self.connectable_operators:
+                propagated_operand_parities: list[dict[str, int]] = [{}, {}]
+                for cc, (operator_set, _) in self.connection_classes.items():
+                    if operator in operator_set:
+                        propagated_operand_parities[0][cc] = operator_parity[cc]
+                        propagated_operand_parities[1][cc] = operator_parity[cc] * (-1 if operator in {'-', '/'} else 1)
+                    else:
+                        propagated_operand_parities[0][cc] = operator_parity[cc]
+                        propagated_operand_parities[1][cc] = operator_parity[cc]
+
+                # If no cancellation candidate has been identified yet, try to find one in the current subtree
+                if argmax_candidate is None:
+                    for cc in self.connection_classes:
+                        for subtree_hash, multiplicity in subtree_annotation[0][cc].items():
+                            if len(subtree_hash) > max_subtree_length and sum(abs(m) for m in multiplicity) > 1:
+                                argmax_candidate = (cc, subtree_hash, multiplicity[0] - multiplicity[1])
+                                still_connected = True
+
+                # Add the operator to the expression
+                expression.append(operator)
+
+                # Add the children to the stack
+                for operand, operand_an, operand_label, propagated_operand_parity in zip(
+                        reversed(operands),
+                        reversed(operands_annotations_sets),
+                        reversed(operands_labels),
+                        reversed(propagated_operand_parities)):
+                    stack.append(operand)
+                    stack_annotations.append(operand_an)
+                    stack_labels.append(operand_label)
+                    stack_parity.append(propagated_operand_parity)
+                    stack_still_connected.append(still_connected)
+
+            else:
+                # Add the operator to the expression
+                expression.append(operator)
+
+                # Add the children to the stack
+                for operand, operand_an, operand_label in zip(reversed(operands), reversed(operands_annotations_sets), reversed(operands_labels)):
+                    stack.append(operand)
+                    stack_annotations.append(operand_an)
+                    stack_labels.append(operand_label)
+                    stack_parity.append({cc: 1 for cc in self.connection_classes})
+                    stack_still_connected.append(still_connected)
+
+        return expression
+
+    def sort_operands(self, expression: list[str] | tuple[str, ...]) -> list[str]:
+        stack: list = []
+        i = len(expression) - 1
+
+        while i >= 0:
+            token = expression[i]
+
+            if token in self.operator_arity_compat or token in self.operator_aliases:
+                operator = self.operator_aliases.get(token, token)
+                arity = self.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+
+                if operator in self.commutative_operators:
+                    # Check for the pattern [*, *, A, B, C] -> [*, A, *, B, C] or [+, +, A, B, C] -> [+, A, +, B, C]
+                    if len(operands[0]) == 2 and operator == operands[0][0]:
+                        _ = [stack.pop() for _ in range(arity)]
+                        stack.append([operator, [operands[0][1][0], [operator, [operands[0][1][1], operands[1]]]]])
+                        i -= 1
+                        continue
+
+                    subtree = [operator, operands]
+
+                    # Traverse through the tree in breadth-first order
+                    queue = [subtree]
+                    commutative_paths: list[tuple] = [tuple()]
+                    commutative_positions = []
+                    while queue:
+                        node = queue.pop(0)
+                        current_path = commutative_paths.pop(0)
+                        for child_index, child in enumerate(node[1]):  # I conclude that using `i` as a variable name here is not very clever
+                            if len(child) > 1:
+                                if child[0] == node[0]:
+                                    # Continue: Same commutative perator
+                                    queue.append(child)
+                                    commutative_paths.append(current_path + (child_index,))
+                                else:
+                                    # Stop: Different operator
+                                    commutative_positions.append(current_path + (child_index,))
+                            else:
+                                # Stop: Leaf
+                                commutative_positions.append(current_path + (child_index,))
+
+                    # Sort the positions
+                    sorted_indices = sorted(range(len(commutative_positions)), key=lambda x: commutative_positions[x])
+
+                    commutative_paths = [commutative_positions[i] for i in sorted_indices]
+                    commutative_positions = [commutative_positions[i] for i in sorted_indices]
+
+                    operands_to_sort = []
+                    for position in commutative_positions:
+                        node = subtree
+                        for position_index in position:
+                            node = node[1][position_index]
+                        operands_to_sort.append(node)
+
+                    sorted_operands = sorted(operands_to_sort, key=self.operand_key)
+
+                    # Replace the operands in the tree
+                    new_subtree: list = deepcopy(subtree)
+
+                    for position, operand in zip(commutative_positions, sorted_operands):
+                        node = new_subtree
+                        for position_index in position:
+                            node = node[1][position_index]
+                        node[:] = operand
+
+                    operands = new_subtree[1]
+
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([operator, operands])
+                    i -= 1
+                    continue
+
+                _ = [stack.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+
+            else:
+                stack.append([token])
+
+            i -= 1
+
+        return flatten_nested_list(stack)[::-1]
+
+    def simplify_auto_flash(self, expression: list[str] | tuple[str, ...], max_iter: int = 5, mask_elementary_literals: bool = True, inplace: bool = False) -> list[str] | tuple[str, ...]:
+        if isinstance(expression, tuple):
+            was_tuple = True
+            expression = list(expression)
+            new_expression = expression.copy()
+        else:
+            was_tuple = False
+            new_expression = expression
+
+        # Apply simplification rules and sort operands to get started
+        new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+        # print('1', new_expression)
+        new_expression = self.sort_operands(new_expression)
+        # print('2', new_expression)
+
+        for _ in range(max_iter):
+            # Cancel any terms
+            expression_tree, annotated_expression_tree, stack_labels = self.collect_multiplicities(new_expression)
+            new_expression = self.cancel_terms(expression_tree, annotated_expression_tree, stack_labels)
+            # print('3', new_expression)
+
+            # Apply simplification rules
+            new_expression = self._apply_auto_flash_simplifcation_rules(new_expression, self.simplification_rules_trees)
+            # print('4', new_expression)
+
+            # Sort operands
+            new_expression = self.sort_operands(new_expression)
+            # print('5', new_expression)
+
+            if new_expression == expression:
+                break
+            expression = new_expression
+
+        if mask_elementary_literals:
+            new_expression = self.mask_elementary_literals(new_expression, inplace=inplace)
+
+        if was_tuple:
+            return tuple(new_expression)
+        return new_expression
+
+    def construct_expressions(self, hashes_of_size: dict[int, set[tuple[str, ...]]], non_leaf_nodes: dict[str, int], must_have_sizes: list | set | None = None) -> Generator[tuple[str, ...], None, None]:
+        hashes_of_size_with_lists = {k: list(v) for k, v in hashes_of_size.items()}
+
+        filter_sizes = must_have_sizes is not None and not len(must_have_sizes) == 0
+        if must_have_sizes is not None and filter_sizes:
+            must_have_sizes_set = set(must_have_sizes)
+
+        # Append existing trees to every operator
+        for new_root_operator, arity in non_leaf_nodes.items():
+            # Start with the smallest arity-tuples of trees
+            for child_lengths in sorted(itertools.product(list(hashes_of_size_with_lists.keys()), repeat=arity), key=lambda x: sum(x)):
+                # Check all possible combinations of child trees
+                if filter_sizes and not any(length in must_have_sizes_set for length in child_lengths):
+                    continue
+                for child_combination in itertools.product(*[hashes_of_size_with_lists[child_length] for child_length in child_lengths]):
+                    yield (new_root_operator,) + tuple(itertools.chain.from_iterable(child_combination))
+
+    def exist_constants_that_fit(self, expression: list[str] | tuple[str, ...], variables: list[str], X: np.ndarray, y_target: np.ndarray) -> bool:
+        if isinstance(expression, tuple):
+            expression = list(expression)
+
+        executable_prefix_expression = self.operators_to_realizations(expression)
+        prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
+        code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
+        code = codify(code_string, variables + constants)
+        f = self.code_to_lambda(code)
+
+        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float | np.ndarray:
+            if len(constants) == 0:
+                y = safe_f(f, X)
+            y = safe_f(f, X, constants)
+
+            # If the numbers are complex, return nan
+            if np.iscomplexobj(y):
+                return np.full(X.shape[0], np.nan)
+
+            return y
+
+        p0 = np.random.normal(loc=0, scale=5, size=len(constants))
+
+        is_valid = np.isfinite(X).all(axis=1) & np.isfinite(y_target)
+
+        if not np.any(is_valid):
+            return False
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=OptimizeWarning)
+                popt, _ = curve_fit(pred_function, X[is_valid], y_target[is_valid].flatten(), p0=p0)
+        except RuntimeError:
+            return False
+
+        y = f(*X.T, *popt)
+        if not isinstance(y, np.ndarray):
+            y = np.full(X.shape[0], y)  # type: ignore
+
+        return np.allclose(y_target, y, equal_nan=True)
+
+    def find_rules(
+            self,
+            max_n_rules: int | None = None,
+            max_pattern_length: int | None = 7,
+            timeout: float | None = None,
+            dummy_variables: int | list[str] | None = None,
+            max_simplify_steps: int = 1,
+            X: np.ndarray | int | None = None,
+            C: np.ndarray | int | None = None,
+            constants_fit_retries: int = 5,
+            output_file: str | None = None,
+            save_every: int = 100,
+            reset_rules: bool = True,
+            verbose: bool = False) -> None:
+
+        hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
+
+        if dummy_variables is None:
+            dummy_variables = [f"x{i}" for i in range(4)]  # Room for up to 4 different terms in simplification patterns
+        elif isinstance(dummy_variables, int):
+            dummy_variables = [f"x{i}" for i in range(dummy_variables)]
+
+        if reset_rules:
+            self.simplification_rules = []
+            self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
+
+        if X is None:
+            X = np.random.normal(loc=0, scale=5, size=(1024, len(dummy_variables)))
+        elif isinstance(X, int):
+            X = np.random.normal(loc=0, scale=5, size=(X, len(dummy_variables)))
+
+        if C is None:
+            C = np.random.normal(loc=0, scale=5, size=128)
+        elif isinstance(C, int):
+            C = np.random.normal(loc=0, scale=5, size=C)
+
+        leaf_nodes = dummy_variables + self.simplification_kwargs['extra_internal_terms']
+        non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
+
+        pbar = tqdm(disable=not verbose)
+        n_scanned = 0
+
+        start_time = time.time()
+
+        max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
+        max_time_string = f'/{timeout/60:.1f}' if timeout is not None else ''
+
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                # Create all leaf nodes
+                for leaf in leaf_nodes[:max_n_rules]:
+                    hashes_of_size[1].add((leaf,))  # type: ignore
+
+                new_sizes: set[int] = set()
+
+                while (max_n_rules is None or len(self.simplification_rules) < max_n_rules) and (timeout is None or time.time() - start_time <= timeout):
+                    simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
+                    for length, hashes_list in hashes_of_size.items():
+                        for h in hashes_list:
+                            simplified_hashes_of_size[len(h)].add(h)  # type: ignore
+                    hashes_of_size = simplified_hashes_of_size
+
+                    if max_pattern_length is not None and max(hashes_of_size.keys()) >= max_pattern_length:
+                        # If the maximum pattern length is exceeded, stop searching
+                        if verbose:
+                            print(f'Maximum pattern length reached: {max_pattern_length}')
+                        break
+
+                    # For logging
+                    hashes_of_size_lengths = {k: len(v) for k, v in hashes_of_size.items()}
+
+                    if len(hashes_of_size[1]) == 1:
+                        # Should not happen since the leaf nodes cannot disappear
+                        print(hashes_of_size[1])
+                        print(hashes_of_size_lengths)
+                        print(self.simplification_rules)
+                        exit()
+
+                    new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
+
+                    for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes, must_have_sizes=new_sizes):
+                        # debug_file_handle.write(f'{combination}\n')
+                        if timeout is not None and time.time() - start_time > timeout:
+                            if verbose:
+                                print('Reached timeout')
+                            break
+
+                        # Write the rules to a file to check the progress
+                        if output_file is not None and n_scanned % save_every == 0:
+                            self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
+                            with open(output_file, 'w') as file:
+                                json.dump(self.simplification_rules, file, indent=4)
+
+                        if max_n_rules is not None and len(self.simplification_rules) >= max_n_rules:
+                            print(f'Reached maximum number of rules: {len(self.simplification_rules)}')
+                            break
+
+                        simplified_skeleton_hash = combination
+
+                        new_hashes_of_size_lengths = {k: len(v) for k, v in new_hashes_of_size.items()}
+                        pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths} <- {new_hashes_of_size_lengths}, Current: {combination} -> {simplified_skeleton_hash}")
+
+                        # Check if all leaf nodes are <num> (i.e. if the skeleton is purely numerical)
+                        if all([t == '<num>' or t in self.operator_arity for t in simplified_skeleton_hash]) and len(simplified_skeleton_hash) > 1:
+                            # Simplify the skeleton to a single <num>
+                            new_rule_candidates: list[tuple[tuple[str, ...], tuple[str, ...]]] = [(simplified_skeleton_hash, ('<num>',))]
+                        else:
+                            executable_prefix_expression = self.operators_to_realizations(simplified_skeleton_hash)
+                            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
+                            code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                            code = codify(code_string, dummy_variables + constants)
+
+                            f = self.code_to_lambda(code)
+
+                            y = safe_f(f, X, C[:len(constants)])  # type: ignore
+
+                            all_sizes = set(hashes_of_size.keys()) | set(new_hashes_of_size.keys())
+                            new_rule_candidates = []
+                            for length in all_sizes:
+                                for candidate_hashes_of_size in (hashes_of_size, new_hashes_of_size):
+                                    if length not in candidate_hashes_of_size:
+                                        continue
+
+                                    # Ignore simplification candidates that do not shorten the expression
+                                    if length >= len(simplified_skeleton_hash):
+                                        continue
+
+                                    # TODO: If we traverse the candidates from short to long, we can stop early once we found a match
+                                    for candidate_hash in candidate_hashes_of_size[length]:
+                                        if candidate_hash == simplified_skeleton_hash:
+                                            continue
+                                        executable_prefix_candidate_hash = self.operators_to_realizations(candidate_hash)
+                                        prefix_candidate_hash_with_constants, constants_candidate_hash = num_to_constants(executable_prefix_candidate_hash, convert_numbers_to_constant=False)
+                                        code_string_candidate_hash = self.prefix_to_infix(prefix_candidate_hash_with_constants, realization=True)
+                                        code_candidate_hash = codify(code_string_candidate_hash, dummy_variables + constants_candidate_hash)
+
+                                        f_candidate = self.code_to_lambda(code_candidate_hash)
+
+                                        # Record the image
+                                        if len(constants_candidate_hash) == 0:
+                                            y_candidate = safe_f(f_candidate, X)
+                                            if not isinstance(y_candidate, np.ndarray):
+                                                y_candidate = np.full(X.shape[0], y_candidate)  # type: ignore
+
+                                            if np.allclose(y, y_candidate, equal_nan=True):
+                                                new_rule_candidates.append((simplified_skeleton_hash, candidate_hash))
+                                        else:
+                                            if any([self.exist_constants_that_fit(candidate_hash, dummy_variables, X, y) for _ in range(constants_fit_retries)]):
+                                                new_rule_candidates.append((simplified_skeleton_hash, candidate_hash))
+
+                                if len(new_rule_candidates) > 0:
+                                    # Found a match that is shorter than other futher candidates could ever be
+                                    break
+
+                        # Find the shortest rule
+                        if len(new_rule_candidates) > 0:
+                            # If there are rules with and without <num>, prefer the ones without
+                            new_rule_candidates_without_num = [c for c in new_rule_candidates if '<num>' not in c[1]]
+                            if len(new_rule_candidates_without_num) > 0:
+                                new_rule_candidates = new_rule_candidates_without_num
+                            self.simplification_rules.append(new_rule_candidates[0])
+                            new_hashes_of_size[len(simplified_skeleton_hash)].add(new_rule_candidates[0][1])
+
+                            if list(combination) == ['+', 'x1', '0'] or list(combination) == ['+', '0', 'x1']:
+                                print()
+                                print(combination)
+                                print(new_rule_candidates)
+                        else:
+                            new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
+
+                        n_scanned += 1
+                        pbar.update(1)
+
+                    new_sizes = set()
+
+                    hashes_of_size_lengths_before = {k: len(v) for k, v in hashes_of_size.items()}
+                    for new_length, new_hashes in new_hashes_of_size.items():
+                        hashes_of_size[new_length].update(new_hashes)
+                    hashes_of_size_lengths_after = {k: len(v) for k, v in hashes_of_size.items()}
+
+                    for size in hashes_of_size_lengths_after.keys():
+                        if size not in hashes_of_size_lengths_before or hashes_of_size_lengths_after[size] > hashes_of_size_lengths_before[size]:
+                            new_sizes.add(size)
+
+                else:
+                    if verbose:
+                        print('Reached maximum number of rules or timeout')
+
+                self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
+                self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
+
+            pbar.close()
+
+            if verbose:
+                print('Finished.')
+
+            if output_file is not None:
+                if verbose:
+                    print('Saving the rules...')
+                with open(output_file, 'w') as file:
+                    json.dump(self.simplification_rules, file, indent=4)
+
+        except KeyboardInterrupt:
+            pbar.close()
+            if output_file is not None:
+                if verbose:
+                    print('Interrupted. Trying to save the rules...')
+                time.sleep(1)  # Allow the user to interrupt the process
+                with open(output_file, 'w') as file:
+                    json.dump(self.simplification_rules, file, indent=4)
+                if verbose:
+                    print('Rules saved.')
+            raise
 
     # SIMPLIFICATION
     def simplify_flash(self, prefix_expression: list[str], mask_elementary_literals: bool = True, max_iter: int = 5, inplace: bool = False, verbose: bool = False, debug: bool = False) -> list[str]:
@@ -818,7 +1700,7 @@ class ExpressionSpace:
 
         for _ in range(max_iter):
             for __ in range(max_iter):
-                new_modified_prefix_expression = self._simplify(new_modified_prefix_expression, verbose=verbose, debug=debug)
+                new_modified_prefix_expression = _simplify_flash(self, new_modified_prefix_expression, verbose=verbose, debug=debug)
                 if new_modified_prefix_expression == modified_prefix_expression:
                     break
                 modified_prefix_expression = new_modified_prefix_expression
@@ -853,947 +1735,10 @@ class ExpressionSpace:
             modified_prefix_expression = prefix_expression.copy()
 
         for i, token in enumerate(prefix_expression):
-            if token in ['<1>', '<0>']:
+            if token not in self.variables and token not in self.operator_arity_compat and token not in self.operator_aliases and token not in self.special_constants:
                 modified_prefix_expression[i] = '<num>'
 
         return modified_prefix_expression
-
-    def _simplify(self, expression: list[str], verbose: bool = False, debug: bool = False) -> list[str]:
-        '''
-        Simplify an expression
-
-        Parameters
-        ----------
-        expression : list[str]
-            The prefix expression
-        verbose : bool, optional
-            Whether to print verbose output, by default False
-        debug : bool, optional
-            Whether to print debug output, by default False
-
-        Returns
-        -------
-        list[str]
-            The simplified expression
-        '''
-        stack: list = []
-        i = len(expression) - 1
-
-        if debug:
-            print(f'Input expression: {expression}')
-
-        while i >= 0:
-            token = expression[i]
-
-            if debug:
-                print(f'Stack: {stack}')
-                print(f'Processing token {token}')
-
-            if token in self.operator_arity_compat or token in self.operator_aliases:
-                operator = self.operator_aliases.get(token, token)
-                arity = self.operator_arity_compat[operator]
-                operands = list(reversed(stack[-arity:]))
-
-                if all(operand[0] == '<num>' for operand in operands):
-                    if verbose:
-                        print('Applying numeric subtree simplification')
-                    # All operands are <num>, so we can simplify
-                    _ = [stack.pop() for _ in range(arity)]
-                    stack.append(['<num>'])  # Replace the operands with a single <num>
-                    i -= 1
-                    continue
-
-                # if all(isinstance(stack[-j], str) and re.match(r'-?\d+\.\d+|\d+', stack[-j]) for j in range(1, arity + 1)):
-                if all(len(operand) == 1 and isinstance(operand[0], str) and re.match(r'-?\d+\.\d+|-?\d+', operand[0]) for operand in operands):
-                    if verbose:
-                        print('Applying numeric subtree evaluation')
-                    # All operands are numbers, so we can simplify by computing the result
-                    # code_str = self.prefix_to_infix([operator] + [stack.pop() for _ in range(arity)], power='**', realization=True)
-                    flat_prefix_expression = flatten_nested_list([operator, operands])[::-1]
-                    code_str = self.prefix_to_infix(flat_prefix_expression, power='**', realization=True)
-                    code = codify(code_str)
-                    result = self.code_to_lambda(code)()
-                    if int(result) == result:
-                        result = int(result)
-                    _ = [stack.pop() for _ in range(arity)]
-                    stack.append([str(result)])
-                    i -= 1
-                    continue
-
-                if operator == '*':
-                    # Check for the pattern [*, A, 0] -> [0] and [*, 0, A] -> [0]
-                    if ['<0>'] in operands:
-                        if verbose:
-                            print('Applying [*, A, 0] -> [0]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['<0>'])
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [*, A, A] -> [pow2, A]
-                    if operands[0] == operands[1]:
-                        if verbose:
-                            print('Applying [*, A, A] -> [pow2, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['pow2', [operands[0]]])
-                        i -= 1
-                        continue
-
-                    if len(operands[0]) == 2 and len(operands[1]) == 2:
-                        # Check for the pattern [*, abs, A, abs, B] -> [abs, *, A, B]
-                        if operands[0][0] == 'abs' and operands[1][0] == 'abs':
-                            if verbose:
-                                print(f'Applying [{operator}, abs, A, abs, B] -> [abs, {operator}, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['abs', [[operator, [operands[0][1][0], operands[1][1][0]]]]])
-                            i -= 1
-                            continue
-
-                    # Check for the pattern [*, A, neg, A] -> [neg, pow2, A] or [*, neg, A, A] -> [neg, pow2, A]
-                    if (len(operands[1]) == 2 and operands[1][0] == 'neg' and operands[0] == operands[1][1][0]) or len(operands[0]) == 2 and operands[0][0] == 'neg' and operands[1] == operands[0][1][0]:
-                        if verbose:
-                            print('Applying [*, A, neg, A] | [*, neg, A, A] -> [neg, pow2, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['neg', [['pow2', [operands[0]] if len(operands[1]) == 2 else [operands[1]]]]])
-                        i -= 1
-                        continue
-
-                    if len(operands[1]) == 2 and operands[1][0] == '+':
-                        # Check for the pattern [*, A, +, B, B] and sort operands A and B. (The case [*, +, B, B, A] will be transformed into [*, A, +, B, B] during normal operand sorting)
-                        if operands[1][1][0] == operands[1][1][1]:
-                            if verbose:
-                                print('Sorting A and B in expansion with commutative operators [*, A, +, B, B]', end='')
-                            unique_operands_to_sort = [operands[0], operands[1][1][0]]
-                            unique_sorted_operands = sorted(unique_operands_to_sort, key=self.operand_key)
-                            if unique_operands_to_sort != unique_sorted_operands:
-                                if verbose:
-                                    print(f': {unique_operands_to_sort} -> {unique_sorted_operands}')
-                                operands[0] = unique_sorted_operands[0]
-                                operands[1][1][0] = unique_sorted_operands[1]
-                                operands[1][1][1] = unique_sorted_operands[1]
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append([operator, [operands[0], operands[1]]])
-                                i -= 1
-                                continue
-                            if verbose:
-                                print()
-
-                        # Check for the pattern [*, A, +, A, A] -> [+, pow2, A, pow2, A]
-                        if operands[0] == operands[1][1][0] == operands[1][1][1]:
-                            if verbose:
-                                print('Applying [*, A, +, A, A] -> [+, pow2, A, pow2, A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['+', [['pow2', [operands[0]]], ['pow2', [operands[0]]]]])
-                            i -= 1
-                            continue
-
-                    if len(operands[0]) == len(operands[1]) == 2:
-                        if operands[0][0] == operands[1][0] == '-':
-                            A = operands[0][1][0]
-                            B = operands[0][1][1]
-                            C = operands[1][1][0]
-                            D = operands[1][1][1]
-
-                            # Check for the pattern [*, -, A, B, -, B, A] -> [neg, pow2, -, A, B]
-                            if B == C and A == D:
-                                if verbose:
-                                    print('Applying [*, -, A, B, -, B, A] -> [neg, pow2, -, A, B]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(['neg', [['pow2', [['-', [A, B]]]]]])
-                                i -= 1
-                                continue
-
-                            # Sort the operands
-                            potential_subtrees = [
-                                [operator, [['-', [A, B]], ['-', [C, D]]]],
-                                [operator, [['-', [B, A]], ['-', [D, C]]]],  # Swapped
-                                [operator, [['-', [C, D]], ['-', [A, B]]]],  # Swapped
-                                [operator, [['-', [D, C]], ['-', [B, A]]]],  # Swapped
-                            ]
-                            sorted_potential_subtrees = sorted(potential_subtrees, key=self.operand_key)
-
-                            if potential_subtrees[0] != sorted_potential_subtrees[0]:
-                                if verbose:
-                                    print(f'Swapping positions from [{operator}, -, A, B, -, C, D]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(sorted_potential_subtrees[0])
-                                i -= 1
-                                continue
-
-                if operator == '/':
-                    # Check for the pattern [/, A, 1] -> [A]
-                    if operands[1] == ['<1>']:
-                        if verbose:
-                            print('Applying [/, A, 1] -> [A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(operands[0])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [/, 1, A] -> [inv A]
-                    if operands[0] == ['<1>']:
-                        if verbose:
-                            print('Applying [/, 1, A] -> [inv A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['inv', [operands[1]]])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [/, abs, A, A] _> [/, A, abs, A]
-                    if len(operands[0]) == 2 and operands[0][0] == 'abs' and operands[0][1][0] == operands[1]:
-                        if verbose:
-                            print('Applying [/, abs, A, A] -> [/, A, abs, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['/', [operands[1], operands[0]]])
-                        i -= 1
-                        continue
-
-                    if len(operands[0]) == 2 and len(operands[1]) == 2:
-                        # Check for the pattern [/, +, A, A, +, B, B] -> [/, A, B]
-                        if operands[0][0] == operands[1][0] == '+' and operands[0][1][0] == operands[0][1][1] and operands[1][1][0] == operands[1][1][1]:
-                            if verbose:
-                                print('Applying [/, +, A, A, +, B, B] -> [/, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['/', [operands[0][1][0], operands[1][1][0]]])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [/, -, A, B, -, B, A] -> [neg, <1>]
-                        if operands[0][0] == operands[1][0] == '-' and operands[0][1][1] == operands[1][1][0] and operands[0][1][0] == operands[1][1][1]:
-                            if verbose:
-                                print('Applying [/, -, A, B, -, B, A] -> [neg, <1>]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['neg', [['<1>']]])
-                            i -= 1
-                            continue
-
-                    if len(operands[0]) == len(operands[1]) == 2:
-                        if operands[0][0] == operands[1][0] == '-':
-                            A = operands[0][1][0]
-                            B = operands[0][1][1]
-                            C = operands[1][1][0]
-                            D = operands[1][1][1]
-                            potential_subtrees = [
-                                [operator, [['-', [A, B]], ['-', [C, D]]]],
-                                [operator, [['-', [B, A]], ['-', [D, C]]]],  # Swapped
-                            ]
-                            sorted_potential_subtrees = sorted(potential_subtrees, key=self.operand_key)
-
-                            if potential_subtrees[0] != sorted_potential_subtrees[0]:
-                                if verbose:
-                                    print(f'Swapping positions from [{operator}, -, A, B, -, C, D]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(sorted_potential_subtrees[0])
-                                i -= 1
-                                continue
-
-                if operator == '+':
-                    # Check for the patterns [+, A, 0] -> [A] or [+, 0, A] -> [A]
-                    if ['<0>'] in operands:
-                        if verbose:
-                            print('Applying [+, A, 0] -> [A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        # print(operands)
-                        stack.append(operands[0] if operands[1] == '<0>' else operands[1])
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [+, *, A, B, *, A, C] -> [*, A, +, B, C]
-                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '*' and len(operands[0][1]) == 2 and operands[0][1][0] == operands[1][1][0]:
-                        if verbose:
-                            print('Applying [+, *, A, B, *, A, C] -> [*, A, +, B, C]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['*', [operands[0][1][0], ['+', [operands[0][1][1], operands[1][1][1]]]]])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [+, /, A, B, /, C, B] -> [/, +, A, C, B]
-                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '/' and len(operands[0][1]) == 2 and operands[0][1][1] == operands[1][1][1]:
-                        if verbose:
-                            print('Applying [+, /, A, B, /, C, B] -> [/, +, A, C, B]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['/', [['+', [operands[0][1][0], operands[1][1][0]]], operands[0][1][1]]])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [+, abs, A, abs, A] -> [abs, +, A, A]
-                    if len(operands[0]) == 2 and operands[0][0] == 'abs' and operands[0] == operands[1]:
-                        if verbose:
-                            print('Applying [+, abs, A, abs, A] -> [abs, +, A, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['abs', [['+', [operands[0][1][0], operands[0][1][0]]]]])
-                        i -= 1
-                        continue
-
-                if operator == '-':
-                    # Check for the patterns [-, A, 0] -> [A]
-                    if operands[1] == ['<0>']:
-                        if verbose:
-                            print('Applying [-, A, 0] -> [A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(operands[0])
-                        i -= 1
-                        continue
-
-                    # Check for the patterns [-, 0, A] -> [neg A]
-                    if operands[0] == ['<0>']:
-                        if verbose:
-                            print('Applying [-, 0, A] -> [neg A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['neg', [operands[1]]])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [-, *, A, B, *, A, C] -> [*, A, -, B, C]
-                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '*' and len(operands[0][1]) == 2 and operands[0][1][0] == operands[1][1][0]:
-                        if verbose:
-                            print('Applying [-, *, A, B, *, A, C] -> [*, A, -, B, C]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['*', [operands[0][1][0], ['-', [operands[0][1][1], operands[1][1][1]]]]])
-                        i -= 1
-                        continue
-
-                    # Check for the pattern [-, /, A, B, /, C, B] -> [/, -, A, C, B]
-                    if len(operands[0]) == 2 and operands[0][0] == operands[1][0] == '/' and len(operands[0][1]) == 2 and operands[0][1][1] == operands[1][1][1]:
-                        if verbose:
-                            print('Applying [-, /, A, B, /, C, B] -> [/, -, A, C, B]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['/', [['-', [operands[0][1][0], operands[1][1][0]]], operands[0][1][1]]])
-                        i -= 1
-                        continue
-
-                if operator in ['*', '/']:
-                    if (len(operands[1]) == 2 and operands[1][0] == 'neg'):
-                        # Check for the pattern [*, -, A, B, neg, C] -> [*, -, B, A, C] or [/, -, A, B, neg, C] -> [/, -, B, A, C]
-                        if operands[0][0] == '-':
-                            A = operands[0][1][0]
-                            B = operands[0][1][1]
-                            C = operands[1][1][0]
-
-                            if verbose:
-                                print(f'Applying [{operator}, -, A, B, neg, C] -> [{operator}, -, B, A, C]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([operator, [['-', [B, A]], C]])
-                            # print(stack)
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [*, A, neg, B] -> [neg, *, A, B] or [/, A, neg, B] -> [neg, /, A, B]
-                        if verbose:
-                            print(f'Applying [{operator}, A, neg, B] -> [neg, {operator}, A, B]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['neg', [[operator, [operands[0], operands[1][1][0]]]]])
-                        i -= 1
-                        continue
-
-                    # Same but with the operands swapped
-                    if (len(operands[0]) == 2 and operands[0][0] == 'neg'):
-                        # Check for the pattern [*, neg, C, -, A, B] -> [*, C, -, B, A] or [/, neg, C, -, A, B] -> [/, C, -, B, A]
-                        if operands[0][0] == '-':
-                            if verbose:
-                                print(f'Applying [{operator}, neg, C, -, A, B] -> [{operator}, C, -, B, A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([operator, [operands[0][1][0], ['-', [operands[1][1][1], operands[1][1][0]]]]])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [*, neg, A, B] -> [neg, *, A, B] or [/, neg, A, B] -> [neg, /, A, B]
-                        if verbose:
-                            print(f'Applying [{operator}, neg, A, B] -> [neg, {operator}, A, B]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['neg', [[operator, [operands[0][1][0], operands[1]]]]])
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                if operator in ['+', '*', '/']:
-                    # Check for the pattern [/, abs, A, abs, B] or [*, abs, A, abs, B] or [+, abs, A, abs, B]
-                    # -> [abs, /, A, B] or [abs, *, A, B] or [abs, +, A, B]
-                    if len(operands[0]) == 2 and len(operands[1]) == 2 and operands[0][0] == 'abs' and operands[1][0] == 'abs':
-                        if verbose:
-                            print(f'Applying [{operator}, abs, A, abs, B] -> [abs, {operator}, A, B]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['abs', [[operator, [operands[0][1][0], operands[1][1][0]]]]])
-                        i -= 1
-                        continue
-
-                if operator == 'inv':
-                    # Check for the pattern [inv, exp, A] -> [exp, neg, A]
-                    if len(operands[0]) == 2 and operands[0][0] == 'exp':
-                        if verbose:
-                            print('Applying [inv, exp, A] -> [exp, neg, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['exp', [['neg', [operands[0][1][0]]]]])
-                        i -= 1
-                        continue
-
-                if operator == 'exp':
-                    # Check for the pattern [exp, +, A, A] -> [pow2, exp, A]
-                    if len(operands[0]) == 2 and operands[0][0] == '+' and operands[0][1][0] == operands[0][1][1]:
-                        if verbose:
-                            print('Applying [exp, +, A, A] -> [pow2, exp, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['pow2', [[operator, [operands[0][1][0]]]]])
-                        i -= 1
-                        continue
-
-                if operator.startswith('pow1_'):
-                    negative_exponent = int(operator[5:])
-                    if negative_exponent % 2 == 0:
-                        # Check for the pattern [pow1_<even_integer>, pow<even_integer>, A] -> [abs, A]
-                        if len(operands[0]) == 2 and operands[0][0].startswith('pow') and '_' not in operands[0][0] and negative_exponent == int(operands[0][0][3:]):
-                            if verbose:
-                                print(f'Applying [pow1_{negative_exponent}, pow{negative_exponent}, A] -> [abs, A] for even integer {negative_exponent}')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['abs', [operands[0][1][0]]])
-                            i -= 1
-                            continue
-
-                if operator.startswith('pow'):
-                    # Check for the pattern [pow<i>, inv, A] -> [inv, pow<i>, A]
-                    if len(operands[0]) == 2 and operands[0][0] == 'inv':
-                        if verbose:
-                            print('Applying [pow<i>, inv, A] -> [inv, pow<i>, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(['inv', [[operator, [operands[0][1]][0]]]])
-                        i -= 1
-                        continue
-
-                    # Identify chains
-                    if '_' in operator:
-                        p = 1
-                        q = int(operator[5:])
-                    else:
-                        p = int(operator[3:])
-                        q = 1
-                    operator_chain = [operator]
-                    operator_chain_factors = [Fraction(p, q)]
-                    current_operand = operands[0]
-
-                    reciprocal_operator_allowed = True
-
-                    while len(current_operand) == 2:
-                        if re.match(r'pow1_\d+', current_operand[0]) and reciprocal_operator_allowed:
-                            p = 1
-                            q = int(re.match(r'pow1_(\d+)', current_operand[0]).group(1))  # type: ignore
-                            operator_chain.append(current_operand[0])
-                            operator_chain_factors.append(Fraction(p, q))
-                            current_operand = current_operand[1]
-                        elif '_' not in current_operand[0] and re.match(r'pow\d+', current_operand[0]):
-                            p = int(re.match(r'pow(\d+)', current_operand[0]).group(1))  # type: ignore
-                            q = 1
-                            operator_chain.append(current_operand[0])
-                            operator_chain_factors.append(Fraction(p, q))
-                            current_operand = current_operand[1]
-                            if p % 2 == 0:
-                                reciprocal_operator_allowed = False
-                        else:
-                            break
-
-                    if len(operator_chain_factors) > 1:
-                        total_fraction: Fraction = prod(operator_chain_factors)  # type: ignore
-
-                        # print(operator_chain_factors, total_fraction)
-
-                        # Factorize p into at most self.max_power or self.max_fractional_power
-                        p_factors = self.factorize_to_at_most(total_fraction.numerator, self.max_power)
-                        q_factors = self.factorize_to_at_most(total_fraction.denominator, self.max_fractional_power)
-
-                        # Construct the new operators
-                        new_operators = []
-                        for p in p_factors:
-                            if p == 1:
-                                continue
-                            new_operators.append(f'pow{p}')
-
-                        for q in q_factors:
-                            if q == 1:
-                                continue
-                            new_operators.append(f'pow1_{q}')
-
-                        if len(new_operators) == 0:
-                            new_chain = current_operand[0]
-                            # print(f'0: {new_chain}')
-                        else:
-                            new_chain = [new_operators[-1], current_operand]
-                            # print(f'1: {new_chain}')
-                            for op in new_operators[-2::-1]:
-                                new_chain = [op, [new_chain]]
-                                # print(f'2: {new_chain}')
-
-                        if verbose:
-                            print('Applying power chain simplification')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(new_chain)
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                if operator == 'abs':
-                    if len(operands[0]) == 2:
-                        # Check for the pattern [abs, <positive_operator>, A] -> [<positive_operator>, A]
-                        if operands[0][0] in self.positive_operators:
-                            if verbose:
-                                print(f'Applying [abs, {operands[0][0]}, A] -> [{operands[0][0]}, A] for positive operator {operands[0][0]}')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([operands[0][0], [operands[0][1][0]]])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [abs, inv, A] -> [inv, abs, A]
-                        if operands[0][0] == 'inv':
-                            if verbose:
-                                print('Applying [abs, inv, A] -> [inv, abs, A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['inv', [[operator, [operands[0][1][0]]]]])
-                            i -= 1
-                            continue
-
-                if operator in self.monotonous_increasing_operators and operator in self.antisymmetric_operators:
-                    if len(operands[0]) == 2:
-                        if operands[0][0] == 'abs':
-                            if verbose:
-                                print(f'Applying [{operator}, abs, A] -> [abs, {operator}, A] for antisymmetric monotonous increasing operator {operator}')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(['abs', [[operator, [operands[0][1][0]]]]])
-                            i -= 1
-                            continue
-
-                if operator in self.symmetric_operators and len(operands[0]) == 2:
-                    # Check for the pattern [<symmetric_operator>, neg, A] -> [<symmetric_operator>, A]
-                    if operands[0][0] == 'neg':
-                        if verbose:
-                            print(f'Applying [{operator}, neg, A] -> [{operator}, A] for symmetric operator {operator}')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append([operator, [operands[0][1][0]]])
-                        i -= 1
-                        continue
-
-                    if operands[0][0] == '-':
-                        if verbose:
-                            print('Sorting operands of - in symmetric operator')
-                        unique_operands_to_sort = operands[0][1]
-                        unique_sorted_operands = sorted(unique_operands_to_sort, key=self.operand_key)
-                        if unique_operands_to_sort != unique_sorted_operands:
-                            operands[0][1] = unique_sorted_operands
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([operator, operands])
-                            i -= 1
-                            continue
-
-                    if operands[0][0] == 'abs':
-                        if verbose:
-                            print(f'Applying [{operator}, abs, A] -> [{operator}, A]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append([operator, operands[0][1]])
-                        i -= 1
-                        continue
-
-                if operator in self.operator_inverses:
-                    operator_inverse = self.operator_inverses[operator]
-
-                    if arity == 1:
-                        # Check for the pattern [inv, inv, A] -> [A] or [neg, neg, A] -> [A]
-                        if operands[0][0] == operator_inverse:
-                            if verbose:
-                                print(operator, operator_inverse, operands)
-                                print(f'Applying [{operator}, {operator_inverse}, A] -> [A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(operands[0][1][0])
-                            i -= 1
-                            continue
-
-                # Check for the pattern [<antisymmetric_operator>, neg, A] -> [neg, <antisymmetric_operator>, A]
-                if operator in self.antisymmetric_operators and isinstance(operands[0], list) and operands[0][0] == 'neg':
-                    if verbose:
-                        print(f'Applying [{operator}, neg, A] -> [neg, {operator}, A] for antisymmetric operator {operator}')
-                    _ = [stack.pop() for _ in range(arity)]
-                    stack.append(['neg', [[operator, [operands[0][1][0]]]]])
-                    # print(stack)
-                    i -= 1
-                    continue
-
-                if operator == 'neg':
-                    # Identify chains of antisymmetric operators
-                    operator_chain = []
-                    current_operand = operands[0]
-
-                    while len(current_operand) == 2 and current_operand[0] in self.antisymmetric_operators:
-                        operator_chain.append(current_operand[0])
-                        current_operand = current_operand[1][0]
-
-                    # # BFS through chains of sign-preserving ['*', '/'] operators and flip the operands of the first encountered '-' operator
-                    # current_operand_copy = deepcopy(current_operand)
-                    # queue = [current_operand_copy]
-                    # while queue:
-                    #     current_operand_copy = queue.pop(0)
-                    #     if len(current_operand_copy) == 2 and current_operand_copy[0] in ['*', '/']:
-                    #         queue.append(current_operand_copy[1][0])
-                    #         queue.append(current_operand_copy[1][1])
-                    #     elif len(current_operand_copy) == 2 and current_operand_copy[0] in self.antisymmetric_operators:
-                    #         queue.append(current_operand_copy[1][0])
-                    #     elif len(current_operand_copy) == 2 and current_operand_copy[0] == '-':
-                    #         break
-
-                    # print('Current operand:', current_operand_copy)
-
-                    if len(current_operand) == 2 and current_operand[0] in ['*', '/']:
-                        # Check for the patterns [neg, X, *, -, A, B, C] -> [X, *, -, B, A, C] or [neg, X, /, -, A, B, C] -> [X, /, -, B, A, C] for chain of antisymmetric operators X
-                        if current_operand[1][0][0] == '-':
-                            if verbose:
-                                print(f'Applying [neg, X, {current_operand[0]}, -, A, B, C] -> [X, {current_operand[0]}, -, B, A, C] for chain of antisymmetric operators X')
-                            A = current_operand[1][0][1][0]
-                            B = current_operand[1][0][1][1]
-                            C = current_operand[1][1]
-
-                            new_operand = [current_operand[0], [['-', [B, A]], C]]
-                            for op in operator_chain[::-1]:
-                                new_operand = [op, [new_operand]]
-
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(new_operand)
-                            i -= 1
-                            continue
-
-                        # Check for the patterns [neg, X, *, A, -, B, C] -> [X,*, A, -, C, B] or [neg, X, /, A, -, B, C] -> [X, /, A, -, C, B] for chain of antisymmetric operators X
-                        if current_operand[1][1][0] == '-':
-                            if verbose:
-                                print(f'Applying [neg, X, {current_operand[0]}, A, -, B, C] -> [X, {current_operand[0]}, A, -, C, B] for chain of antisymmetric operators X')
-                            A = current_operand[1][0]
-                            B = current_operand[1][1][1][0]
-                            C = current_operand[1][1][1][1]
-
-                            new_operand = [current_operand[0], [A, ['-', [C, B]]]]
-                            for op in operator_chain[::-1]:
-                                new_operand = [op, [new_operand]]
-
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append(new_operand)
-                            i -= 1
-                            continue
-
-                    # Check for the pattern [neg, <antisymmetric_operator>, -, A, B] -> [<antisymmetric_operator>, -, B, A]
-                    if len(current_operand) == 2 and current_operand[0] == '-':
-                        if verbose:
-                            print('Applying [neg, X, -, A, B] -> [X,  -, B, A] for antisymmetric operators X')
-                        A = current_operand[1][0]
-                        B = current_operand[1][1]
-
-                        new_operand = ['-', [B, A]]
-                        for op in operator_chain[::-1]:
-                            new_operand = [op, [new_operand]]
-
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append(new_operand)
-                        i -= 1
-                        continue
-
-                if operator in self.inverse_base:
-                    unary_inverse, binary_inverse, neutral_element = self.inverse_base[operator]
-
-                    if len(operands[0]) == 2 and len(operands[1]) == 2:
-                        # Check for the pattern [*, inv, A, inv, B] -> [inv, *, A, B] or [+, neg, A, neg, B] -> [neg, +, A, B]
-                        if operands[0][0] == unary_inverse and operands[1][0] == unary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {unary_inverse}, A, {unary_inverse}, B] -> [{unary_inverse}, {operator}, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([unary_inverse, [[operator, [operands[0][1][0], operands[1][1][0]]]]])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [*, /, A, B, /, B, A] -> <1> or [+, -, A, B, -, B, A] -> <0>
-                        if operands[0][0] == binary_inverse and operands[1][0] == binary_inverse and operands[0][1][0] == operands[1][1][1] and operands[0][1][1] == operands[1][1][0]:
-                            # print("Term:", operator, operands)
-                            if verbose:
-                                print(f'Applying [{operator}, {binary_inverse}, A, B, {binary_inverse}, B, A] -> [{neutral_element}]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([neutral_element])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [*, inv, A, /, B, C] -> [/, /, B, A, C] or [+, neg, A, -, B, C] -> [-, -, B, A, C]
-                        if operands[0][0] == unary_inverse and operands[1][0] == binary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {unary_inverse}, A, {binary_inverse}, B, C] -> [{binary_inverse}, {binary_inverse}, B, A, C]')
-                            A = operands[0][1][0]
-                            B = operands[1][1][0]
-                            C = operands[1][1][1]
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([binary_inverse, [[binary_inverse, [B, A]], C]])
-                            i -= 1
-                            continue
-
-                    if len(operands[0]) == 2:
-                        # Check for the pattern [*, inv, A, B] -> [/, B, A] or [+, neg, A, B] -> [-, B, A]
-                        if operands[0][0] == unary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {unary_inverse}, A, B] -> [{binary_inverse}, B, A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([binary_inverse, [operands[1], operands[0][1][0]]])
-                            # print(stack)
-                            i -= 1
-                            continue
-
-                        if len(operands[0][1]) == 2:
-                            # Check for the pattern [* /, B, A, A] -> B or [+, -, B, A, A] -> B
-                            if operands[1] == operands[0][1][1] and operands[0][0] == binary_inverse:
-                                if verbose:
-                                    print(f'Applying [{operator}, {binary_inverse}, B, A, A] -> B')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(operands[0][1][0])
-                                i -= 1
-                                continue
-
-                    if len(operands[1]) == 2:
-                        # Check for the pattern [*, A, inv, B] -> [/, A, B] or [+, A, neg, B] -> [-, A, B]
-                        if operands[1][0] == unary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, A, {unary_inverse}, B] -> [{binary_inverse}, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            # print([binary_inverse, [operands[0], operands[1][1][0]]])
-                            stack.append([binary_inverse, [operands[0], operands[1][1][0]]])
-                            i -= 1
-                            continue
-
-                        if len(operands[1][1]) == 2:
-                            # Check for the pattern [+, A, -, B, A] -> B or [*, A, /, B, A] -> B
-                            if operands[0] == operands[1][1][1] and operands[1][0] == binary_inverse:
-                                if verbose:
-                                    print(f'Applying [{operator}, A, {binary_inverse}, B, A] -> B')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(operands[1][1][0])
-                                i -= 1
-                                continue
-
-                            # Check for the pattern [+, A, +, B, -, B, A] -> [+, B, B] or [*, A, *, B, /, B, A] -> [*, B, B]
-                            if len(operands[1][1][1]) == 2 and len(operands[1][1][1][1]) == 2 and \
-                                    operands[1][0] == operator and operands[1][1][1][0] == binary_inverse and operands[1][1][1][1][1] == operands[0] and operands[1][1][1][1][0] == operands[1][1][0]:
-                                if verbose:
-                                    print(f'Applying [{operator}, A, {operator}, B, {binary_inverse}, B, A] -> [{operator}, B, B]')
-                                B = operands[1][1][0]
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append([operator, [B, B]])
-                                i -= 1
-                                continue
-
-                        # Check for the pattern [*, A, /, B, C]
-                        if operands[1][0] == binary_inverse:
-                            A = operands[0]
-                            B = operands[1][1][0]
-                            C = operands[1][1][1]
-                            potential_subtrees = [
-                                [operator, [A, [binary_inverse, [B, C]]]],
-                                [operator, [B, [binary_inverse, [A, C]]]],
-                            ]
-                            sorted_potential_subtrees = sorted(potential_subtrees, key=self.operand_key)
-
-                            if potential_subtrees[0] != sorted_potential_subtrees[0]:
-                                if verbose:
-                                    print(f'Swapping positions from [{operator}, A, {binary_inverse}, B, C]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(sorted_potential_subtrees[0])
-                                i -= 1
-                                continue
-
-                if operator in self.inverse_binary:
-                    base, unary_inverse, neutral_element = self.inverse_binary[operator]
-
-                    if len(operands[0]) == 2:
-                        if len(operands[0][1]) == 2:
-                            # Check for the pattern [/, *, A, B, A] -> B or [-, +, A, B, A] -> B
-                            if operands[1] == operands[0][1][0] and operands[0][0] == base:
-                                if verbose:
-                                    print(f'Applying [{operator}, {base}, A, B, A] -> B')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append(operands[0][1][1])
-                                # print(stack)
-                                i -= 1
-                                continue
-
-                            # Check for the pattern [/, *, A, B, C] -> [*, A, /, B, C] or [-, +, A, B, C] -> [+, A, -, B, C]
-                            if operands[0][0] == base:
-                                if verbose:
-                                    # print(operator, operands)
-                                    print(f'Applying [{operator}, {base}, A, B, C] -> [{base}, A, {operator}, B, C]')
-                                A = operands[0][1][0]
-                                B = operands[0][1][1]
-                                C = operands[1]
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append([base, [A, [operator, [B, C]]]])
-                                i -= 1
-                                continue
-
-                            # Check for the pattern [/, /, A, B, C] or [-, -, A, B, C] and sort B and C
-                            if operands[0][0] == operator:
-                                unique_operands_to_sort = [operands[0][1][1], operands[1]]
-                                unique_sorted_operands = sorted(unique_operands_to_sort, key=self.operand_key)
-                                if unique_operands_to_sort != unique_sorted_operands:
-                                    if verbose:
-                                        print(f'Sorting B and C in [{operator}, {operator}, A, B, C]')
-                                    operands[0][1][1] = unique_sorted_operands[0]
-                                    operands[1] = unique_sorted_operands[1]
-                                    _ = [stack.pop() for _ in range(arity)]
-                                    stack.append([operator, operands])
-                                    i -= 1
-                                    continue
-
-                        # Check for the pattern [/, inv, A, B] ->  [inv, *, A, B] or [-, neg, A, B] ->  [neg, +, A, B]
-                        if operands[0][0] == unary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {unary_inverse}, A, B] -> [{unary_inverse}, {base}, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([unary_inverse, [[base, [operands[0][1][0], operands[1]]]]])
-                            i -= 1
-                            continue
-
-                    if len(operands[1]) == 2:
-                        # Check for the pattern [/, A, inv, B] ->  [*, A, B] or [-, A, neg, B] ->  [+, A, B]
-                        if operands[1][0] == unary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, A, {unary_inverse}, B] -> [{base}, A, B]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([base, [operands[0], operands[1][1][0]]])
-                            i -= 1
-                            continue
-
-                        if len(operands[1][1]) == 2:
-                            # Check for the pattern [/, A, *, A, B] -> [inv, B] or [-, A, +, A, B] -> [neg, B]
-                            if operands[0] == operands[1][1][0]:
-                                if verbose:
-                                    print(f'Applying [{operator}, A, {base}, A, B] -> [{unary_inverse}, B]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                # print([unary_inverse, [operands[1][1][1]]])
-                                stack.append([unary_inverse, [operands[1][1][1]]])
-                                i -= 1
-                                continue
-
-                            # Check for the pattern [/, A, /, B, C] -> [*, A, /, C, B] or [-, A, -, B, C] -> [+, A, -, C, B]
-                            if operands[1][0] == operator:
-                                if verbose:
-                                    print(f'Applying [{operator}, A, {operator}, B, C] -> [{base}, A, {operator}, C, B]')
-                                _ = [stack.pop() for _ in range(arity)]
-                                stack.append([base, [operands[0], [operator, [operands[1][1][1], operands[1][1][0]]]]])
-                                i -= 1
-                                continue
-
-                    # Check for the patterns [-, A, A] -> [0] and [/, A, A] -> [1]
-                    if operands[0] == operands[1]:
-                        if verbose:
-                            print(f'Applying [{operator}, A, A] -> [{neutral_element}]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append([neutral_element])
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                if operator in self.inverse_unary:
-                    base, binary_inverse, neutral_element = self.inverse_unary[operator]
-
-                    if len(operands[0]) == 2:
-                        # Check for the pattern [inv, /, A, B] -> [/, B, A] or [neg, -, A, B] -> [-, B, A]
-                        if operands[0][0] == binary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {binary_inverse}, A, B] -> [{binary_inverse}, B, A]')
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([binary_inverse, [operands[0][1][1], operands[0][1][0]]])
-                            i -= 1
-                            continue
-
-                        # Check for the pattern [inv, *, A, /, B, C]  -> [/, /, C, B, A] or [neg, +, A, -, B, C]  -> [-, -, C, B, A]  # TODO: Combine this with above (in general for commutative operators)
-                        if operands[0][0] == base and operands[0][1][1][0] == binary_inverse:
-                            if verbose:
-                                print(f'Applying [{operator}, {base}, A, {binary_inverse}, B, C] -> [{binary_inverse}, {binary_inverse}, C, B, A]')
-                            A = operands[0][1][0]
-                            B = operands[0][1][1][1][0]
-                            C = operands[0][1][1][1][1]
-                            _ = [stack.pop() for _ in range(arity)]
-                            stack.append([binary_inverse, [[binary_inverse, [C, B]], A]])
-                            i -= 1
-                            continue
-
-                if operator in self.commutative_operators:
-                    # Check for the pattern [*, *, A, B, C] -> [*, A, *, B, C] or [+, +, A, B, C] -> [+, A, +, B, C]
-                    if len(operands[0]) == 2 and operator == operands[0][0]:
-                        if verbose:
-                            print(f'Applying [{operator}, {operator}, A, B, C] -> [{operator}, A, {operator}, B, C]')
-                        _ = [stack.pop() for _ in range(arity)]
-                        stack.append([operator, [operands[0][1][0], [operator, [operands[0][1][1], operands[1]]]]])
-                        # print(stack)
-                        i -= 1
-                        continue
-
-                    if verbose:
-                        # print(f'Sorting operands of commutative subtree with operator {operator}: {[flatten_nested_list(op)[::-1] for op in operands]}', end='')
-                        print(f'Sorting operands of commutative subtree with operator {operator}: {operands}', end='')
-
-                    subtree = [operator, operands]
-
-                    # Traverse through the tree in breadth-first order
-                    queue = [subtree]
-                    commutative_paths: list[tuple] = [tuple()]
-                    commutative_positions = []
-                    while queue:
-                        node = queue.pop(0)
-                        current_path = commutative_paths.pop(0)
-                        for child_index, child in enumerate(node[1]):  # I conclude that using `i` as a variable name here is not very clever
-                            if len(child) > 1:
-                                if child[0] == node[0]:
-                                    # Continue: Same commutative perator
-                                    queue.append(child)
-                                    commutative_paths.append(current_path + (child_index,))
-                                else:
-                                    # Stop: Different operator
-                                    commutative_positions.append(current_path + (child_index,))
-                            else:
-                                # Steop: Leaf
-                                commutative_positions.append(current_path + (child_index,))
-
-                    # Sort the positions
-                    sorted_indices = sorted(range(len(commutative_positions)), key=lambda x: commutative_positions[x])
-
-                    commutative_paths = [commutative_positions[i] for i in sorted_indices]
-                    commutative_positions = [commutative_positions[i] for i in sorted_indices]
-
-                    operands_to_sort = []
-                    for position in commutative_positions:
-                        node = subtree
-                        for position_index in position:
-                            node = node[1][position_index]
-                        operands_to_sort.append(node)
-
-                    sorted_operands = sorted(operands_to_sort, key=self.operand_key)
-
-                    # Replace the operands in the tree
-                    new_subtree: list = deepcopy(subtree)
-
-                    for position, operand in zip(commutative_positions, sorted_operands):
-                        node = new_subtree
-                        for position_index in position:
-                            node = node[1][position_index]
-                        node[:] = operand
-
-                    operands = new_subtree[1]
-
-                    if verbose:
-                        # print(f' -> {[flatten_nested_list(op)[::-1] for op in sorted_operands]}')
-                        print(f' -> {sorted_operands}')
-
-                    _ = [stack.pop() for _ in range(arity)]
-                    stack.append([operator, operands])
-                    i -= 1
-                    continue
-
-                _ = [stack.pop() for _ in range(arity)]
-                stack.append([operator, operands])
-
-            else:
-                stack.append([token])
-
-            i -= 1
-
-        return flatten_nested_list(stack)[::-1]
 
     def operand_key(self, operands: list) -> tuple:
         '''
@@ -1828,7 +1773,7 @@ class ExpressionSpace:
         raise ValueError(f'None of the criteria matched for operands {operands}:\n1. ({len(operands) > 1}, {isinstance(operands[0], str)}, {operands[0] in self.operator_arity_compat or operands[0] in self.operator_aliases})\n2. ({len(operands) == 1}, {isinstance(operands[0], str)})\n3. ({isinstance(operands, str)})')
 
     # CODIFYING
-    def operators_to_realizations(self, prefix_expression: list[str]) -> list[str]:
+    def operators_to_realizations(self, prefix_expression: list[str] | tuple[str, ...]) -> list[str] | tuple[str, ...]:
         '''
         Converts a prefix expression from operators to realizations.
 

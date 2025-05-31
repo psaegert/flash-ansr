@@ -24,6 +24,7 @@ class MAB(nn.Module):
         self.head_size = size // n_heads
         self.n_heads = n_heads
         self.layer_norm = layer_norm
+        self.attn_scaling = 1 / math.sqrt(self.head_size)
 
         self.W_q = nn.Linear(size_Q, size)
         self.W_k = nn.Linear(size_KV, size)
@@ -40,12 +41,13 @@ class MAB(nn.Module):
         k: torch.Tensor = self.W_k(key_value)
         v: torch.Tensor = self.W_v(key_value)
 
-        Q_ = torch.cat(q.split(self.head_size, dim=2), 0)
-        K_ = torch.cat(k.split(self.head_size, dim=2), 0)
-        V_ = torch.cat(v.split(self.head_size, dim=2), 0)
+        q_head = torch.cat(q.split(self.head_size, dim=2), 0)
+        k_head = torch.cat(k.split(self.head_size, dim=2), 0)
+        v_head = torch.cat(v.split(self.head_size, dim=2), 0)
 
-        A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.size), 2)
-        output = torch.cat((Q_ + A.bmm(V_)).split(query.size(0), 0), 2)
+        A = torch.softmax(q_head.bmm(k_head.transpose(1, 2)) * self.attn_scaling, 2)
+
+        output = torch.cat((q_head + A.bmm(v_head)).split(query.size(0), 0), 2)
 
         if self.layer_norm:
             output = self.layer_norm_0(output)
@@ -102,8 +104,9 @@ class SetTransformer(SetEncoder):
     # https://github.com/juho-lee/set_transformer
     def __init__(
             self,
-            input_size: int,
-            output_size: int,
+            input_embedding_size: int,
+            input_dimension_size: int,
+            output_embedding_size: int,
             n_seeds: int,
             hidden_size: int = 512,
             n_enc_isab: int = 2,
@@ -125,13 +128,15 @@ class SetTransformer(SetEncoder):
                 f"Number of inducing points `n_induce` ({n_induce}) must be an integer or a list of length {n_enc_isab}")
 
         self.enc = nn.Sequential(
-            ISAB(input_size, hidden_size, n_heads, n_induce[0], layer_norm),
+            ISAB(input_embedding_size * input_dimension_size, hidden_size, n_heads, n_induce[0], layer_norm),
             *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], layer_norm) for i in range(n_enc_isab - 1)])
 
         self.dec = nn.Sequential(
             PMA(hidden_size, n_heads, n_seeds, layer_norm),
             *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
-            nn.Linear(hidden_size, output_size))
+            nn.Linear(hidden_size, output_embedding_size))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        # X: (B, M, D * E)
+
         return self.dec(self.enc(X))

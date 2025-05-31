@@ -20,6 +20,16 @@ class LRSchedulerFactory():
                 optimizer=optimizer,
                 lr_lambda=lambda step: min_lr + (max_lr - min_lr) * step / warmup_steps if step < warmup_steps else max_lr - (max_lr - min_lr) * (step - warmup_steps) / (total_steps - warmup_steps))
 
+        if name == 'Warmup':
+            # Increase the learning rate linearly during the warmup phase
+            min_lr = float(kwargs['min_lr'])
+            max_lr = float(kwargs['max_lr'])
+            warmup_steps = int(kwargs['warmup_steps'])
+
+            return torch.optim.lr_scheduler.LambdaLR(
+                optimizer=optimizer,
+                lr_lambda=lambda step: min_lr + (max_lr - min_lr) * step / warmup_steps if step < warmup_steps else max_lr)
+
         if name == 'Trapezoidal':
             # Three phases:
             # 1. Warmup the learning rate linearly from min_lr to max_lr in the first warmup_steps steps

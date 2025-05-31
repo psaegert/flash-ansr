@@ -66,7 +66,7 @@ class SkeletonPool:
         self.sample_strategy = sample_strategy
 
         np.random.default_rng(seed=0)
-        self.holdout_X = np.random.uniform(-10, 10, (512, 3))
+        self.holdout_X = np.random.uniform(-10, 10, (512, 100))  # HACK: Hardcoded large number that is sliced as needed
         self.holdout_C = np.random.uniform(-10, 10, (512, 100))
         self.holdout_y: set[tuple] = set()
         self.holdout_skeletons: set[tuple[str]] = set()
@@ -287,12 +287,12 @@ class SkeletonPool:
         if constants is None:
             raise ValueError("Need constants for test of functional equivalence")
 
-        if tuple(skeleton) in self.holdout_skeletons:  # (symbolic equivalence)
+        no_constant_expression = self.expression_space.remove_num(skeleton)
+        if tuple(no_constant_expression) in self.holdout_skeletons:  # (symbolic equivalence)
             return True
 
         if code is None:
             # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
             executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
             code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
@@ -302,7 +302,7 @@ class SkeletonPool:
         f = self.expression_space.code_to_lambda(code)
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
+        X_with_constants = np.concatenate([self.holdout_X[:, :self.expression_space.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
         try:
             expression_image = f(*X_with_constants.T).round(4)
             expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
@@ -328,24 +328,24 @@ class SkeletonPool:
 
         for skeleton in holdout_pool.skeletons:
             # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
-            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
+            no_constant_expression = holdout_pool.expression_space.remove_num(skeleton)
+            executable_prefix_expression = holdout_pool.expression_space.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-            code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, self.expression_space.variables + constants)
+            code_string = holdout_pool.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, holdout_pool.expression_space.variables + constants)
 
             # Evaluate the Expression and store the result
-            f = self.expression_space.code_to_lambda(code)
-            X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
+            f = holdout_pool.expression_space.code_to_lambda(code)
+            X_with_constants = np.concatenate([self.holdout_X[:, :holdout_pool.expression_space.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
                 expression_image = f(*X_with_constants.T).round(4)
                 expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
-                self.holdout_skeletons.add(skeleton)
+                self.holdout_skeletons.add(tuple(no_constant_expression))
                 continue
 
-            self.holdout_skeletons.add(skeleton)
+            self.holdout_skeletons.add(tuple(no_constant_expression))
             self.holdout_y.add(tuple(expression_image))
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
@@ -442,7 +442,7 @@ class SkeletonPool:
             The leaf node.
         '''
         if random.random() < self.variable_probability:
-            return [random.choice(self.expression_space.variables)]
+            return [str(random.choice(self.expression_space.variables))]
 
         return ['<num>']
 
@@ -485,7 +485,7 @@ class SkeletonPool:
 
             # update tree
             pos = [i for i, v in enumerate(stack) if v is None][l_leaves]
-            stack = stack[:pos] + [op] + [None for _ in range(self.expression_space.operator_arity[op])] + stack[pos + 1:]
+            stack = stack[:pos] + [str(op)] + [None for _ in range(self.expression_space.operator_arity[op])] + stack[pos + 1:]
 
         # sanity check
         assert len([1 for v in stack if v in self.expression_space.operator_arity.keys()]) == n_operators
@@ -493,7 +493,6 @@ class SkeletonPool:
 
         # create leaves
         leaves = [self.get_leaf() for _ in range(t_leaves)]
-        np.random.shuffle(leaves)
 
         # insert leaves into tree
         for pos in range(len(stack) - 1, -1, -1):
@@ -503,7 +502,7 @@ class SkeletonPool:
 
         return stack  # type: ignore
 
-    def sample_skeleton(self, new: bool = False) -> tuple[tuple[str], CodeType, list[str]]:
+    def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str]]:
         '''
         Sample a skeleton from the pool.
 
@@ -541,7 +540,11 @@ class SkeletonPool:
 
                 skeleton = self._sample_skeleton(n_operators)
                 if self.simplify:
-                    skeleton = self.expression_space.simplify(skeleton, inplace=True)
+                    try:
+                        skeleton = self.expression_space.simplify(skeleton, inplace=True)
+                    except Exception as e:
+                        print(f"Failed to simplify skeleton: {skeleton}")
+                        raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e
 
                 if self.expression_space.simplification == "sympy":
                     if not self.expression_space.is_valid(skeleton):
@@ -553,7 +556,7 @@ class SkeletonPool:
                     code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     code = codify(code_string, self.expression_space.variables + constants)
 
-                    if not self.is_held_out(skeleton, constants, code):
+                    if not decontaminate or not self.is_held_out(skeleton, constants):
                         return tuple(skeleton), code, constants   # type: ignore
         else:
             skeleton = random.choice(tuple(self.skeletons))  # type: ignore
@@ -597,7 +600,6 @@ class SkeletonPool:
                 # Sample each dimension independently
                 x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
             else:
-                #
                 x_support = support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
 
             with warnings.catch_warnings():
@@ -669,8 +671,7 @@ class SkeletonPool:
         verbose : bool, optional
             Whether to display a progress bar.
         '''
-        n_duplicates = 0
-        n_invalid = 0
+        n_skipped = 0
         n_created = len(self.skeletons)
 
         pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
@@ -679,31 +680,21 @@ class SkeletonPool:
             try:
                 skeleton, code, constants = self.sample_skeleton(new=True)
             except NoValidSampleFoundError:
+                n_skipped += 1
+                pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
                 continue
 
-            if self.simplify:
-                simplified_skeleton = self.expression_space.simplify(skeleton, inplace=False)
-            else:
-                simplified_skeleton = skeleton
+            if not self.expression_space.is_valid(skeleton):
+                raise ValueError(f"Invalid skeleton: {skeleton}")
 
-            if not self.expression_space.is_valid(simplified_skeleton):
-                n_invalid += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
-                # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
-
-            if skeleton in self.skeletons:
-                n_duplicates += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
-
-            h = tuple(simplified_skeleton)
-            self.skeletons.add(h)
-            self.skeleton_codes[h] = (code, constants)
+            if not isinstance(skeleton, tuple):
+                skeleton = tuple(skeleton)
+            self.skeletons.add(skeleton)
+            self.skeleton_codes[skeleton] = (code, constants)
             n_created += 1
 
             pbar.update(1)
-            pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+            pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
 
             if n_created >= size:
                 break
