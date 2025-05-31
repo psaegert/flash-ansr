@@ -356,3 +356,19 @@ special_tokens: [
 simplification: "auto_flash"
 simplification_kwargs:
   rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v14.0.json"
+  extra_internal_terms: [
+    '<num>',
+    '0',
+    '1',
+    '2',
+    # '3',
+    '(-1)',
+    '(-2)',
+    # '(-3)',
+    'numpy.pi',
+    'numpy.e',
+    # 'numpy.sqrt(2)',
+    'float("inf")',
+    'float("-inf")',
+    'float("nan")'
+  ]

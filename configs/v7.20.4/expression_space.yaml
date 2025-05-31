@@ -346,3 +346,14 @@ variables: 3
 simplification: "auto_flash"
 simplification_kwargs:
   rules_file: "{{ROOT}}/data/ansr-data/simplification_rules/v7.20.json"
+  extra_internal_terms: [
+    '<num>',
+    '0',
+    '1',
+    '2',
+    '(-1)',
+    '(-2)',
+    'float("inf")',
+    'float("-inf")',
+    'float("nan")'
+  ]

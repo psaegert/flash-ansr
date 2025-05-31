@@ -106,7 +106,6 @@ def main(argv: str = None) -> None:
     find_simplifications_parser.add_argument('-l', '--max_pattern_length', type=int, default=7, help='Maximum length of the patterns to find')
     find_simplifications_parser.add_argument('-t', '--timeout', type=int, default=None, help='Timeout for the search of simplifications in seconds')
     find_simplifications_parser.add_argument('-d', '--dummy-variables', type=int, nargs='+', default=None, help='Dummy variables to use in the simplifications')
-    find_simplifications_parser.add_argument('-a', '--additional-leaf-nodes', type=str, nargs='+', default=None, help='Additional leaf nodes to use in the simplifications')
     find_simplifications_parser.add_argument('-m', '--max-simplify-steps', type=int, default=5, help='Maximum number of simplification steps')
     find_simplifications_parser.add_argument('-x', '--X', type=int, default=1024, help='Number of samples to use for comparison of images')
     find_simplifications_parser.add_argument('-c', '--C', type=int, default=1024, help='Number of samples of constants to put in to placeholders')
@@ -140,7 +139,6 @@ def main(argv: str = None) -> None:
                 max_pattern_length=args.max_pattern_length,
                 timeout=args.timeout,
                 dummy_variables=args.dummy_variables,
-                additional_leaf_nodes=args.additional_leaf_nodes,
                 max_simplify_steps=args.max_simplify_steps,
                 X=args.X,
                 C=args.C,

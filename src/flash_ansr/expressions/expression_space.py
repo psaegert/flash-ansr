@@ -1454,7 +1454,6 @@ class ExpressionSpace:
             max_pattern_length: int | None = 7,
             timeout: float | None = None,
             dummy_variables: int | list[str] | None = None,
-            additional_leaf_nodes: list[str] | None = None,
             max_simplify_steps: int = 1,
             X: np.ndarray | int | None = None,
             C: np.ndarray | int | None = None,
@@ -1485,11 +1484,7 @@ class ExpressionSpace:
         elif isinstance(C, int):
             C = np.random.normal(loc=0, scale=5, size=C)
 
-        if additional_leaf_nodes is None:
-            # TODO: Think about more special constants like pi, e, 2, 3, 1/2, etc.
-            additional_leaf_nodes = ['<num>', '0', '1', '2', '3', '(-1)', '(-2)', '(-3)', 'numpy.pi', 'numpy.e', 'numpy.sqrt(2)', 'float("inf")', 'float("-inf")', 'float("nan")']
-
-        leaf_nodes = dummy_variables + additional_leaf_nodes
+        leaf_nodes = dummy_variables + self.simplification_kwargs['extra_internal_terms']
         non_leaf_nodes = dict(sorted(self.operator_arity.items(), key=lambda x: x[1]))
 
         pbar = tqdm(disable=not verbose)
