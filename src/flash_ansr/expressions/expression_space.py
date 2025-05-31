@@ -275,7 +275,7 @@ class ExpressionSpace:
 
                 # If the operator is a function from a module, format it as
                 # "module.function(operand1, operand2, ...)"
-                elif '.' in operator_realization or self.operator_arity_compat[operator] > 2:
+                elif '.' in write_operator or self.operator_arity_compat[operator] > 2:
                     # No need for parentheses here
                     stack.append(f'{write_operator}({", ".join([self._deparenthesize(operand) for operand in write_operands])})')
 
