@@ -1490,31 +1490,17 @@ class ExpressionSpace:
         pbar = tqdm(disable=not verbose)
         n_scanned = 0
 
-        simplify_rules_every = 1000
-
         start_time = time.time()
 
         max_rules_string = f'/{max_n_rules:,}' if max_n_rules is not None else ''
         max_time_string = f'/{timeout/60:.1f}' if timeout is not None else ''
-
-        # debug_file = os.path.dirname(output_file) + '/debug.txt'  # type: ignore
-        # with open(debug_file, 'w') as debug_file_handle:
-        #     debug_file_handle.write('')
-        # debug_file_handle = open(debug_file, 'a')
 
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
                 # Create all leaf nodes
                 for leaf in leaf_nodes[:max_n_rules]:
-                    simplified_skeleton = self.simplify_auto_flash([leaf], max_simplify_steps, mask_elementary_literals=False)
-
-                    executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
-                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
-                    code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
-                    code = codify(code_string, dummy_variables + constants)
-
-                    hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
+                    hashes_of_size[1].add((leaf,))  # type: ignore
 
                 new_sizes: set[int] = set()
 
@@ -1522,8 +1508,7 @@ class ExpressionSpace:
                     simplified_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
                     for length, hashes_list in hashes_of_size.items():
                         for h in hashes_list:
-                            simplified_skeleton = self.simplify_auto_flash(h, max_simplify_steps, mask_elementary_literals=False)
-                            simplified_hashes_of_size[len(simplified_skeleton)].add(tuple(simplified_skeleton))  # type: ignore
+                            simplified_hashes_of_size[len(h)].add(h)  # type: ignore
                     hashes_of_size = simplified_hashes_of_size
 
                     if max_pattern_length is not None and max(hashes_of_size.keys()) >= max_pattern_length:
@@ -1543,10 +1528,7 @@ class ExpressionSpace:
                         exit()
 
                     new_hashes_of_size: defaultdict[int, set[tuple[str, ...]]] = defaultdict(set)
-                    # debug_file_handle.write(f'{"-" * 100}\n')
 
-                    # debug_file_handle.write(f'Hashes of size: {hashes_of_size_lengths}\n')
-                    # debug_file_handle.write(f'Must include sizes: {new_sizes}\n')
                     for combination in self.construct_expressions(hashes_of_size, non_leaf_nodes, must_have_sizes=new_sizes):
                         # debug_file_handle.write(f'{combination}\n')
                         if timeout is not None and time.time() - start_time > timeout:
@@ -1554,15 +1536,9 @@ class ExpressionSpace:
                                 print('Reached timeout')
                             break
 
-                        if n_scanned % simplify_rules_every == 0:
-                            for i, rule in enumerate(self.simplification_rules):
-                                self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
-
-                            self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
-                            self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
-
                         # Write the rules to a file to check the progress
                         if output_file is not None and n_scanned % save_every == 0:
+                            self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
                             with open(output_file, 'w') as file:
                                 json.dump(self.simplification_rules, file, indent=4)
 
@@ -1570,22 +1546,17 @@ class ExpressionSpace:
                             print(f'Reached maximum number of rules: {len(self.simplification_rules)}')
                             break
 
-                        try:
-                            simplified_skeleton = self.simplify_auto_flash(list(combination), max_simplify_steps, mask_elementary_literals=False)
-                        except IndexError:
-                            print(combination)
-                            raise
-                        simplified_skeleton_hash = tuple(simplified_skeleton)  # type: ignore
+                        simplified_skeleton_hash = combination
 
                         new_hashes_of_size_lengths = {k: len(v) for k, v in new_hashes_of_size.items()}
                         pbar.set_postfix_str(f"Rules: {len(self.simplification_rules):,}{max_rules_string}, Time: {(time.time() - start_time)/60:.1f}{max_time_string} min, Subtrees: {hashes_of_size_lengths} <- {new_hashes_of_size_lengths}, Current: {combination} -> {simplified_skeleton_hash}")
 
                         # Check if all leaf nodes are <num> (i.e. if the skeleton is purely numerical)
-                        if all([t == '<num>' or t in self.operator_arity for t in simplified_skeleton]) and len(simplified_skeleton) > 1:
+                        if all([t == '<num>' or t in self.operator_arity for t in simplified_skeleton_hash]) and len(simplified_skeleton_hash) > 1:
                             # Simplify the skeleton to a single <num>
                             new_rule_candidates: list[tuple[tuple[str, ...], tuple[str, ...]]] = [(simplified_skeleton_hash, ('<num>',))]
                         else:
-                            executable_prefix_expression = self.operators_to_realizations(simplified_skeleton)
+                            executable_prefix_expression = self.operators_to_realizations(simplified_skeleton_hash)
                             prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, convert_numbers_to_constant=False)
                             code_string = self.prefix_to_infix(prefix_expression_with_constants, realization=True)
                             code = codify(code_string, dummy_variables + constants)
@@ -1640,6 +1611,11 @@ class ExpressionSpace:
                                 new_rule_candidates = new_rule_candidates_without_num
                             self.simplification_rules.append(new_rule_candidates[0])
                             new_hashes_of_size[len(simplified_skeleton_hash)].add(new_rule_candidates[0][1])
+
+                            if list(combination) == ['+', 'x1', '0'] or list(combination) == ['+', '0', 'x1']:
+                                print()
+                                print(combination)
+                                print(new_rule_candidates)
                         else:
                             new_hashes_of_size[len(simplified_skeleton_hash)].add(simplified_skeleton_hash)
 
@@ -1661,10 +1637,7 @@ class ExpressionSpace:
                     if verbose:
                         print('Reached maximum number of rules or timeout')
 
-                # Simplify the rules one last time
-                for i, rule in enumerate(self.simplification_rules):
-                    self.simplification_rules[i] = (rule[0], tuple(self.simplify_auto_flash(rule[1], max_simplify_steps, mask_elementary_literals=False)))
-
+                self.simplification_rules = deduplicate_rules(self.simplification_rules, dummy_variables)
                 self.simplification_rules_trees = self.rules_trees_from_rules_list(self.simplification_rules, dummy_variables)
 
             pbar.close()
@@ -1678,10 +1651,7 @@ class ExpressionSpace:
                 with open(output_file, 'w') as file:
                     json.dump(self.simplification_rules, file, indent=4)
 
-            # debug_file_handle.close()
-
         except KeyboardInterrupt:
-            # debug_file_handle.close()
             pbar.close()
             if output_file is not None:
                 if verbose:
