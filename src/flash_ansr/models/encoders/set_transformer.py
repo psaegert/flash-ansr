@@ -115,8 +115,8 @@ class SetTransformer(SetEncoder):
             n_heads: int = 4,
             layer_norm: bool = False) -> None:
         super().__init__()
-        if n_enc_isab < 1:
-            raise ValueError(f"Number of ISABs in encoder `n_enc_isab` ({n_enc_isab}) must be greater than 0")
+        if n_enc_isab < 0:
+            raise ValueError(f"Number of ISABs in encoder `n_enc_isab` ({n_enc_isab}) cannot be negative")
 
         if n_dec_sab < 0:
             raise ValueError(f"Number of SABs in decoder `n_dec_sab` ({n_dec_sab}) cannot be negative")

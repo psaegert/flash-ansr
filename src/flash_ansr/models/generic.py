@@ -3,6 +3,7 @@ from typing import Any
 import torch
 from torch import nn
 import torch.nn.functional as F
+import numpy as np
 
 from flash_ansr.models.factory import ModelFactory
 
@@ -68,3 +69,24 @@ class SwiGLU(nn.Module):
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2  # SwiGLU activation
         return self.w3(hidden)
+
+
+class LoRAGLU(nn.Module):
+    def __init__(self, in_features: int, out_features: int, hidden_features: int | None = None, bias: bool = True):
+        super().__init__()
+
+        if hidden_features is None:
+            hidden_features = np.sqrt(min(in_features, out_features)).astype(int)
+
+        self.project_down = nn.Linear(in_features, hidden_features, bias=bias)
+        self.project_up = nn.Linear(hidden_features, out_features, bias=bias)
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        a = self.project_down(input)
+        a = torch.tanh(a)
+        a = self.project_up(a)
+
+        b = self.linear(input)
+
+        return a * b

@@ -1,0 +1,23 @@
+encoder_max_n_variables: 4  # includes the dependent variable
+
+pre_encoder_input_type: "none"
+pre_encoder_support_nan: False
+
+encoder: "AABBTreeSetTransformer"
+encoder_kwargs:
+  depth: 5
+  hidden_size: 512
+  n_heads: 8
+  pre_encoder_kwargs:
+    mode: "ieee-754-32"
+
+size: 512
+decoder_n_heads: 8
+decoder_ff_size: 512
+decoder_dropout: 0.1
+decoder_n_layers: 5
+
+learnable_positional_embeddings: False
+max_input_length: null
+
+expression_space: './expression_space.yaml'
