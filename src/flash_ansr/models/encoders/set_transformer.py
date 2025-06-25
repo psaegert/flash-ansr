@@ -15,6 +15,7 @@ class MAB(nn.Module):
             size_KV: int,
             size: int,
             n_heads: int,
+            signed_softmax: bool = False,
             layer_norm: bool = False) -> None:
         super().__init__()
         if size % n_heads != 0:
@@ -24,6 +25,7 @@ class MAB(nn.Module):
         self.head_size = size // n_heads
         self.n_heads = n_heads
         self.layer_norm = layer_norm
+        self.signed_softmax = signed_softmax
         self.attn_scaling = 1 / math.sqrt(self.head_size)
 
         self.W_q = nn.Linear(size_Q, size)
@@ -45,7 +47,12 @@ class MAB(nn.Module):
         k_head = torch.cat(k.split(self.head_size, dim=2), 0)
         v_head = torch.cat(v.split(self.head_size, dim=2), 0)
 
-        A = torch.softmax(q_head.bmm(k_head.transpose(1, 2)) * self.attn_scaling, 2)
+        A_ = q_head.bmm(k_head.transpose(1, 2)) * self.attn_scaling
+
+        if self.signed_softmax:
+            A = torch.tanh(A_) * torch.softmax(torch.sqrt(A_**2 + 0.01), 2)
+        else:
+            A = torch.softmax(A_, 2)
 
         output = torch.cat((q_head + A.bmm(v_head)).split(query.size(0), 0), 2)
 
@@ -62,9 +69,9 @@ class MAB(nn.Module):
 
 class SAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, input_size: int, output_size: int, n_heads: int, layer_norm: bool = False) -> None:
+    def __init__(self, input_size: int, output_size: int, n_heads: int, signed_softmax: bool = False, layer_norm: bool = False) -> None:
         super().__init__()
-        self.mab = MAB(input_size, input_size, output_size, n_heads, layer_norm)
+        self.mab = MAB(input_size, input_size, output_size, n_heads, signed_softmax, layer_norm)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(X, X)
@@ -72,14 +79,14 @@ class SAB(nn.Module):
 
 class ISAB(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, input_size: int, output_size: int, n_heads: int, n_induce: int, layer_norm: bool = False) -> None:
+    def __init__(self, input_size: int, output_size: int, n_heads: int, n_induce: int, signed_softmax: bool = False, layer_norm: bool = False) -> None:
         super().__init__()
 
         self.inducing_points = nn.Parameter(torch.Tensor(1, n_induce, output_size))
         nn.init.xavier_uniform_(self.inducing_points)
 
-        self.mab0 = MAB(output_size, input_size, output_size, n_heads, layer_norm)
-        self.mab1 = MAB(input_size, output_size, output_size, n_heads, layer_norm)
+        self.mab0 = MAB(output_size, input_size, output_size, n_heads, signed_softmax, layer_norm)
+        self.mab1 = MAB(input_size, output_size, output_size, n_heads, signed_softmax, layer_norm)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         H = self.mab0(self.inducing_points.repeat(X.size(0), 1, 1), X)
@@ -88,13 +95,13 @@ class ISAB(nn.Module):
 
 class PMA(nn.Module):
     # https://github.com/juho-lee/set_transformer
-    def __init__(self, size: int, n_heads: int, n_seeds: int, layer_norm: bool = False) -> None:
+    def __init__(self, size: int, n_heads: int, n_seeds: int, signed_softmax: bool = False, layer_norm: bool = False) -> None:
         super().__init__()
 
         self.S = nn.Parameter(torch.Tensor(1, n_seeds, size))
         nn.init.xavier_uniform_(self.S)
 
-        self.mab = MAB(size, size, size, n_heads, layer_norm)
+        self.mab = MAB(size, size, size, n_heads, signed_softmax, layer_norm)
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.mab(self.S.repeat(X.size(0), 1, 1), X)
@@ -113,6 +120,7 @@ class SetTransformer(SetEncoder):
             n_dec_sab: int = 2,
             n_induce: int | list[int] = 64,
             n_heads: int = 4,
+            signed_softmax: bool = False,
             layer_norm: bool = False) -> None:
         super().__init__()
         if n_enc_isab < 1:
@@ -128,12 +136,12 @@ class SetTransformer(SetEncoder):
                 f"Number of inducing points `n_induce` ({n_induce}) must be an integer or a list of length {n_enc_isab}")
 
         self.enc = nn.Sequential(
-            ISAB(input_embedding_size * input_dimension_size, hidden_size, n_heads, n_induce[0], layer_norm),
-            *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], layer_norm) for i in range(n_enc_isab - 1)])
+            ISAB(input_embedding_size * input_dimension_size, hidden_size, n_heads, n_induce[0], signed_softmax, layer_norm),
+            *[ISAB(hidden_size, hidden_size, n_heads, n_induce[i + 1], signed_softmax, layer_norm) for i in range(n_enc_isab - 1)])
 
         self.dec = nn.Sequential(
-            PMA(hidden_size, n_heads, n_seeds, layer_norm),
-            *[SAB(hidden_size, hidden_size, n_heads, layer_norm) for _ in range(n_dec_sab)],
+            PMA(hidden_size, n_heads, n_seeds, signed_softmax, layer_norm),
+            *[SAB(hidden_size, hidden_size, n_heads, signed_softmax, layer_norm) for _ in range(n_dec_sab)],
             nn.Linear(hidden_size, output_embedding_size))
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:
