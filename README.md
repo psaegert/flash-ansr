@@ -29,6 +29,8 @@ Symbolic Regression has been approached with many different methods and paradigm
 
 # Table of Contents
 - [Introduction](#introduction)
+    - [Abstract](#abstract)
+    - [Main Results](#main-results)
 - [Table of Contents](#table-of-contents)
 - [Requirements](#requirements)
   - [Hardware](#hardware)
@@ -142,8 +144,9 @@ Use, copy or modify a config in `./configs`:
 │   ├── dataset_train.yaml          # Link to skeleton pool and padding for training
 │   ├── dataset_val.yaml            # Link to skeleton pool and padding for validation
 │   ├── evaluation.yaml             # Evaluation settings
-│   ├── expression_space.yaml       # Operators and variables
-│   ├── nsr.yaml                    # Model settings and link to expression space
+│   ├── simplipy_engine.yaml        # SimpliPyEngine settings
+│   ├── tokenizer.yaml              # Tokenizer settings
+│   ├── model.yaml                    # Model settings and link to expression space
 │   ├── skeleton_pool_train.yaml    # Sampling and holdout settings for training
 │   ├── skeleton_pool_val.yaml      # Sampling and holdout settings for validation
 │   └── train.yaml                  # Data and schedule for training

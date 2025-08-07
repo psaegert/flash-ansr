@@ -11,6 +11,7 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 
 from simplipy import SimpliPyEngine
 
+from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
@@ -28,8 +29,9 @@ class FlashANSRDataset:
     padding : {'random', 'zero'}
         The padding strategy for the input_ids, by default 'random'.
     '''
-    def __init__(self, skeleton_pool: SkeletonPool, padding: Literal['random', 'zero'], preprocessor: FlashASNRPreprocessor | None = None) -> None:
+    def __init__(self, skeleton_pool: SkeletonPool, tokenizer: Tokenizer, padding: Literal['random', 'zero'], preprocessor: FlashASNRPreprocessor | None = None) -> None:
         self.skeleton_pool = skeleton_pool
+        self.tokenizer = tokenizer
         self.padding = padding
         self.preprocessor = preprocessor
 
@@ -71,6 +73,8 @@ class FlashANSRDataset:
         else:
             raise ValueError(f"Invalid skeleton pool configuration: {config_['skeleton_pool']}")
 
+        tokenizer = Tokenizer.from_config(config_["tokenizer"])
+
         if 'preprocessor' in config_.keys() and config_['preprocessor'] is not None:
             preprocessor = FlashASNRPreprocessor.from_config(config_['preprocessor'])
         else:
@@ -78,6 +82,7 @@ class FlashANSRDataset:
 
         return cls(
             skeleton_pool=skeleton_pool,
+            tokenizer=tokenizer,
             padding=config_["padding"],
             preprocessor=preprocessor
         )
@@ -171,7 +176,7 @@ class FlashANSRDataset:
             max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 
             for i in range(len(batch['input_ids'])):
-                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.skeleton_pool.tokenizer['<pad>'], device=device, dtype=torch.long)
+                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -200,7 +205,7 @@ class FlashANSRDataset:
             # Single instance
             max_length_input_ids = len(batch['input_ids'])
 
-            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.skeleton_pool.tokenizer['<pad>'], device=device, dtype=torch.long)
+            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -474,7 +479,7 @@ class FlashANSRDataset:
                                     x_support[:, i] = 0
 
                         # Tokenize the expression to get the input_ids
-                        input_ids = self.skeleton_pool.tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+                        input_ids = self.tokenizer.encode(skeleton, add_bos=True, add_eos=True)
 
                         # Yield the sample
                         buffer.append({

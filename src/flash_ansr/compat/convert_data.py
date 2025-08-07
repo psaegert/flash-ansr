@@ -90,7 +90,7 @@ class SOOSEParser(TestSetParaser):
                 n_invalid_expressions += 1
                 continue
 
-            prefix_expression = simplipy_engine.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
@@ -155,7 +155,7 @@ class FeynmanParser(TestSetParaser):
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
                 continue
 
-            prefix_expression = simplipy_engine.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
@@ -218,7 +218,7 @@ class NguyenParser(TestSetParaser):
                 n_invalid_expressions += 1
                 continue
 
-            prefix_expression = simplipy_engine.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)

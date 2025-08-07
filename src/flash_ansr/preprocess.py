@@ -6,12 +6,14 @@ import numpy as np
 
 from simplipy import SimpliPyEngine
 
+from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.utils import load_config
 
 
 class FlashASNRPreprocessor:
-    def __init__(self, simplipy_engine: SimpliPyEngine, format_probs: dict | None = None) -> None:
+    def __init__(self, simplipy_engine: SimpliPyEngine, tokenizer: Tokenizer, format_probs: dict | None = None) -> None:
         self.simplipy_engine = simplipy_engine
+        self.tokenizer = tokenizer
 
         # By default, do not change the input
         self.format_probs = format_probs or {'complexity': 0}
@@ -58,7 +60,7 @@ class FlashASNRPreprocessor:
         return batch
 
     def format_complexity(self, input_ids: list[int], complexity: float | int) -> tuple[list[int], list[float]]:
-        modified_input_ids = [self.simplipy_engine.tokenizer['<ctrl_complexity>'], self.simplipy_engine.tokenizer['<constant>']] + input_ids
+        modified_input_ids = [self.tokenizer['<ctrl_complexity>'], self.tokenizer['<constant>']] + input_ids
 
         input_num = [np.nan] * len(modified_input_ids)
         input_num[1] = complexity

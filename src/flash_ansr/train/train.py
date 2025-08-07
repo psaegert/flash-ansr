@@ -82,8 +82,8 @@ class Trainer():
 
         self.gradient_accumulation_steps = gradient_accumulation_steps
 
-        self.metrics_ignore_index = self.model.simplipy_engine.tokenizer["<pad>"]
-        self.numeric_token_index = self.model.simplipy_engine.tokenizer["<constant>"]
+        self.metrics_ignore_index = self.model.tokenizer["<pad>"]
+        self.numeric_token_index = self.model.tokenizer["<constant>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
         self.mse_loss = nn.MSELoss(reduction='sum')
         self.contrastive_loss_fn = ContrastiveLoss()

@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["dependencies"]
-version = "0.2.0"
+version = "0.3.0"
 urls = { Github = "https://github.com/psaegert/flash-ansr"}
 
 [project.scripts]

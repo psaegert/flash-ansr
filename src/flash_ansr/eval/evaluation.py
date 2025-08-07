@@ -230,15 +230,15 @@ class Evaluation():
 
                 results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
-                # target_expression = model.simplipy_engine.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
-                # target_expression_decoded = model.simplipy_engine.tokenizer.decode(target_expression, special_tokens='<constant>')
+                # target_expression = model.flash_ansr_transformer.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
+                # target_expression_decoded = model.tokenizer.decode(target_expression, special_tokens='<constant>')
 
-                # target_expression_labels = torch.tensor(target_expression + [model.simplipy_engine.tokenizer['<eos>']], device=self.device)
-                # target_expression_labels_decoded = model.simplipy_engine.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<constant>', '<eos>'])
+                # target_expression_labels = torch.tensor(target_expression + [model.tokenizer['<eos>']], device=self.device)
+                # target_expression_labels_decoded = model.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<constant>', '<eos>'])
 
                 batch_size = len(batch['input_ids'])
 
-                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.simplipy_engine.n_variables)
+                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.n_variables)
 
                 data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
@@ -264,12 +264,12 @@ class Evaluation():
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
 
-                    bos_position = torch.where(batch['input_ids'] == dataset.simplipy_engine.tokenizer['<bos>'])[1][0].item()
+                    bos_position = torch.where(batch['input_ids'] == dataset.tokenizer['<bos>'])[1][0].item()
 
                     expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
                     expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
 
-                    expresssion_labels_decoded = dataset.simplipy_engine.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<constant>', '<eos>'])
+                    expresssion_labels_decoded = dataset.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<constant>', '<eos>'])
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
                     print('Error in the forward pass or fitting.')
@@ -282,7 +282,7 @@ class Evaluation():
                     beams = [r['beam'] for r in model._results]
                     log_probs = [r['log_prob'] for r in model._results]
 
-                    beams_decoded = [model.simplipy_engine.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
+                    beams_decoded = [model.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
                     for j in range(self.beam_width):
                         if j >= len(beams):

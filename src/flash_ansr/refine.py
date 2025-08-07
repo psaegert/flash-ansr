@@ -34,11 +34,12 @@ class Refiner:
     expression_lambda: Callable
     constants_cov: np.ndarray | None
 
-    def __init__(self, simplipy_engine: SimpliPyEngine):
+    def __init__(self, simplipy_engine: SimpliPyEngine, n_variables: int):
         '''
         Initialize the Refiner with the expression or skeleton to be refined
         '''
         self.simplipy_engine = simplipy_engine
+        self.n_variables: int = n_variables
 
         self.import_modules()
 
@@ -310,7 +311,7 @@ class Refiner:
         if len(constants_values) != len(self.constants_symbols):
             return np.full((X.shape[0], 1), np.nan)
 
-        X = pad_input_set(X, self.simplipy_engine.n_variables)
+        X = pad_input_set(X, self.n_variables)
 
         if len(self.constants_symbols) == 0 or len(constants_values) == 0:
             y = self.expression_lambda(*X.T)

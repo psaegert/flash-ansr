@@ -1,5 +1,7 @@
 import unittest
 
+from tqdm import tqdm
+
 from flash_ansr import SkeletonPool, get_path, NoValidSampleFoundError
 
 
@@ -12,7 +14,7 @@ class TestSkeletonPool(unittest.TestCase):
 
         pool_2.register_holdout_pool(pool_1)
 
-        for _ in range(10000):
+        for _ in tqdm(range(10000)):
             try:
                 skeleton, code, constants = pool_2.sample_skeleton(new=True)
             except NoValidSampleFoundError:

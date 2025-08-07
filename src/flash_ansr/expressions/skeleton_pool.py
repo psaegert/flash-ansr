@@ -12,9 +12,8 @@ import numpy as np
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models import Tokenizer
 from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.utils import codify, num_to_constants, generate_ubi_dist, get_distribution, flatten_nested_list
+from flash_ansr.expressions.utils import codify, num_to_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
 
 
 class NoValidSampleFoundError(Exception):
@@ -72,11 +71,9 @@ class SkeletonPool:
         self.n_variables = len(self.variables)
         self.operator_weights = operator_weights or {op: 1.0 for op in self.simplipy_engine.operator_arity.keys()}
 
-        self.tokenizer = Tokenizer(vocab=self.variables + list(self.operator_weights.keys()))
-
         np.random.default_rng(seed=0)
         self.holdout_X = np.random.uniform(-10, 10, (512, 100))  # HACK: Hardcoded large number that is sliced as needed
-        self.holdout_C = np.random.uniform(-10, 10, (512, 100))
+        self.holdout_C = np.random.uniform(-10, 10, (100,))
         self.holdout_y: set[tuple] = set()
         self.holdout_skeletons: set[tuple[str, ...]] = set()
 
@@ -317,9 +314,8 @@ class SkeletonPool:
         f = self.simplipy_engine.code_to_lambda(code)
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
-        X_with_constants = np.concatenate([self.holdout_X[:, :self.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
         try:
-            expression_image = f(*X_with_constants.T).round(4)
+            expression_image = safe_f(f, self.holdout_X[:, :self.n_variables], self.holdout_C[:len(constants)]).round(4)
             expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
         except OverflowError:
             return True  # Just to be safe
@@ -398,10 +394,9 @@ class SkeletonPool:
 
             # Evaluate the Expression and store the result
             f = holdout_pool.simplipy_engine.code_to_lambda(code)
-            X_with_constants = np.concatenate([self.holdout_X[:, :holdout_pool.n_variables], self.holdout_C[:, :len(constants)]], axis=1)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
-                expression_image = f(*X_with_constants.T).round(4)
+                expression_image = safe_f(f, self.holdout_X[:, :self.n_variables], self.holdout_C[:len(constants)]).round(4)
                 expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
                 self.holdout_skeletons.add(tuple(no_constant_expression))
@@ -603,7 +598,9 @@ class SkeletonPool:
                 skeleton = self._sample_skeleton(n_operators)
                 if self.simplify:
                     try:
-                        skeleton = self.simplipy_engine.simplify(skeleton, inplace=True)
+                        print(skeleton)
+                        skeleton = self.simplipy_engine.simplify(skeleton, inplace=True, max_pattern_length=4)
+                        print(skeleton)
                     except Exception as e:
                         print(f"Failed to simplify skeleton: {skeleton}")
                         raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e

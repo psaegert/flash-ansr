@@ -24,10 +24,11 @@ from flash_ansr.eval.token_prediction import (
     recall,
     f1_score,
 )
+from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
 
-from nesymres.architectures.model import Model
+from nesymres.architectures.model import Model  # type: ignore[import]
 
 
 nltk.download('wordnet', quiet=True)
@@ -81,6 +82,7 @@ class NeSymReSEvaluation():
             model: Model,
             fitfunc: Callable,
             simplipy_engine: SimpliPyEngine,
+            tokenizer: Tokenizer,
             dataset: FlashANSRDataset,
             size: int | None = None,
             verbose: bool = True) -> dict[str, Any]:
@@ -113,12 +115,12 @@ class NeSymReSEvaluation():
 
                 # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
                 labels = batch['labels'][0].clone()
-                labels_decoded = simplipy_engine.tokenizer.decode(labels.tolist(), special_tokens='<constant>')
+                labels_decoded = tokenizer.decode(labels.tolist(), special_tokens='<constant>')
 
                 # TODO: For different datasets, sort unused dimensions to the end
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-                print(simplipy_engine.tokenizer.decode(batch['input_ids'][0].tolist(), special_tokens='<constant>'))
+                print(tokenizer.decode(batch['input_ids'][0].tolist(), special_tokens='<constant>'))
 
                 X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
                 y = batch['y_tensors'].cpu().numpy()[0, :self.n_support, 0]
@@ -138,7 +140,7 @@ class NeSymReSEvaluation():
                             best_skeleton_decoded.append('<constant>')
                         except ValueError:
                             best_skeleton_decoded.append(token)
-                    best_skeleton = simplipy_engine.tokenizer.encode(best_skeleton_decoded, oov='unk')
+                    best_skeleton = tokenizer.encode(best_skeleton_decoded, oov='unk')
 
                     # Accuracy, precision, recall, F1 score
                     best_skeleton_tensor = torch.tensor(best_skeleton).unsqueeze(0)

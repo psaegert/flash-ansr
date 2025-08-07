@@ -15,7 +15,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.models import FlashANSRTransformer
+from flash_ansr.models import FlashANSRTransformer, Tokenizer
 from flash_ansr.train.train import OptimizerFactory
 from flash_ansr.train.scheduler import LRSchedulerFactory
 
@@ -71,6 +71,7 @@ class FlashANSR(BaseEstimator):
             self,
             simplipy_engine: SimpliPyEngine,
             flash_ansr_transformer: FlashANSRTransformer,
+            tokenizer: Tokenizer,
             generation_config: GenerationConfig | None = None,
             numeric_head: bool = False,
             n_restarts: int = 8,
@@ -81,6 +82,7 @@ class FlashANSR(BaseEstimator):
             parsimony: float = 0.05):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
+        self.tokenizer = tokenizer
 
         if generation_config is None:
             generation_config = GenerationConfig()
@@ -115,7 +117,8 @@ class FlashANSR(BaseEstimator):
         directory = substitute_root_path(directory)
 
         simplipy_engine_path = os.path.join(directory, 'simplipy_engine.yaml')
-        flash_ansr_transformer_path = os.path.join(directory, 'nsr.yaml')
+        flash_ansr_transformer_path = os.path.join(directory, 'model.yaml')
+        tokenizer_path = os.path.join(directory, 'tokenizer.yaml')
 
         simplipy_engine = SimpliPyEngine.from_config(simplipy_engine_path)
 
@@ -123,9 +126,12 @@ class FlashANSR(BaseEstimator):
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
         model.eval().to(device)
 
+        tokenizer = Tokenizer.from_config(tokenizer_path)
+
         return cls(
             simplipy_engine=simplipy_engine,
             flash_ansr_transformer=model,
+            tokenizer=tokenizer,
             generation_config=generation_config,
             numeric_head=numeric_head,
             n_restarts=n_restarts,
@@ -135,19 +141,26 @@ class FlashANSR(BaseEstimator):
             numpy_errors=numpy_errors,
             parsimony=parsimony)
 
+    @property
+    def n_variables(self) -> int:
+        '''
+        The number of variables the model was trained on.
+        '''
+        return self.flash_ansr_transformer.encoder_max_n_variables - 1
+
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
-        if X.shape[-1] <= self.flash_ansr_transformer.encoder_max_n_variables - 1:
+        if X.shape[-1] <= self.n_variables:
             return X
 
-        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.flash_ansr_transformer.encoder_max_n_variables - 1 = } variables, but the input data has {X.shape[-1] = } variables. X and y will be truncated to {self.flash_ansr_transformer.encoder_max_n_variables - 1} variables.")
+        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.n_variables = } variables, but the input data has {X.shape[-1] = } variables. X and y will be truncated to {self.n_variables} variables.")
         if isinstance(X, pd.DataFrame):
-            return X.iloc[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+            return X.iloc[:, :self.n_variables]
 
         try:
-            return X[..., :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+            return X[..., :self.n_variables]
         except IndexError:
             try:
-                return X[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+                return X[:, :self.n_variables]
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
@@ -261,7 +274,7 @@ class FlashANSR(BaseEstimator):
 
             y_variance = y.var(dim=0).item()
 
-            X = pad_input_set(X, self.simplipy_engine.n_variables)
+            X = pad_input_set(X, self.n_variables)
 
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
@@ -276,10 +289,10 @@ class FlashANSR(BaseEstimator):
             for complexity in complexity_list:
                 raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
 
-                beams = [self.simplipy_engine.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
+                beams = [self.flash_ansr_transformer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
-                raw_beams_decoded = [self.simplipy_engine.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
-                beams_decoded = [self.simplipy_engine.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
+                raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
+                beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
                 # Fit the refiner to each beam
                 for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
@@ -290,10 +303,10 @@ class FlashANSR(BaseEstimator):
                             raise NotImplementedError("Numeric head is not yet implemented")
                             # with torch.no_grad():
                             #     _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
-                            #     numeric_prediction = num_output[0, :, 0][beam == self.simplipy_engine.tokenizer["<constant>"]]  # FIXME: Start at 1 or 0?
+                            #     numeric_prediction = num_output[0, :, 0][beam == self.tokenizer["<constant>"]]  # FIXME: Start at 1 or 0?
 
                         try:
-                            refiner = Refiner(simplipy_engine=self.simplipy_engine).fit(
+                            refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
                                 expression=beam_decoded,
                                 X=X.cpu().numpy(),
                                 y=y.cpu().numpy(),
@@ -384,7 +397,7 @@ class FlashANSR(BaseEstimator):
         if isinstance(X, pd.DataFrame):
             X = X.values
 
-        X = pad_input_set(X, self.simplipy_engine.n_variables)
+        X = pad_input_set(X, self.n_variables)
 
         if len(self._results) == 0:
             raise ValueError("The model has not been fitted yet. Please call the fit method first.")
@@ -458,6 +471,7 @@ class FlashANSR(BaseEstimator):
         agent = FlashANSR(
             simplipy_engine=self.simplipy_engine,
             flash_ansr_transformer=self.flash_ansr_transformer,
+            tokenizer=self.tokenizer,
             generation_config=generation_config,
             numeric_head=numeric_head,
             n_restarts=n_restarts,
@@ -513,7 +527,7 @@ class FlashANSR(BaseEstimator):
                 y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
         else:
             y_tensor = y.to(device)
-        X = pad_input_set(x_tensor, self.simplipy_engine.n_variables)
+        X = pad_input_set(x_tensor, self.n_variables)
         data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
 
         self.specialize_history = []
@@ -576,7 +590,7 @@ class FlashANSR(BaseEstimator):
 
                 # Padding sequences to same length
                 max_length = max(len(beam) for beam in priority_queue_beams)
-                padded_beams = [list(beam) + [agent.simplipy_engine.tokenizer['<pad>']] * (max_length - len(beam)) for beam in priority_queue_beams]
+                padded_beams = [list(beam) + [agent.tokenizer['<pad>']] * (max_length - len(beam)) for beam in priority_queue_beams]
 
                 beam_tensor = torch.tensor(padded_beams, dtype=torch.long).to(device)
 
@@ -593,7 +607,7 @@ class FlashANSR(BaseEstimator):
                 taken_log_probs = log_probs.gather(2, beam_tensor[:, 1:].unsqueeze(-1)).squeeze(-1)
 
                 # Compute masks for padding and sequence endings
-                pad_mask = beam_tensor != agent.simplipy_engine.tokenizer['<pad>']
+                pad_mask = beam_tensor != agent.tokenizer['<pad>']
 
                 # Increase average log likelihood (not weighted by reward)
                 policy_loss = -torch.mean(taken_log_probs[pad_mask[:, 1:]])
@@ -645,7 +659,7 @@ class FlashANSR(BaseEstimator):
                 'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}" if len(priority_queue_objective) > 0 and np.any(np.isfinite(priority_queue_objective)) else "N/A",
                 'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}" if len(agent.results) > 0 and np.any(np.isfinite(agent.results['fvu'])) else "N/A",
                 'Explored': len(total_unique_generated),
-                'Best Expression': agent.simplipy_engine.prefix_to_infix(agent.simplipy_engine.tokenizer.decode(priority_queue_beams[0], special_tokens='<constant>')) if len(priority_queue_beams) > 0 else "N/A",
+                'Best Expression': agent.simplipy_engine.prefix_to_infix(agent.tokenizer.decode(priority_queue_beams[0], special_tokens='<constant>')) if len(priority_queue_beams) > 0 else "N/A",
             })
 
         pbar.close()

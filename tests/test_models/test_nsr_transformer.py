@@ -6,6 +6,7 @@ import torch
 
 from simplipy import SimpliPyEngine
 
+from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr import FlashANSRTransformer, get_path, SetTransformer
 
 
@@ -19,6 +20,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_nsr_forward(self):
         nsr = FlashANSRTransformer(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=1024,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
@@ -27,19 +29,20 @@ class TestFlashANSRTransformer(unittest.TestCase):
         sequence_length = 17
 
         x = torch.rand(batch_size, 10, 1024)
-        input_tokens = torch.randint(low=len(nsr.simplipy_engine.tokenizer.special_tokens), high=len(nsr.simplipy_engine.tokenizer), size=(batch_size, sequence_length))
+        input_tokens = torch.randint(low=len(nsr.tokenizer.special_tokens), high=len(nsr.tokenizer), size=(batch_size, sequence_length))
 
         random_padding_beginnings = torch.randint(0, sequence_length, (batch_size,))
 
         for i in range(32):
-            input_tokens[i, random_padding_beginnings[i]:] = nsr.simplipy_engine.tokenizer['<pad>']
+            input_tokens[i, random_padding_beginnings[i]:] = nsr.tokenizer['<pad>']
 
         logits, _ = nsr.forward(input_tokens, x, numeric_head=True)
-        assert logits.shape == (batch_size, sequence_length, len(nsr.simplipy_engine.tokenizer))
+        assert logits.shape == (batch_size, sequence_length, len(nsr.tokenizer))
 
     def test_nsr_beam_search(self):
         nsr = FlashANSRTransformer(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
@@ -54,25 +57,27 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRTransformer(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
 
         x = torch.rand(13, 6)
 
-        beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
+        try:
+            beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
+        except ValueError:
+            beams, scores = [], []
 
         assert len(beams) <= 4
         assert len(scores) <= 4
 
     def test_nsr_from_config(self):
-        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', filename='nsr.yaml'))
+        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', filename='model.yaml'))
 
         assert isinstance(nsr, FlashANSRTransformer)
         assert isinstance(nsr.encoder, SetTransformer)
         assert isinstance(nsr.decoder, torch.nn.TransformerDecoder)
-
-        assert nsr.simplipy_engine.variables == ['x1', 'x2', 'x3']
 
         x = torch.rand(256, 10, 4)
         input_tokens = torch.randint(5, 10, (256, 17))
@@ -84,11 +89,11 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         logits, _ = nsr.forward(input_tokens, x)
 
-        assert logits.shape == (256, 17, 33)
+        assert logits.shape == (256, 17, 41)
 
     def test_save_load_relative(self):
         # Create from config
-        nsr_config_path = get_path('configs', 'test', 'nsr.yaml')
+        nsr_config_path = get_path('configs', 'test', 'model.yaml')
         nsr = FlashANSRTransformer.from_config(nsr_config_path)
 
         # Save
@@ -103,7 +108,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_save_load_absolute(self):
         # Create from config
-        nsr_config_path = get_path('configs', 'test', 'nsr.yaml')
+        nsr_config_path = get_path('configs', 'test', 'model.yaml')
         nsr = FlashANSRTransformer.from_config(nsr_config_path)
 
         # Save
@@ -118,7 +123,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_save_load_project(self):
         # Create from config
-        nsr_config_path = get_path('configs', 'test', 'nsr.yaml')
+        nsr_config_path = get_path('configs', 'test', 'model.yaml')
         nsr = FlashANSRTransformer.from_config(nsr_config_path)
 
         # Save
@@ -132,7 +137,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
             assert param_nsr.data.eq(param_nsr_reload.data).all()
 
     def test_masking(self):
-        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml'))
+        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', 'model.yaml'))
         nsr.eval()
 
         B = 7

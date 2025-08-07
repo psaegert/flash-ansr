@@ -3,6 +3,7 @@ import shutil
 
 from simplipy import SimpliPyEngine
 
+from flash_ansr.models.transformer_utils import Tokenizer
 from flash_ansr.eval.evaluation import Evaluation
 from flash_ansr import get_path, FlashANSR, FlashANSRTransformer, GenerationConfig
 from flash_ansr.data import FlashANSRDataset
@@ -34,7 +35,8 @@ class TestEvaluation(unittest.TestCase):
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
         ansr = FlashANSR(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
-            flash_ansr_transformer=FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml')),
+            flash_ansr_transformer=FlashANSRTransformer.from_config(get_path('configs', 'test', 'model.yaml')),
+            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             generation_config=GenerationConfig(method='beam_search', beam_width=2, ),
             numeric_head=False,
             n_restarts=3,

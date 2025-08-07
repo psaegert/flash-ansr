@@ -44,7 +44,7 @@ class Tokenizer:
         if "tokenizer" in config_.keys():
             config_ = config_["tokenizer"]
 
-        return cls(vocab=config_["vocab"], special_tokens=config_["special_tokens"])
+        return cls(vocab=config_["operators"] + config_["variables"], special_tokens=config_["special_tokens"])
 
     def encode(self, tokens: list[str], return_tensors: bool = False, add_bos: bool = False, add_eos: bool = False, oov: Literal['raise', 'unk'] = 'raise') -> list[int] | torch.Tensor:
         '''

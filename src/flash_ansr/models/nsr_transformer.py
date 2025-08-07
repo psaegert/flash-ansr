@@ -9,7 +9,7 @@ from tqdm import tqdm
 from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import load_config, save_config, substitute_root_path
-from flash_ansr.models.transformer_utils import PositionalEncoding
+from flash_ansr.models.transformer_utils import PositionalEncoding, Tokenizer
 from flash_ansr.models.encoders.pre_encoder import PreEncoder
 from flash_ansr.models.factory import ModelFactory
 from flash_ansr.preprocess import FlashASNRPreprocessor
@@ -23,6 +23,8 @@ class FlashANSRTransformer(nn.Module):
     ----------
     simplipy_engine : SimpliPyEngine
         The expression space to use for the model.
+    tokenizer : Tokenizer
+        The tokenizer to use for encoding and decoding tokens.
     encoder_max_n_variables : int
         The maximum number of variables that the encoder can handle.
     size : int, optional
@@ -57,6 +59,7 @@ class FlashANSRTransformer(nn.Module):
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
+            tokenizer: Tokenizer,
             encoder_max_n_variables: int,
             size: int = 512,
             norm_first: bool = False,
@@ -76,6 +79,7 @@ class FlashANSRTransformer(nn.Module):
         super().__init__()
 
         self.simplipy_engine = simplipy_engine
+        self.tokenizer = tokenizer
         self.encoder_max_n_variables = encoder_max_n_variables
 
         self.pre_encoder = PreEncoder(
@@ -94,7 +98,7 @@ class FlashANSRTransformer(nn.Module):
         else:
             self.encoder = encoder
 
-        self.embedding = nn.Embedding(len(simplipy_engine.tokenizer), size)
+        self.embedding = nn.Embedding(len(self.tokenizer), size)
         if learnable_positional_embeddings:
             self.pos_encoding = nn.Embedding(max_input_length, size)
             self.pos_tokens = nn.Parameter(torch.arange(max_input_length, device=self.device), requires_grad=False)
@@ -128,7 +132,7 @@ class FlashANSRTransformer(nn.Module):
             nn.Linear(size, size),
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
-            nn.Linear(size, len(simplipy_engine.tokenizer)))
+            nn.Linear(size, len(self.tokenizer)))
 
         self.num_out = nn.Sequential(
             nn.Linear(size, size),
@@ -136,7 +140,7 @@ class FlashANSRTransformer(nn.Module):
             nn.Dropout(p=decoder_dropout),
             nn.Linear(size, 1))
 
-        self.preprocessor = FlashASNRPreprocessor(simplipy_engine)
+        self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
     @property
     def device(self) -> torch.device:
@@ -172,9 +176,11 @@ class FlashANSRTransformer(nn.Module):
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
         simplipy_engine = SimpliPyEngine.from_config(config_["simplipy_engine"])
+        tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
         return cls(
             simplipy_engine=simplipy_engine,
+            tokenizer=tokenizer,
             encoder_max_n_variables=config_["encoder_max_n_variables"],
             size=config_["size"],
             norm_first=config_.get("norm_first", False),
@@ -236,7 +242,7 @@ class FlashANSRTransformer(nn.Module):
             self.memory = self.memory.view(B, -1, self.memory.size(-1))
 
         attn_mask = nn.Transformer.generate_square_subsequent_mask(input_tokens.shape[1], device=input_tokens.device)
-        padding_mask = (input_tokens == self.simplipy_engine.tokenizer["<pad>"]).float().masked_fill(input_tokens == self.simplipy_engine.tokenizer["<pad>"], 1e-9)
+        padding_mask = (input_tokens == self.tokenizer["<pad>"]).float().masked_fill(input_tokens == self.tokenizer["<pad>"], 1e-9)
 
         output = self.decoder.forward(
             tgt=embeddings,
@@ -289,9 +295,9 @@ class FlashANSRTransformer(nn.Module):
             A list of booleans indicating whether the sequence is a valid expression.
         '''
         if complexity is None:
-            initial_beam, input_num = [self.simplipy_engine.tokenizer['<bos>']], None
+            initial_beam, input_num = [self.tokenizer['<bos>']], None
         else:
-            initial_beam, input_num = self.preprocessor.format_complexity([self.simplipy_engine.tokenizer['<bos>']], complexity=complexity)
+            initial_beam, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
 
         # Step 1: Initialize the beam with the initial input sequence
         beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
@@ -306,7 +312,7 @@ class FlashANSRTransformer(nn.Module):
 
             # Prepare batched sequences and their scores
             for seq, score in beams:
-                if seq[-1] == self.simplipy_engine.tokenizer['<eos>']:
+                if seq[-1] == self.tokenizer['<eos>']:
                     completed_sequences.append((seq, score))
                     continue  # Don't expand this sequence further
                 all_sequences.append(seq)
@@ -317,7 +323,7 @@ class FlashANSRTransformer(nn.Module):
 
             # Step 2: Pad the sequences to ensure they all have the same length
             max_seq_len = max(len(seq) for seq in all_sequences)
-            input_ids_padded = [seq + [self.simplipy_engine.tokenizer['<pad>']] * (max_seq_len - len(seq)) for seq in all_sequences]
+            input_ids_padded = [seq + [self.tokenizer['<pad>']] * (max_seq_len - len(seq)) for seq in all_sequences]
             input_num_padded = input_num + [torch.nan] * (max_seq_len - len(input_num)) if input_num is not None else None
 
             # Convert sequences and scores to tensors
@@ -361,12 +367,12 @@ class FlashANSRTransformer(nn.Module):
             if equivalence_pruning:
                 all_candidates_unique: list[tuple] = []
                 for candidate in all_candidates:
-                    if candidate[0][-1] == self.simplipy_engine.tokenizer['<eos>']:
-                        candidate_expression, before, after = self.simplipy_engine.extract_expression_from_beam(candidate[0])
-                        candidate_expression_decoded = self.simplipy_engine.tokenizer.decode(candidate_expression, special_tokens='<constant>')
+                    if candidate[0][-1] == self.tokenizer['<eos>']:
+                        candidate_expression, before, after = self.extract_expression_from_beam(candidate[0])
+                        candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
 
                         if self.simplipy_engine.is_valid(candidate_expression_decoded) and len(candidate_expression_decoded) > 1:
-                            candidate_simplified = self.simplipy_engine.tokenizer.encode(self.simplipy_engine.simplify(candidate_expression_decoded))
+                            candidate_simplified = self.tokenizer.encode(self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=4))
 
                             # Add back everything before <bos> and after <eos>
                             candidate_simplified = before + candidate_simplified + after
@@ -450,9 +456,9 @@ class FlashANSRTransformer(nn.Module):
         '''
         # Prepare initial token based on complexity
         if complexity is None:
-            initial_token, input_num = [self.simplipy_engine.tokenizer['<bos>']], None
+            initial_token, input_num = [self.tokenizer['<bos>']], None
         else:
-            initial_token, input_num = self.preprocessor.format_complexity([self.simplipy_engine.tokenizer['<bos>']], complexity=complexity)
+            initial_token, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
 
         # Initialize sequences for generation
         sequences = [initial_token.copy() for _ in range(choices)]
@@ -527,7 +533,7 @@ class FlashANSRTransformer(nn.Module):
                     new_score = score + original_scores[i][sampled_token.item()].item()  # type: ignore
 
                     # If token is <eos>, add to completed sequences
-                    if sampled_token == self.simplipy_engine.tokenizer['<eos>']:
+                    if sampled_token == self.tokenizer['<eos>']:
                         completed_sequences.append(new_seq)
                         completed_scores.append(new_score)
                         continue
@@ -560,23 +566,23 @@ class FlashANSRTransformer(nn.Module):
         seen_expressions = set()
 
         for seq, score in zip(completed_sequences, completed_scores):
-            encoded_expression, before, after = self.simplipy_engine.extract_expression_from_beam(seq)
+            encoded_expression, before, after = self.extract_expression_from_beam(seq)
 
             # Decode the sequence
-            expression = self.simplipy_engine.tokenizer.decode(encoded_expression, special_tokens='<constant>')
+            expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
 
             # Only process valid expressions
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 if simplify:
                     # Simplify the expression
-                    expression = self.simplipy_engine.simplify(expression)
+                    expression = self.simplipy_engine.simplify(expression, max_pattern_length=4)
 
                     # Skip if we've already seen this simplified expression
                 if unique and tuple(expression) in seen_expressions:
                     continue
 
                 # Encode the simplified expression
-                filtered_sequence = self.simplipy_engine.tokenizer.encode(expression, add_bos=True, add_eos=True)
+                filtered_sequence = self.tokenizer.encode(expression, add_bos=True, add_eos=True)
                 filtered_sequences.append(filtered_sequence)
                 filtered_scores.append(score)
                 filtered_is_valid.append(True)
@@ -595,6 +601,31 @@ class FlashANSRTransformer(nn.Module):
         filtered_is_valid = [filtered_is_valid[i] for i in sorted_indices_by_score]
 
         return filtered_sequences, filtered_scores, filtered_is_valid
+
+    def extract_expression_from_beam(self, beam: list[int]) -> tuple[list[int], list[int], list[int]]:
+        '''
+        Extract the expression from a beam.
+
+        Parameters
+        ----------
+        beam : list[int]
+            The beam to extract the expression from.
+
+        Returns
+        -------
+        tuple[list[int], list[int], list[int]]
+            The encoded expression, the tokens before <bos>, and the tokens after <eos>.
+        '''
+        if self.tokenizer['<bos>'] not in beam or self.tokenizer['<eos>'] not in beam:
+            raise ValueError("Beam must contain <bos> and <eos> tokens.")
+
+        bos_index = beam.index(self.tokenizer['<bos>'])
+        eos_index = beam.index(self.tokenizer['<eos>'])
+
+        before = beam[:bos_index]
+        after = beam[eos_index + 1:]
+
+        return beam[bos_index + 1:eos_index], before, after
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, errors: Literal['raise', 'warn', 'ignore'] = 'warn') -> None:
         '''
@@ -637,7 +668,7 @@ class FlashANSRTransformer(nn.Module):
             save_config(
                 load_config(config, resolve_paths=True),
                 directory=directory,
-                filename='nsr.yaml',
+                filename='model.yaml',
                 reference=reference,
                 recursive=recursive,
                 resolve_paths=True)
@@ -661,7 +692,7 @@ class FlashANSRTransformer(nn.Module):
         '''
         directory = substitute_root_path(directory)
 
-        config_path = os.path.join(directory, 'nsr.yaml')
+        config_path = os.path.join(directory, 'model.yaml')
 
         model = cls.from_config(config_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
