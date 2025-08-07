@@ -4,7 +4,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 from flash_ansr import SkeletonPool, get_path
-from flash_ansr.expressions.utils import num_to_constants, numbers_to_num
+from flash_ansr.expressions.utils import identify_constants, numbers_to_num
 from flash_ansr.eval.utils import bootstrapped_metric_ci
 import time
 import pickle

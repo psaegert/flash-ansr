@@ -30,7 +30,7 @@ def main(argv: str = None) -> None:
     import_test_data_parser.add_argument('-i', '--input', type=str, required=True, help='Path to the csv file from Biggio et al. or other datasets')
     import_test_data_parser.add_argument('-b', '--base-skeleton-pool', type=str, required=True, help='Path to the base skeleton pool')
     import_test_data_parser.add_argument('-p', '--parser', type=str, required=True, help='Name of the parser to use')
-    import_test_data_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
+    import_test_data_parser.add_argument('-e', '--simplipy-engine', type=str, required=True, help='Path to the expression space configuration file')
     import_test_data_parser.add_argument('-o', '--output-dir', type=str, required=True, help='Path to the output directory')
     import_test_data_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
 
@@ -70,7 +70,7 @@ def main(argv: str = None) -> None:
     evaluate_nesymres_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
     evaluate_nesymres_parser.add_argument('-m', '--model', type=str, required=True, help='Path to the model or model configuration')
     evaluate_nesymres_parser.add_argument('-d', '--dataset', type=str, required=True, help='Path to the dataset or dataset configuration')
-    evaluate_nesymres_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
+    evaluate_nesymres_parser.add_argument('-e', '--simplipy-engine', type=str, required=True, help='Path to the expression space configuration file')
     evaluate_nesymres_parser.add_argument('-n', '--size', type=int, default=None, help='Size of the dataset')
     evaluate_nesymres_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
     evaluate_nesymres_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output file')
@@ -78,7 +78,7 @@ def main(argv: str = None) -> None:
     evaluate_pysr_parser = subparsers.add_parser("evaluate-pysr")
     evaluate_pysr_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
     evaluate_pysr_parser.add_argument('-d', '--dataset', type=str, required=True, help='Path to the dataset or dataset configuration')
-    evaluate_pysr_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
+    evaluate_pysr_parser.add_argument('-e', '--simplipy-engine', type=str, required=True, help='Path to the expression space configuration file')
     evaluate_pysr_parser.add_argument('-n', '--size', type=int, default=None, help='Size of the dataset')
     evaluate_pysr_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
     evaluate_pysr_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output file')
@@ -101,7 +101,7 @@ def main(argv: str = None) -> None:
     remove_parser.add_argument("path", type=str, help="Path to the model to remove")
 
     find_simplifications_parser = subparsers.add_parser("find-simplifications")
-    find_simplifications_parser.add_argument('-e', '--expression-space', type=str, required=True, help='Path to the expression space configuration file')
+    find_simplifications_parser.add_argument('-e', '--simplipy-engine', type=str, required=True, help='Path to the expression space configuration file')
     find_simplifications_parser.add_argument('-n', '--max_n_rules', type=int, default=None, help='Maximum number of rules to find')
     find_simplifications_parser.add_argument('-l', '--max_pattern_length', type=int, default=7, help='Maximum length of the patterns to find')
     find_simplifications_parser.add_argument('-t', '--timeout', type=int, default=None, help='Timeout for the search of simplifications in seconds')
@@ -125,9 +125,9 @@ def main(argv: str = None) -> None:
                 print(f'Finding simplifications with simplipy engine {args.simplipy_engine}')
             import os
             from simplipy import SimpliPyEngine
-            from flash_ansr.utils import substitute_root_path
+            from flash_ansr.utils import substitute_root_path, load_config
 
-            simplipy_engine = SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine))
+            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
 
             resolved_output_file = substitute_root_path(args.output_file)
 
@@ -177,11 +177,11 @@ def main(argv: str = None) -> None:
             from simplipy import SimpliPyEngine
             from flash_ansr.expressions import SkeletonPool
             from flash_ansr.compat import ParserFactory
-            from flash_ansr.utils import substitute_root_path
+            from flash_ansr.utils import substitute_root_path, load_config
 
             import pandas as pd
 
-            simplipy_engine = SimpliPyEngine.from_config(args.simplipy_engine)
+            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
             base_skeleton_pool = SkeletonPool.from_config(args.base_skeleton_pool)
             df = pd.read_csv(substitute_root_path(args.input))
 
@@ -363,7 +363,7 @@ def main(argv: str = None) -> None:
                 model=model,
                 fitfunc=fitfunc,
                 dataset=dataset,
-                simplipy_engine=SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
                 size=args.size,
                 verbose=args.verbose)
 
@@ -406,7 +406,7 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 dataset=dataset,
                 size=args.size,
-                simplipy_engine=SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
                 verbose=args.verbose)
 
             if args.verbose:

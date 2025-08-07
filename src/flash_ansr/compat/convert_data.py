@@ -6,9 +6,10 @@ import pandas as pd
 from tqdm import tqdm
 
 from simplipy import SimpliPyEngine
+from simplipy.utils import remap_expression
 
 from flash_ansr import SkeletonPool  # Parse expressions with SimpliPyEngine.parse_infix_expression
-from flash_ansr.expressions.utils import codify, num_to_constants
+from flash_ansr.expressions.utils import codify, identify_constants
 
 
 class TestSetParaser:
@@ -92,9 +93,13 @@ class SOOSEParser(TestSetParaser):
 
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
+            # Standardize variable names
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
+            prefix_expression, _ = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
+            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, base_skeleton_pool.variables + constants)
 
@@ -147,8 +152,7 @@ class FeynmanParser(TestSetParaser):
             try:
                 prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
             except ValueError:
-                n_too_many_variables += 1
-                warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
+                warnings.warn(f'Could not parse expression {expression}')
                 continue
 
             # Check valid
@@ -157,9 +161,18 @@ class FeynmanParser(TestSetParaser):
 
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
+            # Standardize variable names
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
+            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+
+            if len(mapping) > len(base_skeleton_pool.variables):
+                n_too_many_variables += 1
+                warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
+                continue
+
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
+            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, base_skeleton_pool.variables + constants)
 
@@ -220,9 +233,13 @@ class NguyenParser(TestSetParaser):
 
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
+            # Standardize variable names
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
+            prefix_expression, _ = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
+            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
             code = codify(code_string, base_skeleton_pool.variables + constants)
 

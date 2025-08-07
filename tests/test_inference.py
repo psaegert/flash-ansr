@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 from flash_ansr import FlashANSR, get_path, install_model
-from flash_ansr.expressions.utils import codify, num_to_constants
+from flash_ansr.expressions.utils import codify, identify_constants
 
 import unittest
 
@@ -31,7 +31,7 @@ class TestInference(unittest.TestCase):
 
         prefix_expression = nsr.simplipy_engine.parse(expression, mask_numbers=True)
         prefix_expression_w_num = nsr.simplipy_engine.operators_to_realizations(prefix_expression)
-        prefix_expression_w_constants, constants_names = num_to_constants(prefix_expression_w_num)
+        prefix_expression_w_constants, constants_names = identify_constants(prefix_expression_w_num)
         code_string = nsr.simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
         code = codify(code_string, nsr.simplipy_engine.variables + constants_names)
 

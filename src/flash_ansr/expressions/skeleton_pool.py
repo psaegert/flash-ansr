@@ -13,7 +13,7 @@ import numpy as np
 from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.utils import codify, num_to_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
+from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
 
 
 class NoValidSampleFoundError(Exception):
@@ -254,7 +254,7 @@ class SkeletonPool:
         for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose):
             # Codify the Expression
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
             code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.variables + constants)
 
@@ -306,7 +306,7 @@ class SkeletonPool:
         if code is None:
             # Remove constants since permutations are not detected as duplicates
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
             code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.variables + constants)
 
@@ -388,7 +388,7 @@ class SkeletonPool:
             # Remove constants since permutations are not detected as duplicates
             no_constant_expression = holdout_pool.remove_num(skeleton)
             executable_prefix_expression = holdout_pool.simplipy_engine.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
             code_string = holdout_pool.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, holdout_pool.variables + constants)
 
@@ -598,16 +598,14 @@ class SkeletonPool:
                 skeleton = self._sample_skeleton(n_operators)
                 if self.simplify:
                     try:
-                        print(skeleton)
                         skeleton = self.simplipy_engine.simplify(skeleton, inplace=True, max_pattern_length=4)
-                        print(skeleton)
                     except Exception as e:
                         print(f"Failed to simplify skeleton: {skeleton}")
                         raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
-                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
+                    prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
                     code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     code = codify(code_string, self.variables + constants)
 

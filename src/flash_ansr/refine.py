@@ -8,7 +8,7 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
+from flash_ansr.expressions.utils import codify, substitude_constants, identify_constants, apply_variable_mapping
 from flash_ansr.utils import pad_input_set
 
 
@@ -115,7 +115,7 @@ class Refiner:
 
         self.input_expression = expression
         self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
-        self.prefix_expression_with_constants, self.constants_symbols = num_to_constants(self.input_expression)
+        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(self.input_expression)
         self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
 
         self.expression_code = codify(
