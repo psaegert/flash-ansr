@@ -29,14 +29,14 @@ class TestInference(unittest.TestCase):
         constants = (3.4,)
         xlim = (-5, 5)
 
-        prefix_expression = nsr.expression_space.parse_expression(expression, mask_numbers=True)
-        prefix_expression_w_num = nsr.expression_space.operators_to_realizations(prefix_expression)
+        prefix_expression = nsr.simplipy_engine.parse(expression, mask_numbers=True)
+        prefix_expression_w_num = nsr.simplipy_engine.operators_to_realizations(prefix_expression)
         prefix_expression_w_constants, constants_names = num_to_constants(prefix_expression_w_num)
-        code_string = nsr.expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
-        code = codify(code_string, nsr.expression_space.variables + constants_names)
+        code_string = nsr.simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
+        code = codify(code_string, nsr.simplipy_engine.variables + constants_names)
 
         def demo_function(x):
-            return nsr.expression_space.code_to_lambda(code)(x, 0, 0, *constants)
+            return nsr.simplipy_engine.code_to_lambda(code)(x, 0, 0, *constants)
 
         x = np.random.uniform(*xlim, 100)
 

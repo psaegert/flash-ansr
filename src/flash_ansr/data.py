@@ -9,8 +9,10 @@ import numpy as np
 from tqdm import tqdm
 from datasets import Dataset, load_from_disk, disable_progress_bars
 
+from simplipy import SimpliPyEngine
+
 from flash_ansr.utils import load_config, save_config, substitute_root_path
-from flash_ansr.expressions import ExpressionSpace, SkeletonPool, NoValidSampleFoundError
+from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
 from flash_ansr.preprocess import FlashASNRPreprocessor
 
@@ -34,8 +36,8 @@ class FlashANSRDataset:
         self.data = None
 
     @property
-    def expression_space(self) -> ExpressionSpace:
-        return self.skeleton_pool.expression_space
+    def simplipy_engine(self) -> SimpliPyEngine:
+        return self.skeleton_pool.simplipy_engine
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
@@ -169,7 +171,7 @@ class FlashANSRDataset:
             max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
 
             for i in range(len(batch['input_ids'])):
-                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.skeleton_pool.expression_space.tokenizer['<pad>'], device=device, dtype=torch.long)
+                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.skeleton_pool.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -198,7 +200,7 @@ class FlashANSRDataset:
             # Single instance
             max_length_input_ids = len(batch['input_ids'])
 
-            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.skeleton_pool.expression_space.tokenizer['<pad>'], device=device, dtype=torch.long)
+            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.skeleton_pool.tokenizer['<pad>'], device=device, dtype=torch.long)
 
             for k, dtype in [
                 ('input_ids', torch.long),
@@ -467,12 +469,12 @@ class FlashANSRDataset:
 
                         if self.padding == 'zero':
                             # Set all x that do not appear in the expression to 0
-                            for i, variable in enumerate(self.skeleton_pool.expression_space.variables):
+                            for i, variable in enumerate(self.skeleton_pool.variables):
                                 if variable not in skeleton:
                                     x_support[:, i] = 0
 
                         # Tokenize the expression to get the input_ids
-                        input_ids = self.skeleton_pool.expression_space.tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+                        input_ids = self.skeleton_pool.tokenizer.encode(skeleton, add_bos=True, add_eos=True)
 
                         # Yield the sample
                         buffer.append({

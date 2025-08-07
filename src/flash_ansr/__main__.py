@@ -122,19 +122,19 @@ def main(argv: str = None) -> None:
     match args.command_name:
         case 'find-simplifications':
             if args.verbose:
-                print(f'Finding simplifications with expression space {args.expression_space}')
+                print(f'Finding simplifications with simplipy engine {args.simplipy_engine}')
             import os
-            from flash_ansr.expressions import ExpressionSpace
+            from simplipy import SimpliPyEngine
             from flash_ansr.utils import substitute_root_path
 
-            expression_space = ExpressionSpace.from_config(substitute_root_path(args.expression_space))
+            simplipy_engine = SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine))
 
             resolved_output_file = substitute_root_path(args.output_file)
 
             if not os.path.exists(os.path.dirname(resolved_output_file)):
                 os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
 
-            expression_space.find_rules(
+            simplipy_engine.find_rules(
                 max_n_rules=args.max_n_rules,
                 max_pattern_length=args.max_pattern_length,
                 timeout=args.timeout,
@@ -174,18 +174,19 @@ def main(argv: str = None) -> None:
         case 'import-data':
             if args.verbose:
                 print(f'Importing data from {args.input}')
-            from flash_ansr.expressions import SkeletonPool, ExpressionSpace
+            from simplipy import SimpliPyEngine
+            from flash_ansr.expressions import SkeletonPool
             from flash_ansr.compat import ParserFactory
             from flash_ansr.utils import substitute_root_path
 
             import pandas as pd
 
-            expression_space = ExpressionSpace.from_config(args.expression_space)
+            simplipy_engine = SimpliPyEngine.from_config(args.simplipy_engine)
             base_skeleton_pool = SkeletonPool.from_config(args.base_skeleton_pool)
             df = pd.read_csv(substitute_root_path(args.input))
 
             data_parser = ParserFactory.get_parser(args.parser)
-            test_skeleton_pool: SkeletonPool = data_parser.parse_data(df, expression_space, base_skeleton_pool, verbose=args.verbose)
+            test_skeleton_pool: SkeletonPool = data_parser.parse_data(df, simplipy_engine, base_skeleton_pool, verbose=args.verbose)
 
             if args.verbose:
                 print(f"Saving test set to {args.output_dir}")
@@ -281,7 +282,7 @@ def main(argv: str = None) -> None:
 
             # Use the same expression space as the model for correct tokenization
             # FIXME: Is this necessary?
-            # dataset.skeleton_pool.expression_space = model.expression_space
+            # dataset.skeleton_pool.simplipy_engine = model.simplipy_engine
 
             evaluation = Evaluation.from_config(substitute_root_path(args.config))
 
@@ -328,7 +329,7 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'Evaluating model from {args.model} on {args.dataset}')
             import os
-            from flash_ansr import ExpressionSpace
+            from simplipy import SimpliPyEngine
             from flash_ansr.compat.evaluation_nesymres import NeSymReSEvaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
@@ -362,7 +363,7 @@ def main(argv: str = None) -> None:
                 model=model,
                 fitfunc=fitfunc,
                 dataset=dataset,
-                expression_space=ExpressionSpace.from_config(substitute_root_path(args.expression_space)),
+                simplipy_engine=SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine)),
                 size=args.size,
                 verbose=args.verbose)
 
@@ -382,7 +383,7 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'Evaluating PySR on {args.dataset}')
             import os
-            from flash_ansr import ExpressionSpace
+            from simplipy import SimpliPyEngine
             from flash_ansr.compat.evaluation_pysr import PySREvaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
@@ -405,7 +406,7 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 dataset=dataset,
                 size=args.size,
-                expression_space=ExpressionSpace.from_config(substitute_root_path(args.expression_space)),
+                simplipy_engine=SimpliPyEngine.from_config(substitute_root_path(args.simplipy_engine)),
                 verbose=args.verbose)
 
             if args.verbose:

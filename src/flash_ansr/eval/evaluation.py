@@ -188,14 +188,14 @@ class Evaluation():
 
         # HACK: Ensure compatibility of tokenization and input variables
         print('Recompiling skeleton and holdout codes to ensure compatibility...')
-        dataset.skeleton_pool.expression_space = model.expression_space
+        dataset.skeleton_pool.simplipy_engine = model.simplipy_engine
         dataset.skeleton_pool.skeleton_codes = dataset.skeleton_pool.compile_codes(verbose=verbose)
         for holdout_pool in dataset.skeleton_pool.holdout_pools:
-            holdout_pool.expression_space = model.expression_space
+            holdout_pool.simplipy_engine = model.simplipy_engine
             holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=verbose)
 
         if self.preprocess:
-            dataset.preprocessor = FlashASNRPreprocessor(model.expression_space, format_probs={'complexity': 1.0})
+            dataset.preprocessor = FlashASNRPreprocessor(model.simplipy_engine, format_probs={'complexity': 1.0})
 
         with torch.no_grad():
             current_size = 0
@@ -230,15 +230,15 @@ class Evaluation():
 
                 results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
 
-                # target_expression = model.expression_space.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
-                # target_expression_decoded = model.expression_space.tokenizer.decode(target_expression, special_tokens='<num>')
+                # target_expression = model.simplipy_engine.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
+                # target_expression_decoded = model.simplipy_engine.tokenizer.decode(target_expression, special_tokens='<constant>')
 
-                # target_expression_labels = torch.tensor(target_expression + [model.expression_space.tokenizer['<eos>']], device=self.device)
-                # target_expression_labels_decoded = model.expression_space.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<num>', '<eos>'])
+                # target_expression_labels = torch.tensor(target_expression + [model.simplipy_engine.tokenizer['<eos>']], device=self.device)
+                # target_expression_labels_decoded = model.simplipy_engine.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<constant>', '<eos>'])
 
                 batch_size = len(batch['input_ids'])
 
-                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.expression_space.n_variables)
+                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.simplipy_engine.n_variables)
 
                 data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
 
@@ -264,12 +264,12 @@ class Evaluation():
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
 
-                    bos_position = torch.where(batch['input_ids'] == dataset.expression_space.tokenizer['<bos>'])[1][0].item()
+                    bos_position = torch.where(batch['input_ids'] == dataset.simplipy_engine.tokenizer['<bos>'])[1][0].item()
 
                     expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
                     expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
 
-                    expresssion_labels_decoded = dataset.expression_space.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<num>', '<eos>'])
+                    expresssion_labels_decoded = dataset.simplipy_engine.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<constant>', '<eos>'])
 
                 except (ConvergenceError, OverflowError, TypeError, ValueError):
                     print('Error in the forward pass or fitting.')
@@ -282,7 +282,7 @@ class Evaluation():
                     beams = [r['beam'] for r in model._results]
                     log_probs = [r['log_prob'] for r in model._results]
 
-                    beams_decoded = [model.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
+                    beams_decoded = [model.simplipy_engine.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
                     for j in range(self.beam_width):
                         if j >= len(beams):
@@ -359,10 +359,10 @@ class Evaluation():
                             results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        if not model.expression_space.is_valid(beam):
+                        if not model.simplipy_engine.is_valid(beam):
                             results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
                         else:
-                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.expression_space.operator_arity))
+                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.simplipy_engine.operator_arity))
 
                     # Structural accuracy
                     for j in range(self.beam_width):
@@ -370,7 +370,7 @@ class Evaluation():
                             results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'structural_accuracy_beam_{j+1}'].append(int(model.expression_space.is_valid(beam)))
+                        results_dict[f'structural_accuracy_beam_{j+1}'].append(int(model.simplipy_engine.is_valid(beam)))
 
                     # Constant Fitting
                     np_errors_before = np.geterr()

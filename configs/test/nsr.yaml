@@ -22,4 +22,4 @@ decoder_n_layers: 5
 learnable_positional_embeddings: true
 max_input_length: 32
 
-expression_space: './expression_space.yaml'
+simplipy_engine: './simplipy_engine.yaml'

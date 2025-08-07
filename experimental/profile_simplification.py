@@ -36,7 +36,7 @@ simplification_times = {}
 
 pbar = tqdm(total=N_SAMPLES, smoothing=0)
 while len(simplified_skeletons) < N_SAMPLES:
-    skeleton, _, _ = pool.sample_skeleton()
+    skeleton, _, _, _ = pool.sample_skeleton()
 
     if skeleton in simplified_skeletons:
         continue

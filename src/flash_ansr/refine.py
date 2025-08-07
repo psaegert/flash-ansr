@@ -6,7 +6,8 @@ import numpy as np
 import torch
 from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
-from flash_ansr.expressions import ExpressionSpace
+from simplipy import SimpliPyEngine
+
 from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
 from flash_ansr.utils import pad_input_set
 
@@ -21,7 +22,7 @@ class Refiner:
 
     Parameters
     ----------
-    expression_space : ExpressionSpace
+    simplipy_engine : SimpliPyEngine
         The expression space to use for the refiner
     '''
     input_expression: list[str]
@@ -33,11 +34,11 @@ class Refiner:
     expression_lambda: Callable
     constants_cov: np.ndarray | None
 
-    def __init__(self, expression_space: ExpressionSpace):
+    def __init__(self, simplipy_engine: SimpliPyEngine):
         '''
         Initialize the Refiner with the expression or skeleton to be refined
         '''
-        self.expression_space = expression_space
+        self.simplipy_engine = simplipy_engine
 
         self.import_modules()
 
@@ -50,7 +51,7 @@ class Refiner:
         Import the modules required for the expression
         '''
         # TODO: Check if this is necessary
-        for module in self.expression_space.modules:
+        for module in self.simplipy_engine.modules:
             if module not in globals():
                 globals()[module] = importlib.import_module(module)
 
@@ -108,21 +109,21 @@ class Refiner:
         Refiner
             The refiner object
         '''
-        if not self.expression_space.is_valid(expression, verbose=True):
+        if not self.simplipy_engine.is_valid(expression, verbose=True):
             raise ValueError("The expression is not valid")
 
         self.input_expression = expression
-        self.executable_prefix_expression = self.expression_space.operators_to_realizations(self.input_expression)
+        self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
         self.prefix_expression_with_constants, self.constants_symbols = num_to_constants(self.input_expression)
-        self.code_string = self.expression_space.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
+        self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
 
         self.expression_code = codify(
             code_string=self.code_string,
-            variables=self.expression_space.variables + self.constants_symbols
+            variables=self.simplipy_engine.variables + self.constants_symbols
         )
 
-        # Since the ExpressionSpace is already initialized, we can use the same global scope
-        self.expression_lambda = self.expression_space.code_to_lambda(self.expression_code)
+        # Since the SimpliPyEngine is already initialized, we can use the same global scope
+        self.expression_lambda = self.simplipy_engine.code_to_lambda(self.expression_code)
 
         def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float:
             if len(constants) == 0:
@@ -309,7 +310,7 @@ class Refiner:
         if len(constants_values) != len(self.constants_symbols):
             return np.full((X.shape[0], 1), np.nan)
 
-        X = pad_input_set(X, self.expression_space.n_variables)
+        X = pad_input_set(X, self.simplipy_engine.n_variables)
 
         if len(self.constants_symbols) == 0 or len(constants_values) == 0:
             y = self.expression_lambda(*X.T)
@@ -366,7 +367,7 @@ class Refiner:
         if return_prefix:
             return expression_with_values
 
-        expression_with_values_infix = self.expression_space.prefix_to_infix(expression_with_values, **kwargs)
+        expression_with_values_infix = self.simplipy_engine.prefix_to_infix(expression_with_values, **kwargs)
         return expression_with_values_infix
 
     def __str__(self) -> str:

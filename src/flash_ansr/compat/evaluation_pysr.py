@@ -14,9 +14,10 @@ from rouge_score import rouge_scorer
 
 from pysr import PySRRegressor
 
+from simplipy import SimpliPyEngine
+
 from flash_ansr import FlashANSRDataset
 from flash_ansr.utils import load_config
-from flash_ansr import ExpressionSpace
 from flash_ansr.eval.token_prediction import (
     accuracy,
     precision,
@@ -70,7 +71,7 @@ class PySREvaluation():
     def evaluate(
             self,
             dataset: FlashANSRDataset,
-            expression_space: ExpressionSpace,
+            simplipy_engine: SimpliPyEngine,
             size: int | None = None,
             verbose: bool = True) -> dict[str, Any]:
 
@@ -132,7 +133,7 @@ class PySREvaluation():
 
                 # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
                 labels = batch['labels'][0].clone()
-                labels_decoded = expression_space.tokenizer.decode(batch['labels'].tolist(), special_tokens='<num>')
+                labels_decoded = simplipy_engine.tokenizer.decode(batch['labels'].tolist(), special_tokens='<constant>')
 
                 # TODO: For different datasets, sort unused dimensions to the end
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -142,13 +143,13 @@ class PySREvaluation():
                 results_dict['fit_time'].append(time.time() - fit_time_before)
 
                 best_skeleton_decoded = []
-                for token in expression_space.parse_expression(str(model.get_best()['equation'])):
+                for token in simplipy_engine.parse(str(model.get_best()['equation'])):
                     try:
                         float(token)
-                        best_skeleton_decoded.append('<num>')
+                        best_skeleton_decoded.append('<constant>')
                     except ValueError:
                         best_skeleton_decoded.append(token)
-                best_skeleton = expression_space.tokenizer.encode(best_skeleton_decoded, oov='unk')
+                best_skeleton = simplipy_engine.tokenizer.encode(best_skeleton_decoded, oov='unk')
 
                 # Accuracy, precision, recall, F1 score
                 best_skeleton_tensor = torch.tensor(best_skeleton).unsqueeze(0)
@@ -175,15 +176,15 @@ class PySREvaluation():
                 results_dict['edit_distance_beam_1'].append(editdistance.eval(best_skeleton_decoded, labels_decoded))
 
                 # Tree edit distance
-                if not expression_space.is_valid(best_skeleton_decoded):
+                if not simplipy_engine.is_valid(best_skeleton_decoded):
                     tree_edit_distance = float('nan')
                 else:
-                    tree_edit_distance = zss_tree_edit_distance(best_skeleton_decoded, labels_decoded, expression_space.operator_arity)
+                    tree_edit_distance = zss_tree_edit_distance(best_skeleton_decoded, labels_decoded, simplipy_engine.operator_arity)
 
                 results_dict['tree_edit_distance_beam_1'].append(tree_edit_distance)
 
-                # Structural accuracy using model.expression_space.check_valid(expression)
-                results_dict['structural_accuracy_beam_1'].append(int(expression_space.is_valid(best_skeleton_decoded)))
+                # Structural accuracy using model.simplipy_engine.check_valid(expression)
+                results_dict['structural_accuracy_beam_1'].append(int(simplipy_engine.is_valid(best_skeleton_decoded)))
 
                 y_pred = model.predict(X)
                 y_pred_val = model.predict(X_val)

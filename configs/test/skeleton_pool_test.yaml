@@ -1,12 +1,12 @@
-expression_space: './expression_space.yaml'
+simplipy_engine: './simplipy_engine.yaml'
 holdout_pools: []
 
 sample_strategy:
   n_operator_distribution: "length_proportional"
   min_operators: 0
-  max_operators: 2
+  max_operators: 10
   power: 1
-  max_length: 10
+  max_length: 21
   max_tries: 1
   independent_dimensions: True
 
@@ -15,7 +15,7 @@ simplify: True
 
 literal_prior: 'uniform'
 literal_prior_kwargs:
-  low: 1
+  low: -5
   high: 5
 
 support_prior: "uniform_intervals"
@@ -29,3 +29,38 @@ n_support_prior_kwargs:
   high: 512
   min_value: 16
   max_value: 512
+
+variables: ['x1', 'x2', 'x3']
+
+operator_weights:
+  "+": 10
+  "-": 10
+  "*": 10
+  "/": 10
+  abs: 1
+  inv: 1
+  neg: 1
+  pow2: 1
+  pow3: 1
+  pow4: 1
+  pow5: 1
+  pow1_2: 1
+  pow1_3: 1
+  pow1_4: 1
+  pow1_5: 1
+  sin: 1
+  cos: 1
+  tan: 1
+  asin: 1
+  acos: 1
+  atan: 1
+  exp: 1
+  log: 1
+  mult2: 1
+  mult3: 1
+  mult4: 1
+  mult5: 1
+  div2: 1
+  div3: 1
+  div4: 1
+  div5: 1

@@ -1,4 +1,6 @@
-from flash_ansr import ExpressionSpace, get_path
+from simplipy import SimpliPyEngine
+
+from flash_ansr import get_path
 from flash_ansr.expressions.utils import codify, num_to_constants
 
 import numpy as np
@@ -6,17 +8,17 @@ import numpy as np
 import unittest
 
 
-class TestExpressionSpace(unittest.TestCase):
+class TestSimpliPyEngine(unittest.TestCase):
     def test_prefix_to_infix(self):
         test_expression = ["*", "sin", "**", "1.234", "x1", "-423"]
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
         infix_equation_string = space.prefix_to_infix(test_expression)
 
         assert infix_equation_string == 'sin(1.234 ** x1) * -423'
 
     def test_from_config_dict(self):
-        space = ExpressionSpace(operators={
+        space = SimpliPyEngine(operators={
             '+': {
                 "realization": "+",
                 "alias": ["add", "plus"],
@@ -35,54 +37,54 @@ class TestExpressionSpace(unittest.TestCase):
         assert space.operator_arity == {'+': 2}
 
     def test_from_config_file(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
         assert space.variables == ["x1", "x2", "x3"]
         assert space.operator_arity['*'] == 2
 
     def test_check_valid(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert space.is_valid(["*", "sin", "pow2", "<num>", "x1"], verbose=True) is True
+        assert space.is_valid(["*", "sin", "pow2", "<constant>", "x1"], verbose=True) is True
 
     def test_check_valid_invalid(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert space.is_valid(["*", "sin", "pow2" "<num>", "x1", "<num>", "<num>"], verbose=True) is False
+        assert space.is_valid(["*", "sin", "pow2" "<constant>", "x1", "<constant>", "<constant>"], verbose=True) is False
 
     def test_parse_infix_expression(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert isinstance(space.parse_expression("sin(2.1**x1) * -4370"), list)
+        assert isinstance(space.parse("sin(2.1**x1) * -4370"), list)
 
     def test_check_valid_invalid_token(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert space.is_valid(["*", "sin", "numpy.does_not_exist", "<num>", "x1", "<num>"], verbose=True) is False
+        assert space.is_valid(["*", "sin", "numpy.does_not_exist", "<constant>", "x1", "<constant>"], verbose=True) is False
 
     def test_check_valid_invalid_too_many_operands(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert space.is_valid(["*", "sin", "numpy.does_not_exist", "<num>", "x1", "<num>", "x1", "<num>", "<num>"], verbose=True) is False
+        assert space.is_valid(["*", "sin", "numpy.does_not_exist", "<constant>", "x1", "<constant>", "x1", "<constant>", "<constant>"], verbose=True) is False
 
     def test_check_valid_invalid_too_few_operands(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        assert space.is_valid(["*", "sin", "<num>"], verbose=True) is False
+        assert space.is_valid(["*", "sin", "<constant>"], verbose=True) is False
 
     def test_collapse_numeric_subtrees(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
-        expression = ['+', 'x1', '*', '<num>', '<num>']
+        expression = ['+', 'x1', '*', '<constant>', '<constant>']
 
         assert space.is_valid(expression)
 
         collapsed_expression = space.simplify(expression)
 
-        assert collapsed_expression == ['+', '<num>', 'x1']
+        assert collapsed_expression == ['+', '<constant>', 'x1']
 
     def test_infix_to_prefix(self):
-        space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
         infix_expressions = [
             ('sin(2.1**x1) * -4370', ['*', 'sin', '**', '2.1', 'x1', 'neg', '4370']),
@@ -105,14 +107,14 @@ class TestExpressionSpace(unittest.TestCase):
 
 class TestSimplify(unittest.TestCase):
     def setUp(self):
-        self.space = ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml'))
+        self.space = SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml'))
 
     def test_simplify(self):
         test_expressions = [
-            (['+', 'x1', '*', '<num>', '<num>'], ['+', '<num>', 'x1']),
-            (['+', 'x1', '*', '1.2', '2'], ['+', '<num>', 'x1']),
+            (['+', 'x1', '*', '<constant>', '<constant>'], ['+', '<constant>', 'x1']),
+            (['+', 'x1', '*', '1.2', '2'], ['+', '<constant>', 'x1']),
             (['+', '-', 'x1', 'x1', 'x2'], ['x2']),
-            (['*', '-', 'x1', 'x1', 'x2'], ['<num>']),
+            (['*', '-', 'x1', 'x1', 'x2'], ['<constant>']),
             (['*', 'x1', 'x1'], ['pow2', 'x1']),
             (['*', 'x1', 'neg', 'x1'], ['neg', 'pow2', 'x1']),
             (['*', 'x2', '+', 'x1', 'x1'], ['*', 'x1', '+', 'x2', 'x2']),
@@ -125,7 +127,7 @@ class TestSimplify(unittest.TestCase):
             # [/, +, A, A, +, B, B] -> [/, A, B]
             (['/', '+', 'x1', 'x1', '+', 'x2', 'x2'], ['/', 'x1', 'x2']),
             #  [/, -, A, B, -, B, A] -> [neg, <1>]
-            (['/', '-', 'x1', 'x2', '-', 'x2', 'x1'], ['<num>']),
+            (['/', '-', 'x1', 'x2', '-', 'x2', 'x1'], ['<constant>']),
             # Swapping positions from [{operator}, -, A, B, -, C, D]
             (['/', '-', 'x3', 'x2', '-', 'x2', 'x1'], ['/', '-', 'x2', 'x3', '-', 'x1', 'x2']),
             # [+, *, A, B, *, A, B] -> [*, A, +, B, B]
@@ -187,7 +189,7 @@ class TestSimplify(unittest.TestCase):
             # [*, inv, A, inv, B] -> [inv, *, A, B]
             (['*', 'inv', 'x1', 'inv', 'x2'], ['inv', '*', 'x1', 'x2']),
             # [*, /, A, B, /, B, A] -> <1>
-            (['*', '/', 'x1', 'x2', '/', 'x2', 'x1'], ['<num>']),
+            (['*', '/', 'x1', 'x2', '/', 'x2', 'x1'], ['<constant>']),
             # [*, inv, A, /, B, C] -> [/, /, B, A, C]
             (['*', 'inv', 'x1', '/', 'x2', 'x3'], ['/', '/', 'x2', 'x1', 'x3']),
             # [*, inv, A, B] -> [/, B, A]
@@ -248,7 +250,7 @@ class TestSimplify(unittest.TestCase):
             print(expression, target_simplified_expression)
             assert self.space.is_valid(expression)
 
-            simplified_expression = self.space.simplify(expression, verbose=True, debug=False)
+            simplified_expression = self.space.simplify(expression, verbose=True, max_pattern_length=4)
 
             assert self.space.is_valid(simplified_expression)
             assert simplified_expression == target_simplified_expression

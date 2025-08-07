@@ -1,8 +1,10 @@
 import unittest
 import pandas as pd
 
+from simplipy import SimpliPyEngine
+
 from flash_ansr.compat.convert_data import SOOSEParser, FeynmanParser, NguyenParser
-from flash_ansr import ExpressionSpace, SkeletonPool, get_path
+from flash_ansr import SkeletonPool, get_path
 
 
 class TestConvertData(unittest.TestCase):
@@ -17,7 +19,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)
@@ -34,7 +36,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)
@@ -50,7 +52,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)

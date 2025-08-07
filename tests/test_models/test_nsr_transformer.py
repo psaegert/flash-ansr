@@ -4,7 +4,9 @@ import tempfile
 
 import torch
 
-from flash_ansr import FlashANSRTransformer, ExpressionSpace, get_path, SetTransformer
+from simplipy import SimpliPyEngine
+
+from flash_ansr import FlashANSRTransformer, get_path, SetTransformer
 
 
 class TestFlashANSRTransformer(unittest.TestCase):
@@ -16,7 +18,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_nsr_forward(self):
         nsr = FlashANSRTransformer(
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             encoder_max_n_variables=1024,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
@@ -25,19 +27,19 @@ class TestFlashANSRTransformer(unittest.TestCase):
         sequence_length = 17
 
         x = torch.rand(batch_size, 10, 1024)
-        input_tokens = torch.randint(low=len(nsr.expression_space.tokenizer.special_tokens), high=len(nsr.expression_space.tokenizer), size=(batch_size, sequence_length))
+        input_tokens = torch.randint(low=len(nsr.simplipy_engine.tokenizer.special_tokens), high=len(nsr.simplipy_engine.tokenizer), size=(batch_size, sequence_length))
 
         random_padding_beginnings = torch.randint(0, sequence_length, (batch_size,))
 
         for i in range(32):
-            input_tokens[i, random_padding_beginnings[i]:] = nsr.expression_space.tokenizer['<pad>']
+            input_tokens[i, random_padding_beginnings[i]:] = nsr.simplipy_engine.tokenizer['<pad>']
 
         logits, _ = nsr.forward(input_tokens, x, numeric_head=True)
-        assert logits.shape == (batch_size, sequence_length, len(nsr.expression_space.tokenizer))
+        assert logits.shape == (batch_size, sequence_length, len(nsr.simplipy_engine.tokenizer))
 
     def test_nsr_beam_search(self):
         nsr = FlashANSRTransformer(
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             encoder_max_n_variables=6,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
@@ -51,7 +53,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRTransformer(
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             encoder_max_n_variables=6,
             encoder='SetTransformer',
             encoder_kwargs={'n_seeds': 10})
@@ -70,7 +72,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert isinstance(nsr.encoder, SetTransformer)
         assert isinstance(nsr.decoder, torch.nn.TransformerDecoder)
 
-        assert nsr.expression_space.variables == ['x1', 'x2', 'x3']
+        assert nsr.simplipy_engine.variables == ['x1', 'x2', 'x3']
 
         x = torch.rand(256, 10, 4)
         input_tokens = torch.randint(5, 10, (256, 17))

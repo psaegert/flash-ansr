@@ -1,10 +1,12 @@
 import unittest
 import shutil
 
+from simplipy import SimpliPyEngine
+
 from flash_ansr.eval.evaluation import Evaluation
 from flash_ansr import get_path, FlashANSR, FlashANSRTransformer, GenerationConfig
 from flash_ansr.data import FlashANSRDataset
-from flash_ansr.expressions import SkeletonPool, ExpressionSpace
+from flash_ansr.expressions import SkeletonPool
 
 
 class TestEvaluation(unittest.TestCase):
@@ -31,7 +33,7 @@ class TestEvaluation(unittest.TestCase):
     def test_evaluate(self):
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
         ansr = FlashANSR(
-            expression_space=ExpressionSpace.from_config(get_path('configs', 'test', 'expression_space.yaml')),
+            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             flash_ansr_transformer=FlashANSRTransformer.from_config(get_path('configs', 'test', 'nsr.yaml')),
             generation_config=GenerationConfig(method='beam_search', beam_width=2, ),
             numeric_head=False,

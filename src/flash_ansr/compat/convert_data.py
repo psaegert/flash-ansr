@@ -5,13 +5,15 @@ import pandas as pd
 
 from tqdm import tqdm
 
-from flash_ansr import ExpressionSpace, SkeletonPool  # Parse expressions with ExpressionSpace.parse_infix_expression
+from simplipy import SimpliPyEngine
+
+from flash_ansr import SkeletonPool  # Parse expressions with SimpliPyEngine.parse_infix_expression
 from flash_ansr.expressions.utils import codify, num_to_constants
 
 
 class TestSetParaser:
     @abstractmethod
-    def parse_data(self, test_set_df: pd.DataFrame, expression_space: ExpressionSpace, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -19,7 +21,7 @@ class TestSetParaser:
         ----------
         test_set_df : pd.DataFrame
             The test set data containing the equations to evaluate.
-        expression_space : ExpressionSpace
+        simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_skeleton_pool : SkeletonPool
             An initial skeleton pool to add the parsed expressions to.
@@ -49,7 +51,7 @@ class ParserFactory:
 
 
 class SOOSEParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, expression_space: ExpressionSpace, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -57,7 +59,7 @@ class SOOSEParser(TestSetParaser):
         ----------
         test_set_df : pd.DataFrame
             The test set data containing the equations to evaluate.
-        expression_space : ExpressionSpace
+        simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_skeleton_pool : SkeletonPool
             An initial skeleton pool to add the parsed expressions to.
@@ -76,7 +78,7 @@ class SOOSEParser(TestSetParaser):
         for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOOSE Data'):
             # Parse and simplify
             try:
-                prefix_expression = expression_space.parse_expression(expression, mask_numbers=True, too_many_variables='raise')
+                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
             except ValueError:
                 n_too_many_variables += 1
                 print(prefix_expression)
@@ -84,17 +86,17 @@ class SOOSEParser(TestSetParaser):
                 continue
 
             # Check valid
-            if not expression_space.is_valid(prefix_expression, verbose=True):
+            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
                 n_invalid_expressions += 1
                 continue
 
-            prefix_expression = expression_space.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression)
 
             # Codify
-            prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
+            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
-            code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, expression_space.variables + constants)
+            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
+            code = codify(code_string, base_skeleton_pool.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)
@@ -110,7 +112,7 @@ class SOOSEParser(TestSetParaser):
 
 
 class FeynmanParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, expression_space: ExpressionSpace, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -118,7 +120,7 @@ class FeynmanParser(TestSetParaser):
         ----------
         test_set_df : pd.DataFrame
             The test set data containing the equations to evaluate.
-        expression_space : ExpressionSpace
+        simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_skeleton_pool : SkeletonPool
             An initial skeleton pool to add the parsed expressions to.
@@ -135,7 +137,7 @@ class FeynmanParser(TestSetParaser):
 
         expression_dict = {}
         for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Feynman Data', total=len(test_set_df)):
-            if row['# variables'] > len(expression_space.variables):
+            if row['# variables'] > len(base_skeleton_pool.variables):
                 n_too_many_variables += 1
                 continue
 
@@ -143,23 +145,23 @@ class FeynmanParser(TestSetParaser):
 
             # Parse and simplify
             try:
-                prefix_expression = expression_space.parse_expression(expression, mask_numbers=True, too_many_variables='raise')
+                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
             except ValueError:
                 n_too_many_variables += 1
                 warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
                 continue
 
             # Check valid
-            if not expression_space.is_valid(prefix_expression, verbose=True):
+            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
                 continue
 
-            prefix_expression = expression_space.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression)
 
             # Codify
-            prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
+            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
-            code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, expression_space.variables + constants)
+            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
+            code = codify(code_string, base_skeleton_pool.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)
@@ -175,7 +177,7 @@ class FeynmanParser(TestSetParaser):
 
 
 class NguyenParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, expression_space: ExpressionSpace, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -183,7 +185,7 @@ class NguyenParser(TestSetParaser):
         ----------
         test_set_df : pd.DataFrame
             The test set data containing the equations to evaluate.
-        expression_space : ExpressionSpace
+        simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_skeleton_pool : SkeletonPool
             An initial skeleton pool to add the parsed expressions to.
@@ -205,24 +207,24 @@ class NguyenParser(TestSetParaser):
 
             # Parse and simplify
             try:
-                prefix_expression = expression_space.parse_expression(expression, mask_numbers=True, too_many_variables='raise')
+                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
             except ValueError:
                 n_too_many_variables += 1
                 warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
                 continue
 
             # Check valid
-            if not expression_space.is_valid(prefix_expression, verbose=True):
+            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
                 n_invalid_expressions += 1
                 continue
 
-            prefix_expression = expression_space.simplify(prefix_expression)
+            prefix_expression = simplipy_engine.simplify(prefix_expression)
 
             # Codify
-            prefix_expression_w_num = expression_space.operators_to_realizations(prefix_expression)
+            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = num_to_constants(prefix_expression_w_num, inplace=True)
-            code_string = expression_space.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, expression_space.variables + constants)
+            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
+            code = codify(code_string, base_skeleton_pool.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)

@@ -82,8 +82,8 @@ class Trainer():
 
         self.gradient_accumulation_steps = gradient_accumulation_steps
 
-        self.metrics_ignore_index = self.model.expression_space.tokenizer["<pad>"]
-        self.numeric_token_index = self.model.expression_space.tokenizer["<num>"]
+        self.metrics_ignore_index = self.model.simplipy_engine.tokenizer["<pad>"]
+        self.numeric_token_index = self.model.simplipy_engine.tokenizer["<constant>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
         self.mse_loss = nn.MSELoss(reduction='sum')
         self.contrastive_loss_fn = ContrastiveLoss()
@@ -320,7 +320,7 @@ class Trainer():
                 # Use memory (embeddings of encoder) that the model cached during the forward pass
                 contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
-            # Compare the num_output at the positions where the labels are `<num>`
+            # Compare the num_output at the positions where the labels are `<constant>`
             num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
             if numeric_prediction_loss_weight > 0:
@@ -458,7 +458,7 @@ class Trainer():
                     # Use memory (embeddings of encoder) that the model cached during the forward pass
                     contrastive_loss = self.contrastive_loss_fn(self.model.memory.reshape(self.model.memory.shape[0], -1), batch['skeleton_hashes'])
 
-                # Compare the num_output at the positions where the labels are `<num>`
+                # Compare the num_output at the positions where the labels are `<constant>`
                 num_loss = torch.tensor(0, device=self.model.device, dtype=torch.float32)
 
                 if numeric_prediction_loss_weight > 0:

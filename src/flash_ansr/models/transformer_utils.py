@@ -18,7 +18,7 @@ class Tokenizer:
         The special tokens to add to the vocabulary, by default None
     '''
     def __init__(self, vocab: list[str], special_tokens: list[str] | None = None) -> None:
-        self.special_tokens = special_tokens or ["<pad>", "<bos>", "<eos>", "<unk>", "<cls>", "<mask>", "<num>"]
+        self.special_tokens = special_tokens or ["<pad>", "<bos>", "<eos>", "<unk>", "<cls>", "<mask>", "<constant>"]
         self.vocab = self.special_tokens + vocab
 
         self.token2idx = {token: idx for idx, token in enumerate(self.vocab)}

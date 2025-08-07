@@ -22,7 +22,7 @@ class TestTokenizer(unittest.TestCase):
         assert "a" in tokenizer
         assert 7 in tokenizer
 
-        assert list(tokenizer) == ["<pad>", "<bos>", "<eos>", "<unk>", "<cls>", "<mask>", "<num>", "a", "b", "c", "d"]
+        assert list(tokenizer) == ["<pad>", "<bos>", "<eos>", "<unk>", "<cls>", "<mask>", "<constant>", "a", "b", "c", "d"]
 
     def test_tokenizer_from_config(self):
         config = {
