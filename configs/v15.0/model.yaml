@@ -6,8 +6,8 @@ pre_encoder_support_nan: False
 encoder: "SetTransformer"
 encoder_kwargs:
   hidden_size: 512
-  n_enc_isab: 5
-  n_dec_sab: 2
+  n_enc_isab: 8
+  n_dec_sab: 4
   n_induce: 64
   n_heads: 8
   layer_norm: False

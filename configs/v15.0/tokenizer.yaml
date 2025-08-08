@@ -6,6 +6,14 @@ special_tokens:
   - "<cls>"
   - "<mask>"
   - "<constant>"
+  - '0'
+  - '1'
+  - '(-1)'
+  - 'np.pi'
+  - 'np.e'
+  - 'float("inf")'
+  - 'float("-inf")'
+  - 'float("nan")'
 
 operators:
   - "+"
@@ -15,6 +23,7 @@ operators:
   - abs
   - inv
   - neg
+  - pow
   - pow2
   - pow3
   - pow4
@@ -47,3 +56,7 @@ variables:
   - x4
   - x5
   - x6
+  - x7
+  - x8
+  - x9
+  - x10
