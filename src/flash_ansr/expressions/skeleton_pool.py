@@ -396,7 +396,7 @@ class SkeletonPool:
             f = holdout_pool.simplipy_engine.code_to_lambda(code)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
-                expression_image = safe_f(f, self.holdout_X[:, :self.n_variables], self.holdout_C[:len(constants)]).round(4)
+                expression_image = safe_f(f, self.holdout_X[:, :holdout_pool.n_variables], self.holdout_C[:len(constants)]).round(4)
                 expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
                 self.holdout_skeletons.add(tuple(no_constant_expression))

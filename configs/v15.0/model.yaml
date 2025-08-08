@@ -1,4 +1,4 @@
-encoder_max_n_variables: 7  # includes the dependent variable
+encoder_max_n_variables: 11  # includes the dependent variable
 
 pre_encoder_input_type: "ieee-754-32"
 pre_encoder_support_nan: False

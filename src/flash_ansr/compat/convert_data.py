@@ -51,6 +51,27 @@ class ParserFactory:
                 raise ValueError(f'Unknown parser: {parser_name}')
 
 
+def is_number(token: str) -> bool:
+    '''
+    Check if a token is a number.
+
+    Parameters
+    ----------
+    token : str
+        The token to check.
+
+    Returns
+    -------
+    bool
+        True if the token is a number, False otherwise.
+    '''
+    try:
+        float(token)
+        return True
+    except ValueError:
+        return False
+
+
 class SOOSEParser(TestSetParaser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
         '''
@@ -78,13 +99,7 @@ class SOOSEParser(TestSetParaser):
         expression_dict = {}
         for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOOSE Data'):
             # Parse and simplify
-            try:
-                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-            except ValueError:
-                n_too_many_variables += 1
-                print(prefix_expression)
-                warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
-                continue
+            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
 
             # Check valid
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
@@ -94,8 +109,13 @@ class SOOSEParser(TestSetParaser):
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
-            prefix_expression, _ = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
+            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+
+            if len(mapping) > len(base_skeleton_pool.variables):
+                n_too_many_variables += 1
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
+                continue
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
@@ -149,11 +169,7 @@ class FeynmanParser(TestSetParaser):
             expression = str(row['Formula'])
 
             # Parse and simplify
-            try:
-                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-            except ValueError:
-                warnings.warn(f'Could not parse expression {expression}')
-                continue
+            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
 
             # Check valid
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
@@ -162,12 +178,12 @@ class FeynmanParser(TestSetParaser):
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
             prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
 
             if len(mapping) > len(base_skeleton_pool.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
@@ -219,12 +235,7 @@ class NguyenParser(TestSetParaser):
             expression = str(row['Equation'])
 
             # Parse and simplify
-            try:
-                prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-            except ValueError:
-                n_too_many_variables += 1
-                warnings.warn(f'Expression {expression} has too many variables despite checking the dataset')
-                continue
+            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
 
             # Check valid
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
@@ -234,8 +245,13 @@ class NguyenParser(TestSetParaser):
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
 
             # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators]
-            prefix_expression, _ = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
+            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+
+            if len(mapping) > len(base_skeleton_pool.variables):
+                n_too_many_variables += 1
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
+                continue
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)

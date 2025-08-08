@@ -20,7 +20,7 @@ n_support_prior_kwargs:
   min_value: 16
   max_value: 512
 
-variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6']
+variables: ['x1', 'x2', 'x3']
 
 operator_weights:
   "+": 10
