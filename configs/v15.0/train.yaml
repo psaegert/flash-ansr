@@ -12,9 +12,9 @@ lr_scheduler:
   kwargs:
     min_lr: 0
     max_lr: 1e-4
-    warmup_steps: 150_000
-    annealing_steps: 300_000
-    total_steps: 1_500_000
+    warmup_steps: 500_000
+    annealing_steps: 1_000_000
+    total_steps: 5_000_000
 
 batch_size: 128
 
@@ -25,5 +25,5 @@ val_size: 100_000
 
 numeric_prediction_loss_weight: 0
 
-steps: 1_500_000
+steps: 5_000_000
 device: cuda
