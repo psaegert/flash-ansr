@@ -599,6 +599,8 @@ class SkeletonPool:
                 if self.simplify:
                     try:
                         skeleton = self.simplipy_engine.simplify(skeleton, inplace=True, max_pattern_length=4)
+                        if any(forbidden_token in skeleton for forbidden_token in ['float("inf")', 'float("-inf")', 'float("nan")']):
+                            raise NoValidSampleFoundError(f"Skeleton contains forbidden tokens: {skeleton}")
                     except Exception as e:
                         print(f"Failed to simplify skeleton: {skeleton}")
                         raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e
