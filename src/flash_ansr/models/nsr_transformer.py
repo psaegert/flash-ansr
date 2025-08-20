@@ -1,6 +1,7 @@
 import os
 import warnings
 from typing import Any, Literal
+import re
 
 import torch
 from torch import nn
@@ -309,7 +310,6 @@ class FlashANSRTransformer(nn.Module):
         for _ in range(max_len):
             all_sequences = []
             all_scores = []
-
             # Prepare batched sequences and their scores
             for seq, score in beams:
                 if seq[-1] == self.tokenizer['<eos>']:
@@ -390,6 +390,10 @@ class FlashANSRTransformer(nn.Module):
             else:
                 beams = all_candidates[:beam_width]
 
+            for beam, score in beams:
+                if beam[0] != self.tokenizer['<bos>']:
+                    raise ValueError(f"Beam must start with <bos> token. Got {beam}.")
+
             # If no beams are left to expand, break early
             if not beams:
                 break
@@ -399,6 +403,11 @@ class FlashANSRTransformer(nn.Module):
 
         # Step 7: Combine completed sequences with current beams (in case they are incomplete)
         completed_sequences.extend(beams)
+
+        # Step 7.4: Constantify the expressions in completed sequences
+        for i, (seq, score) in enumerate(completed_sequences):
+            constantified_seq = self.constantify_expression(seq)
+            completed_sequences[i] = (constantified_seq, score)
 
         # Step 8: Sort all sequences by score (highest scores first)
         completed_sequences = sorted(completed_sequences, key=lambda x: x[1], reverse=True)
@@ -567,6 +576,7 @@ class FlashANSRTransformer(nn.Module):
 
         for seq, score in zip(completed_sequences, completed_scores):
             encoded_expression, before, after = self.extract_expression_from_beam(seq)
+            encoded_expression = self.constantify_expression(encoded_expression)  # type: ignore
 
             # Decode the sequence
             expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
@@ -602,6 +612,35 @@ class FlashANSRTransformer(nn.Module):
 
         return filtered_sequences, filtered_scores, filtered_is_valid
 
+    def constantify_expression(self, expression: list[int] | list[str]) -> list[int] | list[str]:
+        # Replace mult4, div3 etc by multiplication with <constant>
+
+        # Find out if the expression is encoded or not
+        if isinstance(expression, list) and all(isinstance(token, int) for token in expression):
+            # If it's encoded, we need to convert it to the tokenizer's string representation
+            constantified_expression = []
+            for token in expression:
+                if re.match(r"^mult\d+$", self.tokenizer[token]) or re.match(r"^div\d+$", self.tokenizer[token]):
+                    # Replace with '*', '<constant>
+                    constantified_expression.append(self.tokenizer['*'])
+                    constantified_expression.append(self.tokenizer['<constant>'])
+                else:
+                    constantified_expression.append(token)
+
+        elif isinstance(expression, list) and all(isinstance(token, str) for token in expression):
+            # If it's already a string representation, we can directly replace the patterns
+            constantified_expression = []
+            for token in expression:
+                if re.match(r"^mult\d+$", token) or re.match(r"^div\d+$", token):  # type: ignore
+                    # Replace with '*', '<constant>'
+                    constantified_expression.append('*')
+                    constantified_expression.append('<constant>')
+                else:
+                    constantified_expression.append(token)
+        else:
+            raise ValueError("Expression must be a list of integers or strings.")
+        return constantified_expression
+
     def extract_expression_from_beam(self, beam: list[int]) -> tuple[list[int], list[int], list[int]]:
         '''
         Extract the expression from a beam.
@@ -617,13 +656,13 @@ class FlashANSRTransformer(nn.Module):
             The encoded expression, the tokens before <bos>, and the tokens after <eos>.
         '''
         if self.tokenizer['<bos>'] not in beam or self.tokenizer['<eos>'] not in beam:
-            raise ValueError("Beam must contain <bos> and <eos> tokens.")
+            raise ValueError(f"Beam must contain <bos> and <eos> tokens. Got {beam}.")
 
         bos_index = beam.index(self.tokenizer['<bos>'])
         eos_index = beam.index(self.tokenizer['<eos>'])
 
-        before = beam[:bos_index]
-        after = beam[eos_index + 1:]
+        before = beam[:bos_index + 1]
+        after = beam[eos_index:]
 
         return beam[bos_index + 1:eos_index], before, after
 

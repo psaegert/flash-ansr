@@ -350,29 +350,41 @@ class FlashANSR(BaseEstimator):
 
             # --- /INFERENCE ---
 
-            if not self._results:
-                raise ConvergenceError("The optimization did not converge for any beam")
-
-            # Sort the results by the best loss of each beam
-            self._results = list(sorted(self._results, key=lambda x: (
-                x['score'] if not np.isnan(x['score']) else float('inf'),
-                np.isnan(x['score'])
-            )))
-
-            # Create a dataframe
-            self.results = pd.DataFrame(self._results)
-
-            # Explode the fits for each beam
-            self.results = self.results.explode('fits')
-            self.results['beam_id'] = self.results.index
-            self.results.reset_index(drop=True, inplace=True)
-
-            # Split the fit tuples into columns
-            fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
-            self.results = pd.concat([self.results, fits_columns], axis=1)
-            self.results.drop(columns=['fits'], inplace=True)
+            self.compile_results(self.parsimony)
 
             np.seterr(**numpy_errors_before)
+
+    def compile_results(self, parsimony: float) -> None:
+        if not self._results:
+            raise ConvergenceError("The optimization did not converge for any beam")
+
+        self.initial_parsimony = self.parsimony
+        self.parsimony = parsimony
+
+        # Compute the new score for each result
+        for result in self._results:
+            if 'score' in result:
+                # Recompute the score with the new parsimony coefficient
+                result['score'] = np.log10(result['fvu']) + self.parsimony * len(result['expression'])
+
+        # Sort the results by the best loss of each beam
+        self._results = list(sorted(self._results, key=lambda x: (
+            x['score'] if not np.isnan(x['score']) else float('inf'),
+            np.isnan(x['score'])
+        )))
+
+        # Create a dataframe
+        self.results = pd.DataFrame(self._results)
+
+        # Explode the fits for each beam
+        self.results = self.results.explode('fits')
+        self.results['beam_id'] = self.results.index
+        self.results.reset_index(drop=True, inplace=True)
+
+        # Split the fit tuples into columns
+        fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
+        self.results = pd.concat([self.results, fits_columns], axis=1)
+        self.results.drop(columns=['fits'], inplace=True)
 
     def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
         '''

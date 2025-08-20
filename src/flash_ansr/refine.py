@@ -120,7 +120,7 @@ class Refiner:
 
         self.expression_code = codify(
             code_string=self.code_string,
-            variables=self.simplipy_engine.variables + self.constants_symbols
+            variables=[f'x{i+1}' for i in range(X.shape[1])] + self.constants_symbols
         )
 
         # Since the SimpliPyEngine is already initialized, we can use the same global scope
@@ -380,4 +380,4 @@ class Refiner:
         str
             The string representation
         '''
-        return f"Refiner(expression={self.input_expression}, best_constants={self._all_constants_values[0][0]}, best_loss={self.loss})"
+        return f"Refiner(expression={self.input_expression}, best_constants={self._all_constants_values[0][0]}, best_loss={self._all_constants_values[0][2]})"
