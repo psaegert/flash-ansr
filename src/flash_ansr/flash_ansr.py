@@ -15,7 +15,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.models import FlashANSRTransformer, Tokenizer
+from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.train.train import OptimizerFactory
 from flash_ansr.train.scheduler import LRSchedulerFactory
 
@@ -70,7 +70,7 @@ class FlashANSR(BaseEstimator):
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
-            flash_ansr_transformer: FlashANSRTransformer,
+            flash_ansr_transformer: FlashANSRModel,
             tokenizer: Tokenizer,
             generation_config: GenerationConfig | None = None,
             numeric_head: bool = False,
@@ -122,7 +122,7 @@ class FlashANSR(BaseEstimator):
 
         simplipy_engine = SimpliPyEngine.from_config(simplipy_engine_path)
 
-        model = FlashANSRTransformer.from_config(flash_ansr_transformer_path)
+        model = FlashANSRModel.from_config(flash_ansr_transformer_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
         model.eval().to(device)
 

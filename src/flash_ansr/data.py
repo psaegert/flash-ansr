@@ -11,7 +11,7 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models.transformer_utils import Tokenizer
+from flash_ansr.model.transformer import Tokenizer
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants

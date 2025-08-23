@@ -13,7 +13,7 @@ from torch import nn
 
 from tqdm import tqdm
 
-from flash_ansr.models import FlashANSRTransformer
+from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
@@ -57,7 +57,7 @@ def collate_fn(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
 class Trainer():
     def __init__(
             self,
-            model: FlashANSRTransformer,
+            model: FlashANSRModel,
             optimizer: torch.optim.Optimizer,
             lr_scheduler: LRScheduler | None,
             batch_size: int,
@@ -110,7 +110,7 @@ class Trainer():
 
         # Support loading existing models
         print(f'Loading model from {config_["model"]}')
-        model = FlashANSRTransformer.from_config(config_["model"])
+        model = FlashANSRModel.from_config(config_["model"])
 
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer']['kwargs'] if 'kwargs' in config_['optimizer'] else {})
@@ -163,7 +163,7 @@ class Trainer():
             checkpoint_directory: str | None = None,
             validate_interval: int | None = None,
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
-            verbose: bool = False) -> FlashANSRTransformer:
+            verbose: bool = False) -> FlashANSRModel:
         return self.run(
             project_name=project_name,
             entity=entity,
@@ -204,7 +204,7 @@ class Trainer():
             validate_size: int | None = None,
             validate_batch_size: int = 128,
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
-            verbose: bool = False) -> FlashANSRTransformer:
+            verbose: bool = False) -> FlashANSRModel:
         if verbose:
             print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
         torch.cuda.empty_cache()

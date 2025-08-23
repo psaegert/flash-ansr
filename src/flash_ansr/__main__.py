@@ -256,15 +256,15 @@ def main(argv: str = None) -> None:
             from flash_ansr.eval.evaluation import Evaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
-            from flash_ansr.models import FlashANSRTransformer
+            from flash_ansr.model import FlashANSRModel
 
             if os.path.isdir(substitute_root_path(args.model)):
                 # Load the model
-                _, model = FlashANSRTransformer.load(args.model)
+                _, model = FlashANSRModel.load(args.model)
                 print(f"Model loaded from {args.model}")
             elif os.path.isfile(substitute_root_path(args.model)):
                 # The model is specified with a file
-                _, model = FlashANSRTransformer.load(substitute_root_path(args.model))
+                _, model = FlashANSRModel.load(substitute_root_path(args.model))
                 print(f"Model loaded from {substitute_root_path(args.model)}")
             else:
                 raise ValueError(f"Invalid model configuration: {args.model}")
@@ -463,11 +463,11 @@ def main(argv: str = None) -> None:
             print(f'Range:          {1e3 * results["min_iteration_time"]:.0f} - {1e3 * results["max_iteration_time"]:.0f} ms')
 
         case 'install':
-            from flash_ansr.models.manage import install_model
+            from flash_ansr.model.manage import install_model
             install_model(args.model)
 
         case 'remove':
-            from flash_ansr.models.manage import remove_model
+            from flash_ansr.model.manage import remove_model
             remove_model(args.path)
 
         case _:

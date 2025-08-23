@@ -6,7 +6,7 @@ import numpy as np
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models.transformer_utils import Tokenizer
+from flash_ansr.model.transformer import Tokenizer
 from flash_ansr.utils import load_config
 
 

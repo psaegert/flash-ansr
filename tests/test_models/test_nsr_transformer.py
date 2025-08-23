@@ -6,8 +6,8 @@ import torch
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models.transformer_utils import Tokenizer
-from flash_ansr import FlashANSRTransformer, get_path, SetTransformer
+from flash_ansr.model.transformer_utils import Tokenizer
+from flash_ansr import FlashANSRModel, get_path, SetTransformer
 
 
 class TestFlashANSRTransformer(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         shutil.rmtree(self.save_dir)
 
     def test_nsr_forward(self):
-        nsr = FlashANSRTransformer(
+        nsr = FlashANSRModel(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=1024,
@@ -40,7 +40,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert logits.shape == (batch_size, sequence_length, len(nsr.tokenizer))
 
     def test_nsr_beam_search(self):
-        nsr = FlashANSRTransformer(
+        nsr = FlashANSRModel(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
@@ -55,7 +55,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert len(scores) == 4
 
     def test_nsr_sample_top_kp(self):
-        nsr = FlashANSRTransformer(
+        nsr = FlashANSRModel(
             simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
@@ -73,9 +73,9 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert len(scores) <= 4
 
     def test_nsr_from_config(self):
-        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', filename='model.yaml'))
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', filename='model.yaml'))
 
-        assert isinstance(nsr, FlashANSRTransformer)
+        assert isinstance(nsr, FlashANSRModel)
         assert isinstance(nsr.encoder, SetTransformer)
         assert isinstance(nsr.decoder, torch.nn.TransformerDecoder)
 
@@ -94,14 +94,14 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_save_load_relative(self):
         # Create from config
         nsr_config_path = get_path('configs', 'test', 'model.yaml')
-        nsr = FlashANSRTransformer.from_config(nsr_config_path)
+        nsr = FlashANSRModel.from_config(nsr_config_path)
 
         # Save
         saved_model_path = self.save_dir
         nsr.save(saved_model_path, config=nsr_config_path, reference='relative')
 
         # Re-load
-        nsr_reload_config, nsr_reload = FlashANSRTransformer.load(saved_model_path)
+        nsr_reload_config, nsr_reload = FlashANSRModel.load(saved_model_path)
 
         for param_nsr, param_nsr_reload in zip(nsr.parameters(), nsr_reload.parameters()):
             assert param_nsr.data.eq(param_nsr_reload.data).all()
@@ -109,14 +109,14 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_save_load_absolute(self):
         # Create from config
         nsr_config_path = get_path('configs', 'test', 'model.yaml')
-        nsr = FlashANSRTransformer.from_config(nsr_config_path)
+        nsr = FlashANSRModel.from_config(nsr_config_path)
 
         # Save
         saved_model_path = self.save_dir
         nsr.save(saved_model_path, config=nsr_config_path, reference='absolute')
 
         # Re-load
-        nsr_reload_config, nsr_reload = FlashANSRTransformer.load(saved_model_path)
+        nsr_reload_config, nsr_reload = FlashANSRModel.load(saved_model_path)
 
         for param_nsr, param_nsr_reload in zip(nsr.parameters(), nsr_reload.parameters()):
             assert param_nsr.data.eq(param_nsr_reload.data).all()
@@ -124,20 +124,20 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_save_load_project(self):
         # Create from config
         nsr_config_path = get_path('configs', 'test', 'model.yaml')
-        nsr = FlashANSRTransformer.from_config(nsr_config_path)
+        nsr = FlashANSRModel.from_config(nsr_config_path)
 
         # Save
         saved_model_path = self.save_dir
         nsr.save(saved_model_path, config=nsr_config_path, reference='project')
 
         # Re-load
-        nsr_reload_config, nsr_reload = FlashANSRTransformer.load(saved_model_path)
+        nsr_reload_config, nsr_reload = FlashANSRModel.load(saved_model_path)
 
         for param_nsr, param_nsr_reload in zip(nsr.parameters(), nsr_reload.parameters()):
             assert param_nsr.data.eq(param_nsr_reload.data).all()
 
     def test_masking(self):
-        nsr = FlashANSRTransformer.from_config(get_path('configs', 'test', 'model.yaml'))
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
         nsr.eval()
 
         B = 7

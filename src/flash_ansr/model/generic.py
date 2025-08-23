@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from flash_ansr.models.factory import ModelFactory
+from flash_ansr.model.factory import ModelFactory
 
 
 class ConfigurableSequential(nn.Sequential):
