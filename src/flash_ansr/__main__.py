@@ -223,16 +223,24 @@ def main(argv: str = None) -> None:
 
             trainer = Trainer.from_config(args.config)
 
+            config = load_config(args.config)
+
             try:
                 trainer.run(
                     project_name=args.project,
                     entity=args.entity,
                     name=args.name,
-                    verbose=args.verbose,
+                    steps=config['steps'],
+                    preprocess=False,
+                    device=config['device'],
                     checkpoint_interval=args.checkpoint_interval,
                     checkpoint_directory=substitute_root_path(args.output_dir),
                     validate_interval=args.validate_interval,
-                    wandb_mode=args.mode)
+                    validate_size=config.get('val_size', None),
+                    validate_batch_size=config.get('val_batch_size', None),
+                    wandb_mode=args.mode,
+                    verbose=args.verbose,
+                )
             except KeyboardInterrupt:
                 print("Training interrupted. Saving model...")
 

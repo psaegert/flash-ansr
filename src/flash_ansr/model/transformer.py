@@ -234,7 +234,7 @@ class TransformerDecoder(nn.Module):
 
         self.output_norm = RMSNorm(model_dim)
         self.output_projection = nn.Linear(model_dim, vocab_size, bias=False)
-        self.output_projection.weight = self.tok_embeddings.weight  # Weight tying
+        nn.init.xavier_uniform_(self.output_projection.weight, gain=0.1)  # Use a small gain
 
     def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
         batch_size, seq_len = tokens.shape
