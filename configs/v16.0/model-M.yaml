@@ -1,0 +1,20 @@
+simplipy_engine: './simplipy_engine.yaml'
+tokenizer: './tokenizer.yaml'
+
+encoder_max_n_variables: 11
+encoder_dim: 768
+encoder_n_heads: 12
+encoder_n_isab: 8
+encoder_n_sab: 2
+encoder_n_inducing_points: 64
+encoder_n_seeds: 64
+encoder_ffn_hidden_dim: 2048
+encoder_dropout: 0.1
+
+decoder_input_dim: 768
+decoder_model_dim: 768
+decoder_n_heads: 12
+decoder_n_layers: 13
+decoder_max_seq_len: 128
+decoder_ffn_hidden_dim: 2048
+decoder_dropout: 0.1

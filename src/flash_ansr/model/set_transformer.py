@@ -232,7 +232,7 @@ class PMA(nn.Module):
 
 class SetTransformer(SetEncoder):
     def __init__(
-        self, input_dim: int, output_dim: int, model_dim: int = 256, n_heads: int = 8,
+        self, input_dim: int, output_dim: int | None, model_dim: int = 256, n_heads: int = 8,
         n_isab: int = 2, n_sab: int = 1, n_inducing_points: Union[int, List[int]] = 32,
         n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0
     ):
@@ -251,8 +251,13 @@ class SetTransformer(SetEncoder):
         self.decoder = nn.ModuleList([
             SAB(model_dim, n_heads, ffn_hidden_dim, dropout) for _ in range(n_sab)
         ])
-        self.output_norm = RMSSetNorm(model_dim)
-        self.output_projection = nn.Linear(model_dim, output_dim)
+
+        if output_dim is None:
+            self.output_norm = nn.Identity()
+            self.output_projection = nn.Identity()
+        else:
+            self.output_norm = RMSSetNorm(model_dim)  # type: ignore
+            self.output_projection = nn.Linear(model_dim, output_dim)  # type: ignore
 
         self.output_size = output_dim
 

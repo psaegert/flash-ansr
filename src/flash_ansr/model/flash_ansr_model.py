@@ -27,7 +27,6 @@ class FlashANSRModel(nn.Module):
         tokenizer: Tokenizer,
 
         encoder_max_n_variables: int,
-        encoder_output_dim: int = 512,
         encoder_dim: int = 512,
         encoder_n_heads: int = 8,
         encoder_n_isab: int = 2,
@@ -58,7 +57,7 @@ class FlashANSRModel(nn.Module):
 
         self.encoder = SetTransformer(
             input_dim=self.pre_encoder.output_size,
-            output_dim=encoder_output_dim,
+            output_dim=None,
             model_dim=encoder_dim,
             n_heads=encoder_n_heads,
             n_isab=encoder_n_isab,
@@ -71,7 +70,7 @@ class FlashANSRModel(nn.Module):
 
         self.decoder = TransformerDecoder(
             vocab_size=len(tokenizer),
-            input_dim=self.encoder.output_size,
+            input_dim=None,
             model_dim=decoder_model_dim,
             n_layers=decoder_n_layers,
             n_heads=decoder_n_heads,
@@ -111,7 +110,6 @@ class FlashANSRModel(nn.Module):
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
             encoder_max_n_variables=config_["encoder_max_n_variables"],
-            encoder_output_dim=config_["encoder_output_dim"],
             encoder_dim=config_["encoder_dim"],
             encoder_n_heads=config_["encoder_n_heads"],
             encoder_n_isab=config_["encoder_n_isab"],

@@ -212,7 +212,7 @@ class TransformerDecoder(nn.Module):
     def __init__(
         self,
         vocab_size: int,
-        input_dim: int,
+        input_dim: int | None,
         model_dim: int,
         n_layers: int,
         n_heads: int,
@@ -221,7 +221,10 @@ class TransformerDecoder(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        self.input_projection = nn.Linear(input_dim, model_dim)
+        if input_dim is None:
+            self.input_projection = nn.Identity()
+        else:
+            self.input_projection = nn.Linear(input_dim, model_dim)  # type: ignore
 
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
         self.rope = RotaryEmbedding(dim=model_dim // n_heads, max_seq_len=max_seq_len)

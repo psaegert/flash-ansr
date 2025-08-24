@@ -5,13 +5,15 @@ optimizer:
   kwargs:
     lr: 1  # Will be multiplied by scheduler
     weight_decay: 0.01
-    amsgrad: True
+    betas: [0.9, 0.95]
+    amsgrad: False
+    eps: 0.000001  # 1e-6
 
 lr_scheduler:
   name: Trapezoidal
   kwargs:
     min_lr: 0
-    max_lr: 1e-4
+    max_lr: 2e-4
     warmup_steps: 50_000
     annealing_steps: 1_00_000
     total_steps: 5_00_000
