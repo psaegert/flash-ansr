@@ -21,8 +21,6 @@ USE_CHECKPOINTING = True
 
 
 class FlashANSRModel(nn.Module):
-    memory: torch.Tensor
-
     def __init__(
         self,
         simplipy_engine: SimpliPyEngine,
@@ -84,6 +82,8 @@ class FlashANSRModel(nn.Module):
 
         self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
+        self.memory: torch.Tensor | None = None
+
     @property
     def device(self) -> torch.device:
         return next(self.parameters()).device
@@ -129,16 +129,24 @@ class FlashANSRModel(nn.Module):
             decoder_dropout=config_["decoder_dropout"],
         )
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None) -> torch.Tensor:
+    def _create_memory(self, data: torch.Tensor) -> torch.Tensor:
         # Pre-process input data
         data_pre_encodings: torch.Tensor = self.pre_encoder(data)
         B, M, D, E = data_pre_encodings.size()
 
         # Encoder forward pass
-        self.memory = self.encoder(data_pre_encodings.view(B, M, D * E))
+        memory = self.encoder(data_pre_encodings.view(B, M, D * E))
 
-        if self.memory.ndim > 3:
-            self.memory = self.memory.view(B, -1, self.memory.size(-1))
+        if memory.ndim > 3:
+            memory = memory.view(B, -1, memory.size(-1))
+
+        return memory
+
+    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None) -> torch.Tensor:
+        if memory is not None:
+            self.memory = memory
+        else:
+            self.memory = self._create_memory(data)
 
         # Add numeric token logic back
         # The new TransformerDecoder handles embedding and positional encoding internally.
@@ -166,7 +174,6 @@ class FlashANSRModel(nn.Module):
         return logits
 
     def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
-
         if complexity is None:
             initial_beam, input_num = [self.tokenizer['<bos>']], None
         else:
@@ -176,6 +183,8 @@ class FlashANSRModel(nn.Module):
         beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences = []  # store completed sequences here
         n_pruned = 0
+
+        memory = self._create_memory(data)
 
         pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})")
 
@@ -211,7 +220,7 @@ class FlashANSRModel(nn.Module):
                 mini_batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
 
                 # Forward pass for the mini-batch
-                logits = self.forward(mini_batch, mini_batch_data, input_num=input_num_tensor)
+                logits = self.forward(mini_batch, mini_batch_data, input_num=input_num_tensor, memory=memory)
 
                 # Collect the logits for the next token
                 all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)
@@ -297,6 +306,8 @@ class FlashANSRModel(nn.Module):
         else:
             initial_token, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
 
+        memory = self._create_memory(data)
+
         # Initialize sequences for generation
         sequences = [initial_token.copy() for _ in range(choices)]
         scores = [0.0] * choices
@@ -328,7 +339,7 @@ class FlashANSRModel(nn.Module):
 
                 # Forward pass
                 batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
-                logits = self.forward(input_ids_tensor, batch_data, input_num=input_num_tensor)
+                logits = self.forward(input_ids_tensor, batch_data, input_num=input_num_tensor, memory=memory)
 
                 # Get logits for the next token
                 logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)

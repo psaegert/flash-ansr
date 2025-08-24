@@ -41,6 +41,30 @@ class SetNorm(nn.Module):
         return x_norm * self.gamma + self.beta
 
 
+class RMSSetNorm(nn.Module):
+    """
+    RMS Normalization layer for sets.
+
+    Normalizes features across the set and feature dimensions for each batch element.
+    Given an input X of shape (B, M, D), it computes the RMS over the M and D dimensions,
+    resulting in statistics of shape (B, 1, 1).
+    It then applies a learnable affine parameter gamma of shape (1, 1, D).
+    """
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(1, 1, dim))
+
+    def _rms(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.sqrt(x.pow(2).mean(dim=(1, 2), keepdim=True) + self.eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (B, M, D)
+        rms = self._rms(x)
+        x_norm = x / rms
+        return x_norm * self.gamma
+
+
 class MultiheadAttentionBlock(nn.Module):
     """
     Multi-head attention block. Fuses QKV for self-attention, uses separate Q/KV for cross-attention.
@@ -105,7 +129,7 @@ class MultiheadAttentionBlock(nn.Module):
 
 
 class MAB(nn.Module):
-    """Multihead Attention Block with pre-normalization (SetNorm), FFN, and optional checkpointing."""
+    """Multihead Attention Block with pre-normalization (RMSSetNorm), FFN, and optional checkpointing."""
     def __init__(
         self,
         dim_q: int,
@@ -121,14 +145,14 @@ class MAB(nn.Module):
         self.dim = dim
         self.use_checkpointing = use_checkpointing
 
-        self.norm_q = SetNorm(dim_q)
-        self.norm_kv = SetNorm(dim_kv) if dim_kv != dim_q else self.norm_q
+        self.norm_q = RMSSetNorm(dim_q)
+        self.norm_kv = RMSSetNorm(dim_kv) if dim_kv != dim_q else self.norm_q
 
         self.attention = MultiheadAttentionBlock(
             dim_q=dim_q, dim_kv=dim_kv, dim_out=dim, n_heads=n_heads,
             dropout=dropout, is_self_attention=is_self_attention  # Pass flag down
         )
-        self.norm_ffn = SetNorm(dim)
+        self.norm_ffn = RMSSetNorm(dim)
         self.ffn = SwiGLU(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
@@ -227,7 +251,7 @@ class SetTransformer(SetEncoder):
         self.decoder = nn.ModuleList([
             SAB(model_dim, n_heads, ffn_hidden_dim, dropout) for _ in range(n_sab)
         ])
-        self.output_norm = SetNorm(model_dim)
+        self.output_norm = RMSSetNorm(model_dim)
         self.output_projection = nn.Linear(model_dim, output_dim)
 
         self.output_size = output_dim

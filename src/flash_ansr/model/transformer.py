@@ -180,8 +180,9 @@ class TransformerDecoderBlock(nn.Module):
         encoder_memory: torch.Tensor,
         rope_emb: tuple[torch.Tensor, torch.Tensor]
     ) -> torch.Tensor:
+        normed_x = self.self_attn_norm(x)
         x = x + self.self_attention(
-            self.self_attn_norm(x), self.self_attn_norm(x),
+            normed_x, normed_x,
             rope_emb=rope_emb, is_causal=True
         )
         x = x + self.cross_attention(
@@ -245,10 +246,12 @@ class TransformerDecoder(nn.Module):
                 raise ValueError(f"extra_parallel_embeddings shape {extra_parallel_embeddings.shape} does not match token embeddings shape {h.shape}")
             h = h + extra_parallel_embeddings
 
+        projected_memory = self.input_projection(encoder_memory)
+
         rope_emb = self.rope(h, seq_len=seq_len)
 
         for layer in self.layers:
-            h = layer(h, encoder_memory, rope_emb)
+            h = layer(h, projected_memory, rope_emb)
 
         h = self.output_norm(h)
         logits = self.output_projection(h)
