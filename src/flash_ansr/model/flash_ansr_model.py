@@ -29,7 +29,6 @@ class FlashANSRModel(nn.Module):
         tokenizer: Tokenizer,
 
         encoder_max_n_variables: int,
-        encoder_input_dim: int = 32,
         encoder_output_dim: int = 512,
         encoder_dim: int = 512,
         encoder_n_heads: int = 8,
@@ -40,7 +39,6 @@ class FlashANSRModel(nn.Module):
         encoder_ffn_hidden_dim: int = 2048,
         encoder_dropout: float = 0.1,
 
-        decoder_vocab_size: int = 1024,
         decoder_input_dim: int = 512,
         decoder_model_dim: int = 512,
         decoder_n_layers: int = 6,
@@ -53,7 +51,7 @@ class FlashANSRModel(nn.Module):
 
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
-        self.decoder_max_seq_len = decoder_max_seq_len
+        self.encoder_max_n_variables = encoder_max_n_variables
 
         self.pre_encoder = IEEE75432PreEncoder(input_size=encoder_max_n_variables)
 
@@ -61,7 +59,7 @@ class FlashANSRModel(nn.Module):
         self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, decoder_input_dim)
 
         self.encoder = SetTransformer(
-            input_dim=encoder_input_dim,
+            input_dim=self.pre_encoder.output_size,
             output_dim=encoder_output_dim,
             model_dim=encoder_dim,
             n_heads=encoder_n_heads,
@@ -74,7 +72,8 @@ class FlashANSRModel(nn.Module):
         )
 
         self.decoder = TransformerDecoder(
-            vocab_size=decoder_vocab_size,
+            vocab_size=len(tokenizer),
+            input_dim=self.encoder.output_size,
             model_dim=decoder_model_dim,
             n_layers=decoder_n_layers,
             n_heads=decoder_n_heads,
@@ -112,7 +111,6 @@ class FlashANSRModel(nn.Module):
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
             encoder_max_n_variables=config_["encoder_max_n_variables"],
-            encoder_input_dim=config_["encoder_input_dim"],
             encoder_output_dim=config_["encoder_output_dim"],
             encoder_dim=config_["encoder_dim"],
             encoder_n_heads=config_["encoder_n_heads"],
@@ -122,7 +120,6 @@ class FlashANSRModel(nn.Module):
             encoder_n_seeds=config_["encoder_n_seeds"],
             encoder_ffn_hidden_dim=config_["encoder_ffn_hidden_dim"],
             encoder_dropout=config_["encoder_dropout"],
-            decoder_vocab_size=config_["decoder_vocab_size"],
             decoder_input_dim=config_["decoder_input_dim"],
             decoder_model_dim=config_["decoder_model_dim"],
             decoder_n_layers=config_["decoder_n_layers"],
@@ -163,11 +160,7 @@ class FlashANSRModel(nn.Module):
         # A simple solution is to add the numeric embeddings to the symbolic embeddings
         # before passing them to the decoder.
 
-        embeddings = self.decoder.tok_embeddings(input_tokens)
-        if numeric_embeddings is not None:
-            embeddings = embeddings + numeric_embeddings
-
-        logits = self.decoder(tokens=input_tokens, encoder_memory=self.memory, combined_embeddings=embeddings)
+        logits = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
 
         # Removed numeric head as it is not present in the new Decoder structure
         return logits

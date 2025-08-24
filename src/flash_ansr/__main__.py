@@ -224,7 +224,7 @@ def main(argv: str = None) -> None:
             trainer = Trainer.from_config(args.config)
 
             try:
-                trainer.run_from_config(
+                trainer.run(
                     project_name=args.project,
                     entity=args.entity,
                     name=args.name,

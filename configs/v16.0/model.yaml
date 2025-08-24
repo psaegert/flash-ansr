@@ -1,26 +1,21 @@
-encoder_max_n_variables: 11  # includes the dependent variable
-
-pre_encoder_input_type: "ieee-754-32"
-pre_encoder_support_nan: False
-
-encoder: "SetTransformer"
-encoder_kwargs:
-  hidden_size: 512
-  n_enc_isab: 8
-  n_dec_sab: 4
-  n_induce: 64
-  n_heads: 8
-  layer_norm: False
-  n_seeds: 64
-
-size: 512
-decoder_n_heads: 8
-decoder_ff_size: 512
-decoder_dropout: 0.1
-decoder_n_layers: 8
-
-learnable_positional_embeddings: False
-max_input_length: null
-
 simplipy_engine: './simplipy_engine.yaml'
 tokenizer: './tokenizer.yaml'
+
+encoder_max_n_variables: 11
+encoder_output_dim: 512
+encoder_dim: 512
+encoder_n_heads: 8
+encoder_n_isab: 8
+encoder_n_sab: 4
+encoder_n_inducing_points: 64
+encoder_n_seeds: 64
+encoder_ffn_hidden_dim: 2048
+encoder_dropout: 0.1
+
+decoder_input_dim: 512
+decoder_model_dim: 512
+decoder_n_layers: 8
+decoder_n_heads: 8
+decoder_max_seq_len: 128
+decoder_ffn_hidden_dim: 2048
+decoder_dropout: 0.1

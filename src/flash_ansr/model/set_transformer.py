@@ -204,6 +204,8 @@ class SetTransformer(SetEncoder):
         self.output_norm = RMSNorm(model_dim)
         self.output_projection = nn.Linear(model_dim, output_dim)
 
+        self.output_size = output_dim
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.input_projection(x)
         for isab in self.encoder:

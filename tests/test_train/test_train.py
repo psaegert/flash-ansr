@@ -27,11 +27,19 @@ class TestTrain(unittest.TestCase):
     def test_train(self, mock_log, mock_init):
         trainer = Trainer.from_config(get_path('configs', 'test', 'train.yaml'))
 
-        trainer.run_from_config(
+        steps = 2
+        device = 'cpu'
+
+        trainer.run(
             project_name='neural-symbolic-regression-test',
             entity='psaegert',
             name=f'pytest-{datetime.datetime.now().strftime("%Y%m%d%H%M%S")}',
             verbose=True,
+            steps=steps,
+            device=device,
+            preprocess=False,
             checkpoint_interval=None,
             checkpoint_directory=None,
+            wandb_mode="disabled",
+            validate_size=10,
             validate_interval=1)

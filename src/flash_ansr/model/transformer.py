@@ -236,9 +236,15 @@ class TransformerDecoder(nn.Module):
         self.output_projection = nn.Linear(model_dim, vocab_size, bias=False)
         self.output_projection.weight = self.tok_embeddings.weight  # Weight tying
 
-    def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
         batch_size, seq_len = tokens.shape
         h = self.tok_embeddings(tokens)
+
+        if extra_parallel_embeddings is not None:
+            if extra_parallel_embeddings.shape != h.shape:
+                raise ValueError(f"extra_parallel_embeddings shape {extra_parallel_embeddings.shape} does not match token embeddings shape {h.shape}")
+            h = h + extra_parallel_embeddings
+
         rope_emb = self.rope(h, seq_len=seq_len)
 
         for layer in self.layers:
