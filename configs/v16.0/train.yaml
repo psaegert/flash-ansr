@@ -14,9 +14,9 @@ lr_scheduler:
   kwargs:
     min_lr: 0
     max_lr: 2e-4
-    warmup_steps: 50_000
-    annealing_steps: 1_00_000
-    total_steps: 5_00_000
+    warmup_steps: 500_000
+    annealing_steps: 1_000_000
+    total_steps: 5_000_000
 
 batch_size: 128
 
