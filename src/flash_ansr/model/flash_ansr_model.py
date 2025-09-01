@@ -127,24 +127,24 @@ class FlashANSRModel(nn.Module):
             decoder_dropout=config_["decoder_dropout"],
         )
 
-    def _create_memory(self, data: torch.Tensor) -> torch.Tensor:
+    def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         # Pre-process input data
         data_pre_encodings: torch.Tensor = self.pre_encoder(data)
         B, M, D, E = data_pre_encodings.size()
 
         # Encoder forward pass
-        memory = self.encoder(data_pre_encodings.view(B, M, D * E))
+        memory = self.encoder(data_pre_encodings.view(B, M, D * E), data_attn_mask)
 
         if memory.ndim > 3:
             memory = memory.view(B, -1, memory.size(-1))
 
         return memory
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         if memory is not None:
             self.memory = memory
         else:
-            self.memory = self._create_memory(data)
+            self.memory = self._create_memory(data, data_attn_mask)
 
         # Add numeric token logic back
         # The new TransformerDecoder handles embedding and positional encoding internally.

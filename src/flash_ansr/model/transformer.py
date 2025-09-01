@@ -67,7 +67,7 @@ class RotaryEmbedding(nn.Module):
         inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         self.register_buffer("inv_freq", inv_freq)
 
-        t = torch.arange(self.max_seq_len, device=self.inv_freq.device)
+        t = torch.arange(self.max_seq_len, device=self.inv_freq.device)  # type: ignore
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
@@ -77,8 +77,8 @@ class RotaryEmbedding(nn.Module):
         if seq_len > self.max_seq_len:
             raise ValueError(f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
         return (
-            self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
-            self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
+            self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),  # type: ignore
+            self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),  # type: ignore
         )
 
 

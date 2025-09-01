@@ -1,0 +1,9 @@
+Running v16.0 with model v16.0
+Training model from {{ROOT}}/configs/v16.0/train.yaml
+Creating model from /home/psaegert/Projects/flash-ansr/configs/v16.0/./model.yaml
+Loading optimizer with config {'name': 'AdamW', 'kwargs': {'lr': 1, 'weight_decay': 0.01, 'betas': [0.9, 0.95], 'amsgrad': False, 'eps': 1e-06}}
+Loading lr_scheduler with config {'name': 'Trapezoidal', 'kwargs': {'min_lr': 0, 'max_lr': '2e-4', 'warmup_steps': 500000, 'annealing_steps': 1000000, 'total_steps': 5000000}}
+Loading train_dataset with config /home/psaegert/Projects/flash-ansr/configs/v16.0/./dataset_train.yaml
+Loading val_dataset with config /home/psaegert/Projects/flash-ansr/configs/v16.0/./dataset_val.yaml
+Training model (1,007,297,280 parameters) for 500,000 steps on device cuda
+Running benchmark steps...

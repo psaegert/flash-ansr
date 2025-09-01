@@ -5,7 +5,6 @@ from typing import Any, Literal
 import torch
 import torch_optimizer
 import schedulefree
-import numpy as np
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
@@ -74,9 +73,9 @@ class Trainer():
         self.cumulative_training_tokens = 0
         self.cumulative_training_pflops = 0.0
         self.cumulative_parameter_distance = 0.0
-        self.last_gradients_list: torch.Tensor | None = None
-        self.last_parameters_list: torch.Tensor | None = None
-        self.initial_parameters_list: torch.Tensor | None = None
+        # self.last_gradients_list: torch.Tensor | None = None
+        # self.last_parameters_list: torch.Tensor | None = None
+        # self.initial_parameters_list: torch.Tensor | None = None
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
@@ -89,7 +88,7 @@ class Trainer():
         if isinstance(config, str) and isinstance(config_["model"], str) and config_["model"].startswith('.'):
             config_["model"] = os.path.join(os.path.dirname(config), config_["model"])
 
-        print(f'Loading model from {config_["model"]}')
+        print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
         model = torch.compile(model, mode='max-autotune', fullgraph=True)
 
@@ -139,11 +138,20 @@ class Trainer():
         self.flops_per_token = self.model.n_params * 6
         self.cumulative_training_pflops = 0.0
         self.cumulative_training_tokens = 0
-        self.last_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
-        self.initial_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
+        # self.last_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
+        # self.initial_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
         self.cumulative_parameter_distance = 0.0
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
+
+        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_kwargs['max_value']
+
+        config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
+
+        if config_value:
+            print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")
+        else:
+            print("PYTORCH_CUDA_ALLOC_CONF is not set.")
 
     def run_training(
             self,
@@ -157,7 +165,15 @@ class Trainer():
             validate_batch_size: int = 128,
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
+
         self._setup_training_state(device)
+
+        # Benchmark / optimization for compiled models
+        print("Running benchmark steps...")
+        for step, batch in enumerate(self.train_dataset.iterate(steps=100, batch_size=self.batch_size, preprocess=preprocess)):
+            self._train_step(batch, step, preprocess, do_optimizer_step=False)
+
+        torch.cuda.empty_cache()
 
         # Initial validation
         if validate_interval is not None:
@@ -165,7 +181,7 @@ class Trainer():
 
         pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
         for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
-            self._train_step(batch, step, preprocess)
+            self._train_step(batch, step, preprocess, do_optimizer_step=True)
 
             pbar.update(1)
 
@@ -213,7 +229,7 @@ class Trainer():
                 verbose=verbose
             )
 
-    def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool) -> None:
+    def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
@@ -228,8 +244,19 @@ class Trainer():
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
+            # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
+            if data_tensor.shape[1] < self.max_set_size:
+                pad_size = self.max_set_size - data_tensor.shape[1]
+                pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
+                data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
+                data_attn_mask = torch.cat([
+                    torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
+                    torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
+            else:
+                data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
+
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model.forward(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None))
+                logits = self.model.forward(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -247,13 +274,14 @@ class Trainer():
         # Perform the optimizer step
         self.scaler.unscale_(self.optimizer)
         gradient_norms = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        if do_optimizer_step:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-        # Log metrics and update scheduler
-        self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, gradient_norms)
-        if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+            # Log metrics and update scheduler
+            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, gradient_norms)
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
         """Performs a single validation step."""
@@ -277,8 +305,19 @@ class Trainer():
                 batch = self.val_dataset.collate(batch, device=self.device)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
+                # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
+                if data_tensor.shape[1] < self.max_set_size:
+                    pad_size = self.max_set_size - data_tensor.shape[1]
+                    pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
+                    data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
+                    data_attn_mask = torch.cat([
+                        torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
+                        torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
+                else:
+                    data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
+
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None))
+                    logits = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -315,22 +354,22 @@ class Trainer():
 
     def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, gradient_norms: torch.Tensor) -> None:
         """Logs a batch's training metrics to wandb."""
-        new_gradients_list = torch.cat([p.grad.flatten() for p in self.model.parameters() if p.grad is not None])
-        if self.last_gradients_list is None:
-            gradient_cosine_similarity = np.nan
-        else:
-            gradient_cosine_similarity = torch.nn.functional.cosine_similarity(self.last_gradients_list, new_gradients_list, dim=0).item()
-        self.last_gradients_list = new_gradients_list
+        # new_gradients_list = torch.cat([p.grad.cpu().flatten() for p in self.model.parameters() if p.grad is not None])
+        # if self.last_gradients_list is None:
+        #     gradient_cosine_similarity = np.nan
+        # else:
+        #     gradient_cosine_similarity = torch.nn.functional.cosine_similarity(self.last_gradients_list, new_gradients_list, dim=0).item()
+        # self.last_gradients_list = new_gradients_list
 
-        new_parameters_list = torch.cat([p.detach().flatten() for p in self.model.parameters()])
-        self.cumulative_parameter_distance += (new_parameters_list - self.last_parameters_list).norm().item()
-        self.last_parameters_list = new_parameters_list
+        # new_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
+        # self.cumulative_parameter_distance += (new_parameters_list - self.last_parameters_list).norm().item()
+        # self.last_parameters_list = new_parameters_list
 
         log_data = {
-            "gradient_cosine_similarity": gradient_cosine_similarity,
+            # "gradient_cosine_similarity": gradient_cosine_similarity,
             "max_gradient_norm": torch.max(gradient_norms).item(),
-            "total_parameter_distance": self.cumulative_parameter_distance,
-            "effective_parameter_distance": (new_parameters_list - self.initial_parameters_list).norm().item(),
+            # "total_parameter_distance": self.cumulative_parameter_distance,
+            # "effective_parameter_distance": (new_parameters_list - self.initial_parameters_list).norm().item(),
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],

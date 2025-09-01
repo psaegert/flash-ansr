@@ -77,7 +77,7 @@ class MultiheadAttentionBlock(nn.Module):
         n_heads: int,
         dropout: float = 0.0,
         bias: bool = False,
-        is_self_attention: bool = False  # Explicit flag
+        is_self_attention: bool = False
     ):
         super().__init__()
         if dim_out % n_heads != 0:
@@ -108,7 +108,6 @@ class MultiheadAttentionBlock(nn.Module):
         seq_len_kv = key_value.shape[1]
 
         if self.is_self_attention:
-            # The caller guarantees query is key_value
             q, k, v = self.w_qkv(query).chunk(3, dim=-1)
         else:
             q = self.w_q(query)
@@ -117,6 +116,14 @@ class MultiheadAttentionBlock(nn.Module):
         q = q.view(batch_size, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+
+    # Reshape mask for PyTorch's SDPA
+        # Input mask is (B, L_kv). We need it to be broadcastable to (B, H, L_q, L_kv).
+        # Reshaping to (B, 1, 1, L_kv) achieves this.
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.view(batch_size, 1, 1, seq_len_kv)
+            # If the mask is for self-attention (e.g., 4D), we can use it directly.
 
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
@@ -139,7 +146,7 @@ class MAB(nn.Module):
         ffn_hidden_dim: Optional[int] = None,
         dropout: float = 0.0,
         use_checkpointing: bool = False,
-        is_self_attention: bool = False  # Add flag here
+        is_self_attention: bool = False
     ):
         super().__init__()
         self.dim = dim
@@ -150,15 +157,15 @@ class MAB(nn.Module):
 
         self.attention = MultiheadAttentionBlock(
             dim_q=dim_q, dim_kv=dim_kv, dim_out=dim, n_heads=n_heads,
-            dropout=dropout, is_self_attention=is_self_attention  # Pass flag down
+            dropout=dropout, is_self_attention=is_self_attention
         )
         self.norm_ffn = RMSSetNorm(dim)
         self.ffn = SwiGLU(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
-    def _forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
+    def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         normed_q = self.norm_q(query)
         normed_kv = self.norm_kv(key_value)
-        attn_output = self.attention(normed_q, normed_kv)
+        attn_output = self.attention(normed_q, normed_kv, attn_mask=attn_mask)
 
         if query.shape[-1] == self.dim:
             x = query + attn_output
@@ -168,11 +175,12 @@ class MAB(nn.Module):
         x = x + self.ffn(self.norm_ffn(x))
         return x
 
-    def forward(self, query: torch.Tensor, key_value: torch.Tensor) -> torch.Tensor:
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.training and self.use_checkpointing:
-            return checkpoint(self._forward, query, key_value, use_reentrant=False)
+            # Pass attn_mask through checkpointing
+            return checkpoint(self._forward, query, key_value, attn_mask, use_reentrant=False)
         else:
-            return self._forward(query, key_value)
+            return self._forward(query, key_value, attn_mask)
 
 
 class SAB(nn.Module):
@@ -182,10 +190,12 @@ class SAB(nn.Module):
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=USE_CHECKPOINTING,
-            is_self_attention=True  # This is true self-attention
+            is_self_attention=True
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # NOTE: The SAB in the decoder operates on a dense, fixed-size set from PMA.
+        # It does not require a mask. If SAB were used in the encoder, it would need to accept one.
         return self.mab(x, x)
 
 
@@ -198,19 +208,31 @@ class ISAB(nn.Module):
         self.mab_cross = MAB(
             dim_q=dim_out, dim_kv=dim_in, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False  # This is cross-attention
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
         )
         self.mab_self = MAB(
             dim_q=dim_in, dim_kv=dim_out, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False  # This is cross-attention
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = x.shape[0]
         inducing = self.inducing_points.expand(batch_size, -1, -1)
-        h = self.mab_cross(inducing, x)
-        return self.mab_self(x, h)
+
+        # Inducing points attend to the input set x. Mask is applied to x (key/value).
+        h = self.mab_cross(inducing, x, attn_mask=attn_mask)
+
+        # Input set x attends to the dense inducing point representation h.
+        # No mask is needed for the attention calculation itself, as h (key/value) is not padded.
+        out = self.mab_self(x, h)
+
+    # Zero out the outputs corresponding to padded inputs to prevent information leakage
+        # in residual connections and subsequent layers.
+        if attn_mask is not None:
+            out = out * attn_mask.unsqueeze(-1)
+
+        return out
 
 
 class PMA(nn.Module):
@@ -221,13 +243,14 @@ class PMA(nn.Module):
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False  # This is cross-attention
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size = x.shape[0]
         seeds = self.seed_vectors.expand(batch_size, -1, -1)
-        return self.mab(seeds, x)
+        # Seeds attend to the input set x. Mask is applied to x (key/value).
+        return self.mab(seeds, x, attn_mask=attn_mask)
 
 
 class SetTransformer(SetEncoder):
@@ -261,13 +284,22 @@ class SetTransformer(SetEncoder):
 
         self.output_size = output_dim
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.input_projection(x)
+
+    # Apply mask to input features before encoder to zero out padding.
+        if attn_mask is not None:
+            x = x * attn_mask.unsqueeze(-1)
+
         for isab in self.encoder:
-            x = isab(x)
-        x = self.pooling(x)
+            x = isab(x, attn_mask=attn_mask)
+
+        x = self.pooling(x, attn_mask=attn_mask)
+
+        # The decoder operates on the dense output of PMA, so no mask is needed.
         for sab in self.decoder:
             x = sab(x)
+
         x = self.output_norm(x)
         x = self.output_projection(x)
         return x
@@ -288,7 +320,7 @@ if __name__ == "__main__":
     n_isab = 6
     n_sab = 2
     n_inducing_points = 64
-    n_seeds = 64  # This determines the output set size
+    n_seeds = 64
 
     model = SetTransformer(
         input_dim=input_dim, output_dim=output_dim, model_dim=model_dim, n_heads=n_heads,
@@ -298,6 +330,15 @@ if __name__ == "__main__":
 
     x = torch.randn(batch_size, set_size, input_dim, device=device)
     y = torch.randn(batch_size, n_seeds, output_dim, device=device)
+
+# Create a sample attention mask
+    # Simulate batches where each set has a different size.
+    # Here, we create a simple mask where ~75% of points are real and 25% are padding.
+    true_set_sizes = torch.randint(int(set_size * 0.5), set_size + 1, (batch_size,), device=device)
+    attn_mask = torch.arange(set_size, device=device)[None, :] < true_set_sizes[:, None]
+    print(f"\nCreated a sample boolean attention mask of shape: {attn_mask.shape}")
+    # Zero out the padded elements in the input tensor
+    x = x * attn_mask.unsqueeze(-1)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
@@ -311,7 +352,7 @@ if __name__ == "__main__":
     print("Running warm-up iterations...")
     for _ in tqdm(range(5)):
         with torch.autocast(device_type=device.type, dtype=amp_dtype):
-            output = model(x)
+            output = model(x, attn_mask=attn_mask)
             loss = F.mse_loss(output, y)
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -329,7 +370,7 @@ if __name__ == "__main__":
     for i in tqdm(range(num_iterations)):
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype):
-            output = model(x)
+            output = model(x, attn_mask=attn_mask)
             loss = F.mse_loss(output, y)
 
         scaler.scale(loss).backward()
