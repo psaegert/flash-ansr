@@ -26,7 +26,7 @@ support_prior:
 support_scale_prior:
   name: "constant"
   kwargs:
-    value: 1
+    value: 0
 n_support_prior:
   name: uniform
   kwargs:
