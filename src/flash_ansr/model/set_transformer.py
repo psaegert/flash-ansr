@@ -253,6 +253,54 @@ class PMA(nn.Module):
         return self.mab(seeds, x, attn_mask=attn_mask)
 
 
+class SharedInputProjection(nn.Module):
+    """
+    Projects input features by applying a shared linear transformation to each
+    32-element chunk representing an encoded number.
+
+    This is implemented efficiently using a 1D convolution with kernel size and
+    stride equal to the chunk size (32).
+    """
+    def __init__(self, d: int, model_dim: int, chunk_size: int = 32):
+        super().__init__()
+        if model_dim % d != 0:
+            raise ValueError(f"model_dim ({model_dim}) must be divisible by d ({d}).")
+
+        self.d = d
+        self.chunk_size = chunk_size
+        self.embedding_dim_per_chunk = model_dim // d
+
+        # Use Conv1d for a shared linear projection over non-overlapping windows.
+        # in_channels=1 because we treat the whole feature vector as one sequence.
+        # out_channels is the embedding size for each chunk.
+        self.projection = nn.Conv1d(
+            in_channels=1,
+            out_channels=self.embedding_dim_per_chunk,
+            kernel_size=self.chunk_size,
+            stride=self.chunk_size
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Input x shape: (B, M, D), where D = d * chunk_size
+        B, M, D = x.shape
+
+        # Reshape for Conv1d, which expects (N, C_in, L_in)
+        # We treat each set element's feature vector as a separate item in the batch.
+        x_reshaped = x.view(B * M, 1, D)
+
+        # Apply the convolution. Output shape: (B * M, embedding_dim_per_chunk, d)
+        proj = self.projection(x_reshaped)
+
+        # Permute to group the embeddings for each original item: (B * M, d, embedding_dim_per_chunk)
+        proj = proj.permute(0, 2, 1)
+
+        # Flatten the last two dimensions to create the final model_dim embedding
+        # and reshape back to the original batch structure.
+        # Final shape: (B, M, d * embedding_dim_per_chunk) -> (B, M, model_dim)
+        output = proj.contiguous().view(B, M, -1)
+        return output
+
+
 class SetTransformer(SetEncoder):
     def __init__(
         self, input_dim: int, output_dim: int | None, model_dim: int = 256, n_heads: int = 8,
@@ -265,7 +313,10 @@ class SetTransformer(SetEncoder):
         elif len(n_inducing_points) != n_isab:
             raise ValueError(f"n_inducing_points must be an int or list of length {n_isab}")
 
-        self.input_projection = nn.Linear(input_dim, model_dim)
+        # MODIFICATION: Replace nn.Linear with SharedInputProjection
+        bits_per_dimension = 32
+        self.input_projection = SharedInputProjection(d=input_dim // bits_per_dimension, model_dim=model_dim, chunk_size=bits_per_dimension)  # FIXME: do not hardcode chunk size
+
         self.encoder = nn.ModuleList([
             ISAB(model_dim, model_dim, n_heads, n_inducing_points[i], ffn_hidden_dim, dropout)
             for i in range(n_isab)
