@@ -199,7 +199,7 @@ class Evaluation():
 
         with torch.no_grad():
             current_size = 0
-            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, avoid_fragmentation=False, preprocess=self.preprocess, verbose=verbose, tqdm_total=size, batch_size=1):
+            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, preprocess=self.preprocess, verbose=verbose, tqdm_total=size, batch_size=1):
                 batch = dataset.collate(batch, device=self.device)
 
                 if self.noise_level > 0.0:

@@ -269,141 +269,46 @@ def is_prime(n: int) -> bool:
 
 
 def uniform_dist(low: float, high: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
-    '''
-    Sample from a uniform distribution with bounds low and high.
-    If min_value and max_value are provided, the samples are clipped to the range [min_value, max_value].
-
-    Parameters
-    ----------
-    low : float
-        Lower bound of the uniform distribution.
-    high : float
-        Upper bound of the uniform distribution.
-    min_value : int | None
-        Minimum value of the samples.
-    max_value : int | None
-        Maximum value of the samples.
-    size : Any
-        The shape of the output array.
-
-    Returns
-    -------
-    np.ndarray
-        The samples from the uniform distribution.
-    '''
     if min_value is None and max_value is None:
         return np.array(np.random.uniform(float(low), float(high), size=size))
     return np.clip(np.array(np.random.uniform(float(low), float(high), size=size)), min_value, max_value)
 
 
-def uniform_intervals_dist(low: float, high: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
-    '''
-    Sample from a uniform distribution with bounds sampled from the interval [low, high].
-    If min_value and max_value are provided, the samples are clipped to the range [min_value, max_value].
-
-    Parameters
-    ----------
-    low : float
-        Lower bound of the uniform distribution.
-    high : float
-        Upper bound of the uniform distribution.
-    min_value : int | None
-        Minimum value of the samples.
-    max_value : int | None
-        Maximum value of the samples.
-    size : Any
-        The shape of the output array.
-
-    Returns
-    -------
-    np.ndarray
-        The samples from the uniform distribution.
-    '''
+def uniform_uniform_intervals_dist(low: float, high: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
     lower_extreme, higher_extreme = np.sort(np.random.uniform(float(low), float(high), size=2), axis=-1)
     if min_value is None and max_value is None:
         return np.array(np.random.uniform(lower_extreme, higher_extreme, size=size))
     return np.clip(np.array(np.random.uniform(lower_extreme, higher_extreme, size=size)), min_value, max_value)
 
 
+def normal_uniform_intervals_dist(loc: float, scale: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
+    lower_extreme, higher_extreme = np.sort(np.random.normal(float(loc), float(scale), size=2), axis=-1)
+    if min_value is None and max_value is None:
+        return np.array(np.random.uniform(lower_extreme, higher_extreme, size=size))
+    return np.clip(np.array(np.random.uniform(lower_extreme, higher_extreme, size=size)), min_value, max_value)
+
+
+def normal_normal_intervals_dist(loc_mean: float, scale_mean: float, alpha_std: float, beta_std: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
+    loc = np.random.normal(float(loc_mean), float(scale_mean), size=1)
+    scale = np.random.gamma(float(alpha_std), float(beta_std), size=1)
+    if min_value is None and max_value is None:
+        return np.array(np.random.normal(loc, scale, size=size))
+    return np.clip(np.array(np.random.normal(loc, scale, size=size)), min_value, max_value)
+
+
 def log_uniform_dist(low: float, high: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
-    '''
-    Sample from a log-uniform distribution with bounds low and high.
-    If min_value and max_value are provided, the samples are clipped to the range [min_value, max_value].
-
-    Parameters
-    ----------
-    low : float
-        Lower bound of the log-uniform distribution.
-    high : float
-        Upper bound of the log-uniform distribution.
-    min_value : int | None
-        Minimum value of the samples.
-    max_value : int | None
-        Maximum value of the samples.
-    size : Any
-        The shape of the output array.
-
-    Returns
-    -------
-    np.ndarray
-        The samples from the log-uniform distribution.
-    '''
     if min_value is None and max_value is None:
         return np.array(np.exp(np.random.uniform(np.log(float(low)), np.log(float(high)), size=size)))
     return np.clip(np.exp(np.random.uniform(np.log(float(low)), np.log(float(high)), size=size)), min_value, max_value)
 
 
 def normal_dist(loc: float, scale: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
-    '''
-    Sample from a normal distribution with mean loc and standard deviation scale.
-    If min_value and max_value are provided, the samples are clipped to the range [min_value, max_value].
-
-    Parameters
-    ----------
-    loc : float
-        Mean of the normal distribution.
-    scale : float
-        Standard deviation of the normal distribution.
-    min_value : int | None
-        Minimum value of the samples.
-    max_value : int | None
-        Maximum value of the samples.
-    size : Any
-        The shape of the output array.
-
-    Returns
-    -------
-    np.ndarray
-        The samples from the normal distribution.
-    '''
     if min_value is None and max_value is None:
         return np.array(np.random.normal(float(loc), float(scale), size=size))
     return np.clip(np.array(np.random.normal(float(loc), float(scale), size=size)), min_value, max_value)
 
 
 def gamma_dist(shape: float, scale: float, min_value: int | None, max_value: int | None, size: Any = 1) -> np.ndarray:
-    '''
-    Sample from a gamma distribution with shape and scale parameters.
-    If min_value and max_value are provided, the samples are clipped to the range [min_value, max_value].
-
-    Parameters
-    ----------
-    shape : float
-        Shape parameter of the gamma distribution.
-    scale : float
-        Scale parameter of the gamma distribution.
-    min_value : int | None
-        Minimum value of the samples.
-    max_value : int | None
-        Maximum value of the samples.
-    size : Any
-        The shape of the output array.
-
-    Returns
-    -------
-    np.ndarray
-        The samples from the gamma distribution.
-    '''
     if min_value is None and max_value is None:
         return np.array(np.random.gamma(float(shape), float(scale), size=size))
     return np.clip(np.random.gamma(float(shape), float(scale), size=size), min_value, max_value)
@@ -427,8 +332,12 @@ def get_distribution(distribution: str | Callable[..., np.ndarray], distribution
     '''
     if distribution == 'uniform':
         return partial(uniform_dist, low=distribution_kwargs['low'], high=distribution_kwargs['high'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
-    if distribution == 'uniform_intervals':
-        return partial(uniform_intervals_dist, low=distribution_kwargs['low'], high=distribution_kwargs['high'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
+    if distribution == 'uniform_uniform_intervals':
+        return partial(uniform_uniform_intervals_dist, low=distribution_kwargs['low'], high=distribution_kwargs['high'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
+    if distribution == 'normal_uniform_intervals':
+        return partial(normal_uniform_intervals_dist, loc=distribution_kwargs['loc'], scale=distribution_kwargs['scale'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
+    if distribution == 'normal_normal_intervals':
+        return partial(normal_normal_intervals_dist, loc_mean=distribution_kwargs['loc_mean'], scale_mean=distribution_kwargs['scale_mean'], alpha_std=distribution_kwargs['alpha_std'], beta_std=distribution_kwargs['beta_std'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
     if distribution == 'log_uniform':
         return partial(log_uniform_dist, low=distribution_kwargs['low'], high=distribution_kwargs['high'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
     if distribution == 'normal':
@@ -439,6 +348,31 @@ def get_distribution(distribution: str | Callable[..., np.ndarray], distribution
         return partial(distribution, **distribution_kwargs)
 
     raise ValueError(f'Distribution must be a function (int -> float) or one of ["uniform", "log_uniform", "normal"], got {distribution}')
+
+
+def get_multi_distribution(distributions: list[tuple[float, str | Callable[..., np.ndarray], dict[str, Any]]]) -> Callable[..., np.ndarray]:
+    '''
+    Get a mixture distribution from a list of distributions and their weights.
+
+    Parameters
+    ----------
+    distributions : list[tuple[str | Callable[..., np.ndarray], dict[str, Any], float]]
+        The distributions to use and their weights.
+
+    Returns
+    -------
+    Callable[..., np.ndarray]
+        The mixture distribution function.
+    '''
+    dists = [get_distribution(dist, dist_kwargs) for weight, dist, dist_kwargs in distributions]
+    weights = np.array([weight for weight, dist, dist_kwargs in distributions], dtype=np.float64)
+    weights = weights / weights.sum()
+
+    def mixture_distribution(size: Any = 1) -> np.ndarray:
+        distribution_choice = np.random.choice(len(dists), size=1, p=weights)
+        return dists[distribution_choice[0]](size=size)
+
+    return mixture_distribution
 
 
 def safe_f(f: Callable, X: np.ndarray, constants: np.ndarray | None = None) -> np.ndarray:

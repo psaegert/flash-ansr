@@ -13,7 +13,7 @@ import numpy as np
 from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
+from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_multi_distribution, flatten_nested_list, safe_f
 
 
 class NoValidSampleFoundError(Exception):
@@ -30,18 +30,12 @@ class SkeletonPool:
         The expression space to operate in.
     sample_strategy : dict[str, Any]
         The strategy to use for sampling skeletons.
-    literal_prior : str or Callable[..., np.ndarray]
+    literal_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the literals.
-    literal_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the literal prior distribution.
-    support_prior : str or Callable[..., np.ndarray]
+    support_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the support points.
-    support_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the support prior distribution.
-    n_support_prior : str or Callable[..., np.ndarray]
+    n_support_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the number of support points.
-    n_support_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the number of support points prior distribution.
     holdout_pools : list[SkeletonPool] or None, optional
         A list of SkeletonPools (i.e. sets of skeletons) to exclude from sampling.
     allow_nan : bool, optional
@@ -54,12 +48,10 @@ class SkeletonPool:
             self,
             simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
-            literal_prior: str | Callable[..., np.ndarray],
-            literal_prior_kwargs: dict[str, Any],
-            support_prior: str | Callable[..., np.ndarray],
-            support_prior_kwargs: dict[str, Any],
-            n_support_prior: str | Callable[..., np.ndarray],
-            n_support_prior_kwargs: dict[str, Any],
+            literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
             variables: list[str],
             operator_weights: dict[str, float] | None = None,
             holdout_pools: list["SkeletonPool"] | None = None,
@@ -103,17 +95,75 @@ class SkeletonPool:
             self.sample_strategy.get('max_operators', 10),
             self._n_leaves, self._n_unary_operators, self._n_binary_operators)
 
-        self.literal_prior = get_distribution(literal_prior, literal_prior_kwargs)
-        self.literal_prior_kwargs = literal_prior_kwargs
-        self.support_prior = get_distribution(support_prior, support_prior_kwargs)
-        self.support_prior_kwargs = support_prior_kwargs
-        self.n_support_prior = get_distribution(n_support_prior, n_support_prior_kwargs)
-        self.n_support_prior_kwargs = n_support_prior_kwargs
+        if isinstance(literal_prior, (dict, list)):
+            self.literal_prior_config = literal_prior
+            self.literal_prior: Callable = self._create_prior_from_config(literal_prior)
+        elif callable(literal_prior):
+            self.literal_prior = literal_prior
+        else:
+            raise ValueError("literal_prior must be either a dict, list of dicts, or a callable")
+
+        if isinstance(support_prior, (dict, list)):
+            self.support_prior_config = support_prior
+            self.support_prior: Callable = self._create_prior_from_config(support_prior)
+        elif callable(support_prior):
+            self.support_prior = support_prior
+        else:
+            raise ValueError("support_prior must be either a dict, list of dicts, or a callable")
+
+        if isinstance(support_scale_prior, (dict, list)):
+            self.support_scale_prior_config = support_scale_prior
+            self.support_scale_prior: Callable = self._create_prior_from_config(support_scale_prior)
+        elif callable(support_scale_prior):
+            self.support_scale_prior = support_scale_prior
+        else:
+            raise ValueError("support_scale_prior must be either a dict, list of dicts, or a callable")
+
+        if isinstance(n_support_prior, (dict, list)):
+            self.n_support_prior_config = n_support_prior
+            self.n_support_prior: Callable = self._create_prior_from_config(n_support_prior)
+        elif callable(n_support_prior):
+            self.n_support_prior = n_support_prior
+        else:
+            raise ValueError("n_support_prior must be either a dict, list of dicts, or a callable")
 
         self.allow_nan = allow_nan
         self.simplify = simplify
 
         self.operator_probs: np.ndarray | None = None
+
+    def _create_prior_from_config(self, config: dict[str, Any] | list[dict[str, Any]]) -> Any:
+        """
+        Creates a distribution object from a configuration.
+
+        The configuration can be either:
+        1. A single dict for one distribution (e.g., {'name': 'normal', 'kwargs': {...}}).
+        A default weight of 1.0 is assumed.
+        2. A list of dicts for a mixture (e.g., [{'weight': 1, 'name': 'normal', ...}]).
+        """
+        distributions = []
+        if isinstance(config, dict):
+            # Case 1: A single distribution is defined. Wrap it in a list.
+            # Use a default weight of 1.0 if not specified.
+            distributions.append({
+                'weight': config.get('weight', 1.0),
+                'name': config['name'],
+                'kwargs': config.get('kwargs', {})
+            })
+        elif isinstance(config, list):
+            # Case 2: A list of distributions is already provided.
+            distributions = config
+        else:
+            # Handle invalid input format
+            raise TypeError(f"Prior configuration must be a dict or a list, got {type(config).__name__}")
+
+        # Prepare the arguments for get_multi_distribution
+        dist_args = [
+            (dist['weight'], dist['name'], dist.get('kwargs', {}))
+            for dist in distributions
+        ]
+
+        return get_multi_distribution(dist_args)
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SkeletonPool":
@@ -144,11 +194,9 @@ class SkeletonPool:
             simplipy_engine=SimpliPyEngine.from_config(config_["simplipy_engine"]),
             sample_strategy=config_["sample_strategy"],
             literal_prior=config_["literal_prior"],
-            literal_prior_kwargs=config_["literal_prior_kwargs"],
             support_prior=config_["support_prior"],
-            support_prior_kwargs=config_["support_prior_kwargs"],
+            support_scale_prior=config_["support_scale_prior"],
             n_support_prior=config_["n_support_prior"],
-            n_support_prior_kwargs=config_["n_support_prior_kwargs"],
             variables=config_["variables"],
             operator_weights=config_.get("operator_weights"),
             holdout_pools=config_["holdout_pools"],
@@ -162,12 +210,10 @@ class SkeletonPool:
             skeletons: set[tuple[str]],
             simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
-            literal_prior: str | Callable[..., np.ndarray],
-            literal_prior_kwargs: dict[str, Any],
-            support_prior: str | Callable[..., np.ndarray],
-            support_prior_kwargs: dict[str, Any],
-            n_support_prior: str | Callable[..., np.ndarray],
-            n_support_prior_kwargs: dict[str, Any],
+            literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
             variables: list[str],
             operator_weights: dict[str, float] | None = None,
             skeleton_codes: dict[tuple[str], tuple[CodeType, list[str]]] | None = None,
@@ -185,18 +231,16 @@ class SkeletonPool:
             The expression space to operate in.
         sample_strategy : dict[str, Any]
             The strategy to use for sampling skeletons.
-        literal_prior : str or Callable[..., np.ndarray]
+        literal_prior : dict[str, Any] | list[dict[str, Any]]
             The prior distribution for the literals.
-        literal_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the literal prior distribution.
-        support_prior : str or Callable[..., np.ndarray]
+        support_prior : dict[str, Any] | list[dict[str, Any]]
             The prior distribution for the support points.
-        support_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the support prior distribution.
-        n_support_prior : str or Callable[..., np.ndarray]
+        n_support_prior : dict[str, Any] | list[dict[str, Any]]
             The prior distribution for the number of support points.
-        n_support_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the number of support points prior distribution.
+        variables : list[str]
+            The variables to use in the expressions.
+        operator_weights : dict[str, float] or None, optional
+            A dictionary mapping operators to their weights.
         skeleton_codes : dict[tuple[str], tuple[CodeType, list[str]]] or None, optional
             A dictionary mapping skeletons to their compiled codes.
         holdout_pools : list[SkeletonPool] or None, optional
@@ -215,11 +259,9 @@ class SkeletonPool:
             simplipy_engine=simplipy_engine,
             sample_strategy=sample_strategy,
             literal_prior=literal_prior,
-            literal_prior_kwargs=literal_prior_kwargs,
             support_prior=support_prior,
-            support_prior_kwargs=support_prior_kwargs,
+            support_scale_prior=support_scale_prior,
             n_support_prior=n_support_prior,
-            n_support_prior_kwargs=n_support_prior_kwargs,
             variables=variables,
             operator_weights=operator_weights,
             holdout_pools=holdout_pools or [],
@@ -622,7 +664,7 @@ class SkeletonPool:
 
         raise NoValidSampleFoundError(f"Failed to sample a non-contaminated skeleton after {self.sample_strategy['max_tries']} retries")
 
-    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None, support_scale_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Sample support points and literals for an expression.
 
@@ -636,6 +678,8 @@ class SkeletonPool:
             The number of support points to sample. If None, the number of support points will be sampled from the prior distribution.
         support_prior : Callable or None, optional
             The prior distribution for the support points. If None, the default support prior will be used.
+        support_scale_prior : Callable or None, optional
+            The prior distribution for the support scale. If None, the default support scale prior will be
 
         Returns
         -------
@@ -650,13 +694,14 @@ class SkeletonPool:
             literals = self.literal_prior(size=n_constants).astype(np.float32)
 
             support_prior = support_prior or self.support_prior
+            support_scale_prior = support_scale_prior or self.support_scale_prior
 
             # Use the default support prior as defined by the configuration
             if self.sample_strategy.get('independent_dimensions', False):
                 # Sample each dimension independently
-                x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.variables))], axis=1).astype(np.float32)
+                x_support = np.concatenate([support_prior(size=(n_support, 1)) * 10**support_scale_prior(size=1) for _ in range(len(self.variables))], axis=1).astype(np.float32)
             else:
-                x_support = support_prior(size=(n_support, len(self.variables))).astype(np.float32)
+                x_support = support_prior(size=(n_support, len(self.variables))).astype(np.float32) * 10**support_scale_prior(size=1).astype(np.float32)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -778,12 +823,10 @@ class SkeletonPool:
             simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            literal_prior_kwargs=self.literal_prior_kwargs,
             support_prior=self.support_prior,
-            support_prior_kwargs=self.support_prior_kwargs,
+            support_scale_prior=self.support_scale_prior,
             n_support_prior=self.n_support_prior,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in train_keys},
-            n_support_prior_kwargs=self.n_support_prior_kwargs,
             variables=self.variables,
             operator_weights=self.operator_weights,
             holdout_pools=self.holdout_pools,
@@ -793,11 +836,9 @@ class SkeletonPool:
             simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            literal_prior_kwargs=self.literal_prior_kwargs,
             support_prior=self.support_prior,
-            support_prior_kwargs=self.support_prior_kwargs,
+            support_scale_prior=self.support_scale_prior,
             n_support_prior=self.n_support_prior,
-            n_support_prior_kwargs=self.n_support_prior_kwargs,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in test_keys},
             variables=self.variables,
             operator_weights=self.operator_weights,

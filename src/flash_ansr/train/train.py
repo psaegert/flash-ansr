@@ -90,7 +90,7 @@ class Trainer():
 
         print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
-        model = torch.compile(model, mode='max-autotune', fullgraph=True)
+        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
 
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))

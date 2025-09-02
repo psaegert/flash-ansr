@@ -86,7 +86,7 @@ class PySREvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose, avoid_fragmentation=False):
+            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose):
 
                 # Initialize here to prevent memory leak?
                 model = PySRRegressor(
