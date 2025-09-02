@@ -330,6 +330,8 @@ def get_distribution(distribution: str | Callable[..., np.ndarray], distribution
     Callable[..., np.ndarray]
         The distribution function.
     '''
+    if distribution == 'constant':
+        return lambda size=1: np.full(size, distribution_kwargs['value'])
     if distribution == 'uniform':
         return partial(uniform_dist, low=distribution_kwargs['low'], high=distribution_kwargs['high'], min_value=distribution_kwargs.get('min_value'), max_value=distribution_kwargs.get('max_value'))
     if distribution == 'uniform_uniform_intervals':

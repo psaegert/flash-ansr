@@ -73,9 +73,6 @@ class Trainer():
         self.cumulative_training_tokens = 0
         self.cumulative_training_pflops = 0.0
         self.cumulative_parameter_distance = 0.0
-        # self.last_gradients_list: torch.Tensor | None = None
-        # self.last_parameters_list: torch.Tensor | None = None
-        # self.initial_parameters_list: torch.Tensor | None = None
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
@@ -90,7 +87,7 @@ class Trainer():
 
         print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
-        model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+        model = torch.compile(model, mode='reduce-overhead')
 
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
@@ -131,27 +128,27 @@ class Trainer():
             config=config_
         )
 
-    def _setup_training_state(self, device: str) -> None:
+    def _setup_training_state(self, device: str, verbose: bool) -> None:
         """Sets up the model, device, and initial training state."""
         self.device = torch.device(device)
         self.model.to(self.device)
         self.flops_per_token = self.model.n_params * 6
         self.cumulative_training_pflops = 0.0
         self.cumulative_training_tokens = 0
-        # self.last_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
-        # self.initial_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
         self.cumulative_parameter_distance = 0.0
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
 
-        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_kwargs['max_value']
+        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
 
-        config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
+        if verbose:
+            print(f"Padding sequences to max set size of {self.max_set_size}")
 
-        if config_value:
-            print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")
-        else:
-            print("PYTORCH_CUDA_ALLOC_CONF is not set.")
+            config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
+            if config_value:
+                print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")
+            else:
+                print("PYTORCH_CUDA_ALLOC_CONF is not set.")
 
     def run_training(
             self,
@@ -166,14 +163,15 @@ class Trainer():
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
 
-        self._setup_training_state(device)
+        self._setup_training_state(device, verbose=verbose)
 
         # Benchmark / optimization for compiled models
-        print("Running benchmark steps...")
-        for step, batch in enumerate(self.train_dataset.iterate(steps=100, batch_size=self.batch_size, preprocess=preprocess)):
+        compile_steps = 100
+        pbar = tqdm(range(compile_steps), disable=not verbose, desc="Compiling Model")
+        for step, batch in enumerate(self.train_dataset.iterate(steps=compile_steps, batch_size=self.batch_size, preprocess=preprocess)):
             self._train_step(batch, step, preprocess, do_optimizer_step=False)
-
-        torch.cuda.empty_cache()
+            pbar.update(1)
+        pbar.close()
 
         # Initial validation
         if validate_interval is not None:
@@ -354,22 +352,9 @@ class Trainer():
 
     def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, gradient_norms: torch.Tensor) -> None:
         """Logs a batch's training metrics to wandb."""
-        # new_gradients_list = torch.cat([p.grad.cpu().flatten() for p in self.model.parameters() if p.grad is not None])
-        # if self.last_gradients_list is None:
-        #     gradient_cosine_similarity = np.nan
-        # else:
-        #     gradient_cosine_similarity = torch.nn.functional.cosine_similarity(self.last_gradients_list, new_gradients_list, dim=0).item()
-        # self.last_gradients_list = new_gradients_list
-
-        # new_parameters_list = torch.cat([p.detach().cpu().flatten() for p in self.model.parameters()])
-        # self.cumulative_parameter_distance += (new_parameters_list - self.last_parameters_list).norm().item()
-        # self.last_parameters_list = new_parameters_list
 
         log_data = {
-            # "gradient_cosine_similarity": gradient_cosine_similarity,
             "max_gradient_norm": torch.max(gradient_norms).item(),
-            # "total_parameter_distance": self.cumulative_parameter_distance,
-            # "effective_parameter_distance": (new_parameters_list - self.initial_parameters_list).norm().item(),
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
