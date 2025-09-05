@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Any, Iterator, Literal
+from typing import Any, Literal, Iterable
 
 import torch
 import torch_optimizer
@@ -227,14 +227,24 @@ class Trainer():
                 verbose=verbose
             )
 
-    def _get_grad_norm(self, params: Iterator[nn.Parameter], norm_type: float = 2.0) -> float:
-        """Computes the gradient norm of a set of parameters."""
-        parameters = [p for p in params if p.grad is not None]
-        if not parameters:
+    def _get_grad_norm(self, parameters: Iterable[torch.nn.Parameter], norm_type: float = 2.0) -> float:
+        """Computes the total norm of the gradients of the given parameters."""
+        grads = [p.grad.detach() for p in parameters if p.grad is not None]
+        if not grads:
             return 0.0
-
-        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters if p.grad is not None]), norm_type)
+        total_norm = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
         return total_norm.item()
+
+    def _log_large_grad_norms(self, step: int, threshold: float = 10.0) -> None:
+        """Logs the name and gradient norm of parameters with large gradients."""
+        large_grads = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_norm = torch.norm(param.grad.detach(), 2.0).item()
+                if grad_norm > threshold:
+                    large_grads[f"grad_norm_{name}"] = grad_norm
+        if large_grads:
+            wandb.log(large_grads, step=step)  # type: ignore
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
@@ -284,6 +294,8 @@ class Trainer():
         # Monitor gradients for different parts of the model
         encoder_grad_norm = self._get_grad_norm(self.model.encoder.parameters())
         decoder_grad_norm = self._get_grad_norm(self.model.decoder.parameters())
+
+        self._log_large_grad_norms(step)
 
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:
