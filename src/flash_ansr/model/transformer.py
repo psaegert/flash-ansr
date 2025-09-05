@@ -157,7 +157,6 @@ class TransformerDecoderBlock(nn.Module):
         self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=True)
 
         self.cross_attn_norm = RMSNorm(dim)
-        self.encoder_mem_norm = RMSNorm(dim)
         self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=False)
 
         self.ffn_norm = RMSNorm(dim)
@@ -175,7 +174,7 @@ class TransformerDecoderBlock(nn.Module):
             rope_emb=rope_emb, is_causal=True
         )
         x = x + self.cross_attention(
-            self.cross_attn_norm(x), self.encoder_mem_norm(encoder_memory)
+            self.cross_attn_norm(x), encoder_memory
         )
         x = x + self.ffn(self.ffn_norm(x))
         return x
@@ -228,6 +227,7 @@ class TransformerDecoder(nn.Module):
             ) for _ in range(n_layers)
         ])
 
+        self.memory_norm = RMSNorm(model_dim)
         self.output_norm = RMSNorm(model_dim)
         self.output = nn.Linear(model_dim, vocab_size, bias=False)
 
@@ -243,6 +243,7 @@ class TransformerDecoder(nn.Module):
 
         rope_emb = self.rope(h, seq_len=seq_len)
         encoder_memory = self.input_proj(encoder_memory)
+        encoder_memory = self.memory_norm(encoder_memory)
 
         for layer in self.layers:
             h = layer(h, encoder_memory, rope_emb)
