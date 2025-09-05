@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
 import torch
 import torch_optimizer
@@ -227,6 +227,15 @@ class Trainer():
                 verbose=verbose
             )
 
+    def _get_grad_norm(self, params: Iterator[nn.Parameter], norm_type: float = 2.0) -> float:
+        """Computes the gradient norm of a set of parameters."""
+        parameters = [p for p in params if p.grad is not None]
+        if not parameters:
+            return 0.0
+
+        total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), norm_type) for p in parameters if p.grad is not None]), norm_type)
+        return total_norm.item()
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
         self.model.train()
@@ -271,13 +280,18 @@ class Trainer():
 
         # Perform the optimizer step
         self.scaler.unscale_(self.optimizer)
-        gradient_norms = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+
+        # Monitor gradients for different parts of the model
+        encoder_grad_norm = self._get_grad_norm(self.model.encoder.parameters())
+        decoder_grad_norm = self._get_grad_norm(self.model.decoder.parameters())
+
+        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
             # Log metrics and update scheduler
-            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, gradient_norms)
+            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm, encoder_grad_norm, decoder_grad_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -350,11 +364,13 @@ class Trainer():
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, gradient_norms: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor, encoder_grad_norm: float, decoder_grad_norm: float) -> None:
         """Logs a batch's training metrics to wandb."""
 
         log_data = {
-            "max_gradient_norm": torch.max(gradient_norms).item(),
+            "total_gradient_norm": total_gradient_norm.item(),
+            "encoder_grad_norm": encoder_grad_norm,
+            "decoder_grad_norm": decoder_grad_norm,
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],

@@ -288,7 +288,7 @@ class SetTransformer(SetEncoder):
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.embedding(x)
 
-    # Apply mask to input features before encoder to zero out padding.
+        # Apply mask to input features before encoder to zero out padding.
         if attn_mask is not None:
             x = x * attn_mask.unsqueeze(-1)
 
