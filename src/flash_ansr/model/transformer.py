@@ -27,12 +27,8 @@ class RMSNorm(nn.Module):
         return output * self.weight
 
 
-class SwiGLU(nn.Module):
-    """
-    SwiGLU Feed-Forward Network.
-    This is a memory-efficient and performant alternative to the standard FFN.
-    Reference: "GLU Variants Improve Transformer" (https://arxiv.org/abs/2002.05202)
-    """
+class FeedForward(nn.Module):
+    """Standard Feed-Forward Network with GELU activation."""
     def __init__(
         self,
         dim: int,
@@ -41,19 +37,12 @@ class SwiGLU(nn.Module):
     ):
         super().__init__()
         hidden_dim = hidden_dim or 4 * dim
-        # Use a heuristic for the intermediate dim, as in Llama models
-        hidden_dim = int(2 * hidden_dim / 3)
-        hidden_dim = (hidden_dim + 7) & -8  # Multiple of 8
-
-        self.w13 = nn.Linear(dim, 2 * hidden_dim, bias=False)
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate, up = self.w13(x).chunk(2, dim=-1)
-        x = F.silu(gate) * up
-        x = self.w2(x)
-        return self.dropout(x)
+        return self.dropout(self.w2(F.gelu(self.w1(x))))
 
 
 class RotaryEmbedding(nn.Module):
@@ -172,7 +161,7 @@ class TransformerDecoderBlock(nn.Module):
         self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=False)
 
         self.ffn_norm = RMSNorm(dim)
-        self.ffn = SwiGLU(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
+        self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(
         self,
@@ -221,44 +210,45 @@ class TransformerDecoder(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        if input_dim is None:
-            self.input_projection = nn.Identity()
-        else:
-            self.input_projection = nn.Linear(input_dim, model_dim)  # type: ignore
-
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
-        self.rope = RotaryEmbedding(dim=model_dim // n_heads, max_seq_len=max_seq_len)
+
+        self.input_proj: nn.Module
+        if input_dim is not None and input_dim != model_dim:
+            self.input_proj = nn.Linear(input_dim, model_dim, bias=False)
+        else:
+            self.input_proj = nn.Identity()
 
         self.layers = nn.ModuleList([
             TransformerDecoderBlock(
-                dim=model_dim, n_heads=n_heads, ffn_hidden_dim=ffn_hidden_dim,
-                dropout=dropout, use_checkpointing=USE_CHECKPOINTING,
+                dim=model_dim,
+                n_heads=n_heads,
+                ffn_hidden_dim=ffn_hidden_dim,
+                dropout=dropout,
+                use_checkpointing=USE_CHECKPOINTING
             ) for _ in range(n_layers)
         ])
 
         self.output_norm = RMSNorm(model_dim)
-        self.output_projection = nn.Linear(model_dim, vocab_size, bias=False)
-        nn.init.xavier_uniform_(self.output_projection.weight, gain=0.1)  # Use a small gain
+        self.output = nn.Linear(model_dim, vocab_size, bias=False)
+
+        head_dim = model_dim // n_heads  # for RoPE
+        self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len)
 
     def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
-        batch_size, seq_len = tokens.shape
+        seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
 
         if extra_parallel_embeddings is not None:
-            if extra_parallel_embeddings.shape != h.shape:
-                raise ValueError(f"extra_parallel_embeddings shape {extra_parallel_embeddings.shape} does not match token embeddings shape {h.shape}")
             h = h + extra_parallel_embeddings
 
-        projected_memory = self.input_projection(encoder_memory)
-
         rope_emb = self.rope(h, seq_len=seq_len)
+        encoder_memory = self.input_proj(encoder_memory)
 
         for layer in self.layers:
-            h = layer(h, projected_memory, rope_emb)
+            h = layer(h, encoder_memory, rope_emb)
 
         h = self.output_norm(h)
-        logits = self.output_projection(h)
-        return logits
+        return self.output(h)
 
 
 class Tokenizer:

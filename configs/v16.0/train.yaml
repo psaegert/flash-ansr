@@ -13,7 +13,7 @@ lr_scheduler:
   name: Trapezoidal
   kwargs:
     min_lr: 0
-    max_lr: 2e-4
+    max_lr: 1e-4
     warmup_steps: 500_000
     annealing_steps: 1_000_000
     total_steps: 5_000_000

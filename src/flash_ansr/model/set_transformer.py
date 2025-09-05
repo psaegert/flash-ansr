@@ -7,7 +7,7 @@ from torch.utils.checkpoint import checkpoint
 import time
 from tqdm import tqdm
 
-from flash_ansr.model.transformer import SwiGLU
+from flash_ansr.model.transformer import FeedForward
 from flash_ansr.model.set_encoder import SetEncoder
 
 
@@ -149,34 +149,38 @@ class MAB(nn.Module):
         is_self_attention: bool = False
     ):
         super().__init__()
-        self.dim = dim
-        self.use_checkpointing = use_checkpointing
+        self.use_checkpointing = use_checkpointing and USE_CHECKPOINTING
 
         self.norm_q = RMSSetNorm(dim_q)
-        self.norm_kv = RMSSetNorm(dim_kv) if dim_kv != dim_q else self.norm_q
+        self.norm_kv = RMSSetNorm(dim_kv)
 
         self.attention = MultiheadAttentionBlock(
-            dim_q=dim_q, dim_kv=dim_kv, dim_out=dim, n_heads=n_heads,
-            dropout=dropout, is_self_attention=is_self_attention
+            dim_q=dim_q,
+            dim_kv=dim_kv,
+            dim_out=dim,
+            n_heads=n_heads,
+            dropout=dropout,
+            is_self_attention=is_self_attention
         )
+
         self.norm_ffn = RMSSetNorm(dim)
-        self.ffn = SwiGLU(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
+        self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        normed_q = self.norm_q(query)
-        normed_kv = self.norm_kv(key_value)
-        attn_output = self.attention(normed_q, normed_kv, attn_mask=attn_mask)
+        # Pre-normalization and attention
+        q_norm = self.norm_q(query)
+        kv_norm = self.norm_kv(key_value)
+        attn_output = self.attention(q_norm, kv_norm, attn_mask=attn_mask)
+        query = query + attn_output
 
-        if query.shape[-1] == self.dim:
-            x = query + attn_output
-        else:
-            x = attn_output
-
-        x = x + self.ffn(self.norm_ffn(x))
-        return x
+        # Pre-normalization and FFN
+        q_norm = self.norm_ffn(query)
+        ffn_output = self.ffn(q_norm)
+        query = query + ffn_output
+        return query
 
     def forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if self.training and self.use_checkpointing:
+        if self.use_checkpointing and self.training:
             # Pass attn_mask through checkpointing
             return checkpoint(self._forward, query, key_value, attn_mask, use_reentrant=False)
         else:
@@ -262,48 +266,43 @@ class SetTransformer(SetEncoder):
         super().__init__()
         if isinstance(n_inducing_points, int):
             n_inducing_points = [n_inducing_points] * n_isab
-        elif len(n_inducing_points) != n_isab:
-            raise ValueError(f"n_inducing_points must be an int or list of length {n_isab}")
 
-        self.input_projection = nn.Linear(input_dim, model_dim)
+        self.embedding = nn.Linear(input_dim, model_dim)
 
-        self.encoder = nn.ModuleList([
-            ISAB(model_dim, model_dim, n_heads, n_inducing_points[i], ffn_hidden_dim, dropout)
-            for i in range(n_isab)
+        self.isabs = nn.ModuleList([
+            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+            for n_ip in n_inducing_points
         ])
-        self.pooling = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim, dropout)
-        self.decoder = nn.ModuleList([
-            SAB(model_dim, n_heads, ffn_hidden_dim, dropout) for _ in range(n_sab)
+        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+        self.sabs = nn.ModuleList([
+            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+            for _ in range(n_sab)
         ])
+        self.output_norm = RMSSetNorm(model_dim)
 
-        if output_dim is None:
-            self.output_norm = nn.Identity()
-            self.output_projection = nn.Identity()
+        if output_dim is not None:
+            self.output = nn.Linear(model_dim, output_dim)
         else:
-            self.output_norm = RMSSetNorm(model_dim)  # type: ignore
-            self.output_projection = nn.Linear(model_dim, output_dim)  # type: ignore
-
-        self.output_size = output_dim
+            self.output = nn.Linear(model_dim, model_dim)
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.input_projection(x)
+        x = self.embedding(x)
 
     # Apply mask to input features before encoder to zero out padding.
         if attn_mask is not None:
             x = x * attn_mask.unsqueeze(-1)
 
-        for isab in self.encoder:
+        for isab in self.isabs:
             x = isab(x, attn_mask=attn_mask)
 
-        x = self.pooling(x, attn_mask=attn_mask)
+        x = self.pma(x, attn_mask=attn_mask)
 
         # The decoder operates on the dense output of PMA, so no mask is needed.
-        for sab in self.decoder:
+        for sab in self.sabs:
             x = sab(x)
 
         x = self.output_norm(x)
-        x = self.output_projection(x)
-        return x
+        return self.output(x)
 
 
 # --- Benchmark ---
