@@ -235,17 +235,6 @@ class Trainer():
         total_norm = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
         return total_norm.item()
 
-    def _log_large_grad_norms(self, step: int, threshold: float = 10.0) -> None:
-        """Logs the name and gradient norm of parameters with large gradients."""
-        large_grads = {}
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                grad_norm = torch.norm(param.grad.detach(), 2.0).item()
-                if grad_norm > threshold:
-                    large_grads[f"grad_norm_{name}"] = grad_norm
-        if large_grads:
-            wandb.log(large_grads, step=step)  # type: ignore
-
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
         self.model.train()
@@ -294,8 +283,6 @@ class Trainer():
         # Monitor gradients for different parts of the model
         encoder_grad_norm = self._get_grad_norm(self.model.encoder.parameters())
         decoder_grad_norm = self._get_grad_norm(self.model.decoder.parameters())
-
-        self._log_large_grad_norms(step)
 
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:
@@ -367,6 +354,7 @@ class Trainer():
         """Saves the model and training configuration."""
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
         self.model.save(directory=save_directory, errors='ignore')
+        torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))
         save_config(
             load_config(self.config, resolve_paths=True),
             directory=save_directory,
