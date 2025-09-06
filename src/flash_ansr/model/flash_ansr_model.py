@@ -35,6 +35,9 @@ class FlashANSRModel(nn.Module):
         encoder_n_seeds: int = 1,
         encoder_ffn_hidden_dim: int = 2048,
         encoder_dropout: float = 0.1,
+        encoder_attn_norm: str = "none",
+        encoder_ffn_norm: str = "none",
+        encoder_output_norm: str = "none",
 
         decoder_input_dim: int = 512,
         decoder_model_dim: int = 512,
@@ -65,7 +68,10 @@ class FlashANSRModel(nn.Module):
             n_inducing_points=encoder_n_inducing_points,
             n_seeds=encoder_n_seeds,
             ffn_hidden_dim=encoder_ffn_hidden_dim,
-            dropout=encoder_dropout
+            dropout=encoder_dropout,
+            attn_norm=encoder_attn_norm,
+            ffn_norm=encoder_ffn_norm,
+            output_norm=encoder_output_norm
         )
 
         self.decoder = TransformerDecoder(
@@ -118,6 +124,10 @@ class FlashANSRModel(nn.Module):
             encoder_n_seeds=config_["encoder_n_seeds"],
             encoder_ffn_hidden_dim=config_["encoder_ffn_hidden_dim"],
             encoder_dropout=config_["encoder_dropout"],
+            encoder_attn_norm=config_["encoder_attn_norm"],
+            encoder_ffn_norm=config_["encoder_ffn_norm"],
+            encoder_output_norm=config_["encoder_output_norm"],
+
             decoder_input_dim=config_["decoder_input_dim"],
             decoder_model_dim=config_["decoder_model_dim"],
             decoder_n_layers=config_["decoder_n_layers"],

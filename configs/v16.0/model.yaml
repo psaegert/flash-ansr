@@ -11,6 +11,9 @@ encoder_n_inducing_points: 96
 encoder_n_seeds: 96
 encoder_ffn_hidden_dim: 2736
 encoder_dropout: 0.1
+encoder_attn_norm: 'rms_set'
+encoder_ffn_norm: 'rms_set'
+encoder_output_norm: 'rms_set'
 
 decoder_input_dim: 1024
 decoder_model_dim: 1024

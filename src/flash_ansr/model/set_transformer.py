@@ -1,4 +1,4 @@
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Any
 
 import torch
 import torch.nn as nn
@@ -13,6 +13,18 @@ from flash_ansr.model.set_encoder import SetEncoder
 
 # A good practice for enabling/disabling checkpointing globally
 USE_CHECKPOINTING = True
+
+
+def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
+    """Factory function for normalization layers."""
+    if norm_type == "set":
+        return SetNorm(dim, **kwargs)
+    elif norm_type == "rms_set":
+        return RMSSetNorm(dim, **kwargs)
+    elif norm_type == "none":
+        return nn.Identity()
+    else:
+        raise ValueError(f"Unknown norm_type: {norm_type}")
 
 
 class SetNorm(nn.Module):
@@ -136,7 +148,7 @@ class MultiheadAttentionBlock(nn.Module):
 
 
 class MAB(nn.Module):
-    """Multihead Attention Block with pre-normalization (RMSSetNorm), FFN, and optional checkpointing."""
+    """Multihead Attention Block with pre-normalization, FFN, and optional checkpointing."""
     def __init__(
         self,
         dim_q: int,
@@ -146,13 +158,15 @@ class MAB(nn.Module):
         ffn_hidden_dim: Optional[int] = None,
         dropout: float = 0.0,
         use_checkpointing: bool = False,
-        is_self_attention: bool = False
+        is_self_attention: bool = False,
+        attn_norm: str = "none",
+        ffn_norm: str = "none"
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing and USE_CHECKPOINTING
 
-        self.norm_q = RMSSetNorm(dim_q)
-        self.norm_kv = RMSSetNorm(dim_kv)
+        self.norm_q = get_norm_layer(attn_norm, dim_q)
+        self.norm_kv = get_norm_layer(attn_norm, dim_kv)
 
         self.attention = MultiheadAttentionBlock(
             dim_q=dim_q,
@@ -163,7 +177,7 @@ class MAB(nn.Module):
             is_self_attention=is_self_attention
         )
 
-        self.norm_ffn = RMSSetNorm(dim)
+        self.norm_ffn = get_norm_layer(ffn_norm, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -188,13 +202,15 @@ class MAB(nn.Module):
 
 
 class SAB(nn.Module):
-    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0):
+    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
         super().__init__()
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=USE_CHECKPOINTING,
-            is_self_attention=True
+            is_self_attention=True,
+            attn_norm=attn_norm,
+            ffn_norm=ffn_norm
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -204,7 +220,7 @@ class SAB(nn.Module):
 
 
 class ISAB(nn.Module):
-    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0):
+    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
         super().__init__()
         self.inducing_points = nn.Parameter(torch.randn(1, n_inducing_points, dim_out))
         nn.init.xavier_uniform_(self.inducing_points)
@@ -212,12 +228,14 @@ class ISAB(nn.Module):
         self.mab_cross = MAB(
             dim_q=dim_out, dim_kv=dim_in, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            attn_norm=attn_norm, ffn_norm=ffn_norm
         )
         self.mab_self = MAB(
             dim_q=dim_in, dim_kv=dim_out, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            attn_norm=attn_norm, ffn_norm=ffn_norm
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -240,14 +258,15 @@ class ISAB(nn.Module):
 
 
 class PMA(nn.Module):
-    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0):
+    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
         super().__init__()
         self.seed_vectors = nn.Parameter(torch.randn(1, n_seeds, dim))
         nn.init.xavier_uniform_(self.seed_vectors)
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False
+            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            attn_norm=attn_norm, ffn_norm=ffn_norm
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -261,7 +280,8 @@ class SetTransformer(SetEncoder):
     def __init__(
         self, input_dim: int, output_dim: int | None, model_dim: int = 256, n_heads: int = 8,
         n_isab: int = 2, n_sab: int = 1, n_inducing_points: Union[int, List[int]] = 32,
-        n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0
+        n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0,
+        attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none"
     ):
         super().__init__()
         if isinstance(n_inducing_points, int):
@@ -270,15 +290,15 @@ class SetTransformer(SetEncoder):
         self.embedding = nn.Linear(input_dim, model_dim)
 
         self.isabs = nn.ModuleList([
-            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
             for n_ip in n_inducing_points
         ])
-        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
         self.sabs = nn.ModuleList([
-            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout)
+            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
             for _ in range(n_sab)
         ])
-        self.output_norm = RMSSetNorm(model_dim)
+        self.output_norm = get_norm_layer(output_norm, model_dim)
 
         if output_dim is not None:
             self.output = nn.Linear(model_dim, output_dim)
@@ -325,7 +345,8 @@ if __name__ == "__main__":
     model = SetTransformer(
         input_dim=input_dim, output_dim=output_dim, model_dim=model_dim, n_heads=n_heads,
         n_isab=n_isab, n_sab=n_sab,
-        n_inducing_points=n_inducing_points, n_seeds=n_seeds, dropout=0.1
+        n_inducing_points=n_inducing_points, n_seeds=n_seeds, dropout=0.1,
+        attn_norm="rms", ffn_norm="rms", output_norm="rms"
     ).to(device)
 
     x = torch.randn(batch_size, set_size, input_dim, device=device)
