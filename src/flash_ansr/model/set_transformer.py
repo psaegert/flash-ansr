@@ -117,7 +117,7 @@ class MultiheadAttentionBlock(nn.Module):
         k = k.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
-    # Reshape mask for PyTorch's SDPA
+        # Reshape mask for PyTorch's SDPA
         # Input mask is (B, L_kv). We need it to be broadcastable to (B, H, L_q, L_kv).
         # Reshaping to (B, 1, 1, L_kv) achieves this.
         if attn_mask is not None:
@@ -231,7 +231,7 @@ class ISAB(nn.Module):
         # No mask is needed for the attention calculation itself, as h (key/value) is not padded.
         out = self.mab_self(x, h)
 
-    # Zero out the outputs corresponding to padded inputs to prevent information leakage
+        # Zero out the outputs corresponding to padded inputs to prevent information leakage
         # in residual connections and subsequent layers.
         if attn_mask is not None:
             out = out * attn_mask.unsqueeze(-1)
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     x = torch.randn(batch_size, set_size, input_dim, device=device)
     y = torch.randn(batch_size, n_seeds, output_dim, device=device)
 
-# Create a sample attention mask
+    # Create a sample attention mask
     # Simulate batches where each set has a different size.
     # Here, we create a simple mask where ~75% of points are real and 25% are padding.
     true_set_sizes = torch.randint(int(set_size * 0.5), set_size + 1, (batch_size,), device=device)
