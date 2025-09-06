@@ -14,9 +14,9 @@ lr_scheduler:
   kwargs:
     min_lr: 0
     max_lr: 1e-4
-    warmup_steps: 50_000
-    annealing_steps: 1_00_000
-    total_steps: 5_00_000
+    warmup_steps: 500_000
+    annealing_steps: 1_000_000
+    total_steps: 5_000_000
 
 batch_size: 128
 
@@ -24,6 +24,9 @@ train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
 val_size: 100_000
+
+wandb_watch_log: 'all'
+wandb_watch_log_freq: 1000
 
 steps: 5_000_000
 device: cuda

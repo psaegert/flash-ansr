@@ -1,4 +1,4 @@
-from typing import Optional, Union, List, Any
+from typing import Optional, Union, List
 
 import torch
 import torch.nn as nn
@@ -7,74 +7,12 @@ from torch.utils.checkpoint import checkpoint
 import time
 from tqdm import tqdm
 
-from flash_ansr.model.transformer import FeedForward
 from flash_ansr.model.set_encoder import SetEncoder
+from flash_ansr.model.generic import get_norm_layer, FeedForward
 
 
 # A good practice for enabling/disabling checkpointing globally
 USE_CHECKPOINTING = True
-
-
-def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
-    """Factory function for normalization layers."""
-    if norm_type == "set":
-        return SetNorm(dim, **kwargs)
-    elif norm_type == "rms_set":
-        return RMSSetNorm(dim, **kwargs)
-    elif norm_type == "none":
-        return nn.Identity()
-    else:
-        raise ValueError(f"Unknown norm_type: {norm_type}")
-
-
-class SetNorm(nn.Module):
-    """
-    Set Normalization layer.
-
-    Normalizes features across the set and feature dimensions for each batch element.
-    Given an input X of shape (B, M, D), it computes statistics mu and sigma
-    over the M and D dimensions, resulting in statistics of shape (B, 1, 1).
-    It then applies learnable affine parameters gamma and beta of shape (1, 1, D).
-    """
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(1, 1, dim))
-        self.beta = nn.Parameter(torch.zeros(1, 1, dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (B, M, D)
-        # Calculate mean and std over the set and feature dimensions (1 and 2)
-        mu = x.mean(dim=(1, 2), keepdim=True)
-        sigma = x.std(dim=(1, 2), keepdim=True)
-
-        # Normalize and apply affine transformation
-        x_norm = (x - mu) / (sigma + self.eps)
-        return x_norm * self.gamma + self.beta
-
-
-class RMSSetNorm(nn.Module):
-    """
-    RMS Normalization layer for sets.
-
-    Normalizes features across the set and feature dimensions for each batch element.
-    Given an input X of shape (B, M, D), it computes the RMS over the M and D dimensions,
-    resulting in statistics of shape (B, 1, 1).
-    It then applies a learnable affine parameter gamma of shape (1, 1, D).
-    """
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(1, 1, dim))
-
-    def _rms(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.sqrt(x.pow(2).mean(dim=(1, 2), keepdim=True) + self.eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (B, M, D)
-        rms = self._rms(x)
-        x_norm = x / rms
-        return x_norm * self.gamma
 
 
 class MultiheadAttentionBlock(nn.Module):

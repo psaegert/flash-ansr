@@ -22,42 +22,8 @@ decoder_n_layers: 15
 decoder_max_seq_len: 128
 decoder_ffn_hidden_dim: 2736
 decoder_dropout: 0.1
-
-
-# L+
-# encoder_max_n_variables: 11
-# encoder_dim: 1152
-# encoder_n_heads: 18
-# encoder_n_isab: 11
-# encoder_n_sab: 4
-# encoder_n_inducing_points: 108
-# encoder_n_seeds: 108
-# encoder_ffn_hidden_dim: 3078
-# encoder_dropout: 0.1
-
-# decoder_input_dim: 1152
-# decoder_model_dim: 1152
-# decoder_n_heads: 18
-# decoder_n_layers: 18
-# decoder_max_seq_len: 128
-# decoder_ffn_hidden_dim: 3078
-# decoder_dropout: 0.1
-
-# XL
-# encoder_max_n_variables: 11
-# encoder_dim: 1280
-# encoder_n_heads: 20
-# encoder_n_isab: 16
-# encoder_n_sab: 4
-# encoder_n_inducing_points: 128
-# encoder_n_seeds: 128
-# encoder_ffn_hidden_dim: 3416
-# encoder_dropout: 0.1
-
-# decoder_input_dim: 1280
-# decoder_model_dim: 1280
-# decoder_n_heads: 20
-# decoder_n_layers: 20
-# decoder_max_seq_len: 128
-# decoder_ffn_hidden_dim: 3416
-# decoder_dropout: 0.1
+decoder_block_self_attn_norm: 'rms'
+decoder_block_cross_attn_norm: 'rms'
+decoder_block_ffn_norm: 'rms'
+decoder_cross_attn_kv_norm: 'none'
+decoder_output_norm: 'rms'

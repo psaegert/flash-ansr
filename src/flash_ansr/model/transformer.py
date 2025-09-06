@@ -5,42 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from flash_ansr.model.generic import get_norm_layer, FeedForward
+
 
 USE_CHECKPOINTING = True
-
-
-class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization."""
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # The output is cast to the input's dtype, preventing issues with mixed precision.
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
-
-class FeedForward(nn.Module):
-    """Standard Feed-Forward Network with GELU activation."""
-    def __init__(
-        self,
-        dim: int,
-        hidden_dim: Optional[int] = None,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        hidden_dim = hidden_dim or 4 * dim
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.dropout(self.w2(F.gelu(self.w1(x))))
 
 
 class RotaryEmbedding(nn.Module):
@@ -139,7 +107,27 @@ class Attention(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    """A single block of the Transformer Decoder."""
+    """A single block of the Transformer Decoder with configurable norms.
+
+    Parameters
+    ----------
+    dim : int
+        Model dimension.
+    n_heads : int
+        Number of attention heads.
+    ffn_hidden_dim : int | None
+        Hidden dimension of FFN (defaults to 4 * dim if None).
+    dropout : float
+        Dropout probability.
+    use_checkpointing : bool
+        Whether to use gradient checkpointing.
+    self_attn_norm_type : str
+        Norm type for self-attention input ("rms", "layer", "none").
+    cross_attn_norm_type : str
+        Norm type for cross-attention input.
+    ffn_norm_type : str
+        Norm type for FFN input.
+    """
     def __init__(
         self,
         dim: int,
@@ -147,17 +135,20 @@ class TransformerDecoderBlock(nn.Module):
         ffn_hidden_dim: Optional[int] = None,
         dropout: float = 0.0,
         use_checkpointing: bool = False,
+        self_attn_norm_type: str = "rms",
+        cross_attn_norm_type: str = "rms",
+        ffn_norm_type: str = "rms",
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
 
-        self.self_attn_norm = RMSNorm(dim)
+        self.self_attn_norm = get_norm_layer(self_attn_norm_type, dim)
         self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=True)
 
-        self.cross_attn_norm = RMSNorm(dim)
+        self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
         self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=False)
 
-        self.ffn_norm = RMSNorm(dim)
+        self.ffn_norm = get_norm_layer(ffn_norm_type, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(
@@ -194,7 +185,16 @@ class TransformerDecoderBlock(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    """State-of-the-art Transformer Decoder."""
+    """State-of-the-art Transformer Decoder with configurable norms.
+
+    Added parameters:
+    cross_attn_kv_norm_type : str
+        Norm type applied to encoder memory prior to cross-attention ("rms", "layer", "none").
+    output_norm_type : str
+        Norm type applied before the output projection.
+    block_self_attn_norm_type / block_cross_attn_norm_type / block_ffn_norm_type : str
+        Passed to each TransformerDecoderBlock.
+    """
     def __init__(
         self,
         vocab_size: int,
@@ -205,15 +205,20 @@ class TransformerDecoder(nn.Module):
         max_seq_len: int = 4096,
         ffn_hidden_dim: Optional[int] = None,
         dropout: float = 0.1,
+        block_self_attn_norm_type: str = "rms",
+        block_cross_attn_norm_type: str = "rms",
+        block_ffn_norm_type: str = "rms",
+        cross_attn_kv_norm_type: str = "rms",
+        output_norm_type: str = "rms",
     ):
         super().__init__()
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
 
-        self.input_proj: nn.Module
+        self.cross_attn_kv_proj: nn.Module
         if input_dim is not None and input_dim != model_dim:
-            self.input_proj = nn.Linear(input_dim, model_dim, bias=False)
+            self.cross_attn_kv_proj = nn.Linear(input_dim, model_dim, bias=False)
         else:
-            self.input_proj = nn.Identity()
+            self.cross_attn_kv_proj = nn.Identity()
 
         self.layers = nn.ModuleList([
             TransformerDecoderBlock(
@@ -221,12 +226,15 @@ class TransformerDecoder(nn.Module):
                 n_heads=n_heads,
                 ffn_hidden_dim=ffn_hidden_dim,
                 dropout=dropout,
-                use_checkpointing=USE_CHECKPOINTING
+                use_checkpointing=USE_CHECKPOINTING,
+                self_attn_norm_type=block_self_attn_norm_type,
+                cross_attn_norm_type=block_cross_attn_norm_type,
+                ffn_norm_type=block_ffn_norm_type,
             ) for _ in range(n_layers)
         ])
 
-        self.memory_norm = RMSNorm(model_dim)
-        self.output_norm = RMSNorm(model_dim)
+        self.cross_attn_kv_norm = get_norm_layer(cross_attn_kv_norm_type, model_dim)
+        self.output_norm = get_norm_layer(output_norm_type, model_dim)
         self.output = nn.Linear(model_dim, vocab_size, bias=False)
 
         head_dim = model_dim // n_heads  # for RoPE
@@ -240,8 +248,8 @@ class TransformerDecoder(nn.Module):
             h = h + extra_parallel_embeddings
 
         rope_emb = self.rope(h, seq_len=seq_len)
-        encoder_memory = self.input_proj(encoder_memory)
-        encoder_memory = self.memory_norm(encoder_memory)
+        encoder_memory = self.cross_attn_kv_proj(encoder_memory)
+        encoder_memory = self.cross_attn_kv_norm(encoder_memory)
 
         for layer in self.layers:
             h = layer(h, encoder_memory, rope_emb)

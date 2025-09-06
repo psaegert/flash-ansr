@@ -206,6 +206,8 @@ class Trainer():
             validate_size: int | None = None,
             validate_batch_size: int = 128,
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
+            wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = 'gradients',
+            wandb_watch_log_freq: int = 1000,
             verbose: bool = False) -> FlashANSRModel:
 
         if verbose:
@@ -215,6 +217,10 @@ class Trainer():
         wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
+            wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
+            if verbose:
+                print(f'Watching model with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
+
             return self.run_training(
                 steps=steps,
                 preprocess=preprocess,
@@ -262,7 +268,7 @@ class Trainer():
                 data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model.forward(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -328,7 +334,7 @@ class Trainer():
                     data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model.forward(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)

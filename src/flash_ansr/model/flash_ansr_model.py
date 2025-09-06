@@ -46,6 +46,11 @@ class FlashANSRModel(nn.Module):
         decoder_max_seq_len: int = 4096,
         decoder_ffn_hidden_dim: int = None,
         decoder_dropout: float = 0.1,
+        decoder_block_self_attn_norm: str = "rms",
+        decoder_block_cross_attn_norm: str = "rms",
+        decoder_block_ffn_norm: str = "rms",
+        decoder_cross_attn_kv_norm: str = "rms",
+        decoder_output_norm: str = "rms",
     ) -> None:
         super().__init__()
 
@@ -82,7 +87,12 @@ class FlashANSRModel(nn.Module):
             n_heads=decoder_n_heads,
             max_seq_len=decoder_max_seq_len,
             ffn_hidden_dim=decoder_ffn_hidden_dim,
-            dropout=decoder_dropout
+            dropout=decoder_dropout,
+            block_self_attn_norm_type=decoder_block_self_attn_norm,
+            block_cross_attn_norm_type=decoder_block_cross_attn_norm,
+            block_ffn_norm_type=decoder_block_ffn_norm,
+            cross_attn_kv_norm_type=decoder_cross_attn_kv_norm,
+            output_norm_type=decoder_output_norm
         )
 
         self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
@@ -135,6 +145,11 @@ class FlashANSRModel(nn.Module):
             decoder_max_seq_len=config_["decoder_max_seq_len"],
             decoder_ffn_hidden_dim=config_["decoder_ffn_hidden_dim"],
             decoder_dropout=config_["decoder_dropout"],
+            decoder_block_self_attn_norm=config_["decoder_block_self_attn_norm"],
+            decoder_block_cross_attn_norm=config_["decoder_block_cross_attn_norm"],
+            decoder_block_ffn_norm=config_["decoder_block_ffn_norm"],
+            decoder_cross_attn_kv_norm=config_["decoder_cross_attn_kv_norm"],
+            decoder_output_norm=config_["decoder_output_norm"],
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
