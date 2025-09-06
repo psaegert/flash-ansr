@@ -24,7 +24,7 @@ from flash_ansr.eval.token_prediction import (
     recall,
     f1_score,
 )
-from flash_ansr.model.transformer import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
 import nsrops

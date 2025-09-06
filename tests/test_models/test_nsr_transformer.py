@@ -6,7 +6,8 @@ import torch
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.model.transformer import Tokenizer, TransformerDecoder
+from flash_ansr.model.transformer import TransformerDecoder
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr import FlashANSRModel, get_path, SetTransformer
 
 

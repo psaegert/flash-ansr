@@ -10,7 +10,7 @@ from tqdm import tqdm
 from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import load_config, save_config, substitute_root_path
-from flash_ansr.model.transformer import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.preprocess import FlashASNRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer

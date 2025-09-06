@@ -3,7 +3,7 @@ import shutil
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.model.transformer import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.eval.evaluation import Evaluation
 from flash_ansr import get_path, FlashANSR, FlashANSRModel, GenerationConfig
 from flash_ansr.data import FlashANSRDataset
