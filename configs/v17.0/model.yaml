@@ -11,9 +11,9 @@ encoder_n_inducing_points: 96
 encoder_n_seeds: 96
 encoder_ffn_hidden_dim: 2736
 encoder_dropout: 0.1
-encoder_attn_norm: 'none'
-encoder_ffn_norm: 'none'
-encoder_output_norm: 'none'
+encoder_attn_norm: 'rms_set'
+encoder_ffn_norm: 'rms_set'
+encoder_output_norm: 'rms_set'
 
 decoder_input_dim: 1024
 decoder_model_dim: 1024
@@ -25,5 +25,5 @@ decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'
 decoder_block_cross_attn_norm: 'rms'
 decoder_block_ffn_norm: 'rms'
-decoder_cross_attn_kv_norm: 'none'
+decoder_cross_attn_kv_norm: 'rms_set'
 decoder_output_norm: 'rms'
