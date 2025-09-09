@@ -118,7 +118,7 @@ class FlashANSRModel(nn.Module):
             if config_["simplipy_engine"].startswith('.'):
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
-        simplipy_engine = SimpliPyEngine.from_config(config_["simplipy_engine"])
+        simplipy_engine = SimpliPyEngine.load(config_["simplipy_engine"], install=True)
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
         # Update the mapping of config keys to match the new __init__ signature

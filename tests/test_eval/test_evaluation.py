@@ -34,7 +34,7 @@ class TestEvaluation(unittest.TestCase):
     def test_evaluate(self):
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
         ansr = FlashANSR(
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3'),
             flash_ansr_transformer=FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml')),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             generation_config=GenerationConfig(method='beam_search', beam_width=2, ),

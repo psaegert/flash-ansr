@@ -20,7 +20,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_nsr_forward(self):
         nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=1024,
             encoder_n_seeds=10)
@@ -41,7 +41,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_nsr_beam_search(self):
         nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
             encoder_n_seeds=10)
@@ -55,7 +55,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
             encoder_max_n_variables=6,
             encoder_n_seeds=10)

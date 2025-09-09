@@ -191,7 +191,7 @@ class SkeletonPool:
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
         return cls(
-            simplipy_engine=SimpliPyEngine.from_config(config_["simplipy_engine"]),
+            simplipy_engine=SimpliPyEngine.load(config_["simplipy_engine"], install=True),
             sample_strategy=config_["sample_strategy"],
             literal_prior=config_["literal_prior"],
             support_prior=config_["support_prior"],
