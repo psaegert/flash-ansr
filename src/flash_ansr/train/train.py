@@ -8,6 +8,7 @@ import schedulefree
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
+from torch.nn.utils import get_total_norm
 
 from tqdm import tqdm
 
@@ -292,8 +293,8 @@ class Trainer():
         self.scaler.unscale_(self.optimizer)
 
         # Monitor gradients for different parts of the model
-        encoder_grad_norm = self._get_grad_norm(self.model.encoder.parameters())
-        decoder_grad_norm = self._get_grad_norm(self.model.decoder.parameters())
+        encoder_grad_norm = get_total_norm(self.model.encoder.parameters())
+        decoder_grad_norm = get_total_norm(self.model.decoder.parameters())
 
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:
