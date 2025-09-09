@@ -144,9 +144,8 @@ Use, copy or modify a config in `./configs`:
 │   ├── dataset_train.yaml          # Link to skeleton pool and padding for training
 │   ├── dataset_val.yaml            # Link to skeleton pool and padding for validation
 │   ├── evaluation.yaml             # Evaluation settings
-│   ├── simplipy_engine.yaml        # SimpliPyEngine settings
 │   ├── tokenizer.yaml              # Tokenizer settings
-│   ├── model.yaml                    # Model settings and link to expression space
+│   ├── model.yaml                  # Model settings and link to simplipy engine
 │   ├── skeleton_pool_train.yaml    # Sampling and holdout settings for training
 │   ├── skeleton_pool_val.yaml      # Sampling and holdout settings for validation
 │   └── train.yaml                  # Data and schedule for training

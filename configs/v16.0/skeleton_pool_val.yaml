@@ -1,15 +1,29 @@
 simplipy_engine: './simplipy_engine.yaml'
-holdout_pools: []
+holdout_pools: [
+  "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/pool_15/skeleton_pool/"
+]
+
 sample_strategy:
-  max_tries: 100
+  n_operator_distribution: "length_proportional"
+  min_operators: 0
+  max_operators: 10
+  power: 1
+  max_length: 21
+  max_tries: 1
   independent_dimensions: True
-allow_nan: false
+
+allow_nan: False
 simplify: True
+
 literal_prior:
-  name: uniform
+  name: 'normal'
   kwargs:
-    low: -5
-    high: 5
+    loc: 0
+    scale: 5
+
 support_prior:
   - weight: 1
     name: "normal_uniform_intervals"
@@ -23,12 +37,14 @@ support_prior:
       scale_mean: 10
       alpha_std: 1
       beta_std: 1
+
 support_scale_prior:
   name: "constant"
   kwargs:
     value: 0
+
 n_support_prior:
-  name: uniform
+  name: "uniform"
   kwargs:
     low: 16
     high: 512

@@ -6,7 +6,7 @@ import numpy as np
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models.transformer_utils import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils import load_config
 
 
@@ -31,7 +31,7 @@ class FlashASNRPreprocessor:
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
         return cls(
-            SimpliPyEngine.from_config(config_["simplipy_engine"]),
+            SimpliPyEngine.load(config_["simplipy_engine"], install=True),
             config_.get("format_probs", None)
         )
 

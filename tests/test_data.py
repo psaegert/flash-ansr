@@ -69,21 +69,3 @@ class TestFlashANSRDataset(unittest.TestCase):
             batch = dataset.collate(batch)
             assert isinstance(batch['input_ids'], torch.Tensor)
             assert batch['x_tensors'].shape[0] in [17, 512]  # First instance has maximum number of points to reserve maximum memory
-
-    def test_iterate_avoid_fragmentation(self):
-        dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
-
-        expected_sizes = [512, 17, 17]
-
-        i = 0
-        for batch in dataset.iterate(size=3, batch_size=None, n_support=17, avoid_fragmentation=True):
-            batch = dataset.collate(batch)
-            assert batch['x_tensors'].shape[0] == expected_sizes[i]
-            i += 1
-
-    def test_iterate_no_avoid_fragmentation(self):
-        dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
-
-        for batch in dataset.iterate(size=3, batch_size=None, n_support=17, avoid_fragmentation=False):
-            batch = dataset.collate(batch)
-            assert batch['x_tensors'].shape[0] == 17

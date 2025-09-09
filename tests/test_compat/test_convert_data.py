@@ -19,7 +19,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)
@@ -36,7 +36,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)
@@ -52,7 +52,7 @@ class TestConvertData(unittest.TestCase):
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.from_config(get_path('configs', 'test', 'simplipy_engine.yaml')),
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
             base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
         self.assertIsInstance(skeleton_pool, SkeletonPool)

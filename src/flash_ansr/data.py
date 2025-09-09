@@ -11,7 +11,7 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.models.transformer_utils import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
@@ -252,7 +252,6 @@ class FlashANSRDataset:
             n_support: int | None = None,
             n_per_equation: int = 1,
             tqdm_total: int | None = None,
-            avoid_fragmentation: bool = True,
             preprocess: bool = False,
             verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
@@ -272,8 +271,6 @@ class FlashANSRDataset:
             The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None.
-        avoid_fragmentation : bool, optional
-            Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
         preprocess : bool, optional
             Whether to preprocess the data, by default False.
         verbose : bool, optional
@@ -296,7 +293,7 @@ class FlashANSRDataset:
 
                 if preprocess and self.preprocessor is not None:
                     # Preprocess with available preprocessor
-                    for instance in self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation):
+                    for instance in self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose):
                         yield self.preprocessor.format(instance)
                 else:
                     if preprocess:
@@ -304,14 +301,14 @@ class FlashANSRDataset:
                         warnings.warn("No preprocessor specified, skipping preprocessing.")
 
                     # Generate the data without preprocessing
-                    yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+                    yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose)
 
             else:
                 # Generate data in batches
 
                 if preprocess and self.preprocessor is not None:
                     # Preprocess with available preprocessor
-                    for batch in self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation):
+                    for batch in self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose):
                         yield self.preprocessor.format(batch)
                 else:
                     if preprocess:
@@ -319,7 +316,7 @@ class FlashANSRDataset:
                         warnings.warn("No preprocessor specified, skipping preprocessing.")
 
                     # Generate the data without preprocessing
-                    yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose, avoid_fragmentation=avoid_fragmentation)
+                    yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose)
 
         else:
             yield from tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01)
@@ -332,7 +329,6 @@ class FlashANSRDataset:
             n_support: int | None = None,
             n_per_equation: int = 1,
             tqdm_total: int | None = None,
-            avoid_fragmentation: bool = True,
             verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
         '''
         Generate a batch of data.
@@ -351,8 +347,6 @@ class FlashANSRDataset:
             The number of instances with distinct constants and support points to generate per equation, by default 1.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None
-        avoid_fragmentation : bool, optional
-            Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
         verbose : bool, optional
             Whether to print verbose output, by default False.
 
@@ -387,13 +381,7 @@ class FlashANSRDataset:
             }
 
             if n_support is None:
-                if batch_id == 0 and avoid_fragmentation:
-                    # Allocate the maximum size tensor to avoid memory fragmentation
-                    n_support_frag = int(self.skeleton_pool.n_support_prior_kwargs['max_value'])
-                elif n_support is None:
-                    n_support_frag = int(np.round(self.skeleton_pool.n_support_prior(size=1))[0])
-                else:
-                    n_support_frag = n_support
+                n_support_frag = int(np.round(self.skeleton_pool.n_support_prior(size=1))[0])
             else:
                 n_support_frag = n_support
 
@@ -401,7 +389,6 @@ class FlashANSRDataset:
                     size=min(batch_size, size - batch_id * batch_size) if size is not None else batch_size,
                     n_support=n_support_frag,
                     n_per_equation=n_per_equation,
-                    avoid_fragmentation=False,
                     verbose=False):
 
                 for key in instance.keys():
@@ -425,7 +412,6 @@ class FlashANSRDataset:
             size: int | None = None,
             n_support: int | None = None,
             n_per_equation: int = 1,
-            avoid_fragmentation: bool = True,
             tqdm_total: int | None = None,
             verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
         '''
@@ -439,8 +425,6 @@ class FlashANSRDataset:
             The number of support points to sample, by default None.
         n_per_equation : int, optional
             The number of instances with distinct constants and support points to generate per equation, by default 1.
-        avoid_fragmentation : bool, optional
-            Whether to avoid memory fragmentation by allocating the maximum size tensor in the first batch, by default True.
         tqdm_total : int, optional
             The total number of iterations for the tqdm progress bar, by default None.
         verbose : bool, optional
@@ -457,9 +441,6 @@ class FlashANSRDataset:
         n_generated = 0
         n_rejected = 0
         while size is None or n_generated < size:
-            # Allocate the maximum size tensor to avoid memory fragmentation
-            n_support_frag = int(self.skeleton_pool.n_support_prior_kwargs['max_value']) if n_generated == 0 and avoid_fragmentation else n_support
-
             try:
                 # sample = self.skeleton_pool.sample(n_support=n_support_frag)
                 skeleton_hash, skeleton_code, skeleton_constants = self.skeleton_pool.sample_skeleton()
@@ -470,7 +451,7 @@ class FlashANSRDataset:
                 n_generated_per_equation = 0
                 while n_generated_per_equation < n_per_equation:
                     try:
-                        x_support, y_support, literals = self.skeleton_pool.sample_data(skeleton_code, len(skeleton_constants), n_support_frag)
+                        x_support, y_support, literals = self.skeleton_pool.sample_data(skeleton_code, len(skeleton_constants), n_support)
 
                         if self.padding == 'zero':
                             # Set all x that do not appear in the expression to 0

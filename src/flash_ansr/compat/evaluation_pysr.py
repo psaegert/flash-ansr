@@ -24,7 +24,7 @@ from flash_ansr.eval.token_prediction import (
     recall,
     f1_score,
 )
-from flash_ansr.models.transformer_utils import Tokenizer
+from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
 import nsrops
@@ -86,7 +86,7 @@ class PySREvaluation():
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose, avoid_fragmentation=False):
+            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose):
 
                 # Initialize here to prevent memory leak?
                 model = PySRRegressor(

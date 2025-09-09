@@ -120,34 +120,6 @@ def main(argv: str = None) -> None:
 
     # Execute the command
     match args.command_name:
-        case 'find-simplifications':
-            if args.verbose:
-                print(f'Finding simplifications with simplipy engine {args.simplipy_engine}')
-            import os
-            from simplipy import SimpliPyEngine
-            from flash_ansr.utils import substitute_root_path, load_config
-
-            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
-
-            resolved_output_file = substitute_root_path(args.output_file)
-
-            if not os.path.exists(os.path.dirname(resolved_output_file)):
-                os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
-
-            simplipy_engine.find_rules(
-                max_n_rules=args.max_n_rules,
-                max_pattern_length=args.max_pattern_length,
-                timeout=args.timeout,
-                dummy_variables=args.dummy_variables,
-                max_simplify_steps=args.max_simplify_steps,
-                X=args.X,
-                C=args.C,
-                constants_fit_retries=args.constants_fit_retries,
-                output_file=resolved_output_file,
-                save_every=args.save_every,
-                reset_rules=args.reset_rules,
-                verbose=args.verbose)
-
         case 'compile-data':
             print('Deprecation Warning: The compile-data function is deprecated in favor of procedurally generated datasets.')
 
@@ -181,7 +153,7 @@ def main(argv: str = None) -> None:
 
             import pandas as pd
 
-            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
+            simplipy_engine = SimpliPyEngine.load(args.simplipy_engine, install=True)
             base_skeleton_pool = SkeletonPool.from_config(args.base_skeleton_pool)
             df = pd.read_csv(substitute_root_path(args.input))
 
@@ -223,16 +195,27 @@ def main(argv: str = None) -> None:
 
             trainer = Trainer.from_config(args.config)
 
+            config = load_config(args.config)
+
             try:
-                trainer.run_from_config(
+                trainer.run(
                     project_name=args.project,
                     entity=args.entity,
                     name=args.name,
-                    verbose=args.verbose,
+                    steps=config['steps'],
+                    preprocess=False,
+                    device=config['device'],
                     checkpoint_interval=args.checkpoint_interval,
                     checkpoint_directory=substitute_root_path(args.output_dir),
                     validate_interval=args.validate_interval,
-                    wandb_mode=args.mode)
+                    validate_size=config.get('val_size', None),
+                    validate_batch_size=config.get('val_batch_size', None),
+                    compiler_optimization_steps=config.get('compiler_optimization_steps', 100),
+                    wandb_watch_log=config.get('wandb_watch_log', None),
+                    wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
+                    wandb_mode=args.mode,
+                    verbose=args.verbose,
+                )
             except KeyboardInterrupt:
                 print("Training interrupted. Saving model...")
 
@@ -256,15 +239,15 @@ def main(argv: str = None) -> None:
             from flash_ansr.eval.evaluation import Evaluation
             from flash_ansr.utils import substitute_root_path, load_config
             from flash_ansr.data import FlashANSRDataset
-            from flash_ansr.models import FlashANSRTransformer
+            from flash_ansr.model import FlashANSRModel
 
             if os.path.isdir(substitute_root_path(args.model)):
                 # Load the model
-                _, model = FlashANSRTransformer.load(args.model)
+                _, model = FlashANSRModel.load(args.model)
                 print(f"Model loaded from {args.model}")
             elif os.path.isfile(substitute_root_path(args.model)):
                 # The model is specified with a file
-                _, model = FlashANSRTransformer.load(substitute_root_path(args.model))
+                _, model = FlashANSRModel.load(substitute_root_path(args.model))
                 print(f"Model loaded from {substitute_root_path(args.model)}")
             else:
                 raise ValueError(f"Invalid model configuration: {args.model}")
@@ -363,7 +346,7 @@ def main(argv: str = None) -> None:
                 model=model,
                 fitfunc=fitfunc,
                 dataset=dataset,
-                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
                 size=args.size,
                 verbose=args.verbose)
 
@@ -406,7 +389,7 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 dataset=dataset,
                 size=args.size,
-                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
                 verbose=args.verbose)
 
             if args.verbose:
@@ -463,11 +446,11 @@ def main(argv: str = None) -> None:
             print(f'Range:          {1e3 * results["min_iteration_time"]:.0f} - {1e3 * results["max_iteration_time"]:.0f} ms')
 
         case 'install':
-            from flash_ansr.models.manage import install_model
+            from flash_ansr.model.manage import install_model
             install_model(args.model)
 
         case 'remove':
-            from flash_ansr.models.manage import remove_model
+            from flash_ansr.model.manage import remove_model
             remove_model(args.path)
 
         case _:

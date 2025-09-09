@@ -1,7 +1,6 @@
 from typing import Iterator, Any, Literal
 
 import torch
-from torch import nn
 
 from flash_ansr.utils import load_config
 
@@ -187,63 +186,3 @@ class Tokenizer:
             The iterator over the vocabulary.
         '''
         return iter(self.vocab)
-
-
-class PositionalEncoding(nn.Module):
-    '''
-    Positional encoding module for transformer models.
-
-    Notes
-    -----
-    See https://alexrichter.xyz/posts/implementing-sinusoidal-positional-embedding-transformer-pytorch/
-    '''
-    def __init__(self) -> None:
-        super().__init__()
-
-        # Store the encoding in attrbiutes to avoid re-computation
-        self.seq_len: int | None = None
-        self.input_size: int | None = None
-        self.encoding: torch.Tensor | None = None
-
-    def forward(self, x: torch.Tensor | None = None, shape: tuple[int, int] | None = None, device: torch.device | None = None) -> torch.Tensor:
-        '''
-        Returns positional encoding for given input tensor X (batch_size, seq_len, size)
-
-        Parameters
-        ----------
-        X : torch.Tensor
-            Input tensor of shape (batch_size, seq_len, size)
-
-        Returns
-        -------
-        torch.Tensor
-            Positional encoding of shape (seq_len, size)
-        '''
-        if shape is not None and device is not None:
-            T, E = shape
-        elif x is not None:
-            if len(x.shape) < 3:
-                x = x.unsqueeze(0)
-            _, T, E = x.shape
-            device = x.device
-        else:
-            raise ValueError("Either X or shape and device must be provided")
-
-        # Round the sequence length to the next even number
-        E_compat = E + E % 2
-
-        if self.seq_len is None or (T, E_compat, device) != (self.seq_len, self.input_size, self.encoding.device):  # type: ignore
-            self.seq_len = T
-            self.input_size = E_compat
-            self.encoding = torch.zeros((T, E_compat), device=device)
-
-            t = 1 / 10000**(torch.arange(0, E_compat, 2) / E_compat)
-            k = torch.arange(T)
-            v = torch.outer(k, t)
-
-            self.encoding[:, 0::2] = v.sin()
-            self.encoding[:, 1::2] = v.cos()
-
-            self.encoding = self.encoding
-
-        return self.encoding[:, :E]  # type: ignore
