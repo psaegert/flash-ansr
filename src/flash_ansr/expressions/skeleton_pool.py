@@ -699,9 +699,14 @@ class SkeletonPool:
             # Use the default support prior as defined by the configuration
             if self.sample_strategy.get('independent_dimensions', False):
                 # Sample each dimension independently
-                x_support = np.concatenate([support_prior(size=(n_support, 1)) * 10**support_scale_prior(size=1) for _ in range(len(self.variables))], axis=1).astype(np.float32)
+                # Generate support samples for each variable
+                support_samples = [support_prior(size=(n_support, 1)) for _ in range(len(self.variables))]
+                # Apply scaling to each variable's support samples
+                scaled_support_samples = [samples * 10**support_scale_prior(size=1) for samples in support_samples]
+                # Concatenate along axis 1
+                x_support = np.concatenate(scaled_support_samples, axis=1).astype(np.float32)
             else:
-                x_support = support_prior(size=(n_support, len(self.variables))).astype(np.float32) * 10**support_scale_prior(size=1).astype(np.float32)
+                x_support = (support_prior(size=(n_support, len(self.variables))) * 10**support_scale_prior(size=1)).astype(np.float32)
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
