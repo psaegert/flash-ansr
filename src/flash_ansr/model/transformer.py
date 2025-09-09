@@ -79,16 +79,19 @@ class Attention(nn.Module):
         rope_emb: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         is_causal: bool = False,
     ) -> torch.Tensor:
-        batch_size, seq_len_q, _ = query.shape
-        seq_len_kv = key_value.shape[1]
+        # Get batch sizes for query and key_value independently
+        batch_size_q, seq_len_q, _ = query.shape
+        batch_size_kv, seq_len_kv, _ = key_value.shape
 
+        # Project query, key, and value
         q = self.w_q(query)
         k = self.w_k(key_value)
         v = self.w_v(key_value)
 
-        q = q.view(batch_size, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+        # Reshape for multi-head attention using their respective batch sizes
+        q = q.view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
         if self.use_rope:
             if rope_emb is None:
@@ -102,7 +105,7 @@ class Attention(nn.Module):
             dropout_p=self.dropout if self.training else 0.0,
         )
 
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len_q, -1)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
         return self.w_o(attn_output)
 
 

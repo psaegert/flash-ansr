@@ -4,10 +4,7 @@ import tempfile
 
 import torch
 
-from simplipy import SimpliPyEngine
-
 from flash_ansr.model.transformer import TransformerDecoder
-from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr import FlashANSRModel, get_path, SetTransformer
 
 
@@ -19,34 +16,28 @@ class TestFlashANSRTransformer(unittest.TestCase):
         shutil.rmtree(self.save_dir)
 
     def test_nsr_forward(self):
-        nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
-            encoder_max_n_variables=1024,
-            encoder_n_seeds=10)
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
         batch_size = 257
         sequence_length = 17
 
-        x = torch.rand(batch_size, 10, 1024)
+        x = torch.rand(batch_size, 10, 11)
         input_tokens = torch.randint(low=len(nsr.tokenizer.special_tokens), high=len(nsr.tokenizer), size=(batch_size, sequence_length))
 
         random_padding_beginnings = torch.randint(0, sequence_length, (batch_size,))
 
-        for i in range(32):
+        for i in range(batch_size):
             input_tokens[i, random_padding_beginnings[i]:] = nsr.tokenizer['<pad>']
+
+        print(input_tokens.shape, x.shape)
 
         logits = nsr.forward(input_tokens, x)
         assert logits.shape == (batch_size, sequence_length, len(nsr.tokenizer))
 
     def test_nsr_beam_search(self):
-        nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
-            encoder_max_n_variables=6,
-            encoder_n_seeds=10)
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
-        x = torch.rand(13, 6)
+        x = torch.rand(13, 11)
 
         beams, scores, _ = nsr.beam_search(x, beam_width=4, max_len=10)
 
@@ -54,13 +45,9 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert len(scores) == 4
 
     def test_nsr_sample_top_kp(self):
-        nsr = FlashANSRModel(
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
-            encoder_max_n_variables=6,
-            encoder_n_seeds=10)
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
-        x = torch.rand(13, 6)
+        x = torch.rand(13, 11)
 
         try:
             beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
@@ -87,7 +74,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         logits = nsr.forward(input_tokens, x)
 
-        assert logits.shape == (256, 17, 50)
+        assert logits.shape == (256, 17, 57)
 
     def test_save_load_relative(self):
         # Create from config

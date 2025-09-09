@@ -210,6 +210,7 @@ def main(argv: str = None) -> None:
                     validate_interval=args.validate_interval,
                     validate_size=config.get('val_size', None),
                     validate_batch_size=config.get('val_batch_size', None),
+                    compiler_optimization_steps=config.get('compiler_optimization_steps', 100),
                     wandb_watch_log=config.get('wandb_watch_log', None),
                     wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
                     wandb_mode=args.mode,
