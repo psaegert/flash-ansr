@@ -31,7 +31,7 @@ class FlashASNRPreprocessor:
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
         return cls(
-            SimpliPyEngine.from_config(config_["simplipy_engine"]),
+            SimpliPyEngine.load(config_["simplipy_engine"], install=True),
             config_.get("format_probs", None)
         )
 

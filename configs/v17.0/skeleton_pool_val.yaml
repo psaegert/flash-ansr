@@ -1,4 +1,4 @@
-simplipy_engine: './simplipy_engine.yaml'
+simplipy_engine: 'dev_7-3'
 holdout_pools: [
   "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",

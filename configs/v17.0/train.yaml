@@ -25,6 +25,9 @@ val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
 val_size: 100_000
 
+compile_model: true
+compiler_optimization_steps: 100
+
 wandb_watch_log: null   # Causes AttributeError: 'NoneType' object has no attribute 'data'
 wandb_watch_log_freq: 1000
 

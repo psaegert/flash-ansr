@@ -120,34 +120,6 @@ def main(argv: str = None) -> None:
 
     # Execute the command
     match args.command_name:
-        case 'find-simplifications':
-            if args.verbose:
-                print(f'Finding simplifications with simplipy engine {args.simplipy_engine}')
-            import os
-            from simplipy import SimpliPyEngine
-            from flash_ansr.utils import substitute_root_path, load_config
-
-            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
-
-            resolved_output_file = substitute_root_path(args.output_file)
-
-            if not os.path.exists(os.path.dirname(resolved_output_file)):
-                os.makedirs(os.path.dirname(resolved_output_file), exist_ok=True)
-
-            simplipy_engine.find_rules(
-                max_n_rules=args.max_n_rules,
-                max_pattern_length=args.max_pattern_length,
-                timeout=args.timeout,
-                dummy_variables=args.dummy_variables,
-                max_simplify_steps=args.max_simplify_steps,
-                X=args.X,
-                C=args.C,
-                constants_fit_retries=args.constants_fit_retries,
-                output_file=resolved_output_file,
-                save_every=args.save_every,
-                reset_rules=args.reset_rules,
-                verbose=args.verbose)
-
         case 'compile-data':
             print('Deprecation Warning: The compile-data function is deprecated in favor of procedurally generated datasets.')
 
@@ -181,7 +153,7 @@ def main(argv: str = None) -> None:
 
             import pandas as pd
 
-            simplipy_engine = SimpliPyEngine.from_config(load_config(args.simplipy_engine))
+            simplipy_engine = SimpliPyEngine.load(args.simplipy_engine, install=True)
             base_skeleton_pool = SkeletonPool.from_config(args.base_skeleton_pool)
             df = pd.read_csv(substitute_root_path(args.input))
 
@@ -238,6 +210,7 @@ def main(argv: str = None) -> None:
                     validate_interval=args.validate_interval,
                     validate_size=config.get('val_size', None),
                     validate_batch_size=config.get('val_batch_size', None),
+                    compiler_optimization_steps=config.get('compiler_optimization_steps', 100),
                     wandb_watch_log=config.get('wandb_watch_log', None),
                     wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
                     wandb_mode=args.mode,
@@ -373,7 +346,7 @@ def main(argv: str = None) -> None:
                 model=model,
                 fitfunc=fitfunc,
                 dataset=dataset,
-                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
                 size=args.size,
                 verbose=args.verbose)
 
@@ -416,7 +389,7 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 dataset=dataset,
                 size=args.size,
-                simplipy_engine=SimpliPyEngine.from_config(load_config(args.simplipy_engine)),
+                simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
                 verbose=args.verbose)
 
             if args.verbose:

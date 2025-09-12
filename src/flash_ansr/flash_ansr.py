@@ -116,11 +116,8 @@ class FlashANSR(BaseEstimator):
             device: str = 'cpu') -> "FlashANSR":
         directory = substitute_root_path(directory)
 
-        simplipy_engine_path = os.path.join(directory, 'simplipy_engine.yaml')
         flash_ansr_transformer_path = os.path.join(directory, 'model.yaml')
         tokenizer_path = os.path.join(directory, 'tokenizer.yaml')
-
-        simplipy_engine = SimpliPyEngine.from_config(simplipy_engine_path)
 
         model = FlashANSRModel.from_config(flash_ansr_transformer_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
@@ -129,7 +126,7 @@ class FlashANSR(BaseEstimator):
         tokenizer = Tokenizer.from_config(tokenizer_path)
 
         return cls(
-            simplipy_engine=simplipy_engine,
+            simplipy_engine=model.simplipy_engine,
             flash_ansr_transformer=model,
             tokenizer=tokenizer,
             generation_config=generation_config,
@@ -152,7 +149,7 @@ class FlashANSR(BaseEstimator):
         if X.shape[-1] <= self.n_variables:
             return X
 
-        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.n_variables = } variables, but the input data has {X.shape[-1] = } variables. X and y will be truncated to {self.n_variables} variables.")
+        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.n_variables=} variables, but the input data has {X.shape[-1]=} variables. X and y will be truncated to {self.n_variables} variables.")
         if isinstance(X, pd.DataFrame):
             return X.iloc[:, :self.n_variables]
 

@@ -8,6 +8,7 @@ import schedulefree
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
+from torch.nn.utils import get_total_norm
 
 from tqdm import tqdm
 
@@ -87,7 +88,9 @@ class Trainer():
 
         print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
-        model = torch.compile(model, mode='reduce-overhead')
+
+        if config_.get("compile_model", False):
+            model = torch.compile(model, mode='reduce-overhead')
 
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
@@ -160,15 +163,15 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
+            compiler_optimization_steps: int = 100,
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
 
         self._setup_training_state(device, verbose=verbose)
 
         # Benchmark / optimization for compiled models
-        compile_steps = 100
-        pbar = tqdm(range(compile_steps), disable=not verbose, desc="Compiling Model")
-        for step, batch in enumerate(self.train_dataset.iterate(steps=compile_steps, batch_size=self.batch_size, preprocess=preprocess)):
+        pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
+        for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
             self._train_step(batch, step, preprocess, do_optimizer_step=False)
             pbar.update(1)
         pbar.close()
@@ -205,8 +208,9 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
+            compiler_optimization_steps: int = 100,
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
-            wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = 'gradients',
+            wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
             verbose: bool = False) -> FlashANSRModel:
 
@@ -217,7 +221,8 @@ class Trainer():
         wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
-            wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
+            if wandb_mode != 'disabled':
+                wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
             if verbose:
                 print(f'Watching model with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
 
@@ -230,6 +235,7 @@ class Trainer():
                 validate_interval=validate_interval,
                 validate_size=validate_size,
                 validate_batch_size=validate_batch_size,
+                compiler_optimization_steps=compiler_optimization_steps,
                 verbose=verbose
             )
 
@@ -287,8 +293,8 @@ class Trainer():
         self.scaler.unscale_(self.optimizer)
 
         # Monitor gradients for different parts of the model
-        encoder_grad_norm = self._get_grad_norm(self.model.encoder.parameters())
-        decoder_grad_norm = self._get_grad_norm(self.model.decoder.parameters())
+        encoder_grad_norm = get_total_norm(self.model.encoder.parameters())
+        decoder_grad_norm = get_total_norm(self.model.decoder.parameters())
 
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:

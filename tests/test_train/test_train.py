@@ -42,4 +42,5 @@ class TestTrain(unittest.TestCase):
             checkpoint_directory=None,
             wandb_mode="disabled",
             validate_size=10,
+            compiler_optimization_steps=0,
             validate_interval=1)

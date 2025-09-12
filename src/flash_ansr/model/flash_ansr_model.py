@@ -118,7 +118,7 @@ class FlashANSRModel(nn.Module):
             if config_["simplipy_engine"].startswith('.'):
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
-        simplipy_engine = SimpliPyEngine.from_config(config_["simplipy_engine"])
+        simplipy_engine = SimpliPyEngine.load(config_["simplipy_engine"], install=True)
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
         # Update the mapping of config keys to match the new __init__ signature
@@ -153,6 +153,9 @@ class FlashANSRModel(nn.Module):
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if data.ndim != 3:
+            data = data.unsqueeze(0)
+
         # Pre-process input data
         data_pre_encodings: torch.Tensor = self.pre_encoder(data)
         B, M, D, E = data_pre_encodings.size()
@@ -165,17 +168,18 @@ class FlashANSRModel(nn.Module):
 
         return memory
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         if memory is not None:
             self.memory = memory
-        else:
+        elif data is not None:
             self.memory = self._create_memory(data, data_attn_mask)
+        elif self.memory is None:
+            raise ValueError("Either `data` or `memory` must be provided for the first forward pass.")
 
         # Add numeric token logic back
         # The new TransformerDecoder handles embedding and positional encoding internally.
         # We need to pass the numeric embeddings to it.
         if input_num is not None:
-
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
@@ -240,10 +244,9 @@ class FlashANSRModel(nn.Module):
                 # Extract the mini-batch
                 end_idx = min(start_idx + mini_batch_size, len(all_sequences))
                 mini_batch = input_ids_tensor[start_idx:end_idx]
-                mini_batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
 
                 # Forward pass for the mini-batch
-                logits = self.forward(mini_batch, mini_batch_data, input_num=input_num_tensor, memory=memory)
+                logits = self.forward(mini_batch, None, input_num=input_num_tensor, memory=memory)
 
                 # Collect the logits for the next token
                 all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)
@@ -361,8 +364,7 @@ class FlashANSRModel(nn.Module):
                 input_num_tensor = torch.tensor(input_num_padded, device=data.device).unsqueeze(-1) if input_num is not None else None
 
                 # Forward pass
-                batch_data = data.unsqueeze(0).repeat(end_idx - start_idx, 1, 1)
-                logits = self.forward(input_ids_tensor, batch_data, input_num=input_num_tensor, memory=memory)
+                logits = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
 
                 # Get logits for the next token
                 logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)

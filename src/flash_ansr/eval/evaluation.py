@@ -286,12 +286,12 @@ class Evaluation():
 
                     for j in range(self.beam_width):
                         if j >= len(beams):
-                            results_dict[f'free_beam_{j+1}'].append(None)
-                            results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'free_beam_{j + 1}'].append(None)
+                            results_dict[f'log_prob_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'free_beam_{j+1}'].append(beam)
-                        results_dict[f'log_prob_beam_{j+1}'].append(log_probs[j])
+                        results_dict[f'free_beam_{j + 1}'].append(beam)
+                        results_dict[f'log_prob_beam_{j + 1}'].append(log_probs[j])
 
                     results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
                     results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
@@ -302,75 +302,75 @@ class Evaluation():
                     # Accuracy, precision, recall, F1 score
                     for j in range(self.beam_width):
                         if j >= len(beams):
-                            results_dict[f'recall_beam_{j+1}'].append(float('nan'))
-                            results_dict[f'precision_beam_{j+1}'].append(float('nan'))
-                            results_dict[f'f1_score_beam_{j+1}'].append(float('nan'))
-                            results_dict[f'accuracy_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'recall_beam_{j + 1}'].append(float('nan'))
+                            results_dict[f'precision_beam_{j + 1}'].append(float('nan'))
+                            results_dict[f'f1_score_beam_{j + 1}'].append(float('nan'))
+                            results_dict[f'accuracy_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams[j]
                         beam_tensor = torch.tensor(beam, device=self.device).unsqueeze(0)
-                        results_dict[f'recall_beam_{j+1}'].extend(recall(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'precision_beam_{j+1}'].extend(precision(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'f1_score_beam_{j+1}'].extend(f1_score(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'accuracy_beam_{j+1}'].extend(accuracy(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'recall_beam_{j + 1}'].extend(recall(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'precision_beam_{j + 1}'].extend(precision(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'f1_score_beam_{j + 1}'].extend(f1_score(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
+                        results_dict[f'accuracy_beam_{j + 1}'].extend(accuracy(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
 
                     # BLEU
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
-                            results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'bleu_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'bleu_beam_{j+1}'].append(sentence_bleu(references=[expresssion_labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1))
+                        results_dict[f'bleu_beam_{j + 1}'].append(sentence_bleu(references=[expresssion_labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1))
 
                     # ROUGE
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
                             for metric in ['rouge1', 'rouge2', 'rougeL']:
-                                results_dict[f'{metric}_precision_beam_{j+1}'].append(float('nan'))
-                                results_dict[f'{metric}_recall_beam_{j+1}'].append(float('nan'))
-                                results_dict[f'{metric}_fmeasure_beam_{j+1}'].append(float('nan'))
+                                results_dict[f'{metric}_precision_beam_{j + 1}'].append(float('nan'))
+                                results_dict[f'{metric}_recall_beam_{j + 1}'].append(float('nan'))
+                                results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
                         scores = self.rouge_scorer.score(beam, expresssion_labels_decoded)
                         for metric in ['rouge1', 'rouge2', 'rougeL']:
-                            results_dict[f'{metric}_precision_beam_{j+1}'].append(scores[metric].precision)
-                            results_dict[f'{metric}_recall_beam_{j+1}'].append(scores[metric].recall)
-                            results_dict[f'{metric}_fmeasure_beam_{j+1}'].append(scores[metric].fmeasure)
+                            results_dict[f'{metric}_precision_beam_{j + 1}'].append(scores[metric].precision)
+                            results_dict[f'{metric}_recall_beam_{j + 1}'].append(scores[metric].recall)
+                            results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(scores[metric].fmeasure)
 
                     # METEOR
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
-                            results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'meteor_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'meteor_beam_{j+1}'].append(meteor_score(references=[expresssion_labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer()))
+                        results_dict[f'meteor_beam_{j + 1}'].append(meteor_score(references=[expresssion_labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer()))
 
                     # Edit distance
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
-                            results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'edit_distance_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'edit_distance_beam_{j+1}'].append(editdistance.eval(beam, expresssion_labels_decoded))
+                        results_dict[f'edit_distance_beam_{j + 1}'].append(editdistance.eval(beam, expresssion_labels_decoded))
 
                     # Tree edit distance
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
-                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
                         if not model.simplipy_engine.is_valid(beam):
-                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
                         else:
-                            results_dict[f'tree_edit_distance_beam_{j+1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.simplipy_engine.operator_arity))
+                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.simplipy_engine.operator_arity))
 
                     # Structural accuracy
                     for j in range(self.beam_width):
                         if j >= len(beams_decoded):
-                            results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'structural_accuracy_beam_{j + 1}'].append(float('nan'))
                             continue
                         beam = beams_decoded[j]
-                        results_dict[f'structural_accuracy_beam_{j+1}'].append(int(model.simplipy_engine.is_valid(beam)))
+                        results_dict[f'structural_accuracy_beam_{j + 1}'].append(int(model.simplipy_engine.is_valid(beam)))
 
                     # Constant Fitting
                     np_errors_before = np.geterr()
@@ -426,21 +426,21 @@ class Evaluation():
                             nsrts_accuracy_r2_val = float('nan')
                             residuals_val = None
 
-                        results_dict[f'mse_beam_{j+1}'].append(mse)
-                        results_dict[f'r2_beam_{j+1}'].append(r2)
+                        results_dict[f'mse_beam_{j + 1}'].append(mse)
+                        results_dict[f'r2_beam_{j + 1}'].append(r2)
 
-                        results_dict[f'NSRTS_accuracy_close_beam_{j+1}'].append(nsrts_accuracy_close)
-                        results_dict[f'NSRTS_accuracy_r2_beam_{j+1}'].append(nsrts_accuracy_r2)
+                        results_dict[f'NSRTS_accuracy_close_beam_{j + 1}'].append(nsrts_accuracy_close)
+                        results_dict[f'NSRTS_accuracy_r2_beam_{j + 1}'].append(nsrts_accuracy_r2)
 
-                        results_dict[f'residuals_beam_{j+1}'].append(residuals)
+                        results_dict[f'residuals_beam_{j + 1}'].append(residuals)
 
-                        results_dict[f'mse_val_beam_{j+1}'].append(mse_val)
-                        results_dict[f'r2_val_beam_{j+1}'].append(r2_val)
+                        results_dict[f'mse_val_beam_{j + 1}'].append(mse_val)
+                        results_dict[f'r2_val_beam_{j + 1}'].append(r2_val)
 
-                        results_dict[f'NSRTS_accuracy_close_val_beam_{j+1}'].append(nsrts_accuracy_close_val)
-                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j+1}'].append(nsrts_accuracy_r2_val)
+                        results_dict[f'NSRTS_accuracy_close_val_beam_{j + 1}'].append(nsrts_accuracy_close_val)
+                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j + 1}'].append(nsrts_accuracy_r2_val)
 
-                        results_dict[f'residuals_val_beam_{j+1}'].append(residuals_val)
+                        results_dict[f'residuals_val_beam_{j + 1}'].append(residuals_val)
 
                     np.seterr(**np_errors_before)
 
@@ -453,33 +453,33 @@ class Evaluation():
                     results_dict['reciprocal_rank'].extend([float('nan')] * batch_size)
 
                     for j in range(self.beam_width):
-                        results_dict[f'free_beam_{j+1}'].append([float('nan')])
-                        results_dict[f'log_prob_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'bleu_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'meteor_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'edit_distance_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'tree_edit_distance_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'structural_accuracy_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'accuracy_beam_{j+1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'f1_score_beam_{j+1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'precision_beam_{j+1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'recall_beam_{j+1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'free_beam_{j + 1}'].append([float('nan')])
+                        results_dict[f'log_prob_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'bleu_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'meteor_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'edit_distance_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'structural_accuracy_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'accuracy_beam_{j + 1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'f1_score_beam_{j + 1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'precision_beam_{j + 1}'].extend([float('nan')] * batch_size)
+                        results_dict[f'recall_beam_{j + 1}'].extend([float('nan')] * batch_size)
 
                         for metric in ['rouge1', 'rouge2', 'rougeL']:
-                            results_dict[f'{metric}_precision_beam_{j+1}'].append(float('nan'))
-                            results_dict[f'{metric}_recall_beam_{j+1}'].append(float('nan'))
-                            results_dict[f'{metric}_fmeasure_beam_{j+1}'].append(float('nan'))
+                            results_dict[f'{metric}_precision_beam_{j + 1}'].append(float('nan'))
+                            results_dict[f'{metric}_recall_beam_{j + 1}'].append(float('nan'))
+                            results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(float('nan'))
 
-                        results_dict[f'mse_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'r2_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_close_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_r2_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'residuals_beam_{j+1}'].append(None)
-                        results_dict[f'mse_val_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'r2_val_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_close_val_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j+1}'].append(float('nan'))
-                        results_dict[f'residuals_val_beam_{j+1}'].append(None)
+                        results_dict[f'mse_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'r2_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'NSRTS_accuracy_close_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'NSRTS_accuracy_r2_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'residuals_beam_{j + 1}'].append(None)
+                        results_dict[f'mse_val_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'r2_val_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'NSRTS_accuracy_close_val_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j + 1}'].append(float('nan'))
+                        results_dict[f'residuals_val_beam_{j + 1}'].append(None)
 
                 # Check that all lists have the same length
                 if not len(set(len(v) for v in results_dict.values())) == 1:

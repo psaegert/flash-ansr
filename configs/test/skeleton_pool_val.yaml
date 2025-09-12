@@ -1,4 +1,4 @@
-simplipy_engine: './simplipy_engine.yaml'
+simplipy_engine: 'dev_7-3'
 holdout_pools: []
 
 sample_strategy:
