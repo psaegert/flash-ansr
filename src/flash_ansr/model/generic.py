@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from typing import Any
 
 import torch
@@ -86,14 +87,18 @@ class RMSNorm(nn.Module):
         return output * self.weight
 
 
-class SetNorm(nn.Module):
+class SetNormBase(nn.Module):
+    @abstractmethod
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class OriginalSetNorm(SetNormBase):
     """
-    Set Normalization layer.
+    Mask-aware Set Normalization layer.
 
     Normalizes features across the set and feature dimensions for each batch element.
-    Given an input X of shape (B, M, D), it computes statistics mu and sigma
-    over the M and D dimensions, resulting in statistics of shape (B, 1, 1).
-    It then applies learnable affine parameters gamma and beta of shape (1, 1, D).
+    If a mask is provided, padded elements are ignored in the statistics calculation.
     """
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -101,37 +106,64 @@ class SetNorm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(1, 1, dim))
         self.beta = nn.Parameter(torch.zeros(1, 1, dim))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (B, M, D)
-        # Calculate mean and std over the set and feature dimensions (1 and 2)
-        mu = x.mean(dim=(1, 2), keepdim=True)
-        sigma = x.std(dim=(1, 2), keepdim=True)
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # x shape: (B, M, D), mask shape: (B, M)
+        if attn_mask is None:
+            mu = x.mean(dim=(1, 2), keepdim=True)
+            sigma = x.std(dim=(1, 2), keepdim=True)
+        else:
+            # Expand mask for broadcasting: (B, M) -> (B, M, 1)
+            mask_expanded = attn_mask.unsqueeze(-1)
 
-        # Normalize and apply affine transformation
+            # Mask the input to zero out padded values before summing
+            masked_x = x * mask_expanded
+
+            # Count the number of non-padded elements for each batch item
+            # Total elements = (sum of mask) * D
+            n_elements = (attn_mask.sum(dim=1, keepdim=True) * x.shape[-1]).clamp(min=1).unsqueeze(-1)
+
+            # Calculate masked mean
+            mu = masked_x.sum(dim=(1, 2), keepdim=True) / n_elements
+
+            # Calculate masked variance and std
+            var = (masked_x - mu).pow(2)
+            var = (var * mask_expanded).sum(dim=(1, 2), keepdim=True) / n_elements
+            sigma = torch.sqrt(var)
+
         x_norm = (x - mu) / (sigma + self.eps)
         return x_norm * self.gamma + self.beta
 
 
-class RMSSetNorm(nn.Module):
+class RMSSetNorm(SetNormBase):
     """
-    RMS Normalization layer for sets.
+    Mask-aware RMS Normalization layer for sets.
 
-    Normalizes features across the set and feature dimensions for each batch element.
-    Given an input X of shape (B, M, D), it computes the RMS over the M and D dimensions,
-    resulting in statistics of shape (B, 1, 1).
-    It then applies a learnable affine parameter gamma of shape (1, 1, D).
+    Computes RMS over the set and feature dimensions for each batch element.
+    If a mask is provided, padded elements are ignored in the statistics calculation.
     """
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
         self.gamma = nn.Parameter(torch.ones(1, 1, dim))
 
-    def _rms(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.sqrt(x.pow(2).mean(dim=(1, 2), keepdim=True) + self.eps)
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        # x shape: (B, M, D), mask shape: (B, M)
+        if attn_mask is None:
+            rms = torch.sqrt(x.pow(2).mean(dim=(1, 2), keepdim=True) + self.eps)
+        else:
+            # Expand mask for broadcasting: (B, M) -> (B, M, 1)
+            mask_expanded = attn_mask.unsqueeze(-1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (B, M, D)
-        rms = self._rms(x)
+            # Calculate sum of squares only on non-padded elements
+            sum_sq = (x.pow(2) * mask_expanded).sum(dim=(1, 2), keepdim=True)
+
+            # Count non-padded elements
+            n_elements = (attn_mask.sum(dim=1, keepdim=True) * x.shape[-1]).clamp(min=1).unsqueeze(-1)
+
+            # Calculate mean square over valid elements
+            mean_sq = sum_sq / n_elements
+            rms = torch.sqrt(mean_sq + self.eps)
+
         x_norm = x / rms
         return x_norm * self.gamma
 
@@ -156,7 +188,7 @@ def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
     if norm_type_l in ("none", "identity", "id"):
         return nn.Identity()
     if norm_type_l in ("set", "setnorm"):
-        return SetNorm(dim, **kwargs)
+        return OriginalSetNorm(dim, **kwargs)
     if norm_type_l in ("rms_set", "rmssetnorm"):
         return RMSSetNorm(dim, **kwargs)
     raise ValueError(f"Unknown norm_type: {norm_type}")

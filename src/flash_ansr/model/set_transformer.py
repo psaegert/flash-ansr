@@ -8,7 +8,7 @@ import time
 from tqdm import tqdm
 
 from flash_ansr.model.set_encoder import SetEncoder
-from flash_ansr.model.generic import get_norm_layer, FeedForward
+from flash_ansr.model.generic import get_norm_layer, FeedForward, SetNormBase
 
 
 # A good practice for enabling/disabling checkpointing globally
@@ -121,7 +121,13 @@ class MAB(nn.Module):
     def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Pre-normalization and attention
         q_norm = self.norm_q(query)
-        kv_norm = self.norm_kv(key_value)
+
+        # Mask padded elements in the key/value before normalization if using SetNorms
+        if isinstance(self.norm_kv, SetNormBase):
+            kv_norm = self.norm_kv(key_value, attn_mask=attn_mask)
+        else:
+            kv_norm = self.norm_kv(key_value)
+
         attn_output = self.attention(q_norm, kv_norm, attn_mask=attn_mask)
         query = query + attn_output
 
