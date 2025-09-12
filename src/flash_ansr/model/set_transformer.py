@@ -18,6 +18,7 @@ USE_CHECKPOINTING = True
 class MultiheadAttentionBlock(nn.Module):
     """
     Multi-head attention block. Fuses QKV for self-attention, uses separate Q/KV for cross-attention.
+    Can optionally accept a pre-projected query.
     """
     def __init__(
         self,
@@ -27,7 +28,8 @@ class MultiheadAttentionBlock(nn.Module):
         n_heads: int,
         dropout: float = 0.0,
         bias: bool = False,
-        is_self_attention: bool = False
+        is_self_attention: bool = False,
+        query_is_projected: bool = False  # New flag
     ):
         super().__init__()
         if dim_out % n_heads != 0:
@@ -37,13 +39,20 @@ class MultiheadAttentionBlock(nn.Module):
         self.head_dim = dim_out // n_heads
         self.dropout = dropout
         self.is_self_attention = is_self_attention
+        self.query_is_projected = query_is_projected
 
         if self.is_self_attention:
             if dim_q != dim_kv:
                 raise ValueError("For self-attention, dim_q must be equal to dim_kv.")
             self.w_qkv = nn.Linear(dim_q, 3 * dim_out, bias=bias)
         else:
-            self.w_q = nn.Linear(dim_q, dim_out, bias=bias)
+            if self.query_is_projected:
+                # If query is pre-projected, its dimension must match dim_out
+                if dim_q != dim_out:
+                    raise ValueError(f"If query_is_projected, dim_q ({dim_q}) must equal dim_out ({dim_out})")
+                self.w_q = nn.Identity()
+            else:
+                self.w_q = nn.Linear(dim_q, dim_out, bias=bias)  # type: ignore
             self.w_kv = nn.Linear(dim_kv, 2 * dim_out, bias=bias)
 
         self.w_o = nn.Linear(dim_out, dim_out, bias=bias)
@@ -60,7 +69,7 @@ class MultiheadAttentionBlock(nn.Module):
         if self.is_self_attention:
             q, k, v = self.w_qkv(query).chunk(3, dim=-1)
         else:
-            q = self.w_q(query)
+            q = self.w_q(query)  # This will be an identity operation if query_is_projected
             k, v = self.w_kv(key_value).chunk(2, dim=-1)
 
         q = q.view(batch_size, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
@@ -97,6 +106,7 @@ class MAB(nn.Module):
         dropout: float = 0.0,
         use_checkpointing: bool = False,
         is_self_attention: bool = False,
+        query_is_projected: bool = False,  # New flag
         attn_norm: str = "none",
         ffn_norm: str = "none"
     ):
@@ -112,7 +122,8 @@ class MAB(nn.Module):
             dim_out=dim,
             n_heads=n_heads,
             dropout=dropout,
-            is_self_attention=is_self_attention
+            is_self_attention=is_self_attention,
+            query_is_projected=query_is_projected
         )
 
         self.norm_ffn = get_norm_layer(ffn_norm, dim)
@@ -173,7 +184,8 @@ class ISAB(nn.Module):
             dim_q=dim_out, dim_kv=dim_in, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
-            attn_norm=attn_norm, ffn_norm=ffn_norm
+            attn_norm=attn_norm, ffn_norm=ffn_norm,
+            query_is_projected=True
         )
         self.mab_self = MAB(
             dim_q=dim_in, dim_kv=dim_out, dim=dim_out, n_heads=n_heads,
@@ -206,11 +218,13 @@ class PMA(nn.Module):
         super().__init__()
         self.seed_vectors = nn.Parameter(torch.randn(1, n_seeds, dim))
         nn.init.xavier_uniform_(self.seed_vectors)
+
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
-            attn_norm=attn_norm, ffn_norm=ffn_norm
+            attn_norm=attn_norm, ffn_norm=ffn_norm,
+            query_is_projected=True
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:

@@ -95,10 +95,7 @@ class SetNormBase(nn.Module):
 
 class OriginalSetNorm(SetNormBase):
     """
-    Mask-aware Set Normalization layer.
-
-    Normalizes features across the set and feature dimensions for each batch element.
-    If a mask is provided, padded elements are ignored in the statistics calculation.
+    Mask-aware Set Normalization layer with improved numerical stability.
     """
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -107,19 +104,19 @@ class OriginalSetNorm(SetNormBase):
         self.beta = nn.Parameter(torch.zeros(1, 1, dim))
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
-        # x shape: (B, M, D), mask shape: (B, M)
+        # Store original dtype and upcast to float32 for stable calculations
+        input_dtype = x.dtype
+        x = x.float()
+
         if attn_mask is None:
             mu = x.mean(dim=(1, 2), keepdim=True)
-            sigma = x.std(dim=(1, 2), keepdim=True)
+            # Use unbiased=False to match torch.var default for population variance
+            sigma = x.std(dim=(1, 2), keepdim=True, unbiased=False)
         else:
-            # Expand mask for broadcasting: (B, M) -> (B, M, 1)
             mask_expanded = attn_mask.unsqueeze(-1)
-
             # Mask the input to zero out padded values before summing
             masked_x = x * mask_expanded
-
-            # Count the number of non-padded elements for each batch item
-            # Total elements = (sum of mask) * D
+            # Count non-padded elements, ensuring it's at least 1 to avoid division by zero
             n_elements = (attn_mask.sum(dim=1, keepdim=True) * x.shape[-1]).clamp(min=1).unsqueeze(-1)
 
             # Calculate masked mean
@@ -131,15 +128,14 @@ class OriginalSetNorm(SetNormBase):
             sigma = torch.sqrt(var)
 
         x_norm = (x - mu) / (sigma + self.eps)
-        return x_norm * self.gamma + self.beta
+
+        # Apply learnable parameters and cast back to the original dtype
+        return (x_norm * self.gamma + self.beta).to(input_dtype)
 
 
 class RMSSetNorm(SetNormBase):
     """
-    Mask-aware RMS Normalization layer for sets.
-
-    Computes RMS over the set and feature dimensions for each batch element.
-    If a mask is provided, padded elements are ignored in the statistics calculation.
+    Mask-aware RMS Normalization layer for sets with improved numerical stability.
     """
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -147,25 +143,26 @@ class RMSSetNorm(SetNormBase):
         self.gamma = nn.Parameter(torch.ones(1, 1, dim))
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
-        # x shape: (B, M, D), mask shape: (B, M)
-        if attn_mask is None:
-            rms = torch.sqrt(x.pow(2).mean(dim=(1, 2), keepdim=True) + self.eps)
-        else:
-            # Expand mask for broadcasting: (B, M) -> (B, M, 1)
-            mask_expanded = attn_mask.unsqueeze(-1)
+        # Store original dtype and upcast to float32 for stable calculations
+        input_dtype = x.dtype
+        x = x.float()
 
+        if attn_mask is None:
+            mean_sq = x.pow(2).mean(dim=(1, 2), keepdim=True)
+        else:
+            mask_expanded = attn_mask.unsqueeze(-1)
             # Calculate sum of squares only on non-padded elements
             sum_sq = (x.pow(2) * mask_expanded).sum(dim=(1, 2), keepdim=True)
-
-            # Count non-padded elements
+            # Count non-padded elements, ensuring it's at least 1
             n_elements = (attn_mask.sum(dim=1, keepdim=True) * x.shape[-1]).clamp(min=1).unsqueeze(-1)
-
             # Calculate mean square over valid elements
             mean_sq = sum_sq / n_elements
-            rms = torch.sqrt(mean_sq + self.eps)
 
+        rms = torch.sqrt(mean_sq + self.eps)
         x_norm = x / rms
-        return x_norm * self.gamma
+
+        # Apply learnable parameter and cast back to the original dtype
+        return (x_norm * self.gamma).to(input_dtype)
 
 
 def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
