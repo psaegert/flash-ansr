@@ -8,7 +8,6 @@ import schedulefree
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
-from torch.nn.utils import get_total_norm
 
 from tqdm import tqdm
 
@@ -20,6 +19,8 @@ from flash_ansr.train.scheduler import LRSchedulerFactory
 from flash_ansr.train.loss import ContrastiveLoss
 
 import wandb
+
+torch.set_float32_matmul_precision('high')
 
 
 class OptimizerFactory():
@@ -89,9 +90,6 @@ class Trainer():
         print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
 
-        if config_.get("compile_model", False):
-            model = torch.compile(model, mode='reduce-overhead')
-
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
 
@@ -158,6 +156,7 @@ class Trainer():
             steps: int,
             preprocess: bool = False,
             device: str = "cpu",
+            compile_mode: str | None = None,
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
             validate_interval: int | None = None,
@@ -166,6 +165,9 @@ class Trainer():
             compiler_optimization_steps: int = 100,
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
+
+        if compile_mode is not None:
+            self.model = torch.compile(self.model, mode=compile_mode, fullgraph=True)
 
         self._setup_training_state(device, verbose=verbose)
 
@@ -203,6 +205,7 @@ class Trainer():
             steps: int,
             preprocess: bool = False,
             device: str = "cpu",
+            compile_mode: str | None = None,
             checkpoint_interval: int | None = None,
             checkpoint_directory: str | None = None,
             validate_interval: int | None = None,
@@ -230,6 +233,7 @@ class Trainer():
                 steps=steps,
                 preprocess=preprocess,
                 device=device,
+                compile_mode=compile_mode,
                 checkpoint_interval=checkpoint_interval,
                 checkpoint_directory=checkpoint_directory,
                 validate_interval=validate_interval,
@@ -250,7 +254,7 @@ class Trainer():
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
         self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
+        self.optimizer.zero_grad()
 
         total_ce_loss = 0.0
         total_loss = 0.0
@@ -292,17 +296,13 @@ class Trainer():
         # Perform the optimizer step
         self.scaler.unscale_(self.optimizer)
 
-        # Monitor gradients for different parts of the model
-        encoder_grad_norm = get_total_norm(self.model.encoder.parameters())
-        decoder_grad_norm = get_total_norm(self.model.decoder.parameters())
-
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         if do_optimizer_step:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
             # Log metrics and update scheduler
-            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm, encoder_grad_norm, decoder_grad_norm)
+            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -376,13 +376,11 @@ class Trainer():
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor, encoder_grad_norm: float, decoder_grad_norm: float) -> None:
+    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
         """Logs a batch's training metrics to wandb."""
 
         log_data = {
             "total_gradient_norm": total_gradient_norm.item(),
-            "encoder_grad_norm": encoder_grad_norm,
-            "decoder_grad_norm": decoder_grad_norm,
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
@@ -390,7 +388,6 @@ class Trainer():
             "cumulative_training_pflops": self.cumulative_training_pflops,
             "train_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
-            "train_correct_token_predictions_at_5": correct_token_predictions_at_k(logits, labels, k=5, ignore_index=self.metrics_ignore_index),
         }
         wandb.log(log_data, step=step)  # type: ignore
 
@@ -400,7 +397,5 @@ class Trainer():
             "val_ce_loss": val_ce_loss,
             "val_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
             "val_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
-            "val_correct_token_predictions_at_5": correct_token_predictions_at_k(logits, labels, k=5, ignore_index=self.metrics_ignore_index),
-            "val_correct_token_predictions_at_10": correct_token_predictions_at_k(logits, labels, k=10, ignore_index=self.metrics_ignore_index),
         }
         wandb.log(log_data, step=step)  # type: ignore

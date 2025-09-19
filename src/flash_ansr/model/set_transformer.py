@@ -263,6 +263,8 @@ class SetTransformer(SetEncoder):
         else:
             self.output = nn.Linear(model_dim, model_dim)
 
+        self.output_dim = output_dim if output_dim is not None else model_dim
+
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.embedding(x)
 

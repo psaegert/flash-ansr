@@ -79,9 +79,12 @@ class FlashANSRModel(nn.Module):
             output_norm=encoder_output_norm
         )
 
+        if self.encoder.output_dim != decoder_model_dim:
+            decoder_input_dim = self.encoder.output_dim
+
         self.decoder = TransformerDecoder(
             vocab_size=len(tokenizer),
-            input_dim=None,
+            input_dim=decoder_input_dim,
             model_dim=decoder_model_dim,
             n_layers=decoder_n_layers,
             n_heads=decoder_n_heads,

@@ -205,6 +205,7 @@ def main(argv: str = None) -> None:
                     steps=config['steps'],
                     preprocess=False,
                     device=config['device'],
+                    compile_mode=config.get('compile_mode'),
                     checkpoint_interval=args.checkpoint_interval,
                     checkpoint_directory=substitute_root_path(args.output_dir),
                     validate_interval=args.validate_interval,
