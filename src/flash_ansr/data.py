@@ -3,9 +3,9 @@ import warnings
 import time
 from typing import Any, Generator, Literal
 import signal
-import atexit
 import multiprocessing as mp
 from multiprocessing import shared_memory
+from multiprocessing.managers import SyncManager, ListProxy
 
 import torch
 import numpy as np
@@ -22,30 +22,6 @@ from flash_ansr.expressions.utils import substitude_constants
 from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
-# --- Globals for robust cleanup ---
-_managed_resources: list = []
-
-
-def _cleanup_resources() -> None:
-    """Ensure shared memory is unlinked and managers are shut down on exit."""
-    for resource in _managed_resources:
-        if isinstance(resource, shared_memory.SharedMemory):
-            try:
-                resource.close()
-                resource.unlink()  # This is the crucial step
-            except FileNotFoundError:
-                pass  # Already cleaned up
-        elif hasattr(resource, 'shutdown'):
-            resource.shutdown()
-        elif isinstance(resource, mp.Process):
-            if resource.is_alive():
-                resource.terminate()
-            resource.join()
-
-
-atexit.register(_cleanup_resources)
-
-
 class FlashANSRDataset:
     '''
     Dataset for amortized neural symbolic regression training.
@@ -56,6 +32,28 @@ class FlashANSRDataset:
         self.padding = padding
         self.preprocessor = preprocessor
         self.data = None
+
+        # --- ADDED: Attributes for persistent resources ---
+        self._is_initialized = False
+        self._manager: SyncManager | None = None
+        self._shms: dict[str, shared_memory.SharedMemory] = {}
+        self._pools: dict[str, Any] = {}
+        self._metadata_pool: ListProxy | None = None
+        self._work_queue: mp.Queue | None = None
+        self._result_queue: mp.Queue | None = None
+        self._available_slots_queue: mp.Queue | None = None
+        self._workers: list[mp.Process] = []
+        self._num_workers = 0
+
+    # --- ADDED: Destructor for robust cleanup ---
+    def __del__(self) -> None:
+        """Safety net to ensure resources are cleaned up when the object is garbage collected."""
+        if self._is_initialized:
+            warnings.warn(
+                "FlashANSRDataset was not explicitly shut down. "
+                "Call `dataset.shutdown()` for cleaner resource management."
+            )
+            self.shutdown()
 
     @property
     def simplipy_engine(self) -> SimpliPyEngine:
@@ -364,6 +362,103 @@ class FlashANSRDataset:
             for shm in shms.values():
                 shm.close()
 
+    # --- ADDED: Method to initialize the worker pool ---
+    def _initialize_workers(self, prefetch_factor: int, batch_size: int, n_per_equation: int, max_seq_len: int, num_workers: int | None = None) -> None:
+        """Initializes all multiprocessing resources. Idempotent."""
+        if self._is_initialized:
+            return
+
+        self._num_workers = os.cpu_count() or 1 if num_workers is None else num_workers
+        pool_size = self._num_workers * prefetch_factor
+
+        # 1. Define Shapes and Create Shared Memory Pools
+        shm_configs: dict[str, dict[str, Any]] = {
+            'x_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], len(self.skeleton_pool.variables)), 'dtype': np.float32},
+            'y_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], 1), 'dtype': np.float32},
+            'input_ids': {'shape': (pool_size, batch_size, max_seq_len), 'dtype': np.int64},
+        }
+
+        # Create SHM segments and store them on the instance
+        self._shms = {
+            name: shared_memory.SharedMemory(create=True, size=int(np.prod(cfg['shape']) * np.dtype(cfg['dtype']).itemsize))
+            for name, cfg in shm_configs.items()
+        }
+        for name, shm in self._shms.items():
+            shm_configs[name]['name'] = shm.name
+
+        self._pools = {
+            name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=self._shms[name].buf)
+            for name, cfg in shm_configs.items()
+        }
+
+        # Create Manager and Queues
+        self._manager = mp.Manager()
+        self._metadata_pool = self._manager.list([None] * pool_size)
+        self._work_queue = mp.Queue()
+        self._result_queue = mp.Queue()
+        self._available_slots_queue = mp.Queue()
+        for i in range(pool_size):
+            self._available_slots_queue.put(i)
+
+        # 3. Start Worker Processes
+        worker_init_args = {
+            'skeleton_pool': self.skeleton_pool, 'tokenizer': self.tokenizer,
+            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size
+        }
+        self._workers = []
+        for _ in range(self._num_workers):
+            p = mp.Process(target=self._producer_worker, args=(self._work_queue, self._result_queue, shm_configs, self._metadata_pool, worker_init_args), daemon=True)
+            p.start()
+            self._workers.append(p)
+
+        self._is_initialized = True
+
+    # --- ADDED: Method to gracefully shut down the worker pool ---
+    def shutdown(self) -> None:
+        """Gracefully shuts down all multiprocessing resources."""
+        if not self._is_initialized:
+            return
+
+        if self._work_queue is None or self._result_queue is None or self._available_slots_queue is None:
+            raise RuntimeError("Multiprocessing resources are not properly initialized.")
+
+        try:
+            # Tell workers to stop
+            for _ in range(self._num_workers):
+                self._work_queue.put(None)
+
+            # Wait for them to finish
+            for p in self._workers:
+                p.join(timeout=5)  # Add a timeout
+                if p.is_alive():
+                    p.terminate()  # Force terminate if stuck
+
+            # Shutdown manager
+            if self._manager:
+                self._manager.shutdown()
+
+            # Close and unlink shared memory
+            for shm in self._shms.values():
+                shm.close()
+                try:
+                    shm.unlink()
+                except FileNotFoundError:
+                    pass  # Already unlinked
+
+        finally:
+            # Reset state regardless of success
+            self._is_initialized = False
+            self._manager = None
+            self._shms.clear()
+            self._pools.clear()
+            self._metadata_pool = None
+            self._work_queue = None
+            self._result_queue = None
+            self._available_slots_queue = None
+            self._workers.clear()
+            self._num_workers = 0
+
+    # --- MODIFIED: `iterate` is now much simpler ---
     def iterate(
         self,
         size: int | None = None,
@@ -387,79 +482,45 @@ class FlashANSRDataset:
 
         if size is None and steps is None:
             raise ValueError("Must specify 'size' or 'steps'.")
-
-        if num_workers is None:
-            num_workers = os.cpu_count() or 1
-
         if steps is None:
             steps = (size + batch_size - 1) // batch_size  # type: ignore
 
-        pool_size = num_workers * prefetch_factor
+        self._initialize_workers(
+            prefetch_factor=prefetch_factor,
+            batch_size=batch_size,
+            n_per_equation=n_per_equation,
+            max_seq_len=max_seq_len,
+            num_workers=num_workers,
+        )
+        pool_size = self._num_workers * prefetch_factor
 
-        # --- 1. Define Shapes and Create Shared Memory Pools ---
-        shm_configs: dict[str, dict[str, Any]] = {
-            'x_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], len(self.skeleton_pool.variables)), 'dtype': np.float32},
-            'y_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], 1), 'dtype': np.float32},
-            'input_ids': {'shape': (pool_size, batch_size, max_seq_len), 'dtype': np.int64},
-        }
-
-        shms = {name: shared_memory.SharedMemory(create=True, size=int(np.prod(cfg['shape']) * np.dtype(cfg['dtype']).itemsize)) for name, cfg in shm_configs.items()}
-        for shm in shms.values():
-            _managed_resources.append(shm)
-
-        # Add shm names to configs to pass to workers
-        for name, shm in shms.items():
-            shm_configs[name]['name'] = shm.name
-
-        pools = {name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
-
-        manager = mp.Manager()
-        _managed_resources.append(manager)
-        metadata_pool = manager.list([None] * pool_size)
-
-        # --- 2. Setup Coordination Queues ---
-        work_queue: mp.Queue = mp.Queue()
-        result_queue: mp.Queue = mp.Queue()
-        available_slots_queue: mp.Queue = mp.Queue()
-        for i in range(pool_size):
-            available_slots_queue.put(i)  # Prime with all available slots
-
-        # --- 3. Start Worker Processes ---
-        worker_init_args = {
-            'skeleton_pool': self.skeleton_pool, 'tokenizer': self.tokenizer,
-            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size
-        }
-
-        workers = []
-        for _ in range(num_workers):
-            p = mp.Process(target=self._producer_worker, args=(work_queue, result_queue, shm_configs, metadata_pool, worker_init_args), daemon=True)
-            p.start()
-            workers.append(p)
-            _managed_resources.append(p)
+        if self._work_queue is None or self._result_queue is None or self._available_slots_queue is None or self._metadata_pool is None or self._pools is None:
+            raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
         pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
-
         try:
-            # --- 4. Main Producer-Consumer Loop ---
-            # Prefill the work queue to get workers started
-            for _ in range(pool_size):
-                slot_idx = available_slots_queue.get()
+            # Prefill the work queue
+            for _ in range(min(steps, pool_size)):
+                slot_idx = self._available_slots_queue.get()
                 n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
-                work_queue.put((slot_idx, n_support_frag))
+                self._work_queue.put((slot_idx, n_support_frag))
 
-            for i in range(steps):
-                # Wait for a worker to finish a slot
-                completed_slot_idx = result_queue.get()
+            # Main producer-consumer loop
+            for _ in range(steps):
+                completed_slot_idx = self._result_queue.get()
 
-                # --- Construct the batch by reading from the shared slot (Only copy if "persistent") ---
-                metadata_and_constants = metadata_pool[completed_slot_idx]
+                # Construct batch
+                metadata_and_constants = self._metadata_pool[completed_slot_idx]
                 batch_dict = {
-                    'x_tensors': torch.from_numpy(pools['x_tensors'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['x_tensors'][completed_slot_idx]),
-                    'y_tensors': torch.from_numpy(pools['y_tensors'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['y_tensors'][completed_slot_idx]),
-                    'input_ids': torch.from_numpy(pools['input_ids'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['input_ids'][completed_slot_idx]),
-                    'constants': [torch.from_numpy(c).clone() if persistent else torch.from_numpy(c) for c in metadata_and_constants['constants']],
+                    'x_tensors': torch.from_numpy(self._pools['x_tensors'][completed_slot_idx]),
+                    'y_tensors': torch.from_numpy(self._pools['y_tensors'][completed_slot_idx]),
+                    'input_ids': torch.from_numpy(self._pools['input_ids'][completed_slot_idx]),
+                    'constants': [torch.from_numpy(c) for c in metadata_and_constants['constants']],
                     **{k: [d[k] for d in metadata_and_constants['metadata']] for k in metadata_and_constants['metadata'][0]}
                 }
+
+                if persistent:
+                    batch_dict = {k: v.clone() if isinstance(v, torch.Tensor) else [t.clone() for t in v] if k == 'constants' else v for k, v in batch_dict.items()}
 
                 if preprocess and self.preprocessor:
                     yield self.preprocessor.format(batch_dict)
@@ -468,33 +529,15 @@ class FlashANSRDataset:
 
                 pbar.update(1)
 
-                # Recycle the slot by putting it back in the available queue and request new work
-                available_slots_queue.put(completed_slot_idx)
-                slot_to_refill = available_slots_queue.get()
-                n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
-                work_queue.put((slot_to_refill, n_support_frag))
+                # Recycle the slot and request new work if there are more steps to go
+                self._available_slots_queue.put(completed_slot_idx)
+                if _ + pool_size < steps:
+                    slot_to_refill = self._available_slots_queue.get()
+                    n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
+                    self._work_queue.put((slot_to_refill, n_support_frag))
 
         finally:
             pbar.close()
-
-            # --- 5. Graceful Shutdown (Corrected Order) ---
-            if verbose:
-                print("Shutting down workers and cleaning up resources...")
-
-            # Step 1: Tell all workers to stop accepting new jobs
-            for _ in range(num_workers):
-                work_queue.put(None)
-
-            # Step 2: Wait for all workers to finish their current job and exit
-            for p in workers:
-                p.join()
-
-            # Step 3: Now that workers are stopped, it's safe to clean up shared resources
-            atexit.unregister(_cleanup_resources)
-            _cleanup_resources()   # This will shut down the manager and unlink memory
-
-            if verbose:
-                print("All resources cleaned up.")
 
     def _benchmark(self, n_samples: int, batch_size: int, verbose: bool = False) -> dict[str, Any]:
         '''

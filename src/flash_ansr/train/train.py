@@ -167,20 +167,20 @@ class Trainer():
         """Core training loop."""
 
         if compile_mode is not None:
-            self.model = torch.compile(self.model, mode=compile_mode, fullgraph=True)
+            self.model = torch.compile(self.model, mode=compile_mode)
 
         self._setup_training_state(device, verbose=verbose)
 
-        # Benchmark / optimization for compiled models
-        pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
-        for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
-            self._train_step(batch, step, preprocess, do_optimizer_step=False)
-            pbar.update(1)
-        pbar.close()
+        # # Benchmark / optimization for compiled models
+        # pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
+        # for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
+        #     self._train_step(batch, step, preprocess, do_optimizer_step=False)
+        #     pbar.update(1)
+        # pbar.close()
 
-        # Initial validation
-        if validate_interval is not None:
-            self._validate_step(0, validate_size, validate_batch_size, preprocess, verbose)
+        # # Initial validation
+        # if validate_interval is not None:
+        #     self._validate_step(0, validate_size, validate_batch_size, preprocess, verbose)
 
         pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
         for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
@@ -313,13 +313,14 @@ class Trainer():
             self.optimizer.eval()
 
         val_ce_loss = 0.0
+        val_mrr = 0.0
+        val_acc_at_1 = 0.0
         total_items = 0
-        final_flat_logits_list: list[torch.Tensor] = []
-        final_flat_labels_list: list[torch.Tensor] = []
+        total_batches = 0
 
         with torch.no_grad():
             if size is None:
-                steps = len(self.val_dataset) * batch_size // batch_size
+                steps = len(self.val_dataset) // batch_size
             else:
                 steps = size // batch_size
 
@@ -345,22 +346,27 @@ class Trainer():
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
+                # Accumulate metrics for each batch
                 val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                 total_items += flat_labels.shape[0]
 
-                final_flat_logits_list.append(flat_logits)
-                final_flat_labels_list.append(flat_labels)
+                # Filter out ignored indices for metric calculation
+                valid_indices = flat_labels != self.metrics_ignore_index
+                if valid_indices.any():
+                    val_mrr += reciprocal_rank(flat_logits[valid_indices], flat_labels[valid_indices])
+                    val_acc_at_1 += correct_token_predictions_at_k(flat_logits[valid_indices], flat_labels[valid_indices], k=1)
+                    total_batches += 1
+
                 pbar.update(1)
             pbar.close()
 
-        if total_items > 0:
-            val_ce_loss /= total_items
+        # Calculate average metrics
+        avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
+        avg_val_mrr = val_mrr / total_batches if total_batches > 0 else 0.0
+        avg_val_acc_at_1 = val_acc_at_1 / total_batches if total_batches > 0 else 0.0
 
-        final_flat_logits = torch.cat(final_flat_logits_list, dim=0)
-        final_flat_labels = torch.cat(final_flat_labels_list, dim=0)
-
-        # Log validation metrics
-        self._log_validation_metrics(step, final_flat_logits, final_flat_labels, val_ce_loss)
+        # Log averaged validation metrics
+        self._log_validation_metrics(step, avg_val_ce_loss, avg_val_mrr, avg_val_acc_at_1)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Saves the model and training configuration."""
@@ -391,11 +397,11 @@ class Trainer():
         }
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, val_ce_loss: float) -> None:
+    def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
         """Logs validation metrics to wandb."""
         log_data = {
             "val_ce_loss": val_ce_loss,
-            "val_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
-            "val_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
+            "val_mean_reciprocal_rank": val_mrr,
+            "val_correct_token_predictions_at_1": val_acc_at_1,
         }
         wandb.log(log_data, step=step)  # type: ignore
