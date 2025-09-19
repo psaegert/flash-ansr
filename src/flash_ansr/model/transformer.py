@@ -8,9 +8,6 @@ from torch.utils.checkpoint import checkpoint
 from flash_ansr.model.generic import get_norm_layer, FeedForward
 
 
-USE_CHECKPOINTING = True
-
-
 class RotaryEmbedding(nn.Module):
     """Implements Rotary Positional Embeddings (RoPE)."""
     def __init__(self, dim: int, max_seq_len: int = 4096, base: int = 10000):
@@ -213,6 +210,7 @@ class TransformerDecoder(nn.Module):
         block_ffn_norm_type: str = "rms",
         cross_attn_kv_norm_type: str = "rms",
         output_norm_type: str = "rms",
+        use_checkpointing: bool = False,
     ):
         super().__init__()
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
@@ -229,7 +227,7 @@ class TransformerDecoder(nn.Module):
                 n_heads=n_heads,
                 ffn_hidden_dim=ffn_hidden_dim,
                 dropout=dropout,
-                use_checkpointing=USE_CHECKPOINTING,
+                use_checkpointing=use_checkpointing,
                 self_attn_norm_type=block_self_attn_norm_type,
                 cross_attn_norm_type=block_cross_attn_norm_type,
                 ffn_norm_type=block_ffn_norm_type,

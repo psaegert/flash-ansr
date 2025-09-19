@@ -16,9 +16,6 @@ from flash_ansr.preprocess import FlashASNRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer
 from flash_ansr.model.transformer import TransformerDecoder
 
-# Assuming these are defined in your refactored modules
-USE_CHECKPOINTING = True
-
 
 class FlashANSRModel(nn.Module):
     def __init__(
@@ -51,6 +48,8 @@ class FlashANSRModel(nn.Module):
         decoder_block_ffn_norm: str = "rms",
         decoder_cross_attn_kv_norm: str = "rms",
         decoder_output_norm: str = "rms",
+
+        use_checkpointing: bool = False,
     ) -> None:
         super().__init__()
 
@@ -76,7 +75,8 @@ class FlashANSRModel(nn.Module):
             dropout=encoder_dropout,
             attn_norm=encoder_attn_norm,
             ffn_norm=encoder_ffn_norm,
-            output_norm=encoder_output_norm
+            output_norm=encoder_output_norm,
+            use_checkpointing=use_checkpointing
         )
 
         if self.encoder.output_dim != decoder_model_dim:
@@ -95,7 +95,8 @@ class FlashANSRModel(nn.Module):
             block_cross_attn_norm_type=decoder_block_cross_attn_norm,
             block_ffn_norm_type=decoder_block_ffn_norm,
             cross_attn_kv_norm_type=decoder_cross_attn_kv_norm,
-            output_norm_type=decoder_output_norm
+            output_norm_type=decoder_output_norm,
+            use_checkpointing=use_checkpointing,
         )
 
         self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)

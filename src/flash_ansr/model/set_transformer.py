@@ -11,10 +11,6 @@ from flash_ansr.model.set_encoder import SetEncoder
 from flash_ansr.model.generic import get_norm_layer, FeedForward, SetNormBase
 
 
-# A good practice for enabling/disabling checkpointing globally
-USE_CHECKPOINTING = True
-
-
 class MultiheadAttentionBlock(nn.Module):
     """
     Multi-head attention block. Fuses QKV for self-attention, uses separate Q/KV for cross-attention.
@@ -108,10 +104,10 @@ class MAB(nn.Module):
         is_self_attention: bool = False,
         query_is_projected: bool = False,  # New flag
         attn_norm: str = "none",
-        ffn_norm: str = "none"
+        ffn_norm: str = "none",
     ):
         super().__init__()
-        self.use_checkpointing = use_checkpointing and USE_CHECKPOINTING
+        self.use_checkpointing = use_checkpointing
 
         self.norm_q = get_norm_layer(attn_norm, dim_q)
         self.norm_kv = get_norm_layer(attn_norm, dim_kv)
@@ -157,12 +153,12 @@ class MAB(nn.Module):
 
 
 class SAB(nn.Module):
-    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
+    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
         super().__init__()
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING,
+            use_checkpointing=use_checkpointing,
             is_self_attention=True,
             attn_norm=attn_norm,
             ffn_norm=ffn_norm
@@ -175,7 +171,7 @@ class SAB(nn.Module):
 
 
 class ISAB(nn.Module):
-    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
+    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
         super().__init__()
         self.inducing_points = nn.Parameter(torch.randn(1, n_inducing_points, dim_out))
         nn.init.xavier_uniform_(self.inducing_points)
@@ -183,14 +179,14 @@ class ISAB(nn.Module):
         self.mab_cross = MAB(
             dim_q=dim_out, dim_kv=dim_in, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm,
             query_is_projected=True
         )
         self.mab_self = MAB(
             dim_q=dim_in, dim_kv=dim_out, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm
         )
 
@@ -214,7 +210,7 @@ class ISAB(nn.Module):
 
 
 class PMA(nn.Module):
-    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none"):
+    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
         super().__init__()
         self.seed_vectors = nn.Parameter(torch.randn(1, n_seeds, dim))
         nn.init.xavier_uniform_(self.seed_vectors)
@@ -222,7 +218,7 @@ class PMA(nn.Module):
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
-            use_checkpointing=USE_CHECKPOINTING, is_self_attention=False,
+            use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm,
             query_is_projected=True
         )
@@ -239,7 +235,7 @@ class SetTransformer(SetEncoder):
         self, input_dim: int, output_dim: int | None, model_dim: int = 256, n_heads: int = 8,
         n_isab: int = 2, n_sab: int = 1, n_inducing_points: Union[int, List[int]] = 32,
         n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0,
-        attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none"
+        attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none", use_checkpointing: bool = False
     ):
         super().__init__()
         if isinstance(n_inducing_points, int):
@@ -248,12 +244,12 @@ class SetTransformer(SetEncoder):
         self.embedding = nn.Linear(input_dim, model_dim)
 
         self.isabs = nn.ModuleList([
-            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
+            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
             for n_ip in n_inducing_points
         ])
-        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
+        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
         self.sabs = nn.ModuleList([
-            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm)
+            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
             for _ in range(n_sab)
         ])
         self.output_norm = get_norm_layer(output_norm, model_dim)
@@ -327,7 +323,6 @@ if __name__ == "__main__":
     print("\n--- Starting Benchmark ---")
     print(f"Model dim: {model_dim}, Heads: {n_heads}, Encoder Blocks: {n_isab}, Decoder Blocks: {n_sab}")
     print(f"Batch size: {batch_size}, Input set size: {set_size}, Output set size: {n_seeds}")
-    print(f"Checkpointing: {'Enabled' if USE_CHECKPOINTING else 'Disabled'}")
 
     # Warm-up iterations
     print("Running warm-up iterations...")

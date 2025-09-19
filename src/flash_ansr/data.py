@@ -2,6 +2,10 @@ import os
 import warnings
 import time
 from typing import Any, Generator, Literal
+import signal
+import atexit
+import multiprocessing as mp
+from multiprocessing import shared_memory
 
 import torch
 import numpy as np
@@ -18,23 +22,39 @@ from flash_ansr.expressions.utils import substitude_constants
 from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
+# --- Globals for robust cleanup ---
+_managed_resources: list = []
+
+
+def _cleanup_resources() -> None:
+    """Ensure shared memory is unlinked and managers are shut down on exit."""
+    for resource in _managed_resources:
+        if isinstance(resource, shared_memory.SharedMemory):
+            try:
+                resource.close()
+                resource.unlink()  # This is the crucial step
+            except FileNotFoundError:
+                pass  # Already cleaned up
+        elif hasattr(resource, 'shutdown'):
+            resource.shutdown()
+        elif isinstance(resource, mp.Process):
+            if resource.is_alive():
+                resource.terminate()
+            resource.join()
+
+
+atexit.register(_cleanup_resources)
+
+
 class FlashANSRDataset:
     '''
     Dataset for amortized neural symbolic regression training.
-
-    Parameters
-    ----------
-    skeleton_pool : SkeletonPool
-        The skeleton pool to sample from.
-    padding : {'random', 'zero'}
-        The padding strategy for the input_ids, by default 'random'.
     '''
     def __init__(self, skeleton_pool: SkeletonPool, tokenizer: Tokenizer, padding: Literal['random', 'zero'], preprocessor: FlashASNRPreprocessor | None = None) -> None:
         self.skeleton_pool = skeleton_pool
         self.tokenizer = tokenizer
         self.padding = padding
         self.preprocessor = preprocessor
-
         self.data = None
 
     @property
@@ -148,8 +168,14 @@ class FlashANSRDataset:
         return load_config(config_path), dataset
 
     def _pad_sequence(self, sequence: list[int], max_length: int, pad_value: Any, device: str | torch.device | int = 'cpu', dtype: torch.dtype = torch.long) -> torch.Tensor:
+        if not isinstance(sequence, torch.Tensor):
+            sequence_tensor = torch.tensor(sequence, device=device, dtype=dtype)
+        else:
+            # If it's already a tensor, just ensure it's on the correct device.
+            sequence_tensor = sequence.to(device=device, dtype=dtype)
+
         return torch.nn.functional.pad(
-            torch.tensor(sequence, device=device, dtype=dtype),
+            sequence_tensor,
             (0, max_length - len(sequence)),
             value=pad_value
         )
@@ -157,80 +183,61 @@ class FlashANSRDataset:
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = 'cpu') -> dict[str, Any]:
         '''
         Collate a batch of data inplace.
-
-        Parameters
-        ----------
-        batch : dict
-            The batch of data.
-        device : str or torch.device or int, optional
-            The device to move the data to. If a string, it should be one of 'cpu', 'cuda', 'cuda:0', etc., by default 'cpu'.
-
-        Returns
-        -------
-        tuple
-            The collated batch.
         '''
-        # Determine the maximum length of the input_ids
+        # --- Streamlined and Corrected Batch Processing Logic ---
+
+        # 1. Pad and stack 'input_ids' (variable-length sequences)
+        # We handle this first because it's a list of lists.
         if isinstance(batch['input_ids'][0], list):
-            # Batch of instances
-            max_length_input_ids = max(len(input_id) for input_id in batch['input_ids'])
+            max_length_input_ids = max(len(seq) for seq in batch['input_ids'])
+            padded_input_ids = [
+                self._pad_sequence(seq, max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
+                for seq in batch['input_ids']
+            ]
+            batch['input_ids'] = torch.stack(padded_input_ids)
+        else:  # It's likely already a padded tensor
+            batch['input_ids'] = batch['input_ids'].to(device=device, dtype=torch.long)
 
-            for i in range(len(batch['input_ids'])):
-                batch['input_ids'][i] = self._pad_sequence(batch['input_ids'][i], max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
+        # 2. Stack dense tensors ('x_tensors', 'y_tensors')
+        for k, dtype in [
+            ('x_tensors', torch.float32),
+            ('y_tensors', torch.float32),
+        ]:
+            # The input from the dataloader might be a list of tensors; stack them.
+            if isinstance(batch[k], list):
+                batch[k] = torch.stack(batch[k])
+            batch[k] = batch[k].to(device=device, dtype=dtype)
 
-            for k, dtype in [
-                ('input_ids', torch.long),
-                ('x_tensors', torch.float32),
-                ('y_tensors', torch.float32),
-            ]:
-                batch[k] = torch.stack(batch[k]).to(device=device, dtype=dtype)  # type: ignore
+        # 3. Handle 'constants' (ragged data) -> THE CRUCIAL FIX
+        # Since constants have variable lengths, they CANNOT be stacked.
+        # We process them into a LIST of tensors on the correct device.
+        constants_list = []
+        for const_item in batch['constants']:
+            # Ensure each item is a tensor before moving to the device
+            if not isinstance(const_item, torch.Tensor):
+                const_item = torch.tensor(const_item, dtype=torch.float32)
+            constants_list.append(const_item.to(device))
+        batch['constants'] = constants_list  # The result is a list[torch.Tensor]
 
-            for i, constant in enumerate(batch['constants']):
-                if isinstance(constant, torch.Tensor):
-                    batch['constants'][i] = constant.to(device)
-                else:
-                    batch['constants'][i] = torch.tensor(constant, device=device, dtype=torch.float32)
+        # 4. Handle other optional fields
+        if 'input_num' in batch:
+            if isinstance(batch['input_num'][0], list):
+                max_length_input_num = max(len(seq) for seq in batch['input_num'])
+                padded_input_num = [
+                    self._pad_sequence(seq, max_length_input_num, torch.nan, device=device, dtype=torch.float32)
+                    for seq in batch['input_num']
+                ]
+                batch['input_num'] = torch.stack(padded_input_num).unsqueeze(-1)
+            else:  # Already a tensor
+                batch['input_num'] = batch['input_num'].to(device=device, dtype=torch.float32)
 
-            if 'input_num' in batch:
-                max_length_input_num = max(len(input_id) for input_id in batch['input_num'])
-                for i in range(len(batch['input_num'])):
-                    batch['input_num'][i] = self._pad_sequence(batch['input_num'][i], max_length_input_num, torch.nan, device=device, dtype=torch.float32)
+        if 'complexities' in batch:
+            batch['complexities'] = [
+                torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None
+                for c in batch['complexities']
+            ]
 
-                batch['input_num'] = torch.stack(batch['input_num']).to(device=device, dtype=torch.float32).unsqueeze(-1)
-
-            if 'complexities' in batch:
-                batch['complexities'] = [torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None for c in batch['complexities']]
-
-        else:
-            # Single instance
-            max_length_input_ids = len(batch['input_ids'])
-
-            batch['input_ids'] = self._pad_sequence(batch['input_ids'], max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
-
-            for k, dtype in [
-                ('input_ids', torch.long),
-                ('x_tensors', torch.float32),
-                ('y_tensors', torch.float32),
-            ]:
-                if isinstance(batch[k], torch.Tensor):
-                    batch[k] = batch[k].to(device=device, dtype=dtype)
-                else:
-                    batch[k] = torch.tensor(batch[k], device=device, dtype=dtype)
-
-            if isinstance(batch['constants'], torch.Tensor):
-                batch['constants'] = batch['constants'].to(device)
-            else:
-                batch['constants'] = torch.tensor(batch['constants'], device=device, dtype=torch.float32)
-
-            if 'input_num' in batch:
-                max_length_input_num = len(batch['input_num'])
-                batch['input_num'] = self._pad_sequence(batch['input_num'], max_length_input_num, torch.nan, device=device, dtype=torch.float32).unsqueeze(-1)
-
-            if 'complexities' in batch:
-                if batch['complexities'] is not None:
-                    batch['complexities'] = torch.tensor(batch['complexities'], device=device, dtype=torch.float32)
-
-        # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
+        # 5. Create labels
         batch['labels'] = batch['input_ids'].clone()[..., 1:]
 
         return batch
@@ -244,261 +251,250 @@ class FlashANSRDataset:
             list(self.iterate(size=size, steps=steps, batch_size=batch_size, n_support=n_support, verbose=verbose))
         )
 
+    @staticmethod
+    def _producer_worker(
+        work_queue: mp.Queue,
+        result_queue: mp.Queue,
+        shm_configs: dict,
+        metadata_list: list,
+        worker_init_args: dict
+    ) -> None:
+        """
+        Worker that generates data and writes it directly into shared memory slots.
+        For each skeleton, it generates n_per_equation positive samples.
+        """
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        np.random.seed(os.getpid())
+
+        # Unpack initialization arguments
+        skeleton_pool: SkeletonPool = worker_init_args['skeleton_pool']
+        tokenizer: Tokenizer = worker_init_args['tokenizer']
+        padding: str = worker_init_args['padding']
+        n_per_equation: int = worker_init_args['n_per_equation']
+        batch_size: int = worker_init_args['batch_size']
+
+        # --- Connect to shared memory and create numpy views ---
+        shms = {name: shared_memory.SharedMemory(name=cfg['name']) for name, cfg in shm_configs.items()}
+        pools = {name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
+
+        try:
+            while True:
+                job = work_queue.get()
+                if job is None:  # Sentinel
+                    break
+
+                slot_idx, n_support_frag = job
+
+                # --- Buffers for a single batch ---
+                constants_batch = []
+                x_tensors_batch = np.zeros(pools['x_tensors'].shape[1:], dtype=pools['x_tensors'].dtype)
+                y_tensors_batch = np.zeros(pools['y_tensors'].shape[1:], dtype=pools['y_tensors'].dtype)
+                input_ids_batch = np.full(pools['input_ids'].shape[1:], tokenizer['<pad>'], dtype=pools['input_ids'].dtype)
+                metadata_batch = []
+
+                # --- Generate one full batch ---
+                i = 0
+                while i < batch_size:
+                    # Step 1: Find a usable skeleton by sampling until success
+                    skeleton_hash, skeleton_code, skeleton_constants, skeleton = None, None, None, None
+                    while True:
+                        try:
+                            skeleton_hash, skeleton_code, skeleton_constants = skeleton_pool.sample_skeleton()
+                            skeleton = list(skeleton_hash)
+                            break  # Found a valid skeleton
+                        except NoValidSampleFoundError:
+                            # This is rare but possible if the pool is heavily filtered. Keep trying.
+                            continue
+
+                    # Step 2: Generate n_per_equation samples (positive pairs) for this skeleton
+                    generated_count = 0
+                    # A safety break to prevent infinite loops on pathologically difficult skeletons
+                    max_attempts_per_skeleton = 10
+
+                    for _ in range(max_attempts_per_skeleton):
+                        # Stop if we have enough samples for this skeleton OR the entire batch is full
+                        if generated_count >= n_per_equation or i >= batch_size:
+                            break
+
+                        try:
+                            # Resample data (constants and points) for the SAME skeleton
+                            x_support, y_support, literals = skeleton_pool.sample_data(
+                                skeleton_code, len(skeleton_constants), n_support_frag
+                            )
+
+                            if padding == 'zero':
+                                for var_idx, variable in enumerate(skeleton_pool.variables):
+                                    if variable not in skeleton:
+                                        x_support[:, var_idx] = 0
+
+                            input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+
+                            # Populate the batch arrays at the current index 'i'
+                            x_tensors_batch[i] = x_support
+                            y_tensors_batch[i] = y_support
+                            input_ids_batch[i, :len(input_ids)] = input_ids
+                            constants_batch.append(literals)
+                            metadata_batch.append({
+                                'skeletons': skeleton,
+                                'skeleton_hashes': skeleton_hash,
+                                'expressions': substitude_constants(skeleton, values=literals, inplace=False),
+                            })
+
+                            # Increment counters for the next sample
+                            generated_count += 1
+                            i += 1
+
+                        except NoValidSampleFoundError:
+                            # If data sampling for this skeleton fails, just try again
+                            continue
+
+                # --- Write the completed batch directly into the shared memory slot ---
+                pools['x_tensors'][slot_idx] = x_tensors_batch
+                pools['y_tensors'][slot_idx] = y_tensors_batch
+                pools['input_ids'][slot_idx] = input_ids_batch
+
+                # Metadata and constants are handled by the manager/queue
+                metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
+
+                # --- Signal completion ---
+                result_queue.put(slot_idx)
+
+        finally:
+            # Clean up worker's connection to shared memory
+            for shm in shms.values():
+                shm.close()
+
     def iterate(
-            self,
-            size: int | None = None,
-            steps: int | None = None,
-            batch_size: int | None = None,
-            n_support: int | None = None,
-            n_per_equation: int = 1,
-            tqdm_total: int | None = None,
-            preprocess: bool = False,
-            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
-        '''
-        Iterate over the dataset.
+        self,
+        size: int | None = None,
+        steps: int | None = None,
+        batch_size: int | None = None,
+        n_support: int | None = None,
+        max_seq_len: int = 128,
+        n_per_equation: int = 1,
+        preprocess: bool = False,
+        verbose: bool = False,
+        num_workers: int | None = None,
+        prefetch_factor: int = 2,
+        persistent: bool = False,
+    ) -> Generator[dict[str, Any], None, None]:
+        if batch_size is None:
+            batch_size = 1
 
-        Parameters
-        ----------
-        size : int, optional
-            The total number of data to generate, by default None.
-        steps : int, optional
-            The number of batches to generate, by default None.
-        batch_size : int or BatchSizeScheduler, optional
-            The batch size or scheduler, by default None.
-        n_support : int, optional
-            The number of support points to sample, by default None.
-        n_per_equation : int, optional
-            The number of instances with distinct constants and support points to generate per equation, by default 1.
-        tqdm_total : int, optional
-            The total number of iterations for the tqdm progress bar, by default None.
-        preprocess : bool, optional
-            Whether to preprocess the data, by default False.
-        verbose : bool, optional
-            Whether to print verbose output, by default False.
+        if self.data is not None:
+            yield from tqdm(self.data, desc="Iterating over pre-compiled dataset", disable=not verbose)
+            return
 
-        Yields
-        -------
-        dict
-            The next batch of data.
-        '''
-        if self.data is None:
-            # Procedurally generate the dataset
+        if size is None and steps is None:
+            raise ValueError("Must specify 'size' or 'steps'.")
 
-            if batch_size is None:
-                # Generate single instances
+        if num_workers is None:
+            num_workers = os.cpu_count() or 1
 
-                if steps is not None:
-                    # Trying to parameterize the number of batches for non-batched data generation
-                    raise ValueError(f'Speficfied {steps=} which is not used for non-batched data generation')
+        if steps is None:
+            steps = (size + batch_size - 1) // batch_size  # type: ignore
 
-                if preprocess and self.preprocessor is not None:
-                    # Preprocess with available preprocessor
-                    for instance in self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose):
-                        yield self.preprocessor.format(instance)
+        pool_size = num_workers * prefetch_factor
+
+        # --- 1. Define Shapes and Create Shared Memory Pools ---
+        shm_configs: dict[str, dict[str, Any]] = {
+            'x_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], len(self.skeleton_pool.variables)), 'dtype': np.float32},
+            'y_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], 1), 'dtype': np.float32},
+            'input_ids': {'shape': (pool_size, batch_size, max_seq_len), 'dtype': np.int64},
+        }
+
+        shms = {name: shared_memory.SharedMemory(create=True, size=int(np.prod(cfg['shape']) * np.dtype(cfg['dtype']).itemsize)) for name, cfg in shm_configs.items()}
+        for shm in shms.values():
+            _managed_resources.append(shm)
+
+        # Add shm names to configs to pass to workers
+        for name, shm in shms.items():
+            shm_configs[name]['name'] = shm.name
+
+        pools = {name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
+
+        manager = mp.Manager()
+        _managed_resources.append(manager)
+        metadata_pool = manager.list([None] * pool_size)
+
+        # --- 2. Setup Coordination Queues ---
+        work_queue: mp.Queue = mp.Queue()
+        result_queue: mp.Queue = mp.Queue()
+        available_slots_queue: mp.Queue = mp.Queue()
+        for i in range(pool_size):
+            available_slots_queue.put(i)  # Prime with all available slots
+
+        # --- 3. Start Worker Processes ---
+        worker_init_args = {
+            'skeleton_pool': self.skeleton_pool, 'tokenizer': self.tokenizer,
+            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size
+        }
+
+        workers = []
+        for _ in range(num_workers):
+            p = mp.Process(target=self._producer_worker, args=(work_queue, result_queue, shm_configs, metadata_pool, worker_init_args), daemon=True)
+            p.start()
+            workers.append(p)
+            _managed_resources.append(p)
+
+        pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
+
+        try:
+            # --- 4. Main Producer-Consumer Loop ---
+            # Prefill the work queue to get workers started
+            for _ in range(pool_size):
+                slot_idx = available_slots_queue.get()
+                n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
+                work_queue.put((slot_idx, n_support_frag))
+
+            for i in range(steps):
+                # Wait for a worker to finish a slot
+                completed_slot_idx = result_queue.get()
+
+                # --- Construct the batch by reading from the shared slot (Only copy if "persistent") ---
+                metadata_and_constants = metadata_pool[completed_slot_idx]
+                batch_dict = {
+                    'x_tensors': torch.from_numpy(pools['x_tensors'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['x_tensors'][completed_slot_idx]),
+                    'y_tensors': torch.from_numpy(pools['y_tensors'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['y_tensors'][completed_slot_idx]),
+                    'input_ids': torch.from_numpy(pools['input_ids'][completed_slot_idx]).clone() if persistent else torch.from_numpy(pools['input_ids'][completed_slot_idx]),
+                    'constants': [torch.from_numpy(c).clone() if persistent else torch.from_numpy(c) for c in metadata_and_constants['constants']],
+                    **{k: [d[k] for d in metadata_and_constants['metadata']] for k in metadata_and_constants['metadata'][0]}
+                }
+
+                if preprocess and self.preprocessor:
+                    yield self.preprocessor.format(batch_dict)
                 else:
-                    if preprocess:
-                        # Trying to preprocess without a preprocessor
-                        warnings.warn("No preprocessor specified, skipping preprocessing.")
+                    yield batch_dict
 
-                    # Generate the data without preprocessing
-                    yield from self.generate(size=size, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose)
+                pbar.update(1)
 
-            else:
-                # Generate data in batches
+                # Recycle the slot by putting it back in the available queue and request new work
+                available_slots_queue.put(completed_slot_idx)
+                slot_to_refill = available_slots_queue.get()
+                n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
+                work_queue.put((slot_to_refill, n_support_frag))
 
-                if preprocess and self.preprocessor is not None:
-                    # Preprocess with available preprocessor
-                    for batch in self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose):
-                        yield self.preprocessor.format(batch)
-                else:
-                    if preprocess:
-                        # Trying to preprocess without a preprocessor
-                        warnings.warn("No preprocessor specified, skipping preprocessing.")
+        finally:
+            pbar.close()
 
-                    # Generate the data without preprocessing
-                    yield from self.generate_batch(batch_size=batch_size, size=size, steps=steps, n_support=n_support, n_per_equation=n_per_equation, tqdm_total=tqdm_total, verbose=verbose)
+            # --- 5. Graceful Shutdown (Corrected Order) ---
+            if verbose:
+                print("Shutting down workers and cleaning up resources...")
 
-        else:
-            yield from tqdm(self.data, desc="Iterating over dataset", disable=not verbose, smoothing=0.01)
+            # Step 1: Tell all workers to stop accepting new jobs
+            for _ in range(num_workers):
+                work_queue.put(None)
 
-    def generate_batch(
-            self,
-            batch_size: int,
-            size: int | None = None,
-            steps: int | None = None,
-            n_support: int | None = None,
-            n_per_equation: int = 1,
-            tqdm_total: int | None = None,
-            verbose: bool = False) -> Generator[dict[str, list | torch.Tensor], None, None]:
-        '''
-        Generate a batch of data.
+            # Step 2: Wait for all workers to finish their current job and exit
+            for p in workers:
+                p.join()
 
-        Parameters
-        ----------
-        batch_size : int
-            The batch size.
-        size : int, optional
-            The total number of data to generate, by default None.
-        steps : int, optional
-            The number of batches to generate, by default None.
-        n_support : int, optional
-            The number of support points to sample, by default None.
-        n_per_equation : int, optional
-            The number of instances with distinct constants and support points to generate per equation, by default 1.
-        tqdm_total : int, optional
-            The total number of iterations for the tqdm progress bar, by default None
-        verbose : bool, optional
-            Whether to print verbose output, by default False.
-
-        Yields
-        -------
-        dict
-            The next batch of data.
-        '''
-        if size is not None and steps is not None:
-            raise ValueError(f'Must either specify the total number of data (size) or batches (steps) to generate, got {size=}, {steps=}')
-
-        if size is not None:
-            if isinstance(batch_size, int):
-                steps = int(np.ceil(size / batch_size))
-
-        pbar = tqdm(desc="Batch generating data", unit="b", total=steps or tqdm_total, disable=not verbose, smoothing=0.01)
-
-        batch_id = 0
-        n_rejected = 0
-        n_generated = 0
-
-        while (size is None and steps is None) or (steps is not None and batch_id < steps) or (size is not None and n_generated < size):
-            batch: dict[str, list | torch.Tensor] = {
-                'n_rejected': [],
-                'skeletons': [],
-                'skeleton_hashes': [],
-                'expressions': [],
-                'constants': [],
-                'input_ids': [],
-                'x_tensors': [],
-                'y_tensors': [],
-            }
-
-            if n_support is None:
-                n_support_frag = int(np.round(self.skeleton_pool.n_support_prior(size=1))[0])
-            else:
-                n_support_frag = n_support
-
-            for instance in self.generate(
-                    size=min(batch_size, size - batch_id * batch_size) if size is not None else batch_size,
-                    n_support=n_support_frag,
-                    n_per_equation=n_per_equation,
-                    verbose=False):
-
-                for key in instance.keys():
-                    batch[key].append(instance[key])  # type: ignore
-
-            n_rejected += batch['n_rejected'][-1][0]  # type: ignore
-            n_generated += len(batch['input_ids'])
-
-            yield batch
-
-            batch = {k: [] for k in batch}
-            batch_id += 1
-
-            pbar.update(1)
-            pbar.set_postfix(reject_rate=f'{n_rejected / (n_rejected + n_generated):.2%}')
-
-        pbar.close()
-
-    def generate(
-            self,
-            size: int | None = None,
-            n_support: int | None = None,
-            n_per_equation: int = 1,
-            tqdm_total: int | None = None,
-            verbose: bool = False) -> Generator[dict[str, list[str | int] | torch.Tensor], None, None]:
-        '''
-        Generate data.
-
-        Parameters
-        ----------
-        size : int, optional
-            The total number of data to generate, by default None.
-        n_support : int, optional
-            The number of support points to sample, by default None.
-        n_per_equation : int, optional
-            The number of instances with distinct constants and support points to generate per equation, by default 1.
-        tqdm_total : int, optional
-            The total number of iterations for the tqdm progress bar, by default None.
-        verbose : bool, optional
-            Whether to print verbose output, by default False.
-
-        Yields
-        -------
-        dict
-            The next batch of data.
-        '''
-        if verbose:
-            pbar = tqdm(desc="Generating data", total=size or tqdm_total, smoothing=0.01)
-
-        n_generated = 0
-        n_rejected = 0
-        while size is None or n_generated < size:
-            try:
-                # sample = self.skeleton_pool.sample(n_support=n_support_frag)
-                skeleton_hash, skeleton_code, skeleton_constants = self.skeleton_pool.sample_skeleton()
-                skeleton = list(skeleton_hash)
-
-                buffer = []
-
-                n_generated_per_equation = 0
-                while n_generated_per_equation < n_per_equation:
-                    try:
-                        x_support, y_support, literals = self.skeleton_pool.sample_data(skeleton_code, len(skeleton_constants), n_support)
-
-                        if self.padding == 'zero':
-                            # Set all x that do not appear in the expression to 0
-                            for i, variable in enumerate(self.skeleton_pool.variables):
-                                if variable not in skeleton:
-                                    x_support[:, i] = 0
-
-                        # Tokenize the expression to get the input_ids
-                        input_ids = self.tokenizer.encode(skeleton, add_bos=True, add_eos=True)
-
-                        # Yield the sample
-                        buffer.append({
-                            'n_rejected': [n_rejected],
-                            'skeletons': skeleton,
-                            'skeleton_hashes': skeleton_hash,
-                            'expressions': substitude_constants(skeleton, values=literals, inplace=False),
-                            'constants': torch.tensor(literals, dtype=torch.float32),
-                            'input_ids': input_ids,
-                            'x_tensors': torch.tensor(x_support, dtype=torch.float32),
-                            'y_tensors': torch.tensor(y_support, dtype=torch.float32),
-                        })
-
-                    except NoValidSampleFoundError:
-                        buffer = []
-                        n_generated_per_equation = 0
-                        break
-
-                    n_generated_per_equation += 1
-
-                if len(buffer) == 0:
-                    n_rejected += 1
-                    continue
-
-                yield from buffer
-
-            except NoValidSampleFoundError:
-                n_rejected += 1
-                continue
-
-            n_generated += n_per_equation
+            # Step 3: Now that workers are stopped, it's safe to clean up shared resources
+            atexit.unregister(_cleanup_resources)
+            _cleanup_resources()   # This will shut down the manager and unlink memory
 
             if verbose:
-                pbar.update(1)
-                pbar.set_postfix(reject_rate=f'{n_rejected / (n_generated + n_rejected):.2%}')
-
-        if verbose:
-            pbar.close()
+                print("All resources cleaned up.")
 
     def _benchmark(self, n_samples: int, batch_size: int, verbose: bool = False) -> dict[str, Any]:
         '''
