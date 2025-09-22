@@ -165,6 +165,20 @@ class RMSSetNorm(SetNormBase):
         return (x_norm * self.gamma).to(input_dtype)
 
 
+class DynLogNorm(nn.Module):
+    """
+    Dynamic Logarithmic Normalization. Similar to Dynamic Tanh but uses logarithmic scaling without saturation.
+    """
+    def __init__(self, dim: int):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.zeros(1, 1, dim))
+        self.beta = nn.Parameter(torch.zeros(1, 1, dim))
+        self.gamma = nn.Parameter(torch.ones(1, 1, dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.gamma * torch.log1p(torch.sigmoid(self.alpha) * torch.abs(x)) * torch.sign(x) + self.beta
+
+
 def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
     """Factory for normalization layers.
 
@@ -188,6 +202,8 @@ def get_norm_layer(norm_type: str, dim: int, **kwargs: Any) -> nn.Module:
         return OriginalSetNorm(dim, **kwargs)
     if norm_type_l in ("rms_set", "rmssetnorm"):
         return RMSSetNorm(dim, **kwargs)
+    if norm_type_l in ("dyn_log", "dynlognorm"):
+        return DynLogNorm(dim, **kwargs)
     raise ValueError(f"Unknown norm_type: {norm_type}")
 
 

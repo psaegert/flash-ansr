@@ -29,7 +29,7 @@ compile_mode: 'reduce-overhead'
 compiler_optimization_steps: 100
 gradient_checkpointing: False
 
-wandb_watch_log: null   # Causes AttributeError: 'NoneType' object has no attribute 'data'
+wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
 steps: 5_000_000

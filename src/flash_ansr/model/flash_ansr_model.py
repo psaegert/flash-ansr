@@ -164,6 +164,11 @@ class FlashANSRModel(nn.Module):
         data_pre_encodings: torch.Tensor = self.pre_encoder(data)
         B, M, D, E = data_pre_encodings.size()
 
+        # If in training, add a small amount of noise to the pre-encodings for regularization
+        if self.training:
+            noise = torch.randn_like(data_pre_encodings) * 0.01
+            data_pre_encodings = data_pre_encodings + noise
+
         # Encoder forward pass
         memory = self.encoder(data_pre_encodings.view(B, M, D * E), data_attn_mask)
 

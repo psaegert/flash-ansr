@@ -23,7 +23,7 @@ class MultiheadAttentionBlock(nn.Module):
         dim_out: int,
         n_heads: int,
         dropout: float = 0.0,
-        bias: bool = False,
+        bias: bool = True,
         is_self_attention: bool = False,
         query_is_projected: bool = False  # New flag
     ):

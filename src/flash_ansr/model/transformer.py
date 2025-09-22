@@ -63,10 +63,10 @@ class Attention(nn.Module):
         self.head_dim = dim // n_heads
         self.use_rope = use_rope
 
-        self.w_q = nn.Linear(dim, dim, bias=False)
-        self.w_k = nn.Linear(dim, dim, bias=False)
-        self.w_v = nn.Linear(dim, dim, bias=False)
-        self.w_o = nn.Linear(dim, dim, bias=False)
+        self.w_q = nn.Linear(dim, dim)
+        self.w_k = nn.Linear(dim, dim)
+        self.w_v = nn.Linear(dim, dim)
+        self.w_o = nn.Linear(dim, dim)
         self.dropout = dropout
 
     def forward(
@@ -217,7 +217,7 @@ class TransformerDecoder(nn.Module):
 
         self.cross_attn_kv_proj: nn.Module
         if input_dim is not None and input_dim != model_dim:
-            self.cross_attn_kv_proj = nn.Linear(input_dim, model_dim, bias=False)
+            self.cross_attn_kv_proj = nn.Linear(input_dim, model_dim)
         else:
             self.cross_attn_kv_proj = nn.Identity()
 
@@ -236,7 +236,7 @@ class TransformerDecoder(nn.Module):
 
         self.cross_attn_kv_norm = get_norm_layer(cross_attn_kv_norm_type, model_dim)
         self.output_norm = get_norm_layer(output_norm_type, model_dim)
-        self.output = nn.Linear(model_dim, vocab_size, bias=False)
+        self.output = nn.Linear(model_dim, vocab_size)
 
         head_dim = model_dim // n_heads  # for RoPE
         self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len)

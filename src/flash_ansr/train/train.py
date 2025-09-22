@@ -45,8 +45,8 @@ class Trainer():
             self,
             model: FlashANSRModel,
             optimizer: torch.optim.Optimizer,
-            amp_dtype: torch.dtype,
-            scaler: torch.amp.GradScaler,
+            # amp_dtype: torch.dtype,
+            # scaler: torch.amp.GradScaler,
             lr_scheduler: LRScheduler | None,
             batch_size: int,
             train_dataset: FlashANSRDataset,
@@ -56,8 +56,8 @@ class Trainer():
 
         self.model = model
         self.optimizer = optimizer
-        self.amp_dtype = amp_dtype
-        self.scaler = scaler
+        # self.amp_dtype = amp_dtype
+        # self.scaler = scaler
         self.lr_scheduler = lr_scheduler
         self.batch_size = batch_size
         self.train_dataset = train_dataset
@@ -93,8 +93,8 @@ class Trainer():
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
 
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+        # amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
 
         print(f'Loading lr_scheduler with config {config_["lr_scheduler"]}')
         lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler'].get('kwargs', {})) if config_["lr_scheduler"] else None
@@ -119,8 +119,8 @@ class Trainer():
         return cls(
             model=model,
             optimizer=optimizer,
-            amp_dtype=amp_dtype,
-            scaler=scaler,
+            # amp_dtype=amp_dtype,
+            # scaler=scaler,
             lr_scheduler=lr_scheduler,
             batch_size=config_['batch_size'],
             train_dataset=train_dataset,
@@ -166,36 +166,43 @@ class Trainer():
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
 
-        if compile_mode is not None:
-            self.model = torch.compile(self.model, mode=compile_mode)
+        try:
 
-        self._setup_training_state(device, verbose=verbose)
+            if compile_mode is not None:
+                self.model = torch.compile(self.model, mode=compile_mode)
 
-        # # Benchmark / optimization for compiled models
-        # pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
-        # for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
-        #     self._train_step(batch, step, preprocess, do_optimizer_step=False)
-        #     pbar.update(1)
-        # pbar.close()
+            self._setup_training_state(device, verbose=verbose)
 
-        # # Initial validation
-        # if validate_interval is not None:
-        #     self._validate_step(0, validate_size, validate_batch_size, preprocess, verbose)
+            # # Benchmark / optimization for compiled models
+            # pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
+            # for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
+            #     self._train_step(batch, step, preprocess, do_optimizer_step=False)
+            #     pbar.update(1)
+            # pbar.close()
 
-        pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
-        for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
-            self._train_step(batch, step, preprocess, do_optimizer_step=True)
+            # # Initial validation
+            # if validate_interval is not None:
+            #     self._validate_step(0, validate_size, validate_batch_size, preprocess, verbose)
 
-            pbar.update(1)
+            pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
+            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
+                self._train_step(batch, step, preprocess, do_optimizer_step=True)
 
-            if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
-                self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, verbose)
+                pbar.update(1)
 
-            if checkpoint_interval is not None and checkpoint_directory is not None and (step + 1) % checkpoint_interval == 0:
-                self._save_checkpoint(step + 1, checkpoint_directory)
+                if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
+                    self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, verbose)
 
-        pbar.close()
-        return self.model
+                if checkpoint_interval is not None and checkpoint_directory is not None and (step + 1) % checkpoint_interval == 0:
+                    self._save_checkpoint(step + 1, checkpoint_directory)
+
+            pbar.close()
+            return self.model
+
+        except Exception:
+            self.train_dataset.shutdown()
+            self.val_dataset.shutdown()
+            raise
 
     def run(
             self,
@@ -277,14 +284,19 @@ class Trainer():
             else:
                 data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
-            with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
-                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                flat_labels = micro_batch['labels'].reshape(-1)
-                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
-                loss = ce_loss / self.gradient_accumulation_steps
+            # with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+            logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
+            flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+            flat_labels = micro_batch['labels'].reshape(-1)
+            ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
-            self.scaler.scale(loss).backward()
+            param_sum = sum(p.sum() for p in self.model.parameters())
+            zero_loss = 0.0 * param_sum
+
+            loss = ce_loss / self.gradient_accumulation_steps + zero_loss
+
+            # self.scaler.scale(loss).backward()
+            loss.backward()
             total_ce_loss += ce_loss.item()
             total_loss += loss.item() * self.gradient_accumulation_steps
 
@@ -294,12 +306,13 @@ class Trainer():
             self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15
 
         # Perform the optimizer step
-        self.scaler.unscale_(self.optimizer)
+        # self.scaler.unscale_(self.optimizer)
 
-        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
         if do_optimizer_step:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            # self.scaler.step(self.optimizer)
+            # self.scaler.update()
+            self.optimizer.step()
 
             # Log metrics and update scheduler
             self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
@@ -340,11 +353,11 @@ class Trainer():
                 else:
                     data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
-                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
-                    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                    flat_labels = batch['labels'].reshape(-1)
-                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                # with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+                flat_labels = batch['labels'].reshape(-1)
+                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
                 # Accumulate metrics for each batch
                 val_ce_loss += ce_loss.item() * flat_labels.shape[0]

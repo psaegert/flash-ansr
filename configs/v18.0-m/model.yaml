@@ -4,8 +4,8 @@ tokenizer: './tokenizer.yaml'
 encoder_max_n_variables: 11
 encoder_dim: 512
 encoder_n_heads: 8
-encoder_n_isab: 5
-encoder_n_sab: 2
+encoder_n_isab: 2
+encoder_n_sab: 1
 encoder_n_inducing_points: 64
 encoder_n_seeds: 64
 encoder_ffn_hidden_dim: 1024
@@ -17,12 +17,12 @@ encoder_output_norm: 'rms_set'
 decoder_input_dim: 512
 decoder_model_dim: 512
 decoder_n_heads: 8
-decoder_n_layers: 8
+decoder_n_layers: 10
 decoder_max_seq_len: 128
 decoder_ffn_hidden_dim: 1024
 decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'
 decoder_block_cross_attn_norm: 'rms'
 decoder_block_ffn_norm: 'rms'
-decoder_cross_attn_kv_norm: 'rms_set'
+decoder_cross_attn_kv_norm: 'rms'
 decoder_output_norm: 'rms'

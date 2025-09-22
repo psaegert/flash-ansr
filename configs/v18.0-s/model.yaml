@@ -2,27 +2,27 @@ simplipy_engine: 'dev_7-3'
 tokenizer: './tokenizer.yaml'
 
 encoder_max_n_variables: 11
-encoder_dim: 288
+encoder_dim: 256
 encoder_n_heads: 4
-encoder_n_isab: 3
+encoder_n_isab: 2
 encoder_n_sab: 1
 encoder_n_inducing_points: 64
 encoder_n_seeds: 64
-encoder_ffn_hidden_dim: 576
+encoder_ffn_hidden_dim: 512
 encoder_dropout: 0.1
 encoder_attn_norm: 'rms_set'
 encoder_ffn_norm: 'rms_set'
 encoder_output_norm: 'rms_set'
 
-decoder_input_dim: 320
-decoder_model_dim: 320
+decoder_input_dim: 256
+decoder_model_dim: 256
 decoder_n_heads: 4
 decoder_n_layers: 4
 decoder_max_seq_len: 128
-decoder_ffn_hidden_dim: 640
+decoder_ffn_hidden_dim: 512
 decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'
 decoder_block_cross_attn_norm: 'rms'
 decoder_block_ffn_norm: 'rms'
-decoder_cross_attn_kv_norm: 'rms_set'
+decoder_cross_attn_kv_norm: 'rms'
 decoder_output_norm: 'rms'
