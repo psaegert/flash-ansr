@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from flash_ansr.model.generic import get_norm_layer, FeedForward
+from flash_ansr.model.generic import get_norm_layer, FeedForward, PositionalEncoding
 
 
 class RotaryEmbedding(nn.Module):
@@ -73,7 +73,7 @@ class Attention(nn.Module):
         self,
         query: torch.Tensor,
         key_value: torch.Tensor,
-        rope_emb: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        rope_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
         is_causal: bool = False,
     ) -> torch.Tensor:
         # Get batch sizes for query and key_value independently
@@ -135,6 +135,8 @@ class TransformerDecoderBlock(nn.Module):
         ffn_hidden_dim: Optional[int] = None,
         dropout: float = 0.0,
         use_checkpointing: bool = False,
+        use_rope_self_attn: bool = False,
+        use_rope_cross_attn: bool = False,
         self_attn_norm_type: str = "rms",
         cross_attn_norm_type: str = "rms",
         ffn_norm_type: str = "rms",
@@ -143,10 +145,10 @@ class TransformerDecoderBlock(nn.Module):
         self.use_checkpointing = use_checkpointing
 
         self.self_attn_norm = get_norm_layer(self_attn_norm_type, dim)
-        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=True)
+        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn)
 
         self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
-        self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=False)
+        self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn)
 
         self.ffn_norm = get_norm_layer(ffn_norm_type, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
@@ -155,7 +157,7 @@ class TransformerDecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
-        rope_emb: tuple[torch.Tensor, torch.Tensor]
+        rope_emb: tuple[torch.Tensor, torch.Tensor] = None,
     ) -> torch.Tensor:
         normed_x = self.self_attn_norm(x)
         x = x + self.self_attention(
@@ -172,13 +174,20 @@ class TransformerDecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
-        rope_emb: tuple[torch.Tensor, torch.Tensor]
+        rope_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if self.training and self.use_checkpointing:
             # Re-define ckpt_fn to be compatible with checkpoint's argument handling
-            def ckpt_fn(x: torch.Tensor, encoder_memory: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-                return self._forward(x, encoder_memory, (cos, sin))
-            cos, sin = rope_emb
+            def ckpt_fn(x: torch.Tensor, encoder_memory: torch.Tensor, cos: torch.Tensor | None, sin: torch.Tensor | None) -> torch.Tensor:
+                if cos is None or sin is None:
+                    rope_emb = None
+                else:
+                    rope_emb = (cos, sin)
+                return self._forward(x, encoder_memory, rope_emb)
+            if rope_emb is None:
+                cos, sin = None, None
+            else:
+                cos, sin = rope_emb
             return checkpoint(ckpt_fn, x, encoder_memory, cos, sin, use_reentrant=False)
         else:
             return self._forward(x, encoder_memory, rope_emb)
@@ -211,9 +220,16 @@ class TransformerDecoder(nn.Module):
         cross_attn_kv_norm_type: str = "rms",
         output_norm_type: str = "rms",
         use_checkpointing: bool = False,
+        use_rope_self_attn: bool = False,
+        use_rope_cross_attn: bool = False,
+        use_sinusoidal_pos_emb: bool = True,
     ):
         super().__init__()
+        head_dim = model_dim // n_heads
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
+
+        self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len) if (use_rope_self_attn or use_rope_cross_attn) else None
+        self.pos_encoding = PositionalEncoding() if use_sinusoidal_pos_emb else nn.Identity()
 
         self.cross_attn_kv_proj: nn.Module
         if input_dim is not None and input_dim != model_dim:
@@ -228,6 +244,8 @@ class TransformerDecoder(nn.Module):
                 ffn_hidden_dim=ffn_hidden_dim,
                 dropout=dropout,
                 use_checkpointing=use_checkpointing,
+                use_rope_self_attn=use_rope_self_attn,
+                use_rope_cross_attn=use_rope_cross_attn,
                 self_attn_norm_type=block_self_attn_norm_type,
                 cross_attn_norm_type=block_cross_attn_norm_type,
                 ffn_norm_type=block_ffn_norm_type,
@@ -238,17 +256,18 @@ class TransformerDecoder(nn.Module):
         self.output_norm = get_norm_layer(output_norm_type, model_dim)
         self.output = nn.Linear(model_dim, vocab_size)
 
-        head_dim = model_dim // n_heads  # for RoPE
-        self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len)
-
     def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
         seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
+        h = h + self.pos_encoding(h)
 
         if extra_parallel_embeddings is not None:
             h = h + extra_parallel_embeddings
 
-        rope_emb = self.rope(h, seq_len=seq_len)
+        if self.rope is not None:
+            rope_emb = self.rope(h, seq_len=seq_len)
+        else:
+            rope_emb = None
         encoder_memory = self.cross_attn_kv_proj(encoder_memory)
         encoder_memory = self.cross_attn_kv_norm(encoder_memory)
 

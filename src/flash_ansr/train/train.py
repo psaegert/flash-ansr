@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
-from flash_ansr.utils import load_config, save_config, substitute_root_path
+from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.scheduler import LRSchedulerFactory
 from flash_ansr.train.loss import ContrastiveLoss
@@ -162,7 +162,6 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
-            compiler_optimization_steps: int = 100,
             verbose: bool = False) -> FlashANSRModel:
         """Core training loop."""
 
@@ -218,7 +217,6 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
-            compiler_optimization_steps: int = 100,
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
@@ -227,7 +225,7 @@ class Trainer():
         if verbose:
             print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
 
-        wandb_config = copy.deepcopy(self.config)
+        wandb_config = unfold_config(copy.deepcopy(self.config))
         wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
@@ -246,7 +244,6 @@ class Trainer():
                 validate_interval=validate_interval,
                 validate_size=validate_size,
                 validate_batch_size=validate_batch_size,
-                compiler_optimization_steps=compiler_optimization_steps,
                 verbose=verbose
             )
 
@@ -290,7 +287,7 @@ class Trainer():
             flat_labels = micro_batch['labels'].reshape(-1)
             ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
-            param_sum = sum(p.sum() for p in self.model.parameters())
+            param_sum = sum(p.sum() for p in self.model.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
             zero_loss = 0.0 * param_sum
 
             loss = ce_loss / self.gradient_accumulation_steps + zero_loss
@@ -301,7 +298,7 @@ class Trainer():
             total_loss += loss.item() * self.gradient_accumulation_steps
 
             # Update cumulative metrics
-            tokens = logits.shape[1] * micro_batch['x_tensors'].shape[0]
+            tokens = logits.shape[1] * micro_batch['input_ids'].shape[0]
             self.cumulative_training_tokens += tokens
             self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15
 

@@ -5,55 +5,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from flash_ansr.model.factory import ModelFactory
-
-
-class ConfigurableSequential(nn.Sequential):
-    '''
-    A configurable version of nn.Sequential that can be created from a configuration dictionary.
-    '''
-    def __init__(self, layers: list[nn.Module]) -> None:
-        super().__init__()
-        self.layers = nn.Sequential(*layers)
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "ConfigurableSequential":
-        '''
-        Create a ConfigurableSequential from a configuration dictionary.
-
-        Parameters
-        ----------
-        config : dict[str, Any]
-            The configuration dictionary. Must contain a "layers" key with a list of layer configurations in the format {"type": str, "kwargs": dict[str, Any]}.
-
-        Returns
-        -------
-        ConfigurableSequential
-            The ConfigurableSequential instance.
-        '''
-        return cls([ModelFactory.get_model(layer["type"], **layer["kwargs"]) for layer in config["layers"]])
-
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
-        '''
-        Forward pass through the layers.
-
-        Parameters
-        ----------
-        X : torch.Tensor
-            The input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            The output tensor.
-        '''
-        return self.layers(X)
-
-
-class ReLU2(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.relu(x) ** 2
-
 
 class SwiGLU(nn.Module):
     def __init__(self, in_features: int, hidden_features: int | None = None, out_features: int | None = None, bias: bool = True):
@@ -223,3 +174,63 @@ class FeedForward(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.dropout(self.w2(F.gelu(self.w1(x))))
+
+
+class PositionalEncoding(nn.Module):
+    '''
+    Positional encoding module for transformer models.
+
+    Notes
+    -----
+    See https://alexrichter.xyz/posts/implementing-sinusoidal-positional-embedding-transformer-pytorch/
+    '''
+    def __init__(self) -> None:
+        super().__init__()
+
+        # Store the encoding in attrbiutes to avoid re-computation
+        self.seq_len: int | None = None
+        self.input_size: int | None = None
+        self.encoding: torch.Tensor | None = None
+
+    def forward(self, x: torch.Tensor | None = None, shape: tuple[int, int] | None = None, device: torch.device | None = None) -> torch.Tensor:
+        '''
+        Returns positional encoding for given input tensor X (batch_size, seq_len, size)
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Input tensor of shape (batch_size, seq_len, size)
+
+        Returns
+        -------
+        torch.Tensor
+            Positional encoding of shape (seq_len, size)
+        '''
+        if shape is not None and device is not None:
+            T, E = shape
+        elif x is not None:
+            if len(x.shape) < 3:
+                x = x.unsqueeze(0)
+            _, T, E = x.shape
+            device = x.device
+        else:
+            raise ValueError("Either X or shape and device must be provided")
+
+        # Round the sequence length to the next even number
+        E_compat = E + E % 2
+
+        if self.seq_len is None or (T, E_compat, device) != (self.seq_len, self.input_size, self.encoding.device):  # type: ignore
+            self.seq_len = T
+            self.input_size = E_compat
+            self.encoding = torch.zeros((T, E_compat), device=device)
+
+            t = 1 / 10000**(torch.arange(0, E_compat, 2) / E_compat)
+            k = torch.arange(T)
+            v = torch.outer(k, t)
+
+            self.encoding[:, 0::2] = v.sin()
+            self.encoding[:, 1::2] = v.cos()
+
+            self.encoding = self.encoding
+
+        return self.encoding[:, :E]  # type: ignore

@@ -520,7 +520,7 @@ class FlashANSRDataset:
                 }
 
                 if persistent:
-                    batch_dict = {k: v.clone() if isinstance(v, torch.Tensor) else [t.clone() for t in v] if k == 'constants' else v for k, v in batch_dict.items()}
+                    batch_dict = {k: v.clone() if isinstance(v, torch.Tensor) else [t.clone() for t in v] if k == 'constants' else v for k, v in batch_dict.items()}  # type: ignore
 
                 if preprocess and self.preprocessor:
                     yield self.preprocessor.format(batch_dict)

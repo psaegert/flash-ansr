@@ -5,9 +5,10 @@ optimizer:
   kwargs:
     lr: 1  # Will be multiplied by scheduler
     weight_decay: 0.01
-    betas: [0.9, 0.95]
-    amsgrad: False
-    eps: 0.000001  # 1e-6
+    # betas: [0.9, 0.95]
+    # amsgrad: False
+    # eps: 0.000001  # 1e-6
+    amsgrad: True
 
 lr_scheduler:
   name: Trapezoidal
@@ -26,7 +27,6 @@ val_batch_size: 128
 val_size: 100_000
 
 compile_mode: 'reduce-overhead'
-compiler_optimization_steps: 100
 gradient_checkpointing: False
 
 wandb_watch_log: null

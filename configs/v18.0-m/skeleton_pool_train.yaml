@@ -20,24 +20,17 @@ allow_nan: False
 simplify: True
 
 literal_prior:
-  name: 'normal'
+  name: 'uniform'
   kwargs:
-    loc: 0
-    scale: 5
+    low: -5
+    high: 5
 
 support_prior:
   - weight: 1
-    name: "normal_uniform_intervals"
+    name: "uniform_uniform_intervals"
     kwargs:
-      loc: 0
-      scale: 10
-  - weight: 1
-    name: "normal_normal_intervals"
-    kwargs:
-      loc_mean: 0
-      scale_mean: 10
-      alpha_std: 1
-      beta_std: 1
+      low: -10
+      high: 10
 
 support_scale_prior:
   name: "constant"

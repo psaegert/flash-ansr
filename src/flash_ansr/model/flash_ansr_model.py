@@ -48,6 +48,8 @@ class FlashANSRModel(nn.Module):
         decoder_block_ffn_norm: str = "rms",
         decoder_cross_attn_kv_norm: str = "rms",
         decoder_output_norm: str = "rms",
+        decoder_use_rope_self_attn: bool = False,
+        decoder_use_rope_cross_attn: bool = False,
 
         use_checkpointing: bool = False,
     ) -> None:
@@ -97,7 +99,15 @@ class FlashANSRModel(nn.Module):
             cross_attn_kv_norm_type=decoder_cross_attn_kv_norm,
             output_norm_type=decoder_output_norm,
             use_checkpointing=use_checkpointing,
+            use_rope_self_attn=decoder_use_rope_self_attn,
+            use_rope_cross_attn=decoder_use_rope_cross_attn,
         )
+
+        self.next_token_head = nn.Sequential(
+            nn.Linear(decoder_model_dim, decoder_model_dim),
+            nn.GELU(),
+            nn.Dropout(p=decoder_dropout),
+            nn.Linear(decoder_model_dim, len(self.tokenizer)))
 
         self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
@@ -203,8 +213,9 @@ class FlashANSRModel(nn.Module):
         # However, the provided `TransformerDecoder` code doesn't support this.
         # A simple solution is to add the numeric embeddings to the symbolic embeddings
         # before passing them to the decoder.
+        decoder_output = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
 
-        logits = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
+        logits = self.next_token_head(decoder_output)
 
         # Removed numeric head as it is not present in the new Decoder structure
         return logits

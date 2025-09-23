@@ -135,6 +135,32 @@ def apply_on_nested(structure: list | dict, func: Callable) -> list | dict:
     return structure
 
 
+def unfold_config(config: dict[str, Any], max_depth: int = 3) -> dict[str, Any]:
+    '''
+    Recursively load configuration files referenced in a configuration dictionary.
+
+    Parameters
+    ----------
+    config : dict
+        The configuration dictionary to unfold.
+    max_depth : int, optional
+        The maximum depth to unfold, by default 3.
+
+    Returns
+    -------
+    dict
+        The unfolded configuration dictionary.
+    '''
+    def try_load_config(x: Any) -> Any:
+        if isinstance(x, str) and x.endswith(".yaml"):
+            return load_config(get_path(x))
+        return x
+
+    for _ in range(max_depth):
+        config = apply_on_nested(config, try_load_config)  # type: ignore
+    return config
+
+
 def save_config(config: dict[str, Any], directory: str, filename: str, reference: str = 'relative', recursive: bool = True, resolve_paths: bool = False) -> None:
     '''
     Save a configuration dictionary to a YAML file.

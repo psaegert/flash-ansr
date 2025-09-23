@@ -1,5 +1,5 @@
 from .factory import ModelFactory
-from .generic import ConfigurableSequential, SwiGLU, ReLU2, get_norm_layer, FeedForward, RMSSetNorm, SetNormBase
+from .generic import SwiGLU, get_norm_layer, FeedForward, RMSSetNorm, SetNormBase
 from .flash_ansr_model import FlashANSRModel
 from .set_transformer import SetTransformer
 from .pre_encoder import IEEE75432PreEncoder

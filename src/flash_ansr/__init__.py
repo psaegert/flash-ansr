@@ -1,6 +1,5 @@
 from .model import (
     ModelFactory,
-    ConfigurableSequential,
     FlashANSRModel,
     SetTransformer,
     Tokenizer,

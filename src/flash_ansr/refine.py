@@ -150,7 +150,7 @@ class Refiner:
                 if np.isnan(diff).any():
                     self.loss = np.nan
                 else:
-                    self.loss = np.mean(diff ** 2)
+                    self.loss = np.mean(diff ** 2)  # type: ignore
             except OverflowError:
                 self.loss = np.nan
 
@@ -173,7 +173,7 @@ class Refiner:
                 if np.isnan(diff).any():
                     loss = np.nan
                 else:
-                    loss = np.mean(diff ** 2)
+                    loss = np.mean(diff ** 2)  # type: ignore
             except OverflowError:
                 loss = np.nan
 
