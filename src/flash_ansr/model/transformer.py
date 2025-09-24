@@ -230,6 +230,7 @@ class TransformerDecoder(nn.Module):
 
         self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len) if (use_rope_self_attn or use_rope_cross_attn) else None
         self.pos_encoding = PositionalEncoding() if use_sinusoidal_pos_emb else nn.Identity()
+        self.use_sinusoidal_pos_emb = use_sinusoidal_pos_emb
 
         self.cross_attn_kv_proj: nn.Module
         if input_dim is not None and input_dim != model_dim:
@@ -259,7 +260,9 @@ class TransformerDecoder(nn.Module):
     def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
         seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
-        h = h + self.pos_encoding(h)
+
+        if self.use_sinusoidal_pos_emb:
+            h = h + self.pos_encoding(h)
 
         if extra_parallel_embeddings is not None:
             h = h + extra_parallel_embeddings

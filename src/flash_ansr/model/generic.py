@@ -33,8 +33,7 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # The output is cast to the input's dtype, preventing issues with mixed precision.
-        output = self._norm(x.float()).type_as(x)
+        output = self._norm(x)
         return output * self.weight
 
 
@@ -55,9 +54,7 @@ class OriginalSetNorm(SetNormBase):
         self.beta = nn.Parameter(torch.zeros(1, 1, dim))
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
-        # Store original dtype and upcast to float32 for stable calculations
         input_dtype = x.dtype
-        x = x.float()
 
         if attn_mask is None:
             mu = x.mean(dim=(1, 2), keepdim=True)
@@ -94,9 +91,7 @@ class RMSSetNorm(SetNormBase):
         self.gamma = nn.Parameter(torch.ones(1, 1, dim))
 
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None) -> torch.Tensor:
-        # Store original dtype and upcast to float32 for stable calculations
         input_dtype = x.dtype
-        x = x.float()
 
         if attn_mask is None:
             mean_sq = x.pow(2).mean(dim=(1, 2), keepdim=True)

@@ -25,18 +25,20 @@ literal_prior:
     scale: 5
 
 support_prior:
-  - weight: 1
-    name: "normal_uniform_intervals"
-    kwargs:
-      loc: 0
-      scale: 10
-  - weight: 1
-    name: "normal_normal_intervals"
-    kwargs:
-      loc_mean: 0
-      scale_mean: 10
-      alpha_std: 1
-      beta_std: 1
+  name: "sampler"
+  kwargs:
+    base_dist_name: "uniform"
+    base_kwargs:
+      min_value: -30
+      max_value: 30
+    param_samplers:
+      low:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+      high:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+
 
 support_scale_prior:
   name: "constant"

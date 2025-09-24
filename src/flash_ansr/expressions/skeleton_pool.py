@@ -13,7 +13,7 @@ import numpy as np
 from simplipy import SimpliPyEngine
 
 from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_multi_distribution, flatten_nested_list, safe_f
+from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
 
 
 class NoValidSampleFoundError(Exception):
@@ -132,38 +132,34 @@ class SkeletonPool:
 
         self.operator_probs: np.ndarray | None = None
 
-    def _create_prior_from_config(self, config: dict[str, Any] | list[dict[str, Any]]) -> Any:
+    def _create_prior_from_config(self, config: dict[str, Any] | list[dict[str, Any]]) -> Callable:
         """
-        Creates a distribution object from a configuration.
+        Creates a prior distribution callable from a configuration dictionary or list.
+        This new version handles single, mixture, and nested sampler distributions
+        by leveraging the recursive `get_distribution` factory.
+        """
+        if isinstance(config, list):
+            # It's a mixture distribution
+            distributions = [get_distribution(sub_config) for sub_config in config]
+            weights = np.array([dist_config.get('weight', 1.0) for dist_config in config], dtype=np.float64)
+            weights /= weights.sum()
 
-        The configuration can be either:
-        1. A single dict for one distribution (e.g., {'name': 'normal', 'kwargs': {...}}).
-        A default weight of 1.0 is assumed.
-        2. A list of dicts for a mixture (e.g., [{'weight': 1, 'name': 'normal', ...}]).
-        """
-        distributions = []
-        if isinstance(config, dict):
-            # Case 1: A single distribution is defined. Wrap it in a list.
-            # Use a default weight of 1.0 if not specified.
-            distributions.append({
-                'weight': config.get('weight', 1.0),
-                'name': config['name'],
-                'kwargs': config.get('kwargs', {})
-            })
-        elif isinstance(config, list):
-            # Case 2: A list of distributions is already provided.
-            distributions = config
+            def mixture_distribution(size: Any = 1) -> np.ndarray:
+                # Step 1: Choose ONE distribution for the entire set of points.
+                chosen_index = np.random.choice(len(distributions), p=weights)
+                chosen_dist_callable = distributions[chosen_index]
+
+                # Step 2: Sample all 'size' points from that single chosen distribution.
+                return chosen_dist_callable(size=size)
+
+            return mixture_distribution
+
+        elif isinstance(config, dict):
+            # It's a single distribution (which could be simple or a complex 'sampler')
+            return get_distribution(config)
+
         else:
-            # Handle invalid input format
             raise TypeError(f"Prior configuration must be a dict or a list, got {type(config).__name__}")
-
-        # Prepare the arguments for get_multi_distribution
-        dist_args = [
-            (dist['weight'], dist['name'], dist.get('kwargs', {}))
-            for dist in distributions
-        ]
-
-        return get_multi_distribution(dist_args)
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SkeletonPool":

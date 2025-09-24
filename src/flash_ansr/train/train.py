@@ -4,7 +4,6 @@ from typing import Any, Literal, Iterable
 
 import torch
 import torch_optimizer
-import schedulefree
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
@@ -16,7 +15,6 @@ from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.scheduler import LRSchedulerFactory
-from flash_ansr.train.loss import ContrastiveLoss
 
 import wandb
 
@@ -30,10 +28,8 @@ class OptimizerFactory():
             return getattr(torch.optim, name)(*args, **kwargs)
         if hasattr(torch_optimizer, name):
             return getattr(torch_optimizer, name)(*args, **kwargs)
-        if hasattr(schedulefree, name):
-            return getattr(schedulefree, name)(*args, **kwargs)
 
-        raise NotImplementedError(f"Optimizer {name} not found in torch.optim, torch_optimizer, or schedulefree")
+        raise NotImplementedError(f"Optimizer {name} not found in torch.optim, torch_optimizer")
 
 
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
@@ -45,8 +41,8 @@ class Trainer():
             self,
             model: FlashANSRModel,
             optimizer: torch.optim.Optimizer,
-            # amp_dtype: torch.dtype,
-            # scaler: torch.amp.GradScaler,
+            amp_dtype: torch.dtype,
+            scaler: torch.amp.GradScaler,
             lr_scheduler: LRScheduler | None,
             batch_size: int,
             train_dataset: FlashANSRDataset,
@@ -56,8 +52,8 @@ class Trainer():
 
         self.model = model
         self.optimizer = optimizer
-        # self.amp_dtype = amp_dtype
-        # self.scaler = scaler
+        self.amp_dtype = amp_dtype
+        self.scaler = scaler
         self.lr_scheduler = lr_scheduler
         self.batch_size = batch_size
         self.train_dataset = train_dataset
@@ -69,12 +65,6 @@ class Trainer():
         # Metrics and Loss Functions
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
-        self.contrastive_loss_fn = ContrastiveLoss()
-
-        # Training state
-        self.cumulative_training_tokens = 0
-        self.cumulative_training_pflops = 0.0
-        self.cumulative_parameter_distance = 0.0
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
@@ -93,8 +83,8 @@ class Trainer():
         print(f'Loading optimizer with config {config_["optimizer"]}')
         optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
 
-        # amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        # scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
 
         print(f'Loading lr_scheduler with config {config_["lr_scheduler"]}')
         lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler'].get('kwargs', {})) if config_["lr_scheduler"] else None
@@ -119,8 +109,8 @@ class Trainer():
         return cls(
             model=model,
             optimizer=optimizer,
-            # amp_dtype=amp_dtype,
-            # scaler=scaler,
+            amp_dtype=amp_dtype,
+            scaler=scaler,
             lr_scheduler=lr_scheduler,
             batch_size=config_['batch_size'],
             train_dataset=train_dataset,
@@ -133,12 +123,6 @@ class Trainer():
         """Sets up the model, device, and initial training state."""
         self.device = torch.device(device)
         self.model.to(self.device)
-        self.flops_per_token = self.model.n_params * 6
-        self.cumulative_training_pflops = 0.0
-        self.cumulative_training_tokens = 0
-        self.cumulative_parameter_distance = 0.0
-        if hasattr(self.optimizer, "train"):
-            self.optimizer.train()
 
         self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
 
@@ -166,22 +150,10 @@ class Trainer():
         """Core training loop."""
 
         try:
-
             if compile_mode is not None:
                 self.model = torch.compile(self.model, mode=compile_mode)
 
             self._setup_training_state(device, verbose=verbose)
-
-            # # Benchmark / optimization for compiled models
-            # pbar = tqdm(range(compiler_optimization_steps), disable=not verbose, desc="Compiling Model")
-            # for step, batch in enumerate(self.train_dataset.iterate(steps=compiler_optimization_steps, batch_size=self.batch_size, preprocess=preprocess)):
-            #     self._train_step(batch, step, preprocess, do_optimizer_step=False)
-            #     pbar.update(1)
-            # pbar.close()
-
-            # # Initial validation
-            # if validate_interval is not None:
-            #     self._validate_step(0, validate_size, validate_batch_size, preprocess, verbose)
 
             pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
             for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
@@ -281,34 +253,28 @@ class Trainer():
             else:
                 data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
-            # with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-            logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
-            flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-            flat_labels = micro_batch['labels'].reshape(-1)
-            ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+            with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+                flat_labels = micro_batch['labels'].reshape(-1)
+                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
-            param_sum = sum(p.sum() for p in self.model.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
-            zero_loss = 0.0 * param_sum
+                param_sum = sum(p.sum() for p in self.model.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
+                zero_loss = 0.0 * param_sum
 
-            loss = ce_loss / self.gradient_accumulation_steps + zero_loss
+                loss = ce_loss / self.gradient_accumulation_steps + zero_loss
 
-            # self.scaler.scale(loss).backward()
-            loss.backward()
+            self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_loss += loss.item() * self.gradient_accumulation_steps
 
-            # Update cumulative metrics
-            tokens = logits.shape[1] * micro_batch['input_ids'].shape[0]
-            self.cumulative_training_tokens += tokens
-            self.cumulative_training_pflops += (self.flops_per_token * tokens) * 1e-15
-
         # Perform the optimizer step
-        # self.scaler.unscale_(self.optimizer)
+        self.scaler.unscale_(self.optimizer)
 
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
         if do_optimizer_step:
-            # self.scaler.step(self.optimizer)
-            # self.scaler.update()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.optimizer.step()
 
             # Log metrics and update scheduler
@@ -319,8 +285,6 @@ class Trainer():
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
         """Performs a single validation step."""
         self.model.eval()
-        if hasattr(self.optimizer, "eval"):
-            self.optimizer.eval()
 
         val_ce_loss = 0.0
         val_mrr = 0.0
@@ -350,15 +314,15 @@ class Trainer():
                 else:
                     data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
-                # with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
-                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                flat_labels = batch['labels'].reshape(-1)
-                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+                    flat_labels = batch['labels'].reshape(-1)
+                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
-                # Accumulate metrics for each batch
-                val_ce_loss += ce_loss.item() * flat_labels.shape[0]
-                total_items += flat_labels.shape[0]
+                    # Accumulate metrics for each batch
+                    val_ce_loss += ce_loss.item() * flat_labels.shape[0]
+                    total_items += flat_labels.shape[0]
 
                 # Filter out ignored indices for metric calculation
                 valid_indices = flat_labels != self.metrics_ignore_index
@@ -400,8 +364,6 @@ class Trainer():
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "cumulative_training_tokens": self.cumulative_training_tokens,
-            "cumulative_training_pflops": self.cumulative_training_pflops,
             "train_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
         }

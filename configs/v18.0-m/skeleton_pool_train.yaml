@@ -20,17 +20,26 @@ allow_nan: False
 simplify: True
 
 literal_prior:
-  name: 'uniform'
+  name: 'normal'
   kwargs:
-    low: -5
-    high: 5
+    loc: 0
+    scale: 5
 
 support_prior:
-  - weight: 1
-    name: "uniform_uniform_intervals"
-    kwargs:
-      low: -10
-      high: 10
+  name: "sampler"
+  kwargs:
+    base_dist_name: "uniform"
+    base_kwargs:
+      min_value: -30
+      max_value: 30
+    param_samplers:
+      low:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+      high:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+
 
 support_scale_prior:
   name: "constant"

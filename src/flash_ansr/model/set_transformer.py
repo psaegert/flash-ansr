@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-import time
-from tqdm import tqdm
 
 from flash_ansr.model.set_encoder import SetEncoder
 from flash_ansr.model.generic import get_norm_layer, FeedForward, SetNormBase
@@ -279,89 +277,3 @@ class SetTransformer(SetEncoder):
 
         x = self.output_norm(x)
         return self.output(x)
-
-
-# --- Benchmark ---
-if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    print(f"Using device: {device}, AMP dtype: {amp_dtype}")
-
-    # Model and data parameters
-    batch_size, set_size, input_dim_feat = 128, 512, 32
-    input_dim = input_dim_feat * 10
-    output_dim = 10
-    model_dim = 512
-    n_heads = 8
-    n_isab = 6
-    n_sab = 2
-    n_inducing_points = 64
-    n_seeds = 64
-
-    model = SetTransformer(
-        input_dim=input_dim, output_dim=output_dim, model_dim=model_dim, n_heads=n_heads,
-        n_isab=n_isab, n_sab=n_sab,
-        n_inducing_points=n_inducing_points, n_seeds=n_seeds, dropout=0.1,
-        attn_norm="rms", ffn_norm="rms", output_norm="rms"
-    ).to(device)
-
-    x = torch.randn(batch_size, set_size, input_dim, device=device)
-    y = torch.randn(batch_size, n_seeds, output_dim, device=device)
-
-    # Create a sample attention mask
-    # Simulate batches where each set has a different size.
-    # Here, we create a simple mask where ~75% of points are real and 25% are padding.
-    true_set_sizes = torch.randint(int(set_size * 0.5), set_size + 1, (batch_size,), device=device)
-    attn_mask = torch.arange(set_size, device=device)[None, :] < true_set_sizes[:, None]
-    print(f"\nCreated a sample boolean attention mask of shape: {attn_mask.shape}")
-    # Zero out the padded elements in the input tensor
-    x = x * attn_mask.unsqueeze(-1)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
-
-    print("\n--- Starting Benchmark ---")
-    print(f"Model dim: {model_dim}, Heads: {n_heads}, Encoder Blocks: {n_isab}, Decoder Blocks: {n_sab}")
-    print(f"Batch size: {batch_size}, Input set size: {set_size}, Output set size: {n_seeds}")
-
-    # Warm-up iterations
-    print("Running warm-up iterations...")
-    for _ in tqdm(range(5)):
-        with torch.autocast(device_type=device.type, dtype=amp_dtype):
-            output = model(x, attn_mask=attn_mask)
-            loss = F.mse_loss(output, y)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad(set_to_none=True)
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    # Benchmark loop
-    num_iterations = 50
-    model.train()
-    start_time = time.time()
-
-    for i in tqdm(range(num_iterations)):
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=amp_dtype):
-            output = model(x, attn_mask=attn_mask)
-            loss = F.mse_loss(output, y)
-
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    end_time = time.time()
-
-    total_time = end_time - start_time
-    avg_time_per_iter = total_time / num_iterations
-    throughput = (batch_size * num_iterations) / total_time
-
-    print("\n--- Benchmark Results ---")
-    print(f"Total time for {num_iterations} iterations: {total_time:.2f} seconds")
-    print(f"Average time per iteration: {avg_time_per_iter * 1000:.2f} ms")
-    print(f"Throughput: {throughput:.2f} samples/sec")
