@@ -98,9 +98,9 @@ class FlashANSRModel(nn.Module):
             block_ffn_norm_type=decoder_block_ffn_norm,
             cross_attn_kv_norm_type=decoder_cross_attn_kv_norm,
             output_norm_type=decoder_output_norm,
-            use_checkpointing=use_checkpointing,
             use_rope_self_attn=decoder_use_rope_self_attn,
             use_rope_cross_attn=decoder_use_rope_cross_attn,
+            use_checkpointing=use_checkpointing,
         )
 
         self.next_token_head = nn.Sequential(
@@ -164,6 +164,10 @@ class FlashANSRModel(nn.Module):
             decoder_block_ffn_norm=config_["decoder_block_ffn_norm"],
             decoder_cross_attn_kv_norm=config_["decoder_cross_attn_kv_norm"],
             decoder_output_norm=config_["decoder_output_norm"],
+            decoder_use_rope_self_attn=config_["decoder_use_rope_self_attn"],
+            decoder_use_rope_cross_attn=config_["decoder_use_rope_cross_attn"],
+
+            use_checkpointing=config_["use_checkpointing"],
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:

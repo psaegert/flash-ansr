@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Any, Literal, Iterable
+from typing import Any, Literal
 
 import torch
 import torch_optimizer
@@ -66,6 +66,10 @@ class Trainer():
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
 
+        self.total_pflops = 0.0
+        self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
+        self.decoder_parameters = sum(p.numel() for p in self.model.decoder.parameters() if p.requires_grad)
+
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
         config_ = load_config(config)
@@ -125,6 +129,7 @@ class Trainer():
         self.model.to(self.device)
 
         self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
+        self.total_pflops = 0.0
 
         if verbose:
             print(f"Padding sequences to max set size of {self.max_set_size}")
@@ -219,13 +224,8 @@ class Trainer():
                 verbose=verbose
             )
 
-    def _get_grad_norm(self, parameters: Iterable[torch.nn.Parameter], norm_type: float = 2.0) -> float:
-        """Computes the total norm of the gradients of the given parameters."""
-        grads = [p.grad.detach() for p in parameters if p.grad is not None]
-        if not grads:
-            return 0.0
-        total_norm = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
-        return total_norm.item()
+    def _update_total_pflops(self, encoder_tokens: int, decoder_tokens: int, batch_size: int) -> None:
+        self.total_pflops += 6 * (self.encoder_parameters * encoder_tokens + self.decoder_parameters * decoder_tokens) * batch_size * 1e-15
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
@@ -271,11 +271,12 @@ class Trainer():
         # Perform the optimizer step
         self.scaler.unscale_(self.optimizer)
 
+        self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
+
         total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
         if do_optimizer_step:
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            self.optimizer.step()
 
             # Log metrics and update scheduler
             self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
@@ -366,6 +367,7 @@ class Trainer():
             "lr": self.optimizer.param_groups[0]['lr'],
             "train_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
+            "total_pflops": self.total_pflops,
         }
         wandb.log(log_data, step=step)  # type: ignore
 

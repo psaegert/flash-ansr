@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from flash_ansr.model.generic import get_norm_layer, FeedForward, PositionalEncoding
+from flash_ansr.model.generic import get_norm_layer, FeedForward
 
 
 class RotaryEmbedding(nn.Module):
@@ -73,7 +73,7 @@ class Attention(nn.Module):
         self,
         query: torch.Tensor,
         key_value: torch.Tensor,
-        rope_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
+        rope_emb: tuple[torch.Tensor, torch.Tensor],
         is_causal: bool = False,
     ) -> torch.Tensor:
         # Get batch sizes for query and key_value independently
@@ -91,8 +91,6 @@ class Attention(nn.Module):
         v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
         if self.use_rope:
-            if rope_emb is None:
-                raise ValueError("rope_emb must be provided when use_rope is True")
             cos, sin = rope_emb
             q, k = apply_rotary_emb(q, k, cos, sin)
 
@@ -157,7 +155,7 @@ class TransformerDecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
-        rope_emb: tuple[torch.Tensor, torch.Tensor] = None,
+        rope_emb: tuple[torch.Tensor, torch.Tensor]
     ) -> torch.Tensor:
         normed_x = self.self_attn_norm(x)
         x = x + self.self_attention(
@@ -165,7 +163,7 @@ class TransformerDecoderBlock(nn.Module):
             rope_emb=rope_emb, is_causal=True
         )
         x = x + self.cross_attention(
-            self.cross_attn_norm(x), encoder_memory
+            self.cross_attn_norm(x), encoder_memory, rope_emb=rope_emb
         )
         x = x + self.ffn(self.ffn_norm(x))
         return x
@@ -174,20 +172,13 @@ class TransformerDecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
-        rope_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
+        rope_emb: tuple[torch.Tensor, torch.Tensor]
     ) -> torch.Tensor:
         if self.training and self.use_checkpointing:
             # Re-define ckpt_fn to be compatible with checkpoint's argument handling
-            def ckpt_fn(x: torch.Tensor, encoder_memory: torch.Tensor, cos: torch.Tensor | None, sin: torch.Tensor | None) -> torch.Tensor:
-                if cos is None or sin is None:
-                    rope_emb = None
-                else:
-                    rope_emb = (cos, sin)
-                return self._forward(x, encoder_memory, rope_emb)
-            if rope_emb is None:
-                cos, sin = None, None
-            else:
-                cos, sin = rope_emb
+            def ckpt_fn(x: torch.Tensor, encoder_memory: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+                return self._forward(x, encoder_memory, (cos, sin))
+            cos, sin = rope_emb
             return checkpoint(ckpt_fn, x, encoder_memory, cos, sin, use_reentrant=False)
         else:
             return self._forward(x, encoder_memory, rope_emb)
@@ -222,15 +213,12 @@ class TransformerDecoder(nn.Module):
         use_checkpointing: bool = False,
         use_rope_self_attn: bool = False,
         use_rope_cross_attn: bool = False,
-        use_sinusoidal_pos_emb: bool = True,
     ):
         super().__init__()
         head_dim = model_dim // n_heads
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
 
-        self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len) if (use_rope_self_attn or use_rope_cross_attn) else None
-        self.pos_encoding = PositionalEncoding() if use_sinusoidal_pos_emb else nn.Identity()
-        self.use_sinusoidal_pos_emb = use_sinusoidal_pos_emb
+        self.rope = RotaryEmbedding(dim=head_dim, max_seq_len=max_seq_len)
 
         self.cross_attn_kv_proj: nn.Module
         if input_dim is not None and input_dim != model_dim:
@@ -255,22 +243,15 @@ class TransformerDecoder(nn.Module):
 
         self.cross_attn_kv_norm = get_norm_layer(cross_attn_kv_norm_type, model_dim)
         self.output_norm = get_norm_layer(output_norm_type, model_dim)
-        self.output = nn.Linear(model_dim, vocab_size)
 
     def forward(self, tokens: torch.Tensor, encoder_memory: torch.Tensor, extra_parallel_embeddings: torch.Tensor | None = None) -> torch.Tensor:
         seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
 
-        if self.use_sinusoidal_pos_emb:
-            h = h + self.pos_encoding(h)
-
         if extra_parallel_embeddings is not None:
             h = h + extra_parallel_embeddings
 
-        if self.rope is not None:
-            rope_emb = self.rope(h, seq_len=seq_len)
-        else:
-            rope_emb = None
+        rope_emb = self.rope(h, seq_len=seq_len)
         encoder_memory = self.cross_attn_kv_proj(encoder_memory)
         encoder_memory = self.cross_attn_kv_norm(encoder_memory)
 
@@ -278,4 +259,4 @@ class TransformerDecoder(nn.Module):
             h = layer(h, encoder_memory, rope_emb)
 
         h = self.output_norm(h)
-        return self.output(h)
+        return h

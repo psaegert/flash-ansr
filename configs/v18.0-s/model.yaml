@@ -10,9 +10,9 @@ encoder_n_inducing_points: 64
 encoder_n_seeds: 64
 encoder_ffn_hidden_dim: 512
 encoder_dropout: 0.1
-encoder_attn_norm: 'rms_set'
-encoder_ffn_norm: 'rms_set'
-encoder_output_norm: 'rms_set'
+encoder_attn_norm: 'none'
+encoder_ffn_norm: 'none'
+encoder_output_norm: 'none'
 
 decoder_input_dim: 256
 decoder_model_dim: 256
@@ -28,4 +28,5 @@ decoder_cross_attn_kv_norm: 'rms'
 decoder_output_norm: 'rms'
 decoder_use_rope_self_attn: true
 decoder_use_rope_cross_attn: false
-decoder_use_sinusoidal_pos_emb: false
+
+use_checkpointing: false
