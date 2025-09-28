@@ -34,10 +34,10 @@ support_prior:
     param_samplers:
       low:
         name: "normal"
-        kwargs: {loc: 0, scale: 5}
+        kwargs: {loc: 0, scale: 10}
       high:
         name: "normal"
-        kwargs: {loc: 0, scale: 5}
+        kwargs: {loc: 0, scale: 10}
 
 support_scale_prior:
   name: "constant"

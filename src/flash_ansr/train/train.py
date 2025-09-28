@@ -264,6 +264,10 @@ class Trainer():
 
                 loss = ce_loss / self.gradient_accumulation_steps + zero_loss
 
+            # If the loss is nan or inf, stop the training
+            if not torch.isfinite(loss):
+                raise ValueError(f"Loss is {loss.item()}, stopping training")
+
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_loss += loss.item() * self.gradient_accumulation_steps

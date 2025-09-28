@@ -85,7 +85,7 @@ class RMSSetNorm(SetNormBase):
     """
     Mask-aware RMS Normalization layer for sets with improved numerical stability.
     """
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
         self.gamma = nn.Parameter(torch.ones(1, 1, dim))

@@ -6,8 +6,6 @@ optimizer:
     lr: 1  # Will be multiplied by scheduler
     weight_decay: 0.01
     betas: [0.9, 0.95]
-    amsgrad: False
-    eps: 0.000001  # 1e-6
 
 lr_scheduler:
   name: Trapezoidal
@@ -26,10 +24,9 @@ val_batch_size: 128
 val_size: 100_000
 
 compile_mode: 'reduce-overhead'
-compiler_optimization_steps: 100
 gradient_checkpointing: False
 
-wandb_watch_log: "all"   # Causes AttributeError: 'NoneType' object has no attribute 'data'
+wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
 steps: 5_000_000
