@@ -219,7 +219,51 @@ def main(argv: str = None) -> None:
             except KeyboardInterrupt:
                 print("Training interrupted. Saving model...")
 
-            trainer.model.save(directory=args.output_dir, errors='ignore')  # , config=load_config(load_config(args.config)["model"]), reference='relative', recursive=True)
+            trainer.model.save(directory=args.output_dir, errors='ignore')
+
+            save_config(
+                load_config(args.config, resolve_paths=True),
+                directory=substitute_root_path(args.output_dir),
+                filename='train.yaml',
+                reference='relative',
+                recursive=True,
+                resolve_paths=True)
+
+            print(f"Saved model to {args.output_dir}")
+
+        case 'dino':
+            if args.verbose:
+                print(f'Pre-Training model from {args.config} with DINO')
+            from flash_ansr.train.dino import DINOTrainer
+            from flash_ansr.utils import substitute_root_path, load_config, save_config
+
+            trainer = DINOTrainer.from_config(args.config)
+
+            config = load_config(args.config)
+
+            try:
+                trainer.run(
+                    project_name=args.project,
+                    entity=args.entity,
+                    name=args.name,
+                    steps=config['steps'],
+                    preprocess=False,
+                    device=config['device'],
+                    compile_mode=config.get('compile_mode'),
+                    checkpoint_interval=args.checkpoint_interval,
+                    checkpoint_directory=substitute_root_path(args.output_dir),
+                    validate_interval=args.validate_interval,
+                    validate_size=config.get('val_size', None),
+                    validate_batch_size=config.get('val_batch_size', None),
+                    wandb_watch_log=config.get('wandb_watch_log', None),
+                    wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
+                    wandb_mode=args.mode,
+                    verbose=args.verbose,
+                )
+            except KeyboardInterrupt:
+                print("Training interrupted. Saving model...")
+
+            trainer.model.save(directory=args.output_dir, errors='ignore')
 
             save_config(
                 load_config(args.config, resolve_paths=True),

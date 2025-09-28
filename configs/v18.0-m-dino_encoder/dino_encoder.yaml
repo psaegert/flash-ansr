@@ -1,0 +1,18 @@
+encoder_max_n_variables: 11
+encoder_dim: 512
+encoder_n_heads: 8
+encoder_n_isab: 8
+encoder_n_sab: 4
+encoder_n_inducing_points: 64
+encoder_n_seeds: 64
+encoder_ffn_hidden_dim: 512
+encoder_dropout: 0.1
+encoder_attn_norm: 'rms_set'
+encoder_ffn_norm: 'rms_set'
+encoder_output_norm: 'rms_set'
+
+dino_hidden_dim: 2048
+dino_output_dim: 16384
+dino_dropout: 0.1
+
+use_checkpointing: false

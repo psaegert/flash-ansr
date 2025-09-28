@@ -1,0 +1,52 @@
+dino_encoder: ./dino_encoder.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    betas: [0.9, 0.95]
+
+lr_scheduler:
+  name: Trapezoidal
+  kwargs:
+    min_lr: 0
+    max_lr: 2.5e-4
+    warmup_steps: 500_000
+    annealing_steps: 1_000_000
+    total_steps: 5_000_000
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 100_000
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 5_000_000
+device: cuda
+
+
+dino_weight_decay:
+  schedule: cosine
+  initial: 0.04
+  final: 0.4
+
+dino_temperature_student: 0.1
+
+dino_temperature_teacher:
+  schedule: linear
+  initial: 0.04
+  final: 0.07
+
+dino_teacher_lambda:
+  schedule: cosine
+  initial: 0.996
+  final: 1.0
+
+dino_center_momentum: 0.9

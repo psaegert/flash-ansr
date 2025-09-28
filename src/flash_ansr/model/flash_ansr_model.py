@@ -125,8 +125,8 @@ class FlashANSRModel(nn.Module):
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRModel":
         config_ = load_config(config)
 
-        if "nsr" in config_.keys():
-            config_ = config_["nsr"]
+        if "model" in config_.keys():
+            config_ = config_["model"]
 
         if isinstance(config, str) and isinstance(config_["simplipy_engine"], str):
             if config_["simplipy_engine"].startswith('.'):
@@ -135,7 +135,6 @@ class FlashANSRModel(nn.Module):
         simplipy_engine = SimpliPyEngine.load(config_["simplipy_engine"], install=True)
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
-        # Update the mapping of config keys to match the new __init__ signature
         return cls(
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,

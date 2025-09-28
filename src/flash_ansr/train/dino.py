@@ -9,10 +9,9 @@ from torch import nn
 
 from tqdm import tqdm
 
-from flash_ansr.model import FlashANSRModel
+from flash_ansr.model.dino import DINOEncoder
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
-from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.utils import OptimizerFactory
 from flash_ansr.train.scheduler import LRSchedulerFactory
 
@@ -20,14 +19,15 @@ import wandb
 
 torch.set_float32_matmul_precision('high')
 
+
 def collate_fn(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
     return {k: torch.tensor([example[k] for example in batch]) for k in batch[0]}
 
 
-class Trainer():
+class DINOTrainer():
     def __init__(
             self,
-            model: FlashANSRModel,
+            dino_encoder: DINOEncoder,
             optimizer: torch.optim.Optimizer,
             amp_dtype: torch.dtype,
             scaler: torch.amp.GradScaler,
@@ -38,7 +38,7 @@ class Trainer():
             gradient_accumulation_steps: int = 1,
             config: dict[str, Any] = None) -> None:
 
-        self.model = model
+        self.dino_encoder = dino_encoder
         self.optimizer = optimizer
         self.amp_dtype = amp_dtype
         self.scaler = scaler
@@ -51,29 +51,27 @@ class Trainer():
         self.device = torch.device("cpu")  # Will be set in run method
 
         # Metrics and Loss Functions
-        self.metrics_ignore_index = self.model.tokenizer["<pad>"]
-        self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
+        self.cross_entropy_loss = nn.CrossEntropyLoss()
 
         self.total_pflops = 0.0
-        self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
-        self.decoder_parameters = sum(p.numel() for p in self.model.decoder.parameters() if p.requires_grad)
+        self.parameters = sum(p.numel() for p in self.dino_encoder.parameters() if p.requires_grad)
 
     @classmethod
-    def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
+    def from_config(cls, config: dict[str, Any] | str) -> "DINOTrainer":
         config_ = load_config(config)
 
         if "trainer" in config_.keys():
             config_ = config_["trainer"]
 
         # Handle relative model paths
-        if isinstance(config, str) and isinstance(config_["model"], str) and config_["model"].startswith('.'):
-            config_["model"] = os.path.join(os.path.dirname(config), config_["model"])
+        if isinstance(config, str) and isinstance(config_["dino_encoder"], str) and config_["dino_encoder"].startswith('.'):
+            config_["dino_encoder"] = os.path.join(os.path.dirname(config), config_["dino_encoder"])
 
-        print(f'Creating model from {config_["model"]}')
-        model = FlashANSRModel.from_config(config_["model"])
+        print(f'Creating DINOEncoder from {config_["dino_encoder"]}')
+        dino_encoder = DINOEncoder.from_config(config_["dino_encoder"])
 
         print(f'Loading optimizer with config {config_["optimizer"]}')
-        optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
+        optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=dino_encoder.parameters(), **config_['optimizer'].get('kwargs', {}))
 
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
@@ -99,7 +97,7 @@ class Trainer():
             raise ValueError(f"val_dataset must be a dict or path to a file or directory, not {config_['val_dataset']}")
 
         return cls(
-            model=model,
+            dino_encoder=dino_encoder,
             optimizer=optimizer,
             amp_dtype=amp_dtype,
             scaler=scaler,
@@ -114,7 +112,7 @@ class Trainer():
     def _setup_training_state(self, device: str, verbose: bool) -> None:
         """Sets up the model, device, and initial training state."""
         self.device = torch.device(device)
-        self.model.to(self.device)
+        self.dino_encoder.to(self.device)
 
         self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
         self.total_pflops = 0.0
@@ -139,12 +137,12 @@ class Trainer():
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
-            verbose: bool = False) -> FlashANSRModel:
+            verbose: bool = False) -> DINOEncoder:
         """Core training loop."""
 
         try:
             if compile_mode is not None:
-                self.model = torch.compile(self.model, mode=compile_mode)
+                self.dino_encoder = torch.compile(self.dino_encoder, mode=compile_mode)
 
             self._setup_training_state(device, verbose=verbose)
 
@@ -161,7 +159,7 @@ class Trainer():
                     self._save_checkpoint(step + 1, checkpoint_directory)
 
             pbar.close()
-            return self.model
+            return self.dino_encoder
 
         except Exception:
             self.train_dataset.shutdown()
@@ -185,19 +183,19 @@ class Trainer():
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
-            verbose: bool = False) -> FlashANSRModel:
+            verbose: bool = False) -> DINOEncoder:
 
         if verbose:
-            print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
+            print(f"Training DINOEncoder ({self.dino_encoder.n_params:,} parameters) for {steps:,} steps on device {device}")
 
         wandb_config = unfold_config(copy.deepcopy(self.config))
         wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
-                wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
+                wandb.watch(self.dino_encoder, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
                 if verbose:
-                    print(f'Watching model with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
+                    print(f'Watching DINOEncoder with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
 
             return self.run_training(
                 steps=steps,
@@ -212,12 +210,12 @@ class Trainer():
                 verbose=verbose
             )
 
-    def _update_total_pflops(self, encoder_tokens: int, decoder_tokens: int, batch_size: int) -> None:
-        self.total_pflops += 6 * (self.encoder_parameters * encoder_tokens + self.decoder_parameters * decoder_tokens) * batch_size * 1e-15
+    def _update_total_pflops(self, encoder_tokens: int, batch_size: int) -> None:
+        self.total_pflops += 6 * (self.parameters * encoder_tokens) * batch_size * 1e-15
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including gradient accumulation."""
-        self.model.train()
+        self.dino_encoder.train()
         self.optimizer.zero_grad()
 
         total_ce_loss = 0.0
@@ -242,12 +240,11 @@ class Trainer():
                 data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
-                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                flat_labels = micro_batch['labels'].reshape(-1)
-                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                pseudo_logits = self.dino_encoder(data_tensor, data_attn_mask=data_attn_mask)
 
-                param_sum = sum(p.sum() for p in self.model.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
+                ...
+
+                param_sum = sum(p.sum() for p in self.dino_encoder.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
                 zero_loss = 0.0 * param_sum
 
                 loss = ce_loss / self.gradient_accumulation_steps + zero_loss
@@ -263,25 +260,23 @@ class Trainer():
         # Perform the optimizer step
         self.scaler.unscale_(self.optimizer)
 
-        self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
+        self._update_total_pflops(encoder_tokens=data_tensor.shape[1], batch_size=len(batch['x_tensors']))
 
-        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
+        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.dino_encoder.parameters(), 2.0)
         if do_optimizer_step:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
             # Log metrics and update scheduler
-            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
+            self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
         """Performs a single validation step."""
-        self.model.eval()
+        self.dino_encoder.eval()
 
         val_ce_loss = 0.0
-        val_mrr = 0.0
-        val_acc_at_1 = 0.0
         total_items = 0
         total_batches = 0
 
@@ -308,37 +303,32 @@ class Trainer():
                     data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
-                    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                    flat_labels = batch['labels'].reshape(-1)
-                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                    logits = self.dino_encoder(data_tensor, data_attn_mask=data_attn_mask)
+
+                    ...
 
                     # Accumulate metrics for each batch
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                     total_items += flat_labels.shape[0]
 
                 # Filter out ignored indices for metric calculation
-                valid_indices = flat_labels != self.metrics_ignore_index
-                if valid_indices.any():
-                    val_mrr += reciprocal_rank(flat_logits[valid_indices], flat_labels[valid_indices])
-                    val_acc_at_1 += correct_token_predictions_at_k(flat_logits[valid_indices], flat_labels[valid_indices], k=1)
-                    total_batches += 1
+                # valid_indices = flat_labels != self.metrics_ignore_index
+                # if valid_indices.any():
+                #     total_batches += 1
 
                 pbar.update(1)
             pbar.close()
 
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
-        avg_val_mrr = val_mrr / total_batches if total_batches > 0 else 0.0
-        avg_val_acc_at_1 = val_acc_at_1 / total_batches if total_batches > 0 else 0.0
 
         # Log averaged validation metrics
-        self._log_validation_metrics(step, avg_val_ce_loss, avg_val_mrr, avg_val_acc_at_1)
+        self._log_validation_metrics(step, avg_val_ce_loss)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Saves the model and training configuration."""
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
-        self.model.save(directory=save_directory, errors='ignore')
+        self.dino_encoder.save(directory=save_directory, errors='ignore')
         torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))
         save_config(
             load_config(self.config, resolve_paths=True),
@@ -349,7 +339,7 @@ class Trainer():
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
         """Logs a batch's training metrics to wandb."""
 
         log_data = {
@@ -357,17 +347,13 @@ class Trainer():
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "train_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
-            "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
             "total_pflops": self.total_pflops,
         }
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
+    def _log_validation_metrics(self, step: int, val_ce_loss: float) -> None:
         """Logs validation metrics to wandb."""
         log_data = {
             "val_ce_loss": val_ce_loss,
-            "val_mean_reciprocal_rank": val_mrr,
-            "val_correct_token_predictions_at_1": val_acc_at_1,
         }
         wandb.log(log_data, step=step)  # type: ignore
