@@ -1,9 +1,10 @@
 import os
 import copy
+import math
 from typing import Any, Literal
 
 import torch
-
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
 
@@ -38,7 +39,8 @@ class DINOTrainer():
             gradient_accumulation_steps: int = 1,
             config: dict[str, Any] = None) -> None:
 
-        self.dino_encoder = dino_encoder
+        self.config = config or {}
+        self.student = dino_encoder
         self.optimizer = optimizer
         self.amp_dtype = amp_dtype
         self.scaler = scaler
@@ -47,14 +49,47 @@ class DINOTrainer():
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.gradient_accumulation_steps = gradient_accumulation_steps
-        self.config = config or {}
         self.device = torch.device("cpu")  # Will be set in run method
+
+        # DINO specific parameters from config
+        self.dino_config = {
+            'weight_decay': self.config.get('dino_weight_decay', {}),
+            'student_temp': self.config.get('dino_temperature_student', 0.1),
+            'teacher_temp': self.config.get('dino_temperature_teacher', {}),
+            'teacher_lambda': self.config.get('dino_teacher_lambda', {}),
+            'center_momentum': self.config.get('dino_center_momentum', 0.9),
+        }
+        self.total_steps = self.config.get("steps", 1)
+
+        # Create EMA teacher model
+        self.teacher = copy.deepcopy(self.student)
+        for p in self.teacher.parameters():
+            p.requires_grad = False
+        self.teacher.eval()
+
+        # DINO head output dimension for centering
+        dino_head_output_dim = self.student.dino_head.head[-1].out_features
+        self.center = torch.zeros(1, 1, dino_head_output_dim)
 
         # Metrics and Loss Functions
         self.cross_entropy_loss = nn.CrossEntropyLoss()
 
         self.total_pflops = 0.0
-        self.parameters = sum(p.numel() for p in self.dino_encoder.parameters() if p.requires_grad)
+        self.parameters = sum(p.numel() for p in self.student.parameters() if p.requires_grad)
+
+    @staticmethod
+    def _cosine_scheduler(current_step: int, total_steps: int, start_val: float, end_val: float) -> float:
+        """Cosine schedule from start_val to end_val."""
+        if current_step < total_steps:
+            return end_val - (end_val - start_val) * (1 + math.cos(math.pi * current_step / total_steps)) / 2
+        return end_val
+
+    @staticmethod
+    def _linear_scheduler(current_step: int, total_steps: int, start_val: float, end_val: float) -> float:
+        """Linear schedule from start_val to end_val."""
+        if current_step < total_steps:
+            return start_val + (end_val - start_val) * current_step / total_steps
+        return end_val
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "DINOTrainer":
@@ -112,7 +147,9 @@ class DINOTrainer():
     def _setup_training_state(self, device: str, verbose: bool) -> None:
         """Sets up the model, device, and initial training state."""
         self.device = torch.device(device)
-        self.dino_encoder.to(self.device)
+        self.student.to(self.device)
+        self.teacher.to(self.device)
+        self.center = self.center.to(self.device)
 
         self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
         self.total_pflops = 0.0
@@ -142,7 +179,9 @@ class DINOTrainer():
 
         try:
             if compile_mode is not None:
-                self.dino_encoder = torch.compile(self.dino_encoder, mode=compile_mode)
+                print(f"Compiling student model with mode: {compile_mode}")
+                self.student = torch.compile(self.student, mode=compile_mode)
+                # Teacher is not compiled as it's only for inference
 
             self._setup_training_state(device, verbose=verbose)
 
@@ -159,7 +198,8 @@ class DINOTrainer():
                     self._save_checkpoint(step + 1, checkpoint_directory)
 
             pbar.close()
-            return self.dino_encoder
+            # Return the unwrapped student model if compiled
+            return self.student._orig_mod if hasattr(self.student, '_orig_mod') else self.student
 
         except Exception:
             self.train_dataset.shutdown()
@@ -186,14 +226,14 @@ class DINOTrainer():
             verbose: bool = False) -> DINOEncoder:
 
         if verbose:
-            print(f"Training DINOEncoder ({self.dino_encoder.n_params:,} parameters) for {steps:,} steps on device {device}")
+            print(f"Training DINOEncoder ({self.student.n_params:,} parameters) for {steps:,} steps on device {device}")
 
         wandb_config = unfold_config(copy.deepcopy(self.config))
         wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
-                wandb.watch(self.dino_encoder, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
+                wandb.watch(self.student, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
                 if verbose:
                     print(f'Watching DINOEncoder with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
 
@@ -214,121 +254,167 @@ class DINOTrainer():
         self.total_pflops += 6 * (self.parameters * encoder_tokens) * batch_size * 1e-15
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
-        """Performs a single training step, including gradient accumulation."""
-        self.dino_encoder.train()
-        self.optimizer.zero_grad()
+        """Performs a single training step, including DINO loss, EMA updates, and gradient accumulation."""
+        self.student.train()
 
-        total_ce_loss = 0.0
-        total_loss = 0.0
+        # Schedule weight decay
+        wd_config = self.dino_config['weight_decay']
+        wd = self._cosine_scheduler(step, self.total_steps, wd_config['initial'], wd_config['final'])
+        for param_group in self.optimizer.param_groups:
+            param_group['weight_decay'] = wd
+
+        # Schedule teacher temperature
+        teacher_temp_config = self.dino_config['teacher_temp']
+        teacher_temp = self._linear_scheduler(step, self.total_steps, teacher_temp_config['initial'], teacher_temp_config['final'])
+        student_temp = self.dino_config['student_temp']
+
+        total_dino_loss = 0.0
+
+        # We zero grads once before the accumulation loop
+        self.optimizer.zero_grad()
 
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
-            micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
+            start_idx = acc_step * micro_batch_size
+            end_idx = (acc_step + 1) * micro_batch_size
+            micro_batch = {k: v[start_idx:end_idx] for k, v in batch.items()}
             micro_batch = self.train_dataset.collate(micro_batch, device=self.device)
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
-            if data_tensor.shape[1] < self.max_set_size:
-                pad_size = self.max_set_size - data_tensor.shape[1]
-                pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
+            B, M, D = data_tensor.shape
+            if M < self.max_set_size:
+                pad_size = self.max_set_size - M
+                pad_tensor = torch.zeros((B, pad_size, D), device=data_tensor.device, dtype=data_tensor.dtype)
                 data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
                 data_attn_mask = torch.cat([
-                    torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
-                    torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
+                    torch.ones((B, M), device=data_tensor.device, dtype=torch.bool),
+                    torch.zeros((B, pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
             else:
-                data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
+                data_attn_mask = torch.ones((B, M), device=data_tensor.device, dtype=torch.bool)
 
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                pseudo_logits = self.dino_encoder(data_tensor, data_attn_mask=data_attn_mask)
+                student_logits: torch.Tensor = self.student(data_tensor, data_attn_mask=data_attn_mask)
 
-                ...
+                with torch.no_grad():
+                    teacher_logits: torch.Tensor = self.teacher(data_tensor, data_attn_mask=data_attn_mask)
 
-                param_sum = sum(p.sum() for p in self.dino_encoder.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
-                zero_loss = 0.0 * param_sum
+                # Reshape for per-token loss: (B, S, K) -> (B * S, K)
+                B, S, K = student_logits.shape
+                student_logits_flat = student_logits.view(B * S, K)
+                teacher_logits_flat = teacher_logits.view(B * S, K)
 
-                loss = ce_loss / self.gradient_accumulation_steps + zero_loss
+                # Compute DINO loss
+                student_log_probs = F.log_softmax(student_logits_flat / student_temp, dim=-1)
+                teacher_probs = F.softmax((teacher_logits_flat - self.center) / teacher_temp, dim=-1)
 
-            # If the loss is nan or inf, stop the training
+                dino_loss = torch.sum(-teacher_probs * student_log_probs, dim=-1).mean()
+
+                # HACK: Avoids None parameter gradients for wandb.watch
+                param_sum = sum(p.sum() for p in self.student.parameters() if p.grad is not None or p.requires_grad)
+
+                loss = dino_loss / self.gradient_accumulation_steps + (0.0 * param_sum)
+
             if not torch.isfinite(loss):
                 raise ValueError(f"Loss is {loss.item()}, stopping training")
 
             self.scaler.scale(loss).backward()
-            total_ce_loss += ce_loss.item()
-            total_loss += loss.item() * self.gradient_accumulation_steps
+            total_dino_loss += dino_loss.item()
 
-        # Perform the optimizer step
+            # Update center with momentum using the detached teacher outputs
+            with torch.no_grad():
+                batch_center = torch.mean(teacher_logits.detach(), dim=[0, 1], keepdim=True)
+                self.center = self.center * self.dino_config['center_momentum'] + batch_center * (1 - self.dino_config['center_momentum'])
+
+        # After accumulating gradients, perform optimizer step
         self.scaler.unscale_(self.optimizer)
+        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.student.parameters(), 2.0)
 
-        self._update_total_pflops(encoder_tokens=data_tensor.shape[1], batch_size=len(batch['x_tensors']))
-
-        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.dino_encoder.parameters(), 2.0)
         if do_optimizer_step:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
+            # EMA update for the teacher model
+            teacher_lambda_config = self.dino_config['teacher_lambda']
+            teacher_lambda = self._cosine_scheduler(step, self.total_steps, teacher_lambda_config['initial'], teacher_lambda_config['final'])
+            with torch.no_grad():
+                for student_p, teacher_p in zip(self.student.parameters(), self.teacher.parameters()):
+                    teacher_p.data.mul_(teacher_lambda).add_(student_p.data, alpha=1 - teacher_lambda)
+
+            self._update_total_pflops(encoder_tokens=data_tensor.shape[1], batch_size=len(batch['x_tensors']))
+
             # Log metrics and update scheduler
-            self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
+            self._log_metrics(step, total_dino_loss, total_dino_loss, total_gradient_norm, wd, teacher_temp, teacher_lambda)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
-        """Performs a single validation step."""
-        self.dino_encoder.eval()
+        """Performs a single validation step using a standard cross-entropy loss."""
+        self.student.eval()
 
-        val_ce_loss = 0.0
-        total_items = 0
-        total_batches = 0
+        # Schedule teacher temperature
+        teacher_temp_config = self.dino_config['teacher_temp']
+        teacher_temp = self._linear_scheduler(step, self.total_steps, teacher_temp_config['initial'], teacher_temp_config['final'])
+        student_temp = self.dino_config['student_temp']
+
+        total_dino_loss = 0.0
 
         with torch.no_grad():
-            if size is None:
-                steps = len(self.val_dataset) // batch_size
-            else:
-                steps = size // batch_size
-
+            steps = (size or len(self.val_dataset)) // batch_size
             pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
+
             for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=preprocess):
                 batch = self.val_dataset.collate(batch, device=self.device)
-                data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
+                # Note: For validation, we assume a supervised setup where x_tensors are inputs
+                # and y_token_ids are targets. The input processing might differ from training.
+                data_tensor = batch['x_tensors']
 
-                # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
-                if data_tensor.shape[1] < self.max_set_size:
-                    pad_size = self.max_set_size - data_tensor.shape[1]
-                    pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
+                # Pad the data tensor to the max set size
+                B, M, D = data_tensor.shape
+                if M < self.max_set_size:
+                    pad_size = self.max_set_size - M
+                    pad_tensor = torch.zeros((B, pad_size, D), device=data_tensor.device, dtype=data_tensor.dtype)
                     data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
                     data_attn_mask = torch.cat([
-                        torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
-                        torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
+                        torch.ones((B, M), device=data_tensor.device, dtype=torch.bool),
+                        torch.zeros((B, pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
                 else:
-                    data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
+                    data_attn_mask = torch.ones((B, M), device=data_tensor.device, dtype=torch.bool)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.dino_encoder(data_tensor, data_attn_mask=data_attn_mask)
+                    student_logits: torch.Tensor = self.student(data_tensor, data_attn_mask=data_attn_mask)
 
-                    ...
+                    with torch.no_grad():
+                        teacher_logits: torch.Tensor = self.teacher(data_tensor, data_attn_mask=data_attn_mask)
 
-                    # Accumulate metrics for each batch
-                    val_ce_loss += ce_loss.item() * flat_labels.shape[0]
-                    total_items += flat_labels.shape[0]
+                    # Reshape for per-token loss: (B, S, K) -> (B * S, K)
+                    B, S, K = student_logits.shape
+                    student_logits_flat = student_logits.view(B * S, K)
+                    teacher_logits_flat = teacher_logits.view(B * S, K)
 
-                # Filter out ignored indices for metric calculation
-                # valid_indices = flat_labels != self.metrics_ignore_index
-                # if valid_indices.any():
-                #     total_batches += 1
+                    # Compute DINO loss
+                    student_log_probs = F.log_softmax(student_logits_flat / student_temp, dim=-1)
+                    teacher_probs = F.softmax((teacher_logits_flat - self.center) / teacher_temp, dim=-1)
 
+                    dino_loss = torch.sum(-teacher_probs * student_log_probs, dim=-1).mean()
+
+                total_dino_loss += dino_loss.item()
                 pbar.update(1)
             pbar.close()
 
-        # Calculate average metrics
-        avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
+        avg_dino_loss = total_dino_loss / (steps or 1)
 
-        # Log averaged validation metrics
-        self._log_validation_metrics(step, avg_val_ce_loss)
+        self._log_validation_metrics(step, avg_dino_loss)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
-        """Saves the model and training configuration."""
+        """Saves the student model and training configuration."""
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
-        self.dino_encoder.save(directory=save_directory, errors='ignore')
+
+        # Ensure we save the unwrapped model if using torch.compile
+        model_to_save = self.student._orig_mod if hasattr(self.student, '_orig_mod') else self.student
+
+        model_to_save.save(directory=save_directory, errors='ignore')
         torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))
         save_config(
             load_config(self.config, resolve_paths=True),
@@ -339,15 +425,17 @@ class DINOTrainer():
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor, wd: float, teacher_temp: float, teacher_lambda: float) -> None:
         """Logs a batch's training metrics to wandb."""
-
         log_data = {
             "total_gradient_norm": total_gradient_norm.item(),
-            "train_ce_loss": ce_loss,
+            "train_dino_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
             "total_pflops": self.total_pflops,
+            "weight_decay": wd,
+            "teacher_temp": teacher_temp,
+            "teacher_lambda": teacher_lambda,
         }
         wandb.log(log_data, step=step)  # type: ignore
 
