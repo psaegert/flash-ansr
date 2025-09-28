@@ -259,7 +259,8 @@ class FlashANSRDataset:
     ) -> None:
         """
         Worker that generates data and writes it directly into shared memory slots.
-        For each skeleton, it generates n_per_equation positive samples.
+        If generating samples for an equation fails (hits max attempts),
+        it aborts the entire batch and restarts the process with a new equation.
         """
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         np.random.seed(os.getpid())
@@ -283,79 +284,87 @@ class FlashANSRDataset:
 
                 slot_idx, n_support_frag = job
 
-                # --- Buffers for a single batch ---
-                constants_batch = []
-                x_tensors_batch = np.zeros(pools['x_tensors'].shape[1:], dtype=pools['x_tensors'].dtype)
-                y_tensors_batch = np.zeros(pools['y_tensors'].shape[1:], dtype=pools['y_tensors'].dtype)
-                input_ids_batch = np.full(pools['input_ids'].shape[1:], tokenizer['<pad>'], dtype=pools['input_ids'].dtype)
-                metadata_batch = []
+                # 🔁 Outer loop to retry the ENTIRE batch generation if it fails.
+                while True:
+                    batch_aborted = False
 
-                # --- Generate one full batch ---
-                i = 0
-                while i < batch_size:
-                    # Step 1: Find a usable skeleton by sampling until success
-                    skeleton_hash, skeleton_code, skeleton_constants, skeleton = None, None, None, None
-                    while True:
+                    # --- Buffers for a single batch attempt ---
+                    constants_batch = []
+                    x_tensors_batch = np.zeros(pools['x_tensors'].shape[1:], dtype=pools['x_tensors'].dtype)
+                    y_tensors_batch = np.zeros(pools['y_tensors'].shape[1:], dtype=pools['y_tensors'].dtype)
+                    input_ids_batch = np.full(pools['input_ids'].shape[1:], tokenizer['<pad>'], dtype=pools['input_ids'].dtype)
+                    metadata_batch = []
+
+                    # --- Generate one full batch ---
+                    i = 0
+                    while i < batch_size:
+                        # Step 1: Find a usable skeleton
                         try:
                             skeleton_hash, skeleton_code, skeleton_constants = skeleton_pool.sample_skeleton()
                             skeleton = list(skeleton_hash)
-                            break  # Found a valid skeleton
                         except NoValidSampleFoundError:
-                            # This is rare but possible if the pool is heavily filtered. Keep trying.
-                            continue
+                            continue  # Try finding another skeleton
 
-                    # Step 2: Generate n_per_equation samples (positive pairs) for this skeleton
-                    generated_count = 0
-                    # A safety break to prevent infinite loops on pathologically difficult skeletons
-                    max_attempts_per_skeleton = 10
+                        # Step 2: Generate n_per_equation samples for the current skeleton
+                        generated_count = 0
+                        attempts = 0
+                        # Increased limit for robustness, as failure now costs more.
+                        max_total_attempts = n_per_equation * 20
 
-                    for _ in range(max_attempts_per_skeleton):
-                        # Stop if we have enough samples for this skeleton OR the entire batch is full
-                        if generated_count >= n_per_equation or i >= batch_size:
+                        while generated_count < n_per_equation and i < batch_size:
+                            # Check for failure condition BEFORE attempting generation
+                            if attempts >= max_total_attempts:
+                                batch_aborted = True
+                                break  # Exit inner sample-generation loop
+
+                            attempts += 1
+                            try:
+                                # Resample data for the SAME skeleton
+                                x_support, y_support, literals = skeleton_pool.sample_data(
+                                    skeleton_code, len(skeleton_constants), n_support_frag
+                                )
+
+                                if padding == 'zero':
+                                    for var_idx, variable in enumerate(skeleton_pool.variables):
+                                        if variable not in skeleton:
+                                            x_support[:, var_idx] = 0
+
+                                input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+
+                                # Populate batch arrays
+                                x_tensors_batch[i] = x_support
+                                y_tensors_batch[i] = y_support
+                                input_ids_batch[i, :len(input_ids)] = input_ids
+                                constants_batch.append(literals)
+                                metadata_batch.append({
+                                    'skeletons': skeleton,
+                                    'skeleton_hashes': skeleton_hash,
+                                    'expressions': substitude_constants(skeleton, values=literals, inplace=False),
+                                })
+
+                                # Increment counters on SUCCESS
+                                generated_count += 1
+                                i += 1
+
+                            except NoValidSampleFoundError:
+                                continue  # Try generating data for this skeleton again
+
+                        # If the inner loop was broken due to failure, break this loop too.
+                        if batch_aborted:
                             break
 
-                        try:
-                            # Resample data (constants and points) for the SAME skeleton
-                            x_support, y_support, literals = skeleton_pool.sample_data(
-                                skeleton_code, len(skeleton_constants), n_support_frag
-                            )
-
-                            if padding == 'zero':
-                                for var_idx, variable in enumerate(skeleton_pool.variables):
-                                    if variable not in skeleton:
-                                        x_support[:, var_idx] = 0
-
-                            input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
-
-                            # Populate the batch arrays at the current index 'i'
-                            x_tensors_batch[i] = x_support
-                            y_tensors_batch[i] = y_support
-                            input_ids_batch[i, :len(input_ids)] = input_ids
-                            constants_batch.append(literals)
-                            metadata_batch.append({
-                                'skeletons': skeleton,
-                                'skeleton_hashes': skeleton_hash,
-                                'expressions': substitude_constants(skeleton, values=literals, inplace=False),
-                            })
-
-                            # Increment counters for the next sample
-                            generated_count += 1
-                            i += 1
-
-                        except NoValidSampleFoundError:
-                            # If data sampling for this skeleton fails, just try again
-                            continue
-
-                # --- Write the completed batch directly into the shared memory slot ---
-                pools['x_tensors'][slot_idx] = x_tensors_batch
-                pools['y_tensors'][slot_idx] = y_tensors_batch
-                pools['input_ids'][slot_idx] = input_ids_batch
-
-                # Metadata and constants are handled by the manager/queue
-                metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
-
-                # --- Signal completion ---
-                result_queue.put(slot_idx)
+                    # --- Check status of the generated batch ---
+                    if batch_aborted:
+                        # If aborted, restart the outer 'while True' loop to try again.
+                        continue
+                    else:
+                        # If successful, write the data and exit the retry loop.
+                        pools['x_tensors'][slot_idx] = x_tensors_batch
+                        pools['y_tensors'][slot_idx] = y_tensors_batch
+                        pools['input_ids'][slot_idx] = input_ids_batch
+                        metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
+                        result_queue.put(slot_idx)
+                        break  # Exit the retry loop successfully
 
         finally:
             # Clean up worker's connection to shared memory

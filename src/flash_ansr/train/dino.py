@@ -188,8 +188,13 @@ class DINOTrainer():
             for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=False, n_per_equation=self.batch_size)):
 
                 # Assert that all input_ids (classes / skeletons) are the same. This is required for DINO.
-                first_input_ids = batch['input_ids'][0]
-                assert all(torch.equal(example['input_ids'], first_input_ids) for example in batch), "All input_ids in the batch must be the same for DINO training."
+                # Check that each column of batch['input_ids'] has only one unique value
+                if not (len(torch.unique(batch['input_ids'], dim=0)) == 1):
+                    print(batch['input_ids'])
+                    print(torch.unique(batch['input_ids'], dim=0))
+                    print(self.batch_size)
+                    print(batch['input_ids'].shape)
+                    raise ValueError("All input_ids in the batch must be the same for DINO training.")
 
                 self._train_step(batch, step, do_optimizer_step=True)
 
