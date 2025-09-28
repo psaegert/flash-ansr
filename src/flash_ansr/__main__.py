@@ -56,6 +56,17 @@ def main(argv: str = None) -> None:
     train_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
     train_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
 
+    dino_parser = subparsers.add_parser("dino")
+    dino_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
+    dino_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
+    dino_parser.add_argument('-o', '--output-dir', type=str, default='.', help='Path to the output directory')
+    dino_parser.add_argument('-ci', '--checkpoint-interval', type=int, default=None, help='Interval for saving checkpoints')
+    dino_parser.add_argument('-vi', '--validate-interval', type=int, default=None, help='Interval for validating the model')
+    dino_parser.add_argument('--project', type=str, default='foundation_set_encoder', help='Name of the wandb project')
+    dino_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
+    dino_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
+    dino_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
+
     evaluate_parser = subparsers.add_parser("evaluate")
     evaluate_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
     evaluate_parser.add_argument('-m', '--model', type=str, required=True, help='Path to the model or model configuration')
@@ -247,7 +258,6 @@ def main(argv: str = None) -> None:
                     entity=args.entity,
                     name=args.name,
                     steps=config['steps'],
-                    preprocess=False,
                     device=config['device'],
                     compile_mode=config.get('compile_mode'),
                     checkpoint_interval=args.checkpoint_interval,

@@ -68,7 +68,7 @@ class DINOTrainer():
         self.teacher.eval()
 
         # DINO head output dimension for centering
-        dino_head_output_dim = self.student.dino_head.head[-1].out_features
+        dino_head_output_dim = self.student.dino_head[-1].out_features
         self.center = torch.zeros(1, 1, dino_head_output_dim)
 
         # Metrics and Loss Functions
@@ -166,7 +166,6 @@ class DINOTrainer():
     def run_training(
             self,
             steps: int,
-            preprocess: bool = False,
             device: str = "cpu",
             compile_mode: str | None = None,
             checkpoint_interval: int | None = None,
@@ -186,13 +185,18 @@ class DINOTrainer():
             self._setup_training_state(device, verbose=verbose)
 
             pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
-            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
-                self._train_step(batch, step, preprocess, do_optimizer_step=True)
+            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=False, n_per_equation=self.batch_size)):
+
+                # Assert that all input_ids (classes / skeletons) are the same. This is required for DINO.
+                first_input_ids = batch['input_ids'][0]
+                assert all(torch.equal(example['input_ids'], first_input_ids) for example in batch), "All input_ids in the batch must be the same for DINO training."
+
+                self._train_step(batch, step, do_optimizer_step=True)
 
                 pbar.update(1)
 
                 if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
-                    self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, verbose)
+                    self._validate_step(step + 1, validate_size, validate_batch_size, verbose)
 
                 if checkpoint_interval is not None and checkpoint_directory is not None and (step + 1) % checkpoint_interval == 0:
                     self._save_checkpoint(step + 1, checkpoint_directory)
@@ -212,7 +216,6 @@ class DINOTrainer():
             entity: str,
             name: str,
             steps: int,
-            preprocess: bool = False,
             device: str = "cpu",
             compile_mode: str | None = None,
             checkpoint_interval: int | None = None,
@@ -234,12 +237,11 @@ class DINOTrainer():
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
                 wandb.watch(self.student, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
-                if verbose:
+                if verbose and wandb_watch_log is not None:
                     print(f'Watching DINOEncoder with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
 
             return self.run_training(
                 steps=steps,
-                preprocess=preprocess,
                 device=device,
                 compile_mode=compile_mode,
                 checkpoint_interval=checkpoint_interval,
@@ -253,7 +255,7 @@ class DINOTrainer():
     def _update_total_pflops(self, encoder_tokens: int, batch_size: int) -> None:
         self.total_pflops += 6 * (self.parameters * encoder_tokens) * batch_size * 1e-15
 
-    def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
+    def _train_step(self, batch: dict[str, torch.Tensor], step: int, do_optimizer_step: bool = True) -> None:
         """Performs a single training step, including DINO loss, EMA updates, and gradient accumulation."""
         self.student.train()
 
@@ -349,7 +351,7 @@ class DINOTrainer():
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
-    def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
+    def _validate_step(self, step: int, size: int | None, batch_size: int, verbose: bool) -> None:
         """Performs a single validation step using a standard cross-entropy loss."""
         self.student.eval()
 
@@ -364,7 +366,7 @@ class DINOTrainer():
             steps = (size or len(self.val_dataset)) // batch_size
             pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
 
-            for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=preprocess):
+            for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=False, n_per_equation=batch_size):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 # Note: For validation, we assume a supervised setup where x_tensors are inputs
                 # and y_token_ids are targets. The input processing might differ from training.

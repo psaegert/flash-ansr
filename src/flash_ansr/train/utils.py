@@ -3,6 +3,7 @@ from typing import Any
 import torch
 import torch_optimizer
 
+
 class OptimizerFactory():
     @staticmethod
     def get_optimizer(name: str, *args: Any, **kwargs: Any) -> torch.optim.Optimizer:
