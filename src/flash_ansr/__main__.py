@@ -67,6 +67,17 @@ def main(argv: str = None) -> None:
     dino_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
     dino_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
 
+    contrastive_parser = subparsers.add_parser("contrastive")
+    contrastive_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
+    contrastive_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
+    contrastive_parser.add_argument('-o', '--output-dir', type=str, default='.', help='Path to the output directory')
+    contrastive_parser.add_argument('-ci', '--checkpoint-interval', type=int, default=None, help='Interval for saving checkpoints')
+    contrastive_parser.add_argument('-vi', '--validate-interval', type=int, default=None, help='Interval for validating the model')
+    contrastive_parser.add_argument('--project', type=str, default='foundation_set_encoder', help='Name of the wandb project')
+    contrastive_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
+    contrastive_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
+    contrastive_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
+
     evaluate_parser = subparsers.add_parser("evaluate")
     evaluate_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
     evaluate_parser.add_argument('-m', '--model', type=str, required=True, help='Path to the model or model configuration')
@@ -274,6 +285,49 @@ def main(argv: str = None) -> None:
                 print("Training interrupted. Saving model...")
 
             trainer.teacher.save(directory=args.output_dir, errors='ignore')
+
+            save_config(
+                load_config(args.config, resolve_paths=True),
+                directory=substitute_root_path(args.output_dir),
+                filename='train.yaml',
+                reference='relative',
+                recursive=True,
+                resolve_paths=True)
+
+            print(f"Saved model to {args.output_dir}")
+
+        case 'contrastive':
+            if args.verbose:
+                print(f'Pre-Training model from {args.config} with Contrastive Learning')
+            from flash_ansr.train.contrastive import ContrastiveTrainer
+            from flash_ansr.utils import substitute_root_path, load_config, save_config
+
+            trainer = ContrastiveTrainer.from_config(args.config)
+
+            config = load_config(args.config)
+
+            try:
+                trainer.run(
+                    project_name=args.project,
+                    entity=args.entity,
+                    name=args.name,
+                    steps=config['steps'],
+                    device=config['device'],
+                    compile_mode=config.get('compile_mode'),
+                    checkpoint_interval=args.checkpoint_interval,
+                    checkpoint_directory=substitute_root_path(args.output_dir),
+                    validate_interval=args.validate_interval,
+                    validate_size=config.get('val_size', None),
+                    validate_batch_size=config.get('val_batch_size', None),
+                    wandb_watch_log=config.get('wandb_watch_log', None),
+                    wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
+                    wandb_mode=args.mode,
+                    verbose=args.verbose,
+                )
+            except KeyboardInterrupt:
+                print("Training interrupted. Saving model...")
+
+            trainer.contrastive_encoder.save(directory=args.output_dir, errors='ignore')
 
             save_config(
                 load_config(args.config, resolve_paths=True),

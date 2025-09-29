@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-import numpy as np
 
 
 class AILWQ_ContrastiveLoss(nn.Module):
@@ -55,57 +54,64 @@ class AILWQ_ContrastiveLoss(nn.Module):
 
 
 class ContrastiveLoss(nn.Module):
-    def __init__(self, margin: float = 0.5, temperature: float = 0.5) -> None:
+    def __init__(self, temperature: float = 0.07) -> None:
+        """
+        Standard implementation of Supervised Contrastive Loss.
+        https://arxiv.org/abs/2004.11362
+        """
         super().__init__()
-        self.margin = margin
         self.temperature = temperature
 
-    def forward(self, features: torch.Tensor, labels: torch.Tensor | np.ndarray | list) -> torch.Tensor:
+    def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """
-        Compute the contrastive loss based on cosine similarities.
-
         Args:
-            features (torch.Tensor): A tensor of shape (N, D), where N is the number of samples and D is the feature dimension.
-            labels (torch.Tensor): A tensor of shape (N,) with integer class labels for each sample.
-            margin (float): Margin value for dissimilar pairs. Default is 0.5.
+            features (torch.Tensor): A tensor of shape (N, D). Assumed to be L2-normalized.
+            labels (torch.Tensor): A tensor of shape (N,) with integer class labels.
 
         Returns:
-            torch.Tensor: The computed contrastive loss.
+            torch.Tensor: The computed loss.
         """
-        if isinstance(features, np.ndarray):
-            features = torch.tensor(features)
+        device = features.device
+        batch_size = features.shape[0]
 
-        # Create labels tensor
-        if isinstance(labels, list) or isinstance(labels, np.ndarray):
-            unique_labels_map = {label: i for i, label in enumerate(set(labels))}
-            labels_tensor = torch.tensor([unique_labels_map[label] for label in labels], device=features.device)
-        else:
-            labels_tensor = labels
+        # Create a mask to identify positive pairs
+        labels = labels.contiguous().view(-1, 1)
+        # positive_mask[i, j] is True if features[i] and features[j] have the same label
+        positive_mask = torch.eq(labels, labels.T).float().to(device)
 
-        # Normalize features to have unit norm (for cosine similarity)
-        features = F.normalize(features, p=2, dim=1)
+        # Create a mask to exclude self-similarity (the diagonal)
+        # off_diagonal_mask[i, j] is True if i != j
+        off_diagonal_mask = ~torch.eye(batch_size, device=device, dtype=torch.bool)
 
-        # Compute the cosine similarity matrix
+        # Compute cosine similarity
         similarity_matrix = torch.matmul(features, features.T)
 
-        # Apply exponentiation with temperature scaling
-        similarity_matrix = torch.exp(similarity_matrix / self.temperature)
+        # --- Isolate positive pairs (excluding self) ---
+        # We want positive pairs that are not the sample itself
+        positive_mask = positive_mask * off_diagonal_mask
 
-        # Create a mask to identify positive (same label) and negative (different label) pairs
-        labels_tensor = labels_tensor.view(-1, 1)  # Reshape to (N, 1) for broadcasting
-        positive_mask = labels_tensor == labels_tensor.T  # Mask for positive pairs
-        negative_mask = ~positive_mask  # Mask for negative pairs
+        # --- Numerator of SupCon Loss ---
+        # For each anchor, we want the log-probabilities of its positive samples.
+        # The logits are the scaled similarities.
+        logits = similarity_matrix / self.temperature
 
-        # Row-wise normalization of similarity matrix
-        row_sum = similarity_matrix.sum(dim=1, keepdim=True)  # Shape (N, 1)
+        # To avoid numerical instability, we use the log-sum-exp trick.
+        # For each row i, subtract the max logit value for stability.
+        logits_max, _ = torch.max(logits, dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
 
-        # Compute positive loss
-        positive_loss = -torch.log((similarity_matrix * positive_mask).sum(dim=1) / row_sum.squeeze()).mean()
+        # --- Denominator of SupCon Loss ---
+        # The denominator is the sum of exponentiated similarities over all other samples.
+        exp_logits = torch.exp(logits) * off_diagonal_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
 
-        # Compute negative loss
-        negative_loss = F.relu(torch.log((similarity_matrix * negative_mask).sum(dim=1) / row_sum.squeeze()) - self.margin).mean()
+        # --- Compute the loss ---
+        # The loss is the mean of the negative log-probabilities of the positive pairs.
+        # For each anchor, we average the log-probabilities over its positive samples.
+        # mean_log_prob_pos[i] = sum_{p in P(i)} log_prob[i, p] / |P(i)|
+        mean_log_prob_pos = (positive_mask * log_prob).sum(1) / torch.clamp(positive_mask.sum(1), min=1.0)
 
-        # Combine positive and negative losses
-        loss = positive_loss + negative_loss
+        # The final loss is the negative of this value, averaged over the batch.
+        loss = -mean_log_prob_pos.mean()
 
         return loss
