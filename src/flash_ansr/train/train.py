@@ -208,8 +208,8 @@ class Trainer():
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
                 wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
-            if verbose:
-                print(f'Watching model with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
+                if verbose and wandb_watch_log is not None:
+                    print(f'Watching model with wandb log={wandb_watch_log} at frequency {wandb_watch_log_freq}')
 
             return self.run_training(
                 steps=steps,

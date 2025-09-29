@@ -238,6 +238,17 @@ class FlashANSRDataset:
         # 5. Create labels
         batch['labels'] = batch['input_ids'].clone()[..., 1:]
 
+        # 6. Create ids for equal expressions
+        batch['expression_ids'] = []
+        expression_to_id: dict[tuple, int] = {}
+
+        for i, expr in enumerate(batch['input_ids']):
+            expr_key = tuple(expr.flatten().tolist())
+            if expr_key not in expression_to_id:
+                expression_to_id[expr_key] = len(expression_to_id)
+            batch['expression_ids'].append(expression_to_id[expr_key])
+        batch['expression_ids'] = torch.tensor(batch['expression_ids'], device=device, dtype=torch.long)
+
         return batch
 
     def compile(self, size: int | None = None, steps: int | None = None, batch_size: int | None = None, n_support: int | None = None, verbose: bool = False) -> None:
@@ -259,7 +270,8 @@ class FlashANSRDataset:
     ) -> None:
         """
         Worker that generates data and writes it directly into shared memory slots.
-        For each skeleton, it generates n_per_equation positive samples.
+        If generating samples for a specific equation fails (hits max attempts),
+        it discards that equation and tries a new one, without aborting the whole batch.
         """
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         np.random.seed(os.getpid())
@@ -284,77 +296,94 @@ class FlashANSRDataset:
                 slot_idx, n_support_frag = job
 
                 # --- Buffers for a single batch ---
+                # These are views into the shared memory for the assigned slot
+                x_tensors_batch = pools['x_tensors'][slot_idx]
+                y_tensors_batch = pools['y_tensors'][slot_idx]
+                input_ids_batch = pools['input_ids'][slot_idx]
+
+                # Local buffers for data that can't be pre-allocated
                 constants_batch = []
-                x_tensors_batch = np.zeros(pools['x_tensors'].shape[1:], dtype=pools['x_tensors'].dtype)
-                y_tensors_batch = np.zeros(pools['y_tensors'].shape[1:], dtype=pools['y_tensors'].dtype)
-                input_ids_batch = np.full(pools['input_ids'].shape[1:], tokenizer['<pad>'], dtype=pools['input_ids'].dtype)
                 metadata_batch = []
 
                 # --- Generate one full batch ---
                 i = 0
                 while i < batch_size:
-                    # Step 1: Find a usable skeleton by sampling until success
-                    skeleton_hash, skeleton_code, skeleton_constants, skeleton = None, None, None, None
-                    while True:
-                        try:
-                            skeleton_hash, skeleton_code, skeleton_constants = skeleton_pool.sample_skeleton()
-                            skeleton = list(skeleton_hash)
-                            break  # Found a valid skeleton
-                        except NoValidSampleFoundError:
-                            # This is rare but possible if the pool is heavily filtered. Keep trying.
-                            continue
+                    # Step 1: Find a usable skeleton
+                    try:
+                        skeleton_hash, skeleton_code, skeleton_constants = skeleton_pool.sample_skeleton()
+                        skeleton = list(skeleton_hash)
+                    except NoValidSampleFoundError:
+                        continue  # Try finding another skeleton, batch progress `i` is unaffected
 
-                    # Step 2: Generate n_per_equation samples (positive pairs) for this skeleton
-                    generated_count = 0
-                    # A safety break to prevent infinite loops on pathologically difficult skeletons
-                    max_attempts_per_skeleton = 10
+                    # Step 2: Attempt to generate n_per_equation samples for this skeleton
+                    # Use temporary lists to hold samples. Only commit them if all are successful.
+                    temp_samples = []
+                    attempts = 0
+                    max_total_attempts = n_per_equation * 20  # A reasonable limit
 
-                    for _ in range(max_attempts_per_skeleton):
-                        # Stop if we have enough samples for this skeleton OR the entire batch is full
-                        if generated_count >= n_per_equation or i >= batch_size:
-                            break
+                    succeeded = True
+                    # The number of samples to generate for this equation, ensuring we don't exceed batch_size
+                    n_to_generate = min(n_per_equation, batch_size - i)
 
-                        try:
-                            # Resample data (constants and points) for the SAME skeleton
-                            x_support, y_support, literals = skeleton_pool.sample_data(
-                                skeleton_code, len(skeleton_constants), n_support_frag
-                            )
+                    for _ in range(n_to_generate):
+                        sample_found = False
+                        while not sample_found:
+                            if attempts >= max_total_attempts:
+                                succeeded = False
+                                break  # Abort this skeleton
 
-                            if padding == 'zero':
-                                for var_idx, variable in enumerate(skeleton_pool.variables):
-                                    if variable not in skeleton:
-                                        x_support[:, var_idx] = 0
+                            attempts += 1
+                            try:
+                                # Generate one sample
+                                x_support, y_support, literals = skeleton_pool.sample_data(
+                                    skeleton_code, len(skeleton_constants), n_support_frag
+                                )
 
-                            input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+                                if padding == 'zero':
+                                    for var_idx, variable in enumerate(skeleton_pool.variables):
+                                        if variable not in skeleton:
+                                            x_support[:, var_idx] = 0
 
-                            # Populate the batch arrays at the current index 'i'
-                            x_tensors_batch[i] = x_support
-                            y_tensors_batch[i] = y_support
-                            input_ids_batch[i, :len(input_ids)] = input_ids
-                            constants_batch.append(literals)
-                            metadata_batch.append({
-                                'skeletons': skeleton,
-                                'skeleton_hashes': skeleton_hash,
-                                'expressions': substitude_constants(skeleton, values=literals, inplace=False),
-                            })
+                                input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
 
-                            # Increment counters for the next sample
-                            generated_count += 1
-                            i += 1
+                                # Store the successful sample
+                                temp_samples.append({
+                                    'x': x_support, 'y': y_support, 'input_ids': input_ids,
+                                    'constants': literals,
+                                    'metadata': {
+                                        'skeletons': skeleton,
+                                        'skeleton_hashes': skeleton_hash,
+                                        'expressions': substitude_constants(skeleton, values=literals, inplace=False),
+                                    }
+                                })
+                                sample_found = True  # Success, move to next sample for this skeleton
 
-                        except NoValidSampleFoundError:
-                            # If data sampling for this skeleton fails, just try again
-                            continue
+                            except NoValidSampleFoundError:
+                                continue  # Retry generating this specific sample
 
-                # --- Write the completed batch directly into the shared memory slot ---
-                pools['x_tensors'][slot_idx] = x_tensors_batch
-                pools['y_tensors'][slot_idx] = y_tensors_batch
-                pools['input_ids'][slot_idx] = input_ids_batch
+                        if not succeeded:
+                            break  # Exit the for loop if max attempts were reached
 
-                # Metadata and constants are handled by the manager/queue
+                    # Step 3: If generation for this skeleton was successful, commit samples to the batch
+                    if succeeded:
+                        for sample in temp_samples:
+                            # Populate batch arrays
+                            x_tensors_batch[i] = sample['x']
+                            y_tensors_batch[i] = sample['y']
+
+                            # Pad and insert input_ids
+                            input_ids_batch[i, :] = tokenizer['<pad>']  # Reset padding
+                            input_ids_batch[i, :len(sample['input_ids'])] = sample['input_ids']
+
+                            constants_batch.append(sample['constants'])
+                            metadata_batch.append(sample['metadata'])
+
+                            i += 1  # Increment main batch counter
+                    # If not succeeded, we do nothing. The main `while i < batch_size` loop continues,
+                    # effectively discarding the failed skeleton and its partial samples.
+
+                # --- Batch is complete, finalize and notify main process ---
                 metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
-
-                # --- Signal completion ---
                 result_queue.put(slot_idx)
 
         finally:
@@ -362,7 +391,6 @@ class FlashANSRDataset:
             for shm in shms.values():
                 shm.close()
 
-    # --- ADDED: Method to initialize the worker pool ---
     def _initialize_workers(self, prefetch_factor: int, batch_size: int, n_per_equation: int, max_seq_len: int, num_workers: int | None = None) -> None:
         """Initializes all multiprocessing resources. Idempotent."""
         if self._is_initialized:
@@ -413,7 +441,6 @@ class FlashANSRDataset:
 
         self._is_initialized = True
 
-    # --- ADDED: Method to gracefully shut down the worker pool ---
     def shutdown(self) -> None:
         """Gracefully shuts down all multiprocessing resources."""
         if not self._is_initialized:
@@ -458,7 +485,6 @@ class FlashANSRDataset:
             self._workers.clear()
             self._num_workers = 0
 
-    # --- MODIFIED: `iterate` is now much simpler ---
     def iterate(
         self,
         size: int | None = None,
