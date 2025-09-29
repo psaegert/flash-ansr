@@ -23,6 +23,8 @@ class FlashANSRModel(nn.Module):
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
 
+        pre_encoder_noise_scale: float,
+
         encoder_max_n_variables: int,
         encoder_dim: int = 512,
         encoder_n_heads: int = 8,
@@ -62,6 +64,7 @@ class FlashANSRModel(nn.Module):
         self.pre_encoder = IEEE75432PreEncoder(input_size=encoder_max_n_variables)
 
         self.pre_encoder_numeric_tokens = IEEE75432PreEncoder(input_size=1)
+        self.pre_encoder_noise_scale = pre_encoder_noise_scale
         self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, decoder_input_dim)
 
         self.encoder = SetTransformer(
@@ -138,6 +141,9 @@ class FlashANSRModel(nn.Module):
         return cls(
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
+
+            pre_encoder_noise_scale=config_["pre_encoder_noise_scale"],
+
             encoder_max_n_variables=config_["encoder_max_n_variables"],
             encoder_dim=config_["encoder_dim"],
             encoder_n_heads=config_["encoder_n_heads"],
@@ -179,7 +185,7 @@ class FlashANSRModel(nn.Module):
 
         # If in training, add a small amount of noise to the pre-encodings for regularization
         if self.training:
-            noise = torch.randn_like(data_pre_encodings) * 0.01
+            noise = torch.randn_like(data_pre_encodings) * self.pre_encoder_noise_scale
             data_pre_encodings = data_pre_encodings + noise
 
         # Encoder forward pass

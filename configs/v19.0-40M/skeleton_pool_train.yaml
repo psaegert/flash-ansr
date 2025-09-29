@@ -1,0 +1,89 @@
+simplipy_engine: 'dev_7-3'
+holdout_pools: [
+  "{{ROOT}}/data/ansr-data/v18.0-s/skeleton_pool_val/",
+  "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
+  "{{ROOT}}/data/ansr-data/test_set/pool_15/skeleton_pool/"
+]
+
+sample_strategy:
+  n_operator_distribution: "length_proportional"
+  min_operators: 0
+  max_operators: 10
+  power: 1
+  max_length: 21
+  max_tries: 1
+  independent_dimensions: True
+
+allow_nan: False
+simplify: True
+
+literal_prior:
+  name: 'normal'
+  kwargs:
+    loc: 0
+    scale: 5
+
+support_prior:
+  name: "sampler"
+  kwargs:
+    base_dist_name: "uniform"
+    base_kwargs:
+      min_value: -30
+      max_value: 30
+    param_samplers:
+      low:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+      high:
+        name: "normal"
+        kwargs: {loc: 0, scale: 10}
+
+support_scale_prior:
+  name: "constant"
+  kwargs:
+    value: 0
+
+n_support_prior:
+  name: "uniform"
+  kwargs:
+    low: 16
+    high: 512
+    min_value: 16
+    max_value: 512
+
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10']
+
+operator_weights:
+  "+": 10
+  "-": 10
+  "*": 10
+  "/": 10
+  abs: 1
+  inv: 1
+  neg: 1
+  pow2: 1
+  pow3: 1
+  pow4: 1
+  pow5: 1
+  pow1_2: 1
+  pow1_3: 1
+  pow1_4: 1
+  pow1_5: 1
+  sin: 1
+  cos: 1
+  tan: 1
+  asin: 1
+  acos: 1
+  atan: 1
+  exp: 1
+  log: 1
+  mult2: 1
+  mult3: 1
+  mult4: 1
+  mult5: 1
+  div2: 1
+  div3: 1
+  div4: 1
+  div5: 1

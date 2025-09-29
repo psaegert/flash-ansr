@@ -3,7 +3,6 @@ import copy
 from typing import Any, Literal
 
 import torch
-import torch_optimizer
 
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
@@ -14,26 +13,12 @@ from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
-from flash_ansr.train.scheduler import LRSchedulerFactory
+from flash_ansr.train.utils import OptimizerFactory, pw_linear_schedule
 
 import wandb
 
+
 torch.set_float32_matmul_precision('high')
-
-
-class OptimizerFactory():
-    @staticmethod
-    def get_optimizer(name: str, *args: Any, **kwargs: Any) -> torch.optim.Optimizer:
-        if hasattr(torch.optim, name):
-            return getattr(torch.optim, name)(*args, **kwargs)
-        if hasattr(torch_optimizer, name):
-            return getattr(torch_optimizer, name)(*args, **kwargs)
-
-        raise NotImplementedError(f"Optimizer {name} not found in torch.optim, torch_optimizer")
-
-
-def collate_fn(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
-    return {k: torch.tensor([example[k] for example in batch]) for k in batch[0]}
 
 
 class Trainer():
@@ -90,8 +75,11 @@ class Trainer():
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
 
-        print(f'Loading lr_scheduler with config {config_["lr_scheduler"]}')
-        lr_scheduler = LRSchedulerFactory.get_scheduler(config_['lr_scheduler']['name'], optimizer, **config_['lr_scheduler'].get('kwargs', {})) if config_["lr_scheduler"] else None
+        print(f'Loading lr_scheduler with config {config_["lr_schedule"]}')
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer=optimizer,
+            lr_lambda=lambda step: pw_linear_schedule(step, config_['lr_schedule'])  # Pass the step and the points that define the piecewise linear schedule
+        )
 
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
