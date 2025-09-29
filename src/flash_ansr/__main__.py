@@ -273,7 +273,7 @@ def main(argv: str = None) -> None:
             except KeyboardInterrupt:
                 print("Training interrupted. Saving model...")
 
-            trainer.model.save(directory=args.output_dir, errors='ignore')
+            trainer.teacher.save(directory=args.output_dir, errors='ignore')
 
             save_config(
                 load_config(args.config, resolve_paths=True),

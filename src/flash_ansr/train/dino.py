@@ -58,6 +58,7 @@ class DINOTrainer():
             'teacher_temp': self.config.get('dino_temperature_teacher', {}),
             'teacher_lambda': self.config.get('dino_teacher_lambda', {}),
             'center_momentum': self.config.get('dino_center_momentum', 0.9),
+            'views': self.config.get('dino_views', 8),
         }
         self.total_steps = self.config.get("steps", 1)
 
@@ -185,19 +186,8 @@ class DINOTrainer():
             self._setup_training_state(device, verbose=verbose)
 
             pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
-            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=False, n_per_equation=self.batch_size)):
-
-                # Assert that all input_ids (classes / skeletons) are the same. This is required for DINO.
-                # Check that each column of batch['input_ids'] has only one unique value
-                if not (len(torch.unique(batch['input_ids'], dim=0)) == 1):
-                    print(batch['input_ids'])
-                    print(torch.unique(batch['input_ids'], dim=0))
-                    print(self.batch_size)
-                    print(batch['input_ids'].shape)
-                    raise ValueError("All input_ids in the batch must be the same for DINO training.")
-
+            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=False, n_per_equation=self.dino_config['views'])):
                 self._train_step(batch, step, do_optimizer_step=True)
-
                 pbar.update(1)
 
                 if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
@@ -307,16 +297,36 @@ class DINOTrainer():
                 with torch.no_grad():
                     teacher_logits: torch.Tensor = self.teacher(data_tensor, data_attn_mask=data_attn_mask)
 
-                # Reshape for per-token loss: (B, S, K) -> (B * S, K)
+                # --- START: Vectorized Multi-View Loss Calculation ---
                 B, S, K = student_logits.shape
-                student_logits_flat = student_logits.view(B * S, K)
-                teacher_logits_flat = teacher_logits.view(B * S, K)
 
-                # Compute DINO loss
-                student_log_probs = F.log_softmax(student_logits_flat / student_temp, dim=-1)
-                teacher_probs = F.softmax((teacher_logits_flat - self.center) / teacher_temp, dim=-1)
+                # 1. Generate integer labels from input_ids to identify equation groups
+                # `labels` will be a tensor of shape (B,) where samples from the same equation have the same integer label.
+                _, labels = torch.unique(micro_batch['input_ids'], dim=0, return_inverse=True)
 
-                dino_loss = torch.sum(-teacher_probs * student_log_probs, dim=-1).mean()
+                # 2. Create masks
+                # `positive_mask` [B, B]: True if sample i and j are from the same equation
+                positive_mask = (labels.unsqueeze(1) == labels.unsqueeze(0))
+                # `identity_mask` [B, B]: True for diagonal elements (i == j)
+                identity_mask = torch.eye(B, device=labels.device, dtype=torch.bool)
+                # `valid_pair_mask`: True for pairs from the same equation but are not the same view
+                valid_pair_mask = positive_mask & ~identity_mask
+
+                # 3. Calculate student log-probabilities and teacher probabilities
+                student_log_probs = F.log_softmax(student_logits / student_temp, dim=-1)
+                teacher_probs = F.softmax((teacher_logits - self.center) / teacher_temp, dim=-1)
+
+                # 4. Compute pairwise cross-entropy loss matrix [B, B]
+                # The 'bsk,csk->bc' einsum computes the dot product for each student view 'b'
+                # against each teacher view 'c', summed over sequence 's' and feature 'k' dimensions.
+                # This efficiently calculates the cross-entropy for all B*B pairs.
+                pairwise_loss_matrix = -torch.einsum('bsk,csk->bc', student_log_probs, teacher_probs) / S
+
+                # 5. Select valid pairs using the mask and compute the final mean loss
+                # This averages the loss only over the valid (i, j) pairs where i!=j
+                # and i and j are views of the same equation.
+                dino_loss = pairwise_loss_matrix[valid_pair_mask].mean()
+                # --- END: Vectorized Multi-View Loss Calculation ---
 
                 # HACK: Avoids None parameter gradients for wandb.watch
                 param_sum = sum(p.sum() for p in self.student.parameters() if p.grad is not None or p.requires_grad)
@@ -371,11 +381,9 @@ class DINOTrainer():
             steps = (size or len(self.val_dataset)) // batch_size
             pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
 
-            for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=False, n_per_equation=batch_size):
+            for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=False, n_per_equation=self.dino_config['views']):
                 batch = self.val_dataset.collate(batch, device=self.device)
-                # Note: For validation, we assume a supervised setup where x_tensors are inputs
-                # and y_token_ids are targets. The input processing might differ from training.
-                data_tensor = batch['x_tensors']
+                data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 # Pad the data tensor to the max set size
                 B, M, D = data_tensor.shape
@@ -395,16 +403,21 @@ class DINOTrainer():
                     with torch.no_grad():
                         teacher_logits: torch.Tensor = self.teacher(data_tensor, data_attn_mask=data_attn_mask)
 
-                    # Reshape for per-token loss: (B, S, K) -> (B * S, K)
+                    # --- START: Vectorized Multi-View Loss Calculation ---
                     B, S, K = student_logits.shape
-                    student_logits_flat = student_logits.view(B * S, K)
-                    teacher_logits_flat = teacher_logits.view(B * S, K)
+                    _, labels = torch.unique(batch['input_ids'], dim=0, return_inverse=True)
 
-                    # Compute DINO loss
-                    student_log_probs = F.log_softmax(student_logits_flat / student_temp, dim=-1)
-                    teacher_probs = F.softmax((teacher_logits_flat - self.center) / teacher_temp, dim=-1)
+                    positive_mask = (labels.unsqueeze(1) == labels.unsqueeze(0))
+                    identity_mask = torch.eye(B, device=labels.device, dtype=torch.bool)
+                    valid_pair_mask = positive_mask & ~identity_mask
 
-                    dino_loss = torch.sum(-teacher_probs * student_log_probs, dim=-1).mean()
+                    student_log_probs = F.log_softmax(student_logits / student_temp, dim=-1)
+                    teacher_probs = F.softmax((teacher_logits - self.center) / teacher_temp, dim=-1)
+
+                    pairwise_loss_matrix = -torch.einsum('bsk,csk->bc', student_log_probs, teacher_probs) / S
+
+                    dino_loss = pairwise_loss_matrix[valid_pair_mask].mean()
+                    # --- END: Vectorized Multi-View Loss Calculation ---
 
                 total_dino_loss += dino_loss.item()
                 pbar.update(1)
@@ -419,7 +432,7 @@ class DINOTrainer():
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
 
         # Ensure we save the unwrapped model if using torch.compile
-        model_to_save = self.student._orig_mod if hasattr(self.student, '_orig_mod') else self.student
+        model_to_save = self.teacher._orig_mod if hasattr(self.teacher, '_orig_mod') else self.teacher
 
         model_to_save.save(directory=save_directory, errors='ignore')
         torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))

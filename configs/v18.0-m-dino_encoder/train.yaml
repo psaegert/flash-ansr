@@ -50,3 +50,4 @@ dino_teacher_lambda:
   final: 1.0
 
 dino_center_momentum: 0.9
+dino_views: 8

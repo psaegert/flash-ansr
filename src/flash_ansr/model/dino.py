@@ -1,10 +1,11 @@
 import os
-from typing import Any
+import warnings
+from typing import Any, Literal
 
 import torch
 from torch import nn
 
-from flash_ansr.utils import load_config, substitute_root_path
+from flash_ansr.utils import load_config, substitute_root_path, save_config
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.model.set_transformer import SetTransformer
 
@@ -134,3 +135,26 @@ class DINOEncoder(nn.Module):
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
 
         return load_config(config_path), model
+
+    def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, errors: Literal['raise', 'warn', 'ignore'] = 'warn') -> None:
+
+        directory = substitute_root_path(directory)
+
+        os.makedirs(directory, exist_ok=True)
+
+        torch.save(self.state_dict(), os.path.join(directory, "state_dict.pt"))
+
+        # Copy the config to the directory for best portability
+        if config is None:
+            if errors == 'raise':
+                raise ValueError("No config specified, saving the model without a config file. Loading the model will require manual configuration.")
+            if errors == 'warn':
+                warnings.warn("No config specified, saving the model without a config file. Loading the model will require manual configuration.")
+        else:
+            save_config(
+                load_config(config, resolve_paths=True),
+                directory=directory,
+                filename='dino_encoder.yaml',
+                reference=reference,
+                recursive=recursive,
+                resolve_paths=True)
