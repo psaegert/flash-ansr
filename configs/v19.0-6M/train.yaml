@@ -9,7 +9,7 @@ optimizer:
 
 lr_schedule:
   - [0, 0.0]
-  - [100_000, 1e-4]  # 5% of steps
+  - [200_000, 1e-4]  # 10% of steps
 
 batch_size: 128
 
