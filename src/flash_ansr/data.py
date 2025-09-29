@@ -299,6 +299,7 @@ class FlashANSRDataset:
                 # These are views into the shared memory for the assigned slot
                 x_tensors_batch = pools['x_tensors'][slot_idx]
                 y_tensors_batch = pools['y_tensors'][slot_idx]
+                data_attn_mask_batch = pools['data_attn_mask'][slot_idx]
                 input_ids_batch = pools['input_ids'][slot_idx]
 
                 # Local buffers for data that can't be pre-allocated
@@ -348,7 +349,8 @@ class FlashANSRDataset:
 
                                 # Store the successful sample
                                 temp_samples.append({
-                                    'x': x_support, 'y': y_support, 'input_ids': input_ids,
+                                    'x': x_support, 'y': y_support,
+                                    'input_ids': input_ids,
                                     'constants': literals,
                                     'metadata': {
                                         'skeletons': skeleton,
@@ -375,6 +377,9 @@ class FlashANSRDataset:
                             # Pad y_tensors to max size and populate
                             y_tensors_batch[i, :sample['y'].shape[0], :sample['y'].shape[1]] = sample['y']
                             y_tensors_batch[i, sample['y'].shape[0]:, :] = 0  # Zero pad remaining rows
+
+                            data_attn_mask_batch[i, :sample['x'].shape[0]] = 1  # Valid data
+                            data_attn_mask_batch[i, sample['x'].shape[0]:] = 0  # Padding
 
                             # Pad and insert input_ids
                             input_ids_batch[i, :] = tokenizer['<pad>']  # Reset padding
@@ -408,6 +413,7 @@ class FlashANSRDataset:
         shm_configs: dict[str, dict[str, Any]] = {
             'x_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], len(self.skeleton_pool.variables)), 'dtype': np.float32},
             'y_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], 1), 'dtype': np.float32},
+            'data_attn_mask': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value']), 'dtype': np.float32},
             'input_ids': {'shape': (pool_size, batch_size, max_seq_len), 'dtype': np.int64},
         }
 
@@ -503,7 +509,6 @@ class FlashANSRDataset:
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         persistent: bool = False,
-        tqdm_total: int | None = None
     ) -> Generator[dict[str, Any], None, None]:
         if batch_size is None:
             batch_size = 1
@@ -512,7 +517,10 @@ class FlashANSRDataset:
             yield from tqdm(self.data, desc="Iterating over pre-compiled dataset", disable=not verbose)
             return
 
-        if steps is None and size is not None:
+        if steps is None and size is None:
+            raise ValueError("Either size or steps must be specified.")
+
+        if steps is None:
             steps = (size + batch_size - 1) // batch_size  # type: ignore
 
         self._initialize_workers(
@@ -527,18 +535,15 @@ class FlashANSRDataset:
         if self._work_queue is None or self._result_queue is None or self._available_slots_queue is None or self._metadata_pool is None or self._pools is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
-        pbar = tqdm(total=steps or tqdm_total, desc="Generating Batches", disable=not verbose)
-        prefill_volume = min(pool_size, steps) if steps is not None else pool_size
+        pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
         try:
             # Prefill the work queue
-            for _ in range(prefill_volume):
+            for _ in range(min(pool_size, steps)):
                 slot_idx = self._available_slots_queue.get()
                 self._work_queue.put((slot_idx, n_support))
 
             # Main producer-consumer loop
-            producer_iteration = 0
-            while steps is None or producer_iteration < steps:
-                producer_iteration += 1
+            for _ in range(steps):
                 completed_slot_idx = self._result_queue.get()
 
                 # Construct batch
@@ -546,6 +551,7 @@ class FlashANSRDataset:
                 batch_dict = {
                     'x_tensors': torch.from_numpy(self._pools['x_tensors'][completed_slot_idx]),
                     'y_tensors': torch.from_numpy(self._pools['y_tensors'][completed_slot_idx]),
+                    'data_attn_mask': torch.from_numpy(self._pools['data_attn_mask'][completed_slot_idx]),
                     'input_ids': torch.from_numpy(self._pools['input_ids'][completed_slot_idx]),
                     'constants': [torch.from_numpy(c) for c in metadata_and_constants['constants']],
                     **{k: [d[k] for d in metadata_and_constants['metadata']] for k in metadata_and_constants['metadata'][0]}

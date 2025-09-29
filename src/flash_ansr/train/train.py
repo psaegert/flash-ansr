@@ -230,19 +230,8 @@ class Trainer():
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
-            # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
-            if data_tensor.shape[1] < self.max_set_size:
-                pad_size = self.max_set_size - data_tensor.shape[1]
-                pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
-                data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
-                data_attn_mask = torch.cat([
-                    torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
-                    torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
-            else:
-                data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
-
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'])
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -296,19 +285,8 @@ class Trainer():
                 batch = self.val_dataset.collate(batch, device=self.device)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
-                # Pad the data tensor to the max set size (B, M, D) -> (B, max_set_size, D)
-                if data_tensor.shape[1] < self.max_set_size:
-                    pad_size = self.max_set_size - data_tensor.shape[1]
-                    pad_tensor = torch.zeros((data_tensor.shape[0], pad_size, data_tensor.shape[2]), device=data_tensor.device, dtype=data_tensor.dtype)
-                    data_tensor = torch.cat([data_tensor, pad_tensor], dim=1)
-                    data_attn_mask = torch.cat([
-                        torch.ones((data_tensor.shape[0], data_tensor.shape[1] - pad_size), device=data_tensor.device, dtype=torch.bool),
-                        torch.zeros((data_tensor.shape[0], pad_size), device=data_tensor.device, dtype=torch.bool)], dim=1)
-                else:
-                    data_attn_mask = torch.ones((data_tensor.shape[0], data_tensor.shape[1]), device=data_tensor.device, dtype=torch.bool)
-
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=data_attn_mask)
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'])
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
