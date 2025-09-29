@@ -1,0 +1,62 @@
+special_tokens:
+  - "<pad>"
+  - "<bos>"
+  - "<eos>"
+  - "<unk>"
+  - "<cls>"
+  - "<mask>"
+  - "<constant>"
+  - '0'
+  - '1'
+  - '(-1)'
+  - 'np.pi'
+  - 'np.e'
+  - 'float("inf")'
+  - 'float("-inf")'
+  - 'float("nan")'
+
+operators:
+  - "+"
+  - "-"
+  - "*"
+  - "/"
+  - abs
+  - inv
+  - neg
+  - pow
+  - pow2
+  - pow3
+  - pow4
+  - pow5
+  - pow1_2
+  - pow1_3
+  - pow1_4
+  - pow1_5
+  - sin
+  - cos
+  - tan
+  - asin
+  - acos
+  - atan
+  - exp
+  - log
+  - mult2
+  - mult3
+  - mult4
+  - mult5
+  - div2
+  - div3
+  - div4
+  - div5
+
+variables:
+  - x1
+  - x2
+  - x3
+  - x4
+  - x5
+  - x6
+  - x7
+  - x8
+  - x9
+  - x10

@@ -65,7 +65,9 @@ class TestFlashANSRDataset(unittest.TestCase):
     def test_collate_single(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 
-        for batch in dataset.iterate(size=7, batch_size=None, n_support=17):
+        for batch in dataset.iterate(size=7, batch_size=None, n_support=3):
             batch = dataset.collate(batch)
             assert isinstance(batch['input_ids'], torch.Tensor)
-            assert batch['x_tensors'].shape[0] in [17, 512]  # First instance has maximum number of points to reserve maximum memory
+            print(batch['x_tensors'][0, :10, :10])
+            for i in range(batch['x_tensors'].shape[-1]):
+                assert (batch['x_tensors'][0, :, i] != 0).sum() in [0, 3]  # 7 non-zero rows

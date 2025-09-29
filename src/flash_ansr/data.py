@@ -503,6 +503,7 @@ class FlashANSRDataset:
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         persistent: bool = False,
+        tqdm_total: int | None = None
     ) -> Generator[dict[str, Any], None, None]:
         if batch_size is None:
             batch_size = 1
@@ -511,9 +512,7 @@ class FlashANSRDataset:
             yield from tqdm(self.data, desc="Iterating over pre-compiled dataset", disable=not verbose)
             return
 
-        if size is None and steps is None:
-            raise ValueError("Must specify 'size' or 'steps'.")
-        if steps is None:
+        if steps is None and size is not None:
             steps = (size + batch_size - 1) // batch_size  # type: ignore
 
         self._initialize_workers(
@@ -528,15 +527,18 @@ class FlashANSRDataset:
         if self._work_queue is None or self._result_queue is None or self._available_slots_queue is None or self._metadata_pool is None or self._pools is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
-        pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
+        pbar = tqdm(total=steps or tqdm_total, desc="Generating Batches", disable=not verbose)
+        prefill_volume = min(pool_size, steps) if steps is not None else pool_size
         try:
             # Prefill the work queue
-            for _ in range(min(steps, pool_size)):
+            for _ in range(prefill_volume):
                 slot_idx = self._available_slots_queue.get()
                 self._work_queue.put((slot_idx, n_support))
 
             # Main producer-consumer loop
-            for _ in range(steps):
+            producer_iteration = 0
+            while steps is None or producer_iteration < steps:
+                producer_iteration += 1
                 completed_slot_idx = self._result_queue.get()
 
                 # Construct batch
