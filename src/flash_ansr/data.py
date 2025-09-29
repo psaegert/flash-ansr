@@ -551,7 +551,7 @@ class FlashANSRDataset:
                 batch_dict = {
                     'x_tensors': torch.from_numpy(self._pools['x_tensors'][completed_slot_idx]),
                     'y_tensors': torch.from_numpy(self._pools['y_tensors'][completed_slot_idx]),
-                    'data_attn_mask': torch.from_numpy(self._pools['data_attn_mask'][completed_slot_idx]),
+                    'data_attn_mask': torch.from_numpy(self._pools['data_attn_mask'][completed_slot_idx]).to(torch.bool),
                     'input_ids': torch.from_numpy(self._pools['input_ids'][completed_slot_idx]),
                     'constants': [torch.from_numpy(c) for c in metadata_and_constants['constants']],
                     **{k: [d[k] for d in metadata_and_constants['metadata']] for k in metadata_and_constants['metadata'][0]}

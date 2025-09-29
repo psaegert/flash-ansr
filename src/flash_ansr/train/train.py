@@ -231,7 +231,7 @@ class Trainer():
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'])
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device))
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -286,7 +286,7 @@ class Trainer():
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'])
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device))
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
