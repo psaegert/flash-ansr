@@ -293,7 +293,7 @@ class FlashANSRDataset:
                 if job is None:  # Sentinel
                     break
 
-                slot_idx, n_support_frag = job
+                slot_idx, n_support = job
 
                 # --- Buffers for a single batch ---
                 # These are views into the shared memory for the assigned slot
@@ -336,7 +336,7 @@ class FlashANSRDataset:
                             try:
                                 # Generate one sample
                                 x_support, y_support, literals = skeleton_pool.sample_data(
-                                    skeleton_code, len(skeleton_constants), n_support_frag
+                                    skeleton_code, len(skeleton_constants), n_support=n_support
                                 )
 
                                 if padding == 'zero':
@@ -368,8 +368,13 @@ class FlashANSRDataset:
                     if succeeded:
                         for sample in temp_samples:
                             # Populate batch arrays
-                            x_tensors_batch[i] = sample['x']
-                            y_tensors_batch[i] = sample['y']
+                            # Pad x_tensors to max size and populate
+                            x_tensors_batch[i, :sample['x'].shape[0], :sample['x'].shape[1]] = sample['x']
+                            x_tensors_batch[i, sample['x'].shape[0]:, :] = 0  # Zero pad remaining rows
+
+                            # Pad y_tensors to max size and populate
+                            y_tensors_batch[i, :sample['y'].shape[0], :sample['y'].shape[1]] = sample['y']
+                            y_tensors_batch[i, sample['y'].shape[0]:, :] = 0  # Zero pad remaining rows
 
                             # Pad and insert input_ids
                             input_ids_batch[i, :] = tokenizer['<pad>']  # Reset padding
@@ -528,8 +533,7 @@ class FlashANSRDataset:
             # Prefill the work queue
             for _ in range(min(steps, pool_size)):
                 slot_idx = self._available_slots_queue.get()
-                n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
-                self._work_queue.put((slot_idx, n_support_frag))
+                self._work_queue.put((slot_idx, n_support))
 
             # Main producer-consumer loop
             for _ in range(steps):
@@ -559,8 +563,7 @@ class FlashANSRDataset:
                 self._available_slots_queue.put(completed_slot_idx)
                 if _ + pool_size < steps:
                     slot_to_refill = self._available_slots_queue.get()
-                    n_support_frag = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"] if n_support is None else n_support
-                    self._work_queue.put((slot_to_refill, n_support_frag))
+                    self._work_queue.put((slot_to_refill, n_support))
 
         finally:
             pbar.close()
