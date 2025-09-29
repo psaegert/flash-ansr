@@ -15,11 +15,11 @@ lr_scheduler:
     annealing_steps: 100_000
     total_steps: 500_000
 
-batch_size: 256
+batch_size: 192
 
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
-val_batch_size: 256
+val_batch_size: 192
 val_size: 100_000
 
 compile_mode: 'reduce-overhead'

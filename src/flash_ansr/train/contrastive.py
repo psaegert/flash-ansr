@@ -380,11 +380,11 @@ class ContrastiveTrainer():
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, contrastive_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
         """Logs a batch's training metrics to wandb."""
         log_data = {
             "total_gradient_norm": total_gradient_norm.item(),
-            "train_contrastive_loss": ce_loss,
+            "train_contrastive_loss": contrastive_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
             "total_pflops": self.total_pflops,
@@ -392,9 +392,9 @@ class ContrastiveTrainer():
         }
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(self, step: int, val_ce_loss: float) -> None:
+    def _log_validation_metrics(self, step: int, val_contrastive_loss: float) -> None:
         """Logs validation metrics to wandb."""
         log_data = {
-            "val_ce_loss": val_ce_loss,
+            "val_contrastive_loss": val_contrastive_loss,
         }
         wandb.log(log_data, step=step)  # type: ignore
