@@ -43,6 +43,7 @@ class Refiner:
 
         self.import_modules()
 
+        self.loss = np.inf
         self.valid_fit: bool = False
 
         self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []

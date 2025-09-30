@@ -287,7 +287,7 @@ class GenerationConfig(Mapping[str, Any]):
 
         self.method = method
 
-        self.config = dict(**kwargs)
+        self.config = {**kwargs}
 
         # Set defaults if not provided
         if method in self.defaults:

@@ -154,12 +154,11 @@ class SkeletonPool:
 
             return mixture_distribution
 
-        elif isinstance(config, dict):
+        if isinstance(config, dict):
             # It's a single distribution (which could be simple or a complex 'sampler')
             return get_distribution(config)
 
-        else:
-            raise TypeError(f"Prior configuration must be a dict or a list, got {type(config).__name__}")
+        raise TypeError(f"Prior configuration must be a dict or a list, got {type(config).__name__}")
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SkeletonPool":

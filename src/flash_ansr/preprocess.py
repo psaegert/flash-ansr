@@ -43,19 +43,18 @@ class FlashASNRPreprocessor:
 
             return batch
 
-        else:
-            # The input is a batch of instances
-            new_fields: set[str] = set()
-            for i, instance in enumerate(zip(*batch.values())):
-                for k, modified_value in self._format_single(dict(zip(batch.keys(), instance))).items():
-                    if k not in batch:
-                        new_fields.add(k)
-                        batch[k] = []
+        # The input is a batch of instances
+        new_fields: set[str] = set()
+        for i, instance in enumerate(zip(*batch.values())):
+            for k, modified_value in self._format_single(dict(zip(batch.keys(), instance))).items():
+                if k not in batch:
+                    new_fields.add(k)
+                    batch[k] = []
 
-                    if k in new_fields:
-                        batch[k].append(modified_value)
-                    else:
-                        batch[k][i] = modified_value
+                if k in new_fields:
+                    batch[k].append(modified_value)
+                else:
+                    batch[k][i] = modified_value
 
         return batch
 

@@ -34,7 +34,6 @@ class TestSetParaser:
         SkeletonPool
             The skeleton pool with the parsed expressions added.
         '''
-        pass
 
 
 class ParserFactory:

@@ -34,36 +34,37 @@ class Result(TypedDict):
 
 
 class FlashANSR(BaseEstimator):
-    '''
-    Flash Amortized Neural Symbolic Regressor.
+    """Flash Amortized Neural Symbolic Regressor.
 
     Parameters
     ----------
     simplipy_engine : SimpliPyEngine
-        The expression space used for manipulating expressions.
-    flash_ansr_transformer : FlashANSRTransformer
-        The core transformer model.
+        Engine responsible for manipulating and evaluating symbolic expressions.
+    flash_ansr_transformer : FlashANSRModel
+        Trained transformer backbone that proposes expression programs.
+    tokenizer : Tokenizer
+        Tokenizer mapping model outputs to expression tokens.
     generation_config : GenerationConfig, optional
-        The generation configuration, by default None.
+        Configuration that controls candidate generation. If ``None`` a default
+        ``GenerationConfig`` is created.
     numeric_head : bool, optional
-        Whether to use the numeric head, by default False.
+        Whether to enable the numeric head to predict constants directly.
     n_restarts : int, optional
-        The number of restarts for the refiner, by default 1.
-    refiner_method : str, optional
-        The optimization method to use. One of
-        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
-        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
-    p0_noise : {'uniform', 'normal'}, optional
-        The type of noise to add to the initial guess, by default 'normal'.
-    p0_noise_kwargs : dict, optional
-        The keyword arguments for the noise function, by default None.
-    numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'}, optional
-        The behavior for numpy errors, by default 'ignore'.
+        Number of optimizer restarts used by the refiner when fitting constants.
+    refiner_method : {'curve_fit_lm', 'minimize_bfgs'}
+        Optimization routine employed by the refiner.
+    refiner_p0_noise : {'uniform', 'normal'}, optional
+        Distribution applied to perturb initial constant guesses. ``None`` disables
+        perturbations.
+    refiner_p0_noise_kwargs : dict or {'default'} or None, optional
+        Keyword arguments forwarded to the noise sampler. ``'default'`` yields
+        ``{'low': -5, 'high': 5}`` for the uniform distribution.
+    numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
+        Desired NumPy error handling strategy applied during constant refinement.
     parsimony : float, optional
-        The parsimony coefficient, by default 0.2.
-    verbose : bool, optional
-        Whether to print verbose output, by default False.
-    '''
+        Penalty coefficient that discourages overly complex expressions.
+    """
+
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
@@ -74,12 +75,15 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 8,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
-            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
+            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
         self.tokenizer = tokenizer
+
+        if refiner_p0_noise_kwargs == 'default':
+            refiner_p0_noise_kwargs = {'low': -5, 'high': 5}
 
         if generation_config is None:
             generation_config = GenerationConfig()
@@ -107,10 +111,42 @@ class FlashANSR(BaseEstimator):
             n_restarts: int = 1,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
-            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
+            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
             device: str = 'cpu') -> "FlashANSR":
+        """Instantiate a :class:`FlashANSR` model from a configuration directory.
+
+        Parameters
+        ----------
+        directory : str
+            Directory that contains ``model.yaml``, ``tokenizer.yaml`` and
+            ``state_dict.pt`` artifacts.
+        generation_config : GenerationConfig, optional
+            Generation parameters to override defaults during candidate search.
+        numeric_head : bool, optional
+            Whether to enable the numeric head for constant prediction.
+        n_restarts : int, optional
+            Number of restarts passed to the refiner.
+        refiner_method : {'curve_fit_lm', 'minimize_bfgs'}
+            Optimization routine for constant fitting.
+        refiner_p0_noise : {'uniform', 'normal'}, optional
+            Distribution used to perturb initial constant guesses.
+        refiner_p0_noise_kwargs : dict or {'default'} or None, optional
+            Additional keyword arguments for the noise sampler. ``'default'``
+            resolves to ``{'low': -5, 'high': 5}``.
+        numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
+            NumPy floating-point error policy applied during refinement.
+        parsimony : float, optional
+            Parsimony coefficient used when compiling results.
+        device : str, optional
+            Torch device where the model weights will be loaded.
+
+        Returns
+        -------
+        model : FlashANSR
+            Fully initialized regressor ready for inference.
+        """
         directory = substitute_root_path(directory)
 
         flash_ansr_transformer_path = os.path.join(directory, 'model.yaml')
@@ -137,12 +173,27 @@ class FlashANSR(BaseEstimator):
 
     @property
     def n_variables(self) -> int:
-        '''
-        The number of variables the model was trained on.
-        '''
+        """Number of variables the model was trained on."""
         return self.flash_ansr_transformer.encoder_max_n_variables - 1
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
+        """Limit input features to the number of variables seen during training.
+
+        Parameters
+        ----------
+        X : ndarray or Tensor or DataFrame
+            Candidate input data whose trailing dimension enumerates variables.
+
+        Returns
+        -------
+        truncated : ndarray or Tensor or DataFrame
+            Input truncated to ``self.n_variables`` columns when necessary.
+
+        Raises
+        ------
+        ValueError
+            If the input cannot be sliced to the expected number of variables.
+        """
         if X.shape[-1] <= self.n_variables:
             return X
 
@@ -159,6 +210,31 @@ class FlashANSR(BaseEstimator):
                 raise ValueError('Cannot truncate the input data') from exc
 
     def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+        """Generate candidate expression beams from the transformer.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            Batched input tensor where the final feature corresponds to targets.
+        complexity : int or float or None, optional
+            Target expression complexity supplied to the generator.
+        verbose : bool, optional
+            If ``True``, progress output is emitted where supported.
+
+        Returns
+        -------
+        beams : list[list[int]]
+            Raw token sequences proposed by the transformer.
+        log_probs : list[float]
+            Log probabilities associated with each beam.
+        completed : list[bool]
+            Flags indicating whether the beam terminated with an end token.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported generation method is requested.
+        """
         match self.generation_config.method:
             case 'beam_search':
                 return self.flash_ansr_transformer.beam_search(
@@ -183,32 +259,29 @@ class FlashANSR(BaseEstimator):
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             verbose: bool = False) -> None:
-        '''
-        Perform symbolic regression on the input data.
+        """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
         Parameters
         ----------
-        X : np.ndarray | torch.Tensor | pd.DataFrame
-            The input data.
-        y : np.ndarray | torch.Tensor | pd.DataFrame | pd.Series
-            The target data.
-        complexity : int | list[int] | None, optional
-            The desired complexity (length in tokens) of the expression, by default None.
-        variable_names : list[str] | dict[str, str] | {'auto'}, optional
-            The variable names, by default 'auto'.
-            - If list[str], the i-th column of X will be named variable_names[i].
-            - If dict[str, str]:
-                - If X is array-like, the i-th column of X will be named after the variable_names keys
-                - If X is a DataFrame, variable_names will be used to map the column names to the variable names.
-            - If 'auto':
-                - If X is a DataFrame, the column names will be used as variable names.
-                - If X is an array or tensor, the variables will be named x0, x1, x2, ...
-            - If None, the variables will be named x0, x1, x2, ...
+        X : ndarray or Tensor or DataFrame
+            Feature matrix where rows index observations and columns variables.
+        y : ndarray or Tensor or DataFrame or Series
+            Target values. Multi-output targets are unsupported.
+        complexity : int or float or Iterable or None, optional
+            Desired expression complexity. Iterables allow sweeping multiple
+            complexity targets. ``None`` defers to the generator defaults.
+        variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
+            Mapping from internal variable tokens to descriptive names.
         converge_error : {'raise', 'ignore', 'print'}, optional
-            The behavior for convergence errors, by default 'ignore'.
+            Handling strategy when the refiner fails to converge.
         verbose : bool, optional
-            Whether to display a progress bar, by default False.
-        '''
+            If ``True`` progress bars and diagnostic output are displayed.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` has more than one output dimension or cannot be reshaped.
+        """
 
         if len(X.shape) == 1:
             X = X.reshape(-1, 1)
@@ -239,7 +312,7 @@ class FlashANSR(BaseEstimator):
                 # column i -> column name
                 self.variable_mapping = {f"x{i + 1}": name for i, name in enumerate(X.columns)}
 
-        # TODO: Improve the handling of different types
+        # Normalize ``complexity`` into an iterable so downstream logic can iterate uniformly.
         if complexity is None or not hasattr(complexity, '__iter__'):
             complexity_list: list[int | float | None] = [complexity]
         else:
@@ -275,11 +348,10 @@ class FlashANSR(BaseEstimator):
 
             self._results = []
 
-            # Silence numpy errors
+            # Temporarily adopt the configured floating-point error policy for refinement.
             numpy_errors_before = np.geterr()
             np.seterr(all=self.numpy_errors)
 
-            # --- INFERENCE ---
             for complexity in complexity_list:
                 raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
 
@@ -295,9 +367,6 @@ class FlashANSR(BaseEstimator):
 
                         if self.numeric_head:
                             raise NotImplementedError("Numeric head is not yet implemented")
-                            # with torch.no_grad():
-                            #     _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
-                            #     numeric_prediction = num_output[0, :, 0][beam == self.tokenizer["<constant>"]]  # FIXME: Start at 1 or 0?
 
                         try:
                             refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
@@ -342,13 +411,23 @@ class FlashANSR(BaseEstimator):
                             if converge_error == 'print':
                                 print(f"Failed to converge for beam: {beam_decoded}")
 
-            # --- /INFERENCE ---
-
             self.compile_results(self.parsimony)
 
             np.seterr(**numpy_errors_before)
 
     def compile_results(self, parsimony: float) -> None:
+        """Aggregate refiner outputs into a tidy :class:`pandas.DataFrame`.
+
+        Parameters
+        ----------
+        parsimony : float
+            Parsimony coefficient used to recompute scores before ranking.
+
+        Raises
+        ------
+        ConvergenceError
+            If no beams converged during refinement.
+        """
         if not self._results:
             raise ConvergenceError("The optimization did not converge for any beam")
 
@@ -381,23 +460,27 @@ class FlashANSR(BaseEstimator):
         self.results.drop(columns=['fits'], inplace=True)
 
     def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
-        '''
-        Predict the target data using the fitted model.
+        """Evaluate a fitted expression on new data.
 
         Parameters
         ----------
-        X : np.ndarray | torch.Tensor | pd.DataFrame
-            The input data.
+        X : ndarray or Tensor or DataFrame
+            Feature matrix to evaluate.
         nth_best_beam : int, optional
-            The nth best beam to use, by default 0.
+            Beam index to select from the ranked results.
         nth_best_constants : int, optional
-            The nth best constants to use for the given beam, by default 0.
+            Index of the constant fit to choose for the selected beam.
 
         Returns
         -------
-        np.ndarray
-            The predicted target data.
-        '''
+        y_pred : ndarray
+            Predicted targets with the same leading dimension as ``X``.
+
+        Raises
+        ------
+        ValueError
+            If the model has not been fitted before prediction.
+        """
         X = self._truncate_input(X)
 
         if isinstance(X, pd.DataFrame):
@@ -411,28 +494,28 @@ class FlashANSR(BaseEstimator):
         return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
 
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
-        '''
-        Get the nth best expression.
+        """Retrieve a formatted expression from the compiled results.
 
         Parameters
         ----------
         nth_best_beam : int, optional
-            The nth best beam to use, by default 0.
+            Beam index to extract from ``self._results``.
         nth_best_constants : int, optional
-            The nth best constants to use for the given beam, by default 0.
+            Constant fit index for the selected beam.
         return_prefix : bool, optional
-            Whether to return the expression with the prefix, by default False.
+            If ``True`` return the prefix notation instead of infix string.
         precision : int, optional
-            The precision for rounding the constants, by default 2.
+            Number of decimal places used when rendering constants.
         map_variables : bool, optional
-            Whether to map the variables to their specified names if possible, by default True.
+            When ``True`` apply ``self.variable_mapping`` to humanise variables.
         **kwargs : Any
+            Extra keyword arguments forwarded to :meth:`Refiner.transform`.
 
         Returns
         -------
-        list[str] | str
-            The nth best expression.
-        '''
+        expression : list[str] or str
+            Expression either as a token list or human-readable string.
+        """
         return self._results[nth_best_beam]['refiner'].transform(
             expression=self._results[nth_best_beam]['expression'],
             nth_best_constants=nth_best_constants,
@@ -442,30 +525,28 @@ class FlashANSR(BaseEstimator):
             **kwargs)
 
     def to(self, device: str) -> "FlashANSR":
-        '''
-        Move the model to a device.
+        """Move the transformer weights to ``device``.
 
         Parameters
         ----------
         device : str
-            The device to move the model to.
+            Target torch device (e.g. ``'cpu'`` or ``'cuda:0'``).
 
         Returns
         -------
-        FlashANSR
-            The model on the new device.
-        '''
+        model : FlashANSR
+            Self, enabling fluent chaining.
+        """
         self.flash_ansr_transformer.to(device)
         return self
 
     def eval(self) -> "FlashANSR":
-        '''
-        Set the model to evaluation mode.
+        """Put the transformer into evaluation mode.
 
         Returns
         -------
-        FlashANSR
-            The model in evaluation mode.
-        '''
+        model : FlashANSR
+            Self, enabling fluent chaining.
+        """
         self.flash_ansr_transformer.eval()
         return self

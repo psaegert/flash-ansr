@@ -26,6 +26,7 @@ dev = [
     "mypy",
     "flake8",
     "pygount",
+    "pylint",
     "types-setuptools",
     "types-tqdm",
     "types-toml",

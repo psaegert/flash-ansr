@@ -1,3 +1,5 @@
+"""Utilities for generating and managing Flash-ANSR training datasets."""
+
 import os
 import warnings
 import time
@@ -23,17 +25,37 @@ from flash_ansr.preprocess import FlashASNRPreprocessor
 
 
 class FlashANSRDataset:
-    '''
-    Dataset for amortized neural symbolic regression training.
-    '''
-    def __init__(self, skeleton_pool: SkeletonPool, tokenizer: Tokenizer, padding: Literal['random', 'zero'], preprocessor: FlashASNRPreprocessor | None = None) -> None:
+    """Dataset wrapper for amortized neural symbolic regression training."""
+
+    def __init__(
+        self,
+        skeleton_pool: SkeletonPool,
+        tokenizer: Tokenizer,
+        padding: Literal['random', 'zero'],
+        preprocessor: FlashASNRPreprocessor | None = None,
+    ) -> None:
+        """Create a dataset tied to a skeleton pool and tokenizer.
+
+        Parameters
+        ----------
+        skeleton_pool:
+            Pool that produces symbolic skeletons and handles sampling utilities.
+        tokenizer:
+            Tokenizer used to convert skeleton tokens to model-ready ids.
+        padding:
+            Strategy for filling unused inputs. Allowed values are ``"random"`` or
+            ``"zero"``.
+        preprocessor:
+            Optional formatter applied to each generated batch prior to yielding
+            results.
+        """
         self.skeleton_pool = skeleton_pool
         self.tokenizer = tokenizer
         self.padding = padding
         self.preprocessor = preprocessor
         self.data = None
 
-        # --- ADDED: Attributes for persistent resources ---
+        # Multiprocessing resources are lazily created in ``_initialize_workers``.
         self._is_initialized = False
         self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
@@ -45,9 +67,8 @@ class FlashANSRDataset:
         self._workers: list[mp.Process] = []
         self._num_workers = 0
 
-    # --- ADDED: Destructor for robust cleanup ---
     def __del__(self) -> None:
-        """Safety net to ensure resources are cleaned up when the object is garbage collected."""
+        """Warn and free multiprocessing resources when GC'd without shutdown."""
         if self._is_initialized:
             warnings.warn(
                 "FlashANSRDataset was not explicitly shut down. "
@@ -57,23 +78,24 @@ class FlashANSRDataset:
 
     @property
     def simplipy_engine(self) -> SimpliPyEngine:
+        """Return the underlying `SimpliPyEngine` tied to the skeleton pool."""
         return self.skeleton_pool.simplipy_engine
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
-        '''
-        Initialize a dataset from a configuration file.
+        """Instantiate a dataset from a configuration mapping or file.
 
         Parameters
         ----------
-        config : dict or str
-            The configuration file or dictionary.
+        config:
+            Either a configuration dictionary or the path to a YAML/JSON file
+            that conforms to the dataset configuration schema.
 
         Returns
         -------
         FlashANSRDataset
-            The dataset.
-        '''
+            A dataset configured according to the provided specification.
+        """
         config_ = load_config(config)
 
         if "dataset" in config_.keys():
@@ -105,26 +127,35 @@ class FlashANSRDataset:
             preprocessor=preprocessor
         )
 
-    def save(self, directory: str, *args: Any, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, **kwargs: Any) -> None:
-        '''
-        Save the dataset to disk.
+    def save(
+        self,
+        directory: str,
+        *args: Any,
+        config: dict[str, Any] | str | None = None,
+        reference: str = 'relative',
+        recursive: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """Serialize the dataset to ``directory`` and persist its configuration.
 
         Parameters
         ----------
-        directory : str
-            The directory to save the dataset to.
-        config : dict or str, optional
-            The configuration file or dictionary, by default None.
-        reference : str, optional
-            Determines the reference base path. One of
-            - 'relative': relative to the specified directory
-            - 'project': relative to the project root
-            - 'absolute': absolute paths
-        recursive : bool, optional
-            Save any referenced configs too
-        **kwargs
-            Additional arguments to pass to the dataset's save_to_disk method.
-        '''
+        directory:
+            Destination root where the dataset and configuration will be stored.
+        *args, **kwargs:
+            Forwarded to :meth:`datasets.Dataset.save_to_disk`.
+        config:
+            Optional configuration dictionary or path used when saving a snapshot
+            of the dataset definition. When ``None`` the dataset is saved without
+            configuration metadata.
+        reference:
+            Strategy used when recalculating paths inside ``config`` before
+            writing it to disk. Accepts ``"relative"``, ``"project"`` or
+            ``"absolute"``.
+        recursive:
+            When ``True`` also persist referenced configuration files alongside
+            the main dataset configuration.
+        """
         if self.data is None:
             raise ValueError("No dataset to save. Please generate or load a dataset first.")
 
@@ -142,21 +173,20 @@ class FlashANSRDataset:
 
     @classmethod
     def load(cls, directory: str) -> tuple[dict[str, Any], "FlashANSRDataset"]:
-        '''
-        Load a dataset from disk.
+        """Restore a dataset and its configuration from ``directory``.
 
         Parameters
         ----------
-        directory : str
-            The directory to load the dataset from.
+        directory:
+            Base directory containing ``dataset.yaml`` and serialized data under
+            the ``dataset`` subfolder.
 
         Returns
         -------
-        dict
-            The configuration dictionary.
-        FlashANSRDataset
-            The FlashANSRDataset object.
-        '''
+        tuple[dict[str, Any], FlashANSRDataset]
+            A pair of the loaded configuration dictionary and a dataset instance
+            with ``data`` populated from disk.
+        """
         config_path = os.path.join(directory, 'dataset.yaml')
         resolved_directory = substitute_root_path(directory)
 
@@ -165,7 +195,35 @@ class FlashANSRDataset:
 
         return load_config(config_path), dataset
 
-    def _pad_sequence(self, sequence: list[int], max_length: int, pad_value: Any, device: str | torch.device | int = 'cpu', dtype: torch.dtype = torch.long) -> torch.Tensor:
+    def _pad_sequence(
+        self,
+        sequence: list[int] | torch.Tensor,
+        max_length: int,
+        pad_value: Any,
+        device: str | torch.device | int = 'cpu',
+        dtype: torch.dtype = torch.long,
+    ) -> torch.Tensor:
+        """Return ``sequence`` padded to ``max_length`` on the given ``device``.
+
+        Parameters
+        ----------
+        sequence:
+            One-dimensional data to pad. Can be a Python list or tensor.
+        max_length:
+            Desired length after padding. Must be greater than or equal to the
+            current sequence length.
+        pad_value:
+            Fill value inserted to reach ``max_length``.
+        device:
+            Target device for the resulting tensor. Defaults to CPU.
+        dtype:
+            Torch dtype of the returned tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            The padded tensor of shape ``(max_length,)``.
+        """
         if not isinstance(sequence, torch.Tensor):
             sequence_tensor = torch.tensor(sequence, device=device, dtype=dtype)
         else:
@@ -179,11 +237,24 @@ class FlashANSRDataset:
         )
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = 'cpu') -> dict[str, Any]:
-        '''
-        Collate a batch of data inplace.
-        '''
-        # --- Streamlined and Corrected Batch Processing Logic ---
+        """Pad, stack, and post-process a dataloader batch in-place.
 
+        Parameters
+        ----------
+        batch:
+            Mini-batch produced either by :meth:`iterate` or a precompiled
+            dataset. Expected to include ``input_ids``, ``x_tensors``,
+            ``y_tensors`` and optionally ``constants``, ``input_num`` and
+            ``complexities``.
+        device:
+            Torch device on which tensors should reside.
+
+        Returns
+        -------
+        dict[str, Any]
+            The normalized batch dictionary with additional fields ``labels`` and
+            ``expression_ids``.
+        """
         # 1. Pad and stack 'input_ids' (variable-length sequences)
         # We handle this first because it's a list of lists.
         if isinstance(batch['input_ids'][0], list):
@@ -206,7 +277,7 @@ class FlashANSRDataset:
                 batch[k] = torch.stack(batch[k])
             batch[k] = batch[k].to(device=device, dtype=dtype)
 
-        # 3. Handle 'constants' (ragged data) -> THE CRUCIAL FIX
+        # 3. Handle 'constants' (ragged data)
         # Since constants have variable lengths, they CANNOT be stacked.
         # We process them into a LIST of tensors on the correct device.
         constants_list = []
@@ -242,7 +313,7 @@ class FlashANSRDataset:
         batch['expression_ids'] = []
         expression_to_id: dict[tuple, int] = {}
 
-        for i, expr in enumerate(batch['input_ids']):
+        for _, expr in enumerate(batch['input_ids']):
             expr_key = tuple(expr.flatten().tolist())
             if expr_key not in expression_to_id:
                 expression_to_id[expr_key] = len(expression_to_id)
@@ -251,7 +322,31 @@ class FlashANSRDataset:
 
         return batch
 
-    def compile(self, size: int | None = None, steps: int | None = None, batch_size: int | None = None, n_support: int | None = None, verbose: bool = False) -> None:
+    def compile(
+        self,
+        size: int | None = None,
+        steps: int | None = None,
+        batch_size: int | None = None,
+        n_support: int | None = None,
+        verbose: bool = False,
+    ) -> None:
+        """Materialize the dataset into memory via repeated :meth:`iterate` calls.
+
+        Parameters
+        ----------
+        size:
+            Total number of samples to generate. Mutually exclusive with
+            ``steps``.
+        steps:
+            Number of batches to produce when ``size`` is unspecified.
+        batch_size:
+            Batch size used during generation. Defaults to ``1``.
+        n_support:
+            Number of support points sampled per equation. Uses the skeleton
+            pool default when ``None``.
+        verbose:
+            If ``True`` display progress bars while compiling.
+        """
         disable_progress_bars()
         if size is None and steps is None:
             size = len(self.skeleton_pool)
@@ -268,10 +363,13 @@ class FlashANSRDataset:
         metadata_list: list,
         worker_init_args: dict
     ) -> None:
-        """
-        Worker that generates data and writes it directly into shared memory slots.
-        If generating samples for a specific equation fails (hits max attempts),
-        it discards that equation and tries a new one, without aborting the whole batch.
+        """Generate samples in a background process and populate shared buffers.
+
+        This worker pulls ``(slot_idx, n_support)`` jobs from ``work_queue``,
+        fills the shared memory buffers referenced by ``shm_configs`` and stores
+        the corresponding metadata in ``metadata_list``. When a skeleton cannot
+        produce enough samples within ``max_total_attempts`` attempts it simply
+        retries with a fresh skeleton to keep batches flowing.
         """
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         np.random.seed(os.getpid())
@@ -283,7 +381,7 @@ class FlashANSRDataset:
         n_per_equation: int = worker_init_args['n_per_equation']
         batch_size: int = worker_init_args['batch_size']
 
-        # --- Connect to shared memory and create numpy views ---
+    # Connect to shared memory and create numpy views for tensor pools.
         shms = {name: shared_memory.SharedMemory(name=cfg['name']) for name, cfg in shm_configs.items()}
         pools = {name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
 
@@ -295,7 +393,8 @@ class FlashANSRDataset:
 
                 slot_idx, n_support = job
 
-                # --- Buffers for a single batch ---
+                # Bind reusable numpy views for the target slot to avoid
+                # allocating new arrays inside the tight generation loop.
                 # These are views into the shared memory for the assigned slot
                 x_tensors_batch = pools['x_tensors'][slot_idx]
                 y_tensors_batch = pools['y_tensors'][slot_idx]
@@ -306,7 +405,7 @@ class FlashANSRDataset:
                 constants_batch = []
                 metadata_batch = []
 
-                # --- Generate one full batch ---
+                # Generate one full batch.
                 i = 0
                 while i < batch_size:
                     # Step 1: Find a usable skeleton
@@ -369,7 +468,8 @@ class FlashANSRDataset:
                     # Step 3: If generation for this skeleton was successful, commit samples to the batch
                     if succeeded:
                         for sample in temp_samples:
-                            # Populate batch arrays
+                            # Populate batch arrays. The tensors already live in
+                            # shared memory, so we write values in-place.
                             # Pad x_tensors to max size and populate
                             x_tensors_batch[i, :sample['x'].shape[0], :sample['x'].shape[1]] = sample['x']
                             x_tensors_batch[i, sample['x'].shape[0]:, :] = 0  # Zero pad remaining rows
@@ -392,7 +492,7 @@ class FlashANSRDataset:
                     # If not succeeded, we do nothing. The main `while i < batch_size` loop continues,
                     # effectively discarding the failed skeleton and its partial samples.
 
-                # --- Batch is complete, finalize and notify main process ---
+                # Batch is complete, finalize and notify main process.
                 metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
                 result_queue.put(slot_idx)
 
@@ -401,8 +501,30 @@ class FlashANSRDataset:
             for shm in shms.values():
                 shm.close()
 
-    def _initialize_workers(self, prefetch_factor: int, batch_size: int, n_per_equation: int, max_seq_len: int, num_workers: int | None = None) -> None:
-        """Initializes all multiprocessing resources. Idempotent."""
+    def _initialize_workers(
+        self,
+        prefetch_factor: int,
+        batch_size: int,
+        n_per_equation: int,
+        max_seq_len: int,
+        num_workers: int | None = None,
+    ) -> None:
+        """Initialize shared-memory pools and worker processes on first use.
+
+        Parameters
+        ----------
+        prefetch_factor:
+            Multiplicative factor that determines how many batches are prepared
+            ahead of consumption per worker.
+        batch_size:
+            Number of samples per batch written into shared memory buffers.
+        n_per_equation:
+            Number of samples generated from each skeleton before moving on.
+        max_seq_len:
+            Maximum token length reserved in the shared ``input_ids`` pool.
+        num_workers:
+            Optional override for the number of producer processes to spawn.
+        """
         if self._is_initialized:
             return
 
@@ -453,7 +575,7 @@ class FlashANSRDataset:
         self._is_initialized = True
 
     def shutdown(self) -> None:
-        """Gracefully shuts down all multiprocessing resources."""
+        """Gracefully close worker processes and release shared memory."""
         if not self._is_initialized:
             return
 
@@ -510,6 +632,44 @@ class FlashANSRDataset:
         prefetch_factor: int = 2,
         persistent: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
+        """Yield batches of generated data, optionally streaming indefinitely.
+
+        Parameters
+        ----------
+        size:
+            Total number of samples to generate. Mutually exclusive with
+            ``steps``.
+        steps:
+            Number of batches to produce. Derived from ``size`` when omitted.
+        batch_size:
+            Target batch size. Defaults to ``1``.
+        n_support:
+            Number of support points used during sampling. When ``None`` the
+            skeleton pool default is used.
+        max_seq_len:
+            Maximum token sequence length kept in shared buffers.
+        n_per_equation:
+            Number of samples to draw per skeleton before switching to a new
+            skeleton.
+        preprocess:
+            When ``True`` apply the optional ``preprocessor`` before yielding
+            each batch.
+        verbose:
+            Display progress information using ``tqdm`` when enabled.
+        num_workers:
+            Override for the number of producer processes. Defaults to CPU
+            count.
+        prefetch_factor:
+            Number of queued batches per worker to keep pipelines saturated.
+        persistent:
+            Clone tensors before yielding so that the caller can safely mutate
+            them after consumption.
+
+        Yields
+        ------
+        dict[str, Any]
+            A batch ready for model consumption.
+        """
         if batch_size is None:
             batch_size = 1
 
@@ -535,6 +695,8 @@ class FlashANSRDataset:
         if self._work_queue is None or self._result_queue is None or self._available_slots_queue is None or self._metadata_pool is None or self._pools is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
+        # A progress bar is created once so it tracks both queued and completed
+        # batches consistently even when prefetching.
         pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
         try:
             # Prefill the work queue
@@ -558,6 +720,8 @@ class FlashANSRDataset:
                 }
 
                 if persistent:
+                    # Clone tensors so that downstream consumers can mutate them
+                    # without influencing the shared-memory buffers.
                     batch_dict = {k: v.clone() if isinstance(v, torch.Tensor) else [t.clone() for t in v] if k == 'constants' else v for k, v in batch_dict.items()}  # type: ignore
 
                 if preprocess and self.preprocessor:
@@ -577,23 +741,22 @@ class FlashANSRDataset:
             pbar.close()
 
     def _benchmark(self, n_samples: int, batch_size: int, verbose: bool = False) -> dict[str, Any]:
-        '''
-        Benchmark the speed of the dataset generation.
+        """Measure throughput of :meth:`iterate` for ``n_samples`` items.
 
         Parameters
         ----------
-        n_samples : int
-            The number of samples to generate.
-        batch_size : int
-            The batch size.
-        verbose : bool, optional
-            Whether to print verbose output, by default False.
+        n_samples:
+            Total number of samples to generate for the benchmark.
+        batch_size:
+            Number of samples per batch yielded by :meth:`iterate`.
+        verbose:
+            Propagate verbosity to the underlying iterator.
 
         Returns
         -------
-        dict
-            The benchmark results.
-        '''
+        dict[str, Any]
+            Summary statistics (mean, std, min, max) over iteration durations.
+        """
         iteration_times = []
         time_1 = time.time()
         for _ in self.iterate(size=n_samples, steps=None, batch_size=batch_size, n_support=None, verbose=verbose):
@@ -610,9 +773,7 @@ class FlashANSRDataset:
         }
 
     def __len__(self) -> int:
-        '''
-
-        '''
+        """Return the number of rows in the compiled dataset."""
         if self.data is None:
             raise ValueError("No dataset to get the length of. Please generate or load a dataset first.")
 

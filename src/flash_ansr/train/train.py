@@ -1,3 +1,10 @@
+"""Training orchestration logic for Flash-ANSR models.
+
+This module provides the `Trainer` class, which encapsulates the full
+training/validation loop as well as utilities for configuration driven
+initialisation and experiment logging.
+"""
+
 import os
 import copy
 from typing import Any, Literal
@@ -21,7 +28,16 @@ import wandb
 torch.set_float32_matmul_precision('high')
 
 
-class Trainer():
+class Trainer:
+    """Manage end-to-end training for a ``FlashANSRModel``.
+
+    Notes
+    -----
+    Parameters mirror the components required to run training while being
+    flexible enough to support configuration driven instantiation via
+    :meth:`Trainer.from_config`.
+    """
+
     def __init__(
             self,
             model: FlashANSRModel,
@@ -34,6 +50,31 @@ class Trainer():
             val_dataset: FlashANSRDataset,
             gradient_accumulation_steps: int = 1,
             config: dict[str, Any] = None) -> None:
+        """Create a fully configured trainer instance.
+
+        Parameters
+        ----------
+        model : FlashANSRModel
+            The model to optimise.
+        optimizer : torch.optim.Optimizer
+            Optimiser responsible for updating model parameters.
+        amp_dtype : torch.dtype
+            Mixed precision dtype used with autocast.
+        scaler : torch.amp.GradScaler
+            Gradient scaler used for automatic mixed precision.
+        lr_scheduler : LRScheduler or None
+            Optional learning rate scheduler.
+        batch_size : int
+            Number of samples processed per training step.
+        train_dataset : FlashANSRDataset
+            Dataset providing training batches.
+        val_dataset : FlashANSRDataset
+            Dataset providing validation batches.
+        gradient_accumulation_steps : int, default=1
+            Number of micro-batches per optimizer step.
+        config : dict[str, Any] or None, optional
+            Trainer configuration metadata (used for logging).
+        """
 
         self.model = model
         self.optimizer = optimizer
@@ -45,7 +86,7 @@ class Trainer():
         self.val_dataset = val_dataset
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.config = config or {}
-        self.device = torch.device("cpu")  # Will be set in run method
+        self.device = torch.device("cpu")  # Updated during ``run``
 
         # Metrics and Loss Functions
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
@@ -57,6 +98,18 @@ class Trainer():
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
+        """Instantiate a trainer from a config dictionary or YAML file path.
+
+        Parameters
+        ----------
+        config : dict[str, Any] or str
+            Dictionary of trainer settings or path to a YAML configuration file.
+
+        Returns
+        -------
+        Trainer
+            Trainer populated using the provided configuration.
+        """
         config_ = load_config(config)
 
         if "trainer" in config_.keys():
@@ -112,7 +165,15 @@ class Trainer():
         )
 
     def _setup_training_state(self, device: str, verbose: bool) -> None:
-        """Sets up the model, device, and initial training state."""
+        """Move the model to ``device`` and reset training state.
+
+        Parameters
+        ----------
+        device : str
+            Torch device string used for training (for example ``"cuda"``).
+        verbose : bool
+            If ``True`` emit human readable status messages.
+        """
         self.device = torch.device(device)
         self.model.to(self.device)
 
@@ -140,7 +201,36 @@ class Trainer():
             validate_size: int | None = None,
             validate_batch_size: int = 128,
             verbose: bool = False) -> FlashANSRModel:
-        """Core training loop."""
+        """Execute the core training loop.
+
+        Parameters
+        ----------
+        steps : int
+            Number of optimisation steps to perform.
+        preprocess : bool, default=False
+            Whether to run dataset preprocessing before each batch.
+        device : str, default='cpu'
+            Target device identifier passed to :func:`torch.device`.
+        compile_mode : str or None, optional
+            Torch.compile mode for model compilation.
+        checkpoint_interval : int or None, optional
+            Save checkpoints every ``n`` steps when provided.
+        checkpoint_directory : str or None, optional
+            Directory for persisted checkpoints.
+        validate_interval : int or None, optional
+            Frequency (in steps) to run validation.
+        validate_size : int or None, optional
+            Limit the number of validation examples processed.
+        validate_batch_size : int, default=128
+            Batch size used for validation passes.
+        verbose : bool, default=False
+            If ``True`` display progress bars and additional logs.
+
+        Returns
+        -------
+        FlashANSRModel
+            The trained model instance.
+        """
 
         try:
             if compile_mode is not None:
@@ -186,6 +276,48 @@ class Trainer():
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
             verbose: bool = False) -> FlashANSRModel:
+        """Train the model while managing the experiment lifecycle via W&B.
+
+        Parameters
+        ----------
+        project_name : str
+            Name of the Weights & Biases project.
+        entity : str
+            W&B entity (team or user) under which to log the run.
+        name : str
+            Run name displayed in W&B.
+        steps : int
+            Number of training iterations to execute.
+        preprocess : bool, default=False
+            Whether to preprocess dataset batches.
+        device : str, default='cpu'
+            Torch device string (for example ``"cpu"`` or ``"cuda"``).
+        compile_mode : str or None, optional
+            Torch.compile mode, if supported.
+        checkpoint_interval : int or None, optional
+            Step interval for checkpointing.
+        checkpoint_directory : str or None, optional
+            Directory where checkpoints are written when enabled.
+        validate_interval : int or None, optional
+            Step cadence for validation.
+        validate_size : int or None, optional
+            Maximum number of validation samples, if limited.
+        validate_batch_size : int, default=128
+            Batch size to use during validation.
+        wandb_mode : {'online', 'offline', 'disabled'}, default='online'
+            W&B initialisation mode.
+        wandb_watch_log : {'gradients', 'parameters', 'all'} or None, optional
+            W&B ``watch`` setting controlling what to log.
+        wandb_watch_log_freq : int, default=1000
+            Frequency (steps) for W&B gradient/parameter logging.
+        verbose : bool, default=False
+            When ``True`` print progress information to stdout.
+
+        Returns
+        -------
+        FlashANSRModel
+            The trained model instance.
+        """
 
         if verbose:
             print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
@@ -213,16 +345,41 @@ class Trainer():
             )
 
     def _update_total_pflops(self, encoder_tokens: int, decoder_tokens: int, batch_size: int) -> None:
+        """Accumulate an estimate of total pico floating-point operations.
+
+        Parameters
+        ----------
+        encoder_tokens : int
+            Number of encoder tokens processed in the current step.
+        decoder_tokens : int
+            Number of decoder tokens processed in the current step.
+        batch_size : int
+            Size of the current batch (prior to micro batching).
+        """
         self.total_pflops += 6 * (self.encoder_parameters * encoder_tokens + self.decoder_parameters * decoder_tokens) * batch_size * 1e-15
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
-        """Performs a single training step, including gradient accumulation."""
+        """Perform a single optimisation step with optional gradient accumulation.
+
+        Parameters
+        ----------
+        batch : dict[str, torch.Tensor]
+            Batched tensors produced by the training dataset.
+        step : int
+            Zero-indexed global training step.
+        preprocess : bool
+            Whether to preprocess batch data prior to collation.
+        do_optimizer_step : bool, default=True
+            When ``False`` skip the optimiser update (useful for gradient
+            accumulation across micro-batches).
+        """
         self.model.train()
         self.optimizer.zero_grad()
 
         total_ce_loss = 0.0
         total_loss = 0.0
 
+        # Split the batch into micro-batches to support gradient accumulation
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
@@ -236,7 +393,10 @@ class Trainer():
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
-                param_sum = sum(p.sum() for p in self.model.parameters())   # HACK: Avoids None parameter gradients for wandb.watch
+                # Force every parameter to contribute to the loss so that gradient
+                # tracking tools (e.g. wandb.watch) do not encounter ``None`` gradients
+                # for frozen or unused tensors.
+                param_sum = sum(p.sum() for p in self.model.parameters())
                 zero_loss = 0.0 * param_sum
 
                 loss = ce_loss / self.gradient_accumulation_steps + zero_loss
@@ -259,13 +419,27 @@ class Trainer():
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-            # Log metrics and update scheduler
+            # Log metrics and update scheduler after the optimizer step
             self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
-        """Performs a single validation step."""
+        """Evaluate the model on the validation split and log aggregate metrics.
+
+        Parameters
+        ----------
+        step : int
+            Global training step at which validation is triggered.
+        size : int or None
+            Optional limit on the number of validation examples.
+        batch_size : int
+            Number of samples per validation batch.
+        preprocess : bool
+            Whether to preprocess validation batches.
+        verbose : bool
+            If ``True`` display a validation progress bar.
+        """
         self.model.eval()
 
         val_ce_loss = 0.0
@@ -314,7 +488,15 @@ class Trainer():
         self._log_validation_metrics(step, avg_val_ce_loss, avg_val_mrr, avg_val_acc_at_1)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
-        """Saves the model and training configuration."""
+        """Persist model weights, optimiser state, and config for ``step``.
+
+        Parameters
+        ----------
+        step : int
+            Training step associated with the persisted checkpoint.
+        checkpoint_directory : str
+            Directory into which the checkpoint will be written.
+        """
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
         self.model.save(directory=save_directory, errors='ignore')
         torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))
@@ -328,7 +510,23 @@ class Trainer():
         print(f"Checkpoint saved at {save_directory}")
 
     def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
-        """Logs a batch's training metrics to wandb."""
+        """Submit training metrics for the current batch to Weights & Biases.
+
+        Parameters
+        ----------
+        step : int
+            Global training step the metrics correspond to.
+        logits : torch.Tensor
+            Model logits for the current batch.
+        labels : torch.Tensor
+            Ground-truth labels aligned with ``logits``.
+        ce_loss : float
+            Cross-entropy loss for the batch.
+        total_loss : float
+            Total loss (including auxiliary terms) for the batch.
+        total_gradient_norm : torch.Tensor
+            Gradient norm measured after clipping.
+        """
 
         log_data = {
             "total_gradient_norm": total_gradient_norm.item(),
@@ -342,7 +540,19 @@ class Trainer():
         wandb.log(log_data, step=step)  # type: ignore
 
     def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
-        """Logs validation metrics to wandb."""
+        """Submit aggregated validation metrics to Weights & Biases.
+
+        Parameters
+        ----------
+        step : int
+            Global training step the metrics correspond to.
+        val_ce_loss : float
+            Mean validation cross-entropy loss.
+        val_mrr : float
+            Mean reciprocal rank on the validation set.
+        val_acc_at_1 : float
+            Accuracy at one token prediction on the validation set.
+        """
         log_data = {
             "val_ce_loss": val_ce_loss,
             "val_mean_reciprocal_rank": val_mrr,
