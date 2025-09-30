@@ -8,7 +8,7 @@ from flash_ansr.expressions.utils import codify, identify_constants
 import unittest
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL = "psaegert/flash-ansr-v7.20"
+MODEL = "psaegert/flash-ansr-v19.0-6M"
 
 
 class TestInference(unittest.TestCase):
@@ -33,10 +33,10 @@ class TestInference(unittest.TestCase):
         prefix_expression_w_num = nsr.simplipy_engine.operators_to_realizations(prefix_expression)
         prefix_expression_w_constants, constants_names = identify_constants(prefix_expression_w_num)
         code_string = nsr.simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-        code = codify(code_string, nsr.simplipy_engine.variables + constants_names)
+        code = codify(code_string, ['x'] + constants_names)
 
         def demo_function(x):
-            return nsr.simplipy_engine.code_to_lambda(code)(x, 0, 0, *constants)
+            return nsr.simplipy_engine.code_to_lambda(code)(x, *constants)
 
         x = np.random.uniform(*xlim, 100)
 

@@ -468,7 +468,11 @@ class FlashANSRModel(nn.Module):
         seen_expressions = set()
 
         for seq, score in zip(completed_sequences, completed_scores):
-            encoded_expression, before, after = self.extract_expression_from_beam(seq)
+            try:
+                encoded_expression, before, after = self.extract_expression_from_beam(seq)
+            except ValueError:
+                continue
+
             encoded_expression = self.constantify_expression(encoded_expression)  # type: ignore
 
             # Decode the sequence
