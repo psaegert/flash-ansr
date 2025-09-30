@@ -197,9 +197,12 @@ class Evaluation():
         if self.preprocess:
             dataset.preprocessor = FlashASNRPreprocessor(model.simplipy_engine, format_probs={'complexity': 1.0})
 
+        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
+
         with torch.no_grad():
             current_size = 0
-            for batch in dataset.iterate(size=None, n_support=self.n_support * 2 if self.n_support is not None else None, preprocess=self.preprocess, verbose=verbose, tqdm_total=size, batch_size=1):
+            max_size = size * 2  # Just to be safe it won't run indefinitely
+            for batch in dataset.iterate(size=max_size, max_n_support=max_n_support, n_support=self.n_support * 2 if self.n_support is not None else None, preprocess=self.preprocess, verbose=verbose, batch_size=1):
                 batch = dataset.collate(batch, device=self.device)
 
                 if self.noise_level > 0.0:

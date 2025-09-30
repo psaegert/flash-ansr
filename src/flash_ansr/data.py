@@ -507,6 +507,7 @@ class FlashANSRDataset:
         batch_size: int,
         n_per_equation: int,
         max_seq_len: int,
+        max_n_support: int | None = None,
         num_workers: int | None = None,
     ) -> None:
         """Initialize shared-memory pools and worker processes on first use.
@@ -522,6 +523,9 @@ class FlashANSRDataset:
             Number of samples generated from each skeleton before moving on.
         max_seq_len:
             Maximum token length reserved in the shared ``input_ids`` pool.
+        max_n_support:
+            Maximum number of support points reserved in shared buffers. When
+            ``None`` the skeleton pool default is used.
         num_workers:
             Optional override for the number of producer processes to spawn.
         """
@@ -531,11 +535,14 @@ class FlashANSRDataset:
         self._num_workers = os.cpu_count() or 1 if num_workers is None else num_workers
         pool_size = self._num_workers * prefetch_factor
 
+        if max_n_support is None:
+            max_n_support = self.skeleton_pool.n_support_prior_config['kwargs']['max_value']
+
         # 1. Define Shapes and Create Shared Memory Pools
         shm_configs: dict[str, dict[str, Any]] = {
-            'x_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], len(self.skeleton_pool.variables)), 'dtype': np.float32},
-            'y_tensors': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value'], 1), 'dtype': np.float32},
-            'data_attn_mask': {'shape': (pool_size, batch_size, self.skeleton_pool.n_support_prior_config['kwargs']['max_value']), 'dtype': np.float32},
+            'x_tensors': {'shape': (pool_size, batch_size, max_n_support, len(self.skeleton_pool.variables)), 'dtype': np.float32},
+            'y_tensors': {'shape': (pool_size, batch_size, max_n_support, 1), 'dtype': np.float32},
+            'data_attn_mask': {'shape': (pool_size, batch_size, max_n_support), 'dtype': np.float32},
             'input_ids': {'shape': (pool_size, batch_size, max_seq_len), 'dtype': np.int64},
         }
 
@@ -625,6 +632,7 @@ class FlashANSRDataset:
         batch_size: int | None = None,
         n_support: int | None = None,
         max_seq_len: int = 128,
+        max_n_support: int | None = None,
         n_per_equation: int = 1,
         preprocess: bool = False,
         verbose: bool = False,
@@ -648,6 +656,9 @@ class FlashANSRDataset:
             skeleton pool default is used.
         max_seq_len:
             Maximum token sequence length kept in shared buffers.
+        max_n_support:
+            Maximum number of support points reserved in shared buffers. When
+            ``None`` the skeleton pool default is used.
         n_per_equation:
             Number of samples to draw per skeleton before switching to a new
             skeleton.
@@ -688,6 +699,7 @@ class FlashANSRDataset:
             batch_size=batch_size,
             n_per_equation=n_per_equation,
             max_seq_len=max_seq_len,
+            max_n_support=max_n_support,
             num_workers=num_workers,
         )
         pool_size = self._num_workers * prefetch_factor
@@ -705,7 +717,7 @@ class FlashANSRDataset:
                 self._work_queue.put((slot_idx, n_support))
 
             # Main producer-consumer loop
-            for _ in range(steps):
+            for step_id in range(steps):
                 completed_slot_idx = self._result_queue.get()
 
                 # Construct batch
@@ -733,7 +745,7 @@ class FlashANSRDataset:
 
                 # Recycle the slot and request new work if there are more steps to go
                 self._available_slots_queue.put(completed_slot_idx)
-                if _ + pool_size < steps:
+                if step_id + pool_size < steps:
                     slot_to_refill = self._available_slots_queue.get()
                     self._work_queue.put((slot_to_refill, n_support))
 

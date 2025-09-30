@@ -37,7 +37,7 @@ class TestEvaluation(unittest.TestCase):
             simplipy_engine=SimpliPyEngine.load('dev_7-3'),
             flash_ansr_transformer=FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml')),
             tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
-            generation_config=GenerationConfig(method='beam_search', beam_width=2, ),
+            generation_config=GenerationConfig(method='beam_search', beam_width=2),
             numeric_head=False,
             n_restarts=3,
             refiner_p0_noise='uniform',
