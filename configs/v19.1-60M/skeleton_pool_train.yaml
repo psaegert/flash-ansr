@@ -1,6 +1,6 @@
 simplipy_engine: 'dev_7-3'
 holdout_pools: [
-  "{{ROOT}}/data/ansr-data/v19.0/skeleton_pool_val/",
+  "{{ROOT}}/data/ansr-data/v19.x/skeleton_pool_val/",
   "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
   "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
