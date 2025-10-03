@@ -29,7 +29,7 @@ def get_path(*args: str, filename: str | None = None, create: bool = False) -> s
     if any(not isinstance(arg, str) for arg in args):
         raise TypeError("All arguments must be strings.")
 
-    path = os.path.join(os.path.dirname(__file__), '..', '..', *args, filename or '')
+    path = normalize_path_preserve_leading_dot(os.path.join(os.path.dirname(__file__), '..', '..', *args, filename or ''))
 
     if create:
         if filename is not None:
@@ -88,7 +88,7 @@ def load_config(config: dict[str, Any] | str, resolve_paths: bool = True) -> dic
 
         def resolve_path(value: Any) -> str:
             if isinstance(value, str) and (value.endswith('.yaml') or value.endswith('.json')) and value.startswith('.'):  # HACK: Find a way to check if a string is a path
-                return os.path.join(config_base_path, value)
+                return normalize_path_preserve_leading_dot(os.path.join(config_base_path, value))
             return value
 
         if resolve_paths:
@@ -161,6 +161,36 @@ def unfold_config(config: dict[str, Any], max_depth: int = 3) -> dict[str, Any]:
     return config
 
 
+def normalize_path_preserve_leading_dot(path: str) -> str:
+    """
+    Normalizes a path to remove redundant parts like '..' and '.',
+    while preserving a leading './' if it was in the original path.
+
+    Parameters
+    ----------
+    path : str
+        The path to normalize.
+
+    Returns
+    -------
+    str
+        The normalized path with leading './' preserved if applicable.
+    """
+    # Check if the original path started with './' (or '.\' on Windows)
+    starts_with_dot_sep = path.startswith(f'.{os.sep}')
+
+    # Normalize the path to resolve '..' and '.'
+    normalized_path = os.path.normpath(path)
+
+    # If the original path had a leading './' and the normalized result
+    # is a simple relative path (i.e., not '.', '..', or absolute),
+    # then prepend the './' back.
+    if (starts_with_dot_sep and not os.path.isabs(normalized_path) and not normalized_path.startswith('..') and normalized_path != '.'):
+        return f'.{os.sep}{normalized_path}'
+
+    return normalized_path
+
+
 def save_config(config: dict[str, Any], directory: str, filename: str, reference: str = 'relative', recursive: bool = True, resolve_paths: bool = False) -> None:
     '''
     Save a configuration dictionary to a YAML file.
@@ -184,42 +214,42 @@ def save_config(config: dict[str, Any], directory: str, filename: str, reference
     config_ = copy.deepcopy(config)
 
     def save_config_relative_func(value: Any) -> Any:
+        relative_path = value
         if isinstance(value, str) and value.endswith('.yaml'):
-            relative_path = value
             if not value.startswith('.'):
-                relative_path = os.path.join('.', os.path.basename(value))
+                relative_path = normalize_path_preserve_leading_dot(os.path.join('.', os.path.basename(value)))
             save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-        return value
+        return relative_path
 
     def save_config_project_func(value: Any) -> Any:
+        relative_path = value
         if isinstance(value, str) and value.endswith('.yaml'):
-            relative_path = value
             if not value.startswith('.'):
-                relative_path = value.replace(get_path(), '{{ROOT}}')
+                relative_path = normalize_path_preserve_leading_dot(value.replace(get_path(), '{{ROOT}}'))
             save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-        return value
+        return relative_path
 
     def save_config_absolute_func(value: Any) -> Any:
+        relative_path = value
         if isinstance(value, str) and value.endswith('.yaml'):
-            relative_path = value
             if not value.startswith('.'):
-                relative_path = os.path.abspath(substitute_root_path(value))
+                relative_path = normalize_path_preserve_leading_dot(os.path.abspath(substitute_root_path(value)))
             save_config(load_config(value, resolve_paths=resolve_paths), directory, os.path.basename(relative_path), reference=reference, recursive=recursive, resolve_paths=resolve_paths)
-        return value
+        return relative_path
 
     if recursive:
         match reference:
             case 'relative':
-                apply_on_nested(config_, save_config_relative_func)
+                config_with_corrected_paths = apply_on_nested(config_, save_config_relative_func)
             case 'project':
-                apply_on_nested(config_, save_config_project_func)
+                config_with_corrected_paths = apply_on_nested(config_, save_config_project_func)
             case 'absolute':
-                apply_on_nested(config_, save_config_absolute_func)
+                config_with_corrected_paths = apply_on_nested(config_, save_config_absolute_func)
             case _:
                 raise ValueError(f'Invalid reference type: {reference}')
 
     with open(get_path(directory, filename=filename, create=True), 'w') as config_file:
-        yaml.dump(config_, config_file, sort_keys=False)
+        yaml.dump(config_with_corrected_paths, config_file, sort_keys=False)
 
 
 def traverse_dict(dict_: dict[str, Any]) -> Generator[tuple[str, Any], None, None]:

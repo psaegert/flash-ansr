@@ -42,17 +42,23 @@ class TestFlashANSRDataset(unittest.TestCase):
         for data, data_loaded in zip(dataset.data, loaded_dataset.data):
             assert data == data_loaded
 
+        dataset.shutdown()
+
     def test_iterate_step(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 
         for batch in dataset.iterate(steps=2, batch_size=13):
             assert len(batch['input_ids']) == 13
 
+        dataset.shutdown()
+
     def test_iterate_size(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 
         for batch in dataset.iterate(size=20, batch_size=13):
             assert len(batch['input_ids']) in [13, 7]
+
+        dataset.shutdown()
 
     def test_collate_batch(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
@@ -61,6 +67,8 @@ class TestFlashANSRDataset(unittest.TestCase):
             batch = dataset.collate(batch)
             assert isinstance(batch['input_ids'], torch.Tensor)
             assert batch['x_tensors'].shape[0] == 13
+
+        dataset.shutdown()
 
     def test_collate_single(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
@@ -71,3 +79,5 @@ class TestFlashANSRDataset(unittest.TestCase):
             print(batch['x_tensors'][0, :10, :10])
             for i in range(batch['x_tensors'].shape[-1]):
                 assert (batch['x_tensors'][0, :, i] != 0).sum() in [0, 3]  # 7 non-zero rows
+
+        dataset.shutdown()
