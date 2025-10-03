@@ -43,3 +43,6 @@ class TestTrain(unittest.TestCase):
             wandb_mode="disabled",
             validate_size=10,
             validate_interval=1)
+
+        trainer.train_dataset.shutdown()
+        trainer.val_dataset.shutdown()

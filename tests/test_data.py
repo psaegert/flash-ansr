@@ -43,6 +43,7 @@ class TestFlashANSRDataset(unittest.TestCase):
             assert data == data_loaded
 
         dataset.shutdown()
+        loaded_dataset.shutdown()
 
     def test_iterate_step(self):
         dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))

@@ -50,3 +50,5 @@ class TestEvaluation(unittest.TestCase):
             model=ansr,
             dataset=val_dataset,
             size=2)
+
+        val_dataset.shutdown()

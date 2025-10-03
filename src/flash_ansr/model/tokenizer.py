@@ -1,3 +1,4 @@
+import re
 from typing import Iterator, Any, Literal
 
 import torch
@@ -186,3 +187,45 @@ class Tokenizer:
             The iterator over the vocabulary.
         '''
         return iter(self.vocab)
+
+    def extract_expression_from_beam(self, beam: list[int]) -> tuple[list[int], list[int], list[int]]:
+
+        if self['<bos>'] not in beam or self['<eos>'] not in beam:
+            raise ValueError(f"Beam must contain <bos> and <eos> tokens. Got {beam}.")
+
+        bos_index = beam.index(self.token2idx['<bos>'])
+        eos_index = beam.index(self.token2idx['<eos>'])
+
+        before = beam[:bos_index + 1]
+        after = beam[eos_index:]
+
+        return beam[bos_index + 1:eos_index], before, after
+
+    def constantify_expression(self, expression: list[int] | list[str]) -> list[int] | list[str]:
+        # Replace mult4, div3 etc by multiplication with <constant>
+
+        # Find out if the expression is encoded or not
+        if isinstance(expression, list) and all(isinstance(token, int) for token in expression):
+            # If it's encoded, we need to convert it to the tokenizer's string representation
+            constantified_expression = []
+            for token in expression:
+                if re.match(r"^mult\d+$", self.idx2token[token]) or re.match(r"^div\d+$", self.idx2token[token]):  # type: ignore
+                    # Replace with '*', '<constant>
+                    constantified_expression.append(self['*'])
+                    constantified_expression.append(self['<constant>'])
+                else:
+                    constantified_expression.append(token)
+
+        elif isinstance(expression, list) and all(isinstance(token, str) for token in expression):
+            # If it's already a string representation, we can directly replace the patterns
+            constantified_expression = []
+            for token in expression:
+                if re.match(r"^mult\d+$", token) or re.match(r"^div\d+$", token):  # type: ignore
+                    # Replace with '*', '<constant>'
+                    constantified_expression.append('*')
+                    constantified_expression.append('<constant>')
+                else:
+                    constantified_expression.append(token)
+        else:
+            raise ValueError("Expression must be a list of integers or strings.")
+        return constantified_expression  # type: ignore
