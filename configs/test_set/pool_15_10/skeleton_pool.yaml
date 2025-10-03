@@ -1,18 +1,12 @@
 simplipy_engine: 'dev_7-3'
-holdout_pools: [
-  "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/pool_15/skeleton_pool/"
-]
-
+holdout_pools: []
 sample_strategy:
   n_operator_distribution: "length_proportional"
   min_operators: 0
-  max_operators: 10
+  max_operators: 15
   power: 1
-  max_length: 21
-  max_tries: 1
+  max_length: 31
+  max_tries: 100
   independent_dimensions: True
 
 allow_nan: False
