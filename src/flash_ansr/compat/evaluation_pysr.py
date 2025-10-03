@@ -27,7 +27,8 @@ from flash_ansr.eval.token_prediction import (
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.eval.utils import NoOpStemmer
 from flash_ansr.eval.sequences import zss_tree_edit_distance
-import nsrops
+
+import simplipy
 
 
 nltk.download('wordnet', quiet=True)
@@ -96,17 +97,17 @@ class PySREvaluation():
                     unary_operators=['neg', 'abs', 'inv', 'sin', 'cos', 'tan', 'atan', 'exp', 'log'],
                     binary_operators=['+', '-', '*', '/'],
                     extra_sympy_mappings={
-                        "pow2": nsrops.pow2,  # type: ignore
-                        "pow3": nsrops.pow3,  # type: ignore
-                        "pow4": nsrops.pow4,  # type: ignore
-                        "pow5": nsrops.pow5,  # type: ignore
-                        "pow1_2": nsrops.pow1_2,  # type: ignore
-                        "pow1_3": nsrops.pow1_3,  # type: ignore
-                        "pow1_4": nsrops.pow1_4,  # type: ignore
-                        "pow1_5": nsrops.pow1_5,  # type: ignore
-                        "inv": nsrops.inv,  # type: ignore
-                        "asin": lambda x: np.arcsin(x) if -1 <= x <= 1 else np.nan,  # Prevents Julia out of bounds error
-                        "acos": lambda x: np.arccos(x) if -1 <= x <= 1 else np.nan,
+                        "pow2": simplipy.operators.pow2,  # type: ignore
+                        "pow3": simplipy.operators.pow3,  # type: ignore
+                        "pow4": simplipy.operators.pow4,  # type: ignore
+                        "pow5": simplipy.operators.pow5,  # type: ignore
+                        "pow1_2": simplipy.operators.pow1_2,  # type: ignore
+                        "pow1_3": simplipy.operators.pow1_3,  # type: ignore
+                        "pow1_4": simplipy.operators.pow1_4,  # type: ignore
+                        "pow1_5": simplipy.operators.pow1_5,  # type: ignore
+                        "inv": simplipy.operators.inv,  # type: ignore
+                        "asin": simplipy.operators.arcsin,  # Prevents Julia out of bounds error
+                        "acos": simplipy.operators.arccos,  # Prevents Julia out of bounds error
                     },
                 )
 

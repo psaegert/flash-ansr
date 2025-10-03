@@ -82,15 +82,14 @@ Create a virtual environment (optional):
 **conda:**
 
 ```sh
-conda create -n ansr python=3.11 ipykernel ipywidgets
-conda activate ansr
+conda create -n flash_ansr python=3.13 ipykernel ipywidgets
+conda activate flash_ansr
 ```
 
-Then, install the package via
+Then, install the package with
 
 ```sh
 pip install -e .
-pip install -e ./nsrops
 ```
 
 # Usage
@@ -296,7 +295,6 @@ To set up the development environment, run the following commands:
 
 ```sh
 pip install -e .[dev]
-pip install -e ./nsrops
 pre-commit install
 ```
 
