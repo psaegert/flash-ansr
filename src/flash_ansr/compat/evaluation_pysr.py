@@ -85,9 +85,10 @@ class PySREvaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose):
+            for batch in dataset.iterate(size=size, max_n_support=max_n_support, n_support=max_n_support, verbose=verbose):
 
                 # Initialize here to prevent memory leak?
                 model = PySRRegressor(
@@ -97,6 +98,7 @@ class PySREvaluation():
                     unary_operators=['neg', 'abs', 'inv', 'sin', 'cos', 'tan', 'atan', 'exp', 'log'],
                     binary_operators=['+', '-', '*', '/'],
                     extra_sympy_mappings={
+                        "pow": simplipy.operators.pow,  # type: ignore
                         "pow2": simplipy.operators.pow2,  # type: ignore
                         "pow3": simplipy.operators.pow3,  # type: ignore
                         "pow4": simplipy.operators.pow4,  # type: ignore
@@ -106,8 +108,16 @@ class PySREvaluation():
                         "pow1_4": simplipy.operators.pow1_4,  # type: ignore
                         "pow1_5": simplipy.operators.pow1_5,  # type: ignore
                         "inv": simplipy.operators.inv,  # type: ignore
-                        "asin": simplipy.operators.arcsin,  # Prevents Julia out of bounds error
-                        "acos": simplipy.operators.arccos,  # Prevents Julia out of bounds error
+                        "asin": simplipy.operators.asin,  # Prevents Julia out of bounds error
+                        "acos": simplipy.operators.asin,  # Prevents Julia out of bounds error
+                        "mult2": simplipy.operators.mult2,  # type: ignore
+                        "mult3": simplipy.operators.mult3,  # type: ignore
+                        "mult4": simplipy.operators.mult4,  # type: ignore
+                        "mult5": simplipy.operators.mult5,  # type: ignore
+                        "div2": simplipy.operators.div2,  # type: ignore
+                        "div3": simplipy.operators.div3,  # type: ignore
+                        "div4": simplipy.operators.div4,  # type: ignore
+                        "div5": simplipy.operators.div5,  # type: ignore
                     },
                 )
 
