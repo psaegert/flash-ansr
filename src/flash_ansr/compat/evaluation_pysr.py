@@ -182,7 +182,7 @@ class PySREvaluation():
                     print({k: len(v) for k, v in results_dict.items()})  # Check that all lists have the same length
                     raise ValueError("Not all lists in results_dict have the same length.")
 
-                time.sleep(1)  # For good measure
+                time.sleep(0.1)  # For good measure
 
                 if save_every is not None and (batch_id + 1) % save_every == 0:
                     if verbose:
