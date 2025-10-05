@@ -10,6 +10,9 @@ class NoOpStemmer(StemmerI):
 
 
 def bootstrapped_metric_ci(data: np.ndarray, metric: Callable, n: int = 10_000, interval: float = 0.95) -> tuple[float, float, float]:
+    if interval > 1 and interval <= 100:
+        interval /= 100
+
     # Generate all bootstrap samples at once
     indices = np.random.randint(0, len(data), size=(n, len(data)))
     samples = data[indices]

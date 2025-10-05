@@ -386,10 +386,33 @@ def main(argv: str = None) -> None:
 
             evaluation = PySREvaluation.from_config(substitute_root_path(args.config))
 
+            size_todo = args.size
+
+            if os.path.exists(substitute_root_path(args.output_file)):
+                if args.verbose:
+                    print(f"Loading existing evaluation results from {args.output_file} ...")
+
+                with open(substitute_root_path(args.output_file), 'rb') as f:
+                    results_dict = pickle.load(f)
+
+                if size_todo is not None:
+                    size_todo -= len(results_dict['expression'])
+            else:
+                results_dict = None
+
+            if size_todo is not None and size_todo <= 0:
+                if args.verbose:
+                    print(f"Evaluation already completed for {args.size} samples. Exiting.")
+                sys.exit(0)
+
             results_dict = evaluation.evaluate(
                 dataset=dataset,
-                size=args.size,
                 simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
+                tokenizer=dataset.tokenizer,
+                results_dict=results_dict,
+                size=size_todo,
+                save_every=100,
+                output_file=args.output_file,
                 verbose=args.verbose)
 
             if args.verbose:
