@@ -73,6 +73,7 @@ class FlashANSRDataset:
             warnings.warn(
                 "FlashANSRDataset was not explicitly shut down. "
                 "Call `dataset.shutdown()` for cleaner resource management."
+                "Shutting down in destructor.",
             )
             self.shutdown()
 
@@ -452,9 +453,9 @@ class FlashANSRDataset:
                                     'input_ids': input_ids,
                                     'constants': literals,
                                     'metadata': {
-                                        'skeletons': skeleton,
-                                        'skeleton_hashes': skeleton_hash,
-                                        'expressions': substitude_constants(skeleton, values=literals, inplace=False),
+                                        'skeleton': skeleton,
+                                        'skeleton_hash': skeleton_hash,
+                                        'expression': substitude_constants(skeleton, values=literals, inplace=False),
                                     }
                                 })
                                 sample_found = True  # Success, move to next sample for this skeleton

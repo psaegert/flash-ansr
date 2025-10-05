@@ -1,0 +1,7 @@
+n_support: 512
+timeout_in_seconds: 60
+niterations: 512
+pointwise_close_criterion: 0.95
+pointwise_close_accuracy_rtol: 0.05
+pointwise_close_accuracy_atol: 0.001
+r2_close_criterion: 0.95
