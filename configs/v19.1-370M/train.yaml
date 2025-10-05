@@ -1,0 +1,28 @@
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [400_000, 1e-4]  # 10% of steps
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 100_000
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 4_000_000
+device: cuda
