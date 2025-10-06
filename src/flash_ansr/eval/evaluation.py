@@ -5,31 +5,11 @@ import warnings
 
 import torch
 import numpy as np
-import editdistance
-
-import nltk
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.translate.meteor_score import meteor_score
-from rouge_score import rouge_scorer
 
 from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.data import FlashANSRDataset, FlashASNRPreprocessor
 from flash_ansr.refine import ConvergenceError
-from flash_ansr.eval.token_prediction import (
-    correct_token_predictions_at_k,
-    reciprocal_rank,
-    accuracy,
-    precision,
-    recall,
-    f1_score,
-    perplexity
-)
-from flash_ansr.eval.utils import NoOpStemmer
-from flash_ansr.eval.sequences import zss_tree_edit_distance
-from flash_ansr.utils import load_config, pad_input_set
-
-
-nltk.download('wordnet', quiet=True)
+from flash_ansr.utils import load_config
 
 
 class Evaluation():
@@ -68,6 +48,8 @@ class Evaluation():
         Keyword arguments for the noise distribution of the initial guess of the refiner. Default is None.
     r2_close_criterion : float, optional
         R^2 Criterion for the R^2 close accuracy. Default is 0.95.
+    parsimony : float, optional
+        Parsimony coefficient applied when ranking the model results. Default is 0.05.
     device : str, optional
         Device to load the model. Default is 'cpu'.
 
@@ -87,6 +69,7 @@ class Evaluation():
             pointwise_close_accuracy_rtol: float = 0.05,
             pointwise_close_accuracy_atol: float = 0.001,
             r2_close_criterion: float = 0.95,
+            parsimony: float = 0.05,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
@@ -98,11 +81,9 @@ class Evaluation():
         self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
         self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
         self.r2_close_criterion = r2_close_criterion
+        self.parsimony = parsimony
 
         self.device = device
-
-        self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
-        self.rouge_scorer._tokenizer.tokenize = lambda x: x
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Evaluation":
@@ -124,6 +105,7 @@ class Evaluation():
         if "evaluation" in config_.keys():
             config_ = config_["evaluation"]
 
+        beams = None
         if 'beam_width' in config_.keys():
             beams = config_['beam_width']
         elif 'generation_config' in config_.keys():
@@ -131,9 +113,8 @@ class Evaluation():
                 beams = config_['generation_config']['beam_width']
             elif 'choices' in config_['generation_config'].keys():
                 beams = config_['generation_config']['choices']
-            else:
-                raise ValueError('Beam width not found in the configuration.')
-        else:
+
+        if beams is None:
             raise ValueError('Beam width not found in the configuration.')
 
         return cls(
@@ -146,6 +127,7 @@ class Evaluation():
             pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
             pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
             r2_close_criterion=config_["r2_close_criterion"],
+            parsimony=config_.get("parsimony", 0.05),
             device=config_["device"]
         )
 
@@ -173,9 +155,12 @@ class Evaluation():
             Dictionary with the evaluation results.
         '''
         if verbose:
-            print(f'Evaluating model with configuration: beam_width={self.beam_width}, noise_level={self.noise_level}, n_support={self.n_support}, complexity={self.complexity}')
+            print(
+                'Evaluating model with configuration: '
+                f'parsimony={self.parsimony}, noise_level={self.noise_level}, '
+                f'n_support={self.n_support}, complexity={self.complexity}'
+            )
 
-        # Make sure the model is in evaluation mode
         model.to(self.device).eval()
 
         results_dict = defaultdict(list)
@@ -183,10 +168,8 @@ class Evaluation():
         if size is None:
             size = len(dataset.skeleton_pool)
 
-        # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
 
-        # HACK: Ensure compatibility of tokenization and input variables
         print('Recompiling skeleton and holdout codes to ensure compatibility...')
         dataset.skeleton_pool.simplipy_engine = model.simplipy_engine
         dataset.skeleton_pool.skeleton_codes = dataset.skeleton_pool.compile_codes(verbose=verbose)
@@ -200,300 +183,188 @@ class Evaluation():
         max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
 
         with torch.no_grad():
-            current_size = 0
-            max_size = size * 2  # Just to be safe it won't run indefinitely
-            for batch in dataset.iterate(size=max_size, max_n_support=max_n_support, n_support=self.n_support * 2 if self.n_support is not None else None, preprocess=self.preprocess, verbose=verbose, batch_size=1):
+            collected = 0
+            max_samples = size * 2
+            iterator = dataset.iterate(
+                size=max_samples,
+                max_n_support=max_n_support,
+                n_support=self.n_support * 2 if self.n_support is not None else None,
+                preprocess=self.preprocess,
+                verbose=verbose,
+                batch_size=1
+            )
+
+            for batch in iterator:
                 batch = dataset.collate(batch, device=self.device)
 
+                n_support = self.n_support
+                if n_support is None:
+                    n_support = batch['x_tensors'].shape[1] // 2
+
+                if n_support == 0:
+                    warnings.warn('n_support evaluated to zero. Skipping batch.')
+                    continue
+
                 if self.noise_level > 0.0:
-                    batch['y_tensors_noisy'] = batch['y_tensors'] + (self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors']))
+                    batch['y_tensors_noisy'] = batch['y_tensors'] + (
+                        self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors'])
+                    )
                     if not torch.all(torch.isfinite(batch['y_tensors_noisy'])):
                         warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
                         continue
                 else:
                     batch['y_tensors_noisy'] = batch['y_tensors']
 
-                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
-                y = batch['y_tensors_noisy'].cpu().numpy()[0, :self.n_support]
+                x_numpy = batch['x_tensors'].cpu().numpy()[0]
+                y_numpy = batch['y_tensors'].cpu().numpy()[0]
+                y_noisy_numpy = batch['y_tensors_noisy'].cpu().numpy()[0]
 
-                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
-                y_val = batch['y_tensors_noisy'].cpu().numpy()[0, self.n_support:]
+                X = x_numpy[:n_support]
+                y = y_noisy_numpy[:n_support]
 
-                results_dict['input_ids'].append(batch['input_ids'][0].cpu().numpy())
-                results_dict['labels'].append(batch['labels'][0].cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants'][0]])
+                X_val = x_numpy[n_support:]
+                y_val = y_noisy_numpy[n_support:]
 
-                results_dict['x'].append(batch['x_tensors'].cpu().numpy()[:, :self.n_support])
-                results_dict['y'].append(batch['y_tensors'].cpu().numpy()[:, :self.n_support])
-                results_dict['y_noisy'].append(batch['y_tensors_noisy'].cpu().numpy()[:, :self.n_support])
+                sample_results = {
+                    'skeleton': batch['skeleton'][0],
+                    'skeleton_hash': batch['skeleton_hash'][0],
+                    'expression': batch['expression'][0],
+                    'input_ids': batch['input_ids'][0].cpu().numpy(),
+                    'labels': batch['labels'][0].cpu().numpy(),
+                    'constants': [c.cpu().numpy() for c in batch['constants'][0]],
+                    'x': X,
+                    'y': y_numpy[:n_support],
+                    'y_noisy': y,
+                    'x_val': X_val,
+                    'y_val': y_numpy[n_support:],
+                    'y_noisy_val': y_val,
+                    'n_support': n_support,
+                    'labels_decoded': dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>'),
+                    'parsimony': self.parsimony,
 
-                results_dict['x_val'].append(batch['x_tensors'].cpu().numpy()[:, self.n_support:])
-                results_dict['y_val'].append(batch['y_tensors'].cpu().numpy()[:, self.n_support:])
-                results_dict['y_noisy_val'].append(batch['y_tensors_noisy'].cpu().numpy()[:, self.n_support:])
+                    'fit_time': None,
+                    'predicted_expression': None,
+                    'predicted_expression_prefix': None,
+                    'predicted_expression_simplified': None,
+                    'predicted_expression_encoded': None,
+                    'predicted_constants': None,
+                    'predicted_score': None,
+                    'y_pred': None,
+                    'y_pred_val': None,
+                    'prediction_success': False,
+                    'error': None,
+                }
 
-                results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
+                error_occured = False
 
-                # target_expression = model.flash_ansr_transformer.extract_expression_from_beam(batch['labels'][0].cpu().numpy())[0]
-                # target_expression_decoded = model.tokenizer.decode(target_expression, special_tokens='<constant>')
-
-                # target_expression_labels = torch.tensor(target_expression + [model.tokenizer['<eos>']], device=self.device)
-                # target_expression_labels_decoded = model.tokenizer.decode(target_expression_labels.cpu().numpy(), special_tokens=['<constant>', '<eos>'])
-
-                batch_size = len(batch['input_ids'])
-
-                x_tensor_padded = pad_input_set(batch['x_tensors'][:, :self.n_support], model.n_variables)
-
-                data_tensor = torch.cat([x_tensor_padded, batch['y_tensors_noisy'][:, :self.n_support]], dim=-1)
-
-                valid_results = True
+                fit_time_start = time.time()
                 try:
-                    # Teacher forced forward pass
                     if self.complexity == 'none':
-                        next_token_logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor)
-                        fit_time_start = time.time()
                         model.fit(X, y)
-                        fit_time = time.time() - fit_time_start
                     elif self.complexity == 'ground_truth':
-                        next_token_logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
-                        fit_time_start = time.time()
                         model.fit(X, y, complexity=batch['complexities'])
-                        fit_time = time.time() - fit_time_start
                     elif isinstance(self.complexity, list):
-                        raise NotImplementedError('Complexity list not implemented yet.')
-                        # logits, _ = model.flash_ansr_transformer.forward(batch['input_ids'], data_tensor, batch['input_num'])
-                        # fit_time_start = time.time()
-                        # model.fit(X, y, complexity=self.complexity)
-                        # fit_time = time.time() - fit_time_start
+                        model.fit(X, y, complexity=self.complexity)
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
+                    fit_time = time.time() - fit_time_start
+                    sample_results['fit_time'] = fit_time
+                    sample_results['prediction_success'] = True
+                except (ConvergenceError, OverflowError, TypeError, ValueError) as exc:
+                    warnings.warn(f'Error while fitting the model: {exc}. Skipping sample.')
+                    error_occured = True
+                    sample_results['error'] = str(exc)
+                    continue
 
-                    bos_position = torch.where(batch['input_ids'] == dataset.tokenizer['<bos>'])[1][0].item()
+                if not error_occured:
+                    try:
+                        original_parsimony = model.parsimony
+                    except AttributeError:
+                        original_parsimony = None
 
-                    expression_next_token_logits_with_eos = next_token_logits[:, bos_position:-1]  # type: ignore
-                    expression_next_token_labels_with_eos = batch['labels'][:, bos_position:]  # type: ignore
+                    try:
+                        model.compile_results(parsimony=self.parsimony)
+                    except ConvergenceError as exc:
+                        warnings.warn(f'Could not compile results: {exc}. Skipping sample.')
+                        error_occured = True
+                        sample_results['error'] = str(exc)
+                        continue
 
-                    expresssion_labels_decoded = dataset.tokenizer.decode(expression_next_token_labels_with_eos[0][:-1], special_tokens=['<constant>', '<eos>'])
+                if not error_occured:
+                    if not model._results:
+                        warnings.warn('Model produced no results. Skipping sample.')
+                        error_occured = True
+                        sample_results['error'] = 'Model produced no results.'
+                        continue
 
-                except (ConvergenceError, OverflowError, TypeError, ValueError):
-                    print('Error in the forward pass or fitting.')
-                    valid_results = False
-                    fit_time = float('nan')
+                    best_result = model._results[0]
 
-                results_dict['fit_time'].append(fit_time)
-
-                if valid_results:
-                    beams = [r['beam'] for r in model._results]
-                    log_probs = [r['log_prob'] for r in model._results]
-
-                    beams_decoded = [model.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
-
-                    for j in range(self.beam_width):
-                        if j >= len(beams):
-                            results_dict[f'free_beam_{j + 1}'].append(None)
-                            results_dict[f'log_prob_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        results_dict[f'free_beam_{j + 1}'].append(beam)
-                        results_dict[f'log_prob_beam_{j + 1}'].append(log_probs[j])
-
-                    results_dict['perplexity'].extend([perplexity(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
-                    results_dict['correct_token_predictions_at_1'].extend([correct_token_predictions_at_k(log, lab, k=1, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
-                    results_dict['correct_token_predictions_at_5'].extend([correct_token_predictions_at_k(log, lab, k=5, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
-                    results_dict['correct_token_predictions_at_10'].extend([correct_token_predictions_at_k(log, lab, k=10, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
-                    results_dict['reciprocal_rank'].extend([reciprocal_rank(log, lab, ignore_index=0, reduction='mean').item() for log, lab in zip(expression_next_token_logits_with_eos, expression_next_token_labels_with_eos)])
-
-                    # Accuracy, precision, recall, F1 score
-                    for j in range(self.beam_width):
-                        if j >= len(beams):
-                            results_dict[f'recall_beam_{j + 1}'].append(float('nan'))
-                            results_dict[f'precision_beam_{j + 1}'].append(float('nan'))
-                            results_dict[f'f1_score_beam_{j + 1}'].append(float('nan'))
-                            results_dict[f'accuracy_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams[j]
-                        beam_tensor = torch.tensor(beam, device=self.device).unsqueeze(0)
-                        results_dict[f'recall_beam_{j + 1}'].extend(recall(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'precision_beam_{j + 1}'].extend(precision(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'f1_score_beam_{j + 1}'].extend(f1_score(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-                        results_dict[f'accuracy_beam_{j + 1}'].extend(accuracy(beam_tensor, expression_next_token_labels_with_eos[:, :-1], ignore_index=0, reduction='none').cpu())
-
-                    # BLEU
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            results_dict[f'bleu_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        results_dict[f'bleu_beam_{j + 1}'].append(sentence_bleu(references=[expresssion_labels_decoded], hypothesis=beam, smoothing_function=SmoothingFunction().method1))
-
-                    # ROUGE
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            for metric in ['rouge1', 'rouge2', 'rougeL']:
-                                results_dict[f'{metric}_precision_beam_{j + 1}'].append(float('nan'))
-                                results_dict[f'{metric}_recall_beam_{j + 1}'].append(float('nan'))
-                                results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        scores = self.rouge_scorer.score(beam, expresssion_labels_decoded)
-                        for metric in ['rouge1', 'rouge2', 'rougeL']:
-                            results_dict[f'{metric}_precision_beam_{j + 1}'].append(scores[metric].precision)
-                            results_dict[f'{metric}_recall_beam_{j + 1}'].append(scores[metric].recall)
-                            results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(scores[metric].fmeasure)
-
-                    # METEOR
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            results_dict[f'meteor_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        results_dict[f'meteor_beam_{j + 1}'].append(meteor_score(references=[expresssion_labels_decoded], hypothesis=beam, preprocess=lambda x: x, stemmer=NoOpStemmer()))
-
-                    # Edit distance
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            results_dict[f'edit_distance_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        results_dict[f'edit_distance_beam_{j + 1}'].append(editdistance.eval(beam, expresssion_labels_decoded))
-
-                    # Tree edit distance
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        if not model.simplipy_engine.is_valid(beam):
-                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
+                if not error_occured:
+                    try:
+                        y_pred = model.predict(X, nth_best_beam=0, nth_best_constants=0)
+                        if X_val.shape[0] > 0:
+                            y_pred_val = model.predict(X_val, nth_best_beam=0, nth_best_constants=0)
                         else:
-                            results_dict[f'tree_edit_distance_beam_{j + 1}'].append(zss_tree_edit_distance(beam, expresssion_labels_decoded, model.simplipy_engine.operator_arity))
+                            y_pred_val = np.empty_like(y_val)
+                        sample_results['y_pred'] = y_pred
+                        sample_results['y_pred_val'] = y_pred_val
+                    except (ConvergenceError, ValueError) as exc:
+                        warnings.warn(f'Error while predicting: {exc}. Skipping sample.')
+                        error_occured = True
+                        sample_results['error'] = str(exc)
+                        continue
 
-                    # Structural accuracy
-                    for j in range(self.beam_width):
-                        if j >= len(beams_decoded):
-                            results_dict[f'structural_accuracy_beam_{j + 1}'].append(float('nan'))
-                            continue
-                        beam = beams_decoded[j]
-                        results_dict[f'structural_accuracy_beam_{j + 1}'].append(int(model.simplipy_engine.is_valid(beam)))
+                    predicted_expression_readable = model.get_expression(
+                        nth_best_beam=0,
+                        nth_best_constants=0,
+                        map_variables=True
+                    )
+                    predicted_expression_prefix = model.get_expression(
+                        nth_best_beam=0,
+                        nth_best_constants=0,
+                        return_prefix=True,
+                        map_variables=False
+                    )
 
-                    # Constant Fitting
-                    np_errors_before = np.geterr()
-                    np.seterr(all='ignore')
+                    predicted_expression_simplified = None
+                    if isinstance(predicted_expression_prefix, list) and model.simplipy_engine.is_valid(predicted_expression_prefix):
+                        predicted_expression_simplified = model.simplipy_engine.simplify(
+                            predicted_expression_prefix,
+                            max_pattern_length=4
+                        )
 
-                    for j in range(self.beam_width):
-                        if j < len(beams):
-                            result = model._results[j]
-                            beam_valid_results = True
-                            try:
-                                assert X.dtype == y.dtype
+                    sample_results['predicted_expression'] = predicted_expression_readable
+                    sample_results['predicted_expression_prefix'] = predicted_expression_prefix
+                    sample_results['predicted_expression_simplified'] = predicted_expression_simplified
 
-                                y_pred = result['refiner'].predict(X)
-                                y_pred_val = result['refiner'].predict(X_val)
+                    predicted_constants = None
+                    predicted_score = None
+                    if best_result.get('fits'):
+                        predicted_constants = best_result['fits'][0][0].tolist()
+                    if 'score' in best_result:
+                        predicted_score = best_result['score']
 
-                                assert y_pred.shape == y.shape
-                                assert y_pred_val.shape == y_val.shape
+                    sample_results['predicted_constants'] = predicted_constants
+                    sample_results['predicted_score'] = predicted_score
 
-                                # Fit Data
-                                mse = np.mean((y_pred - y) ** 2)
-                                r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
+                    predicted_expression_encoded = None
+                    if isinstance(predicted_expression_prefix, list):
+                        predicted_expression_encoded = model.tokenizer.encode(predicted_expression_prefix, oov='unk')
 
-                                nsrts_accuracy_close = np.mean(np.isclose(y_pred, y, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                                nsrts_accuracy_r2 = r2 > self.r2_close_criterion
+                    sample_results['predicted_expression_encoded'] = predicted_expression_encoded
 
-                                residuals = y_pred - y
+                for key, value in sample_results.items():
+                    results_dict[key].append(value)
 
-                                # Val Data
-                                mse_val = np.mean((y_pred_val - y_val) ** 2)
-                                r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
+                if original_parsimony is not None:
+                    model.parsimony = original_parsimony
 
-                                nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                                nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
-
-                                residuals_val = y_pred_val - y_val
-
-                            except (ConvergenceError, OverflowError, TypeError, ValueError):
-                                print('Error in the constant fitting.')
-                                beam_valid_results = False
-
-                        else:
-                            beam_valid_results = False
-
-                        if not beam_valid_results:
-                            mse = float('nan')
-                            r2 = float('nan')
-                            nsrts_accuracy_close = float('nan')
-                            nsrts_accuracy_r2 = float('nan')
-                            residuals = None
-                            mse_val = float('nan')
-                            r2_val = float('nan')
-                            nsrts_accuracy_close_val = float('nan')
-                            nsrts_accuracy_r2_val = float('nan')
-                            residuals_val = None
-
-                        results_dict[f'mse_beam_{j + 1}'].append(mse)
-                        results_dict[f'r2_beam_{j + 1}'].append(r2)
-
-                        results_dict[f'NSRTS_accuracy_close_beam_{j + 1}'].append(nsrts_accuracy_close)
-                        results_dict[f'NSRTS_accuracy_r2_beam_{j + 1}'].append(nsrts_accuracy_r2)
-
-                        results_dict[f'residuals_beam_{j + 1}'].append(residuals)
-
-                        results_dict[f'mse_val_beam_{j + 1}'].append(mse_val)
-                        results_dict[f'r2_val_beam_{j + 1}'].append(r2_val)
-
-                        results_dict[f'NSRTS_accuracy_close_val_beam_{j + 1}'].append(nsrts_accuracy_close_val)
-                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j + 1}'].append(nsrts_accuracy_r2_val)
-
-                        results_dict[f'residuals_val_beam_{j + 1}'].append(residuals_val)
-
-                    np.seterr(**np_errors_before)
-
-                else:
-                    # Fill with NaNs
-                    results_dict['perplexity'].extend([float('nan')] * batch_size)
-                    results_dict['correct_token_predictions_at_1'].extend([float('nan')] * batch_size)
-                    results_dict['correct_token_predictions_at_5'].extend([float('nan')] * batch_size)
-                    results_dict['correct_token_predictions_at_10'].extend([float('nan')] * batch_size)
-                    results_dict['reciprocal_rank'].extend([float('nan')] * batch_size)
-
-                    for j in range(self.beam_width):
-                        results_dict[f'free_beam_{j + 1}'].append([float('nan')])
-                        results_dict[f'log_prob_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'bleu_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'meteor_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'edit_distance_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'tree_edit_distance_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'structural_accuracy_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'accuracy_beam_{j + 1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'f1_score_beam_{j + 1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'precision_beam_{j + 1}'].extend([float('nan')] * batch_size)
-                        results_dict[f'recall_beam_{j + 1}'].extend([float('nan')] * batch_size)
-
-                        for metric in ['rouge1', 'rouge2', 'rougeL']:
-                            results_dict[f'{metric}_precision_beam_{j + 1}'].append(float('nan'))
-                            results_dict[f'{metric}_recall_beam_{j + 1}'].append(float('nan'))
-                            results_dict[f'{metric}_fmeasure_beam_{j + 1}'].append(float('nan'))
-
-                        results_dict[f'mse_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'r2_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_close_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_r2_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'residuals_beam_{j + 1}'].append(None)
-                        results_dict[f'mse_val_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'r2_val_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_close_val_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'NSRTS_accuracy_r2_val_beam_{j + 1}'].append(float('nan'))
-                        results_dict[f'residuals_val_beam_{j + 1}'].append(None)
-
-                # Check that all lists have the same length
-                if not len(set(len(v) for v in results_dict.values())) == 1:
-                    for k, v in results_dict.items():
-                        print(f'{k}: {len(v)}')
-                    raise ValueError(f'Inconsistent lengths of the results_dict lists: {set(len(v) for v in results_dict.values())}')
-
-                current_size += 1
-
-                if current_size >= size:
+                collected += 1
+                if collected >= size:
                     break
+
+        if collected < size:
+            warnings.warn(f'Only collected {collected} out of {size} requested samples.')
 
         # Sort the scores alphabetically by key
         results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore

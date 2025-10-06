@@ -74,7 +74,7 @@ class FlashANSR(BaseEstimator):
             numeric_head: bool = False,
             n_restarts: int = 8,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05):
@@ -110,7 +110,7 @@ class FlashANSR(BaseEstimator):
             numeric_head: bool = False,
             n_restarts: int = 1,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,

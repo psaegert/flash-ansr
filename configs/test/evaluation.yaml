@@ -5,6 +5,7 @@ max_len: 15
 refiner_method: 'curve_fit_lm'
 numeric_head: False
 equivalence_pruning: True
+parsimony: 0.05
 pointwise_close_criterion: 0.95
 pointwise_close_accuracy_rtol: 0.05
 pointwise_close_accuracy_atol: 0.001
