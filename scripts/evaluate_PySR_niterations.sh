@@ -11,7 +11,7 @@ fi
 # 1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
 
 niterations_values=(
-    1 4 16 64 256 1024
+    128 1 32 64 16 8 4 2 256
 )
 
 for niterations in "${niterations_values[@]}"; do
