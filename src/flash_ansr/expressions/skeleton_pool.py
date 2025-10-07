@@ -354,7 +354,11 @@ class SkeletonPool:
         try:
             expression_image = safe_f(f, self.holdout_X[:, :self.n_variables], self.holdout_C[:len(constants)]).round(4)
             expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
-        except OverflowError:
+        except (OverflowError, NameError):
+            print("Overflow or Name error during holdout evaluation, assuming held out")
+            print(f'Skeleton: {skeleton}')
+            print(f'Constants: {constants}')
+            print(f'Code: {code}')
             return True  # Just to be safe
 
         if tuple(expression_image) in self.holdout_y:
@@ -536,7 +540,7 @@ class SkeletonPool:
             The leaf node.
         '''
         n_unique_variables = np.random.randint(1, min(t_leaves, self.n_variables) + 1)
-        unique_variables = np.random.choice(self.variables, n_unique_variables, replace=False)
+        unique_variables = np.random.choice(self.variables + ['<constant>'], n_unique_variables, replace=False)
 
         guaranteed_part = unique_variables.copy()
         remaining_part = np.random.choice(unique_variables, t_leaves - n_unique_variables, replace=True)
@@ -544,11 +548,6 @@ class SkeletonPool:
         np.random.shuffle(all_allowed_variables)
 
         leaves = all_allowed_variables.tolist()
-
-        # Replace some leaves with constants according to the self.variable_probability
-        for i in range(len(leaves)):
-            if np.random.rand() > self.variable_probability:
-                leaves[i] = '<constant>'
 
         return leaves
 
