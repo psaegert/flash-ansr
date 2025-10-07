@@ -526,7 +526,7 @@ class SkeletonPool:
 
         return e, arity
 
-    def get_leaf(self, unique_variables: list[str]) -> list[str]:
+    def get_leaves(self, t_leaves: int) -> list[str]:
         '''
         Sample a leaf node (either a variable or a constant).
 
@@ -535,11 +535,22 @@ class SkeletonPool:
         list[str]
             The leaf node.
         '''
-        if random.random() < self.variable_probability:
-            # return [str(random.choice(self.variables))]
-            return [str(random.choice(unique_variables))]
+        n_unique_variables = np.random.randint(1, min(t_leaves, self.n_variables) + 1)
+        unique_variables = np.random.choice(self.variables, n_unique_variables, replace=False)
 
-        return ['<constant>']
+        guaranteed_part = unique_variables.copy()
+        remaining_part = np.random.choice(unique_variables, t_leaves - n_unique_variables, replace=True)
+        all_allowed_variables = np.concatenate([guaranteed_part, remaining_part])
+        np.random.shuffle(all_allowed_variables)
+
+        leaves = all_allowed_variables.tolist()
+
+        # Replace some leaves with constants according to the self.variable_probability
+        for i in range(len(leaves)):
+            if np.random.rand() > self.variable_probability:
+                leaves[i] = '<constant>'
+
+        return leaves
 
     def _sample_skeleton(self, n_operators: int) -> list[str]:
         '''
@@ -587,14 +598,14 @@ class SkeletonPool:
         assert len([1 for v in stack if v is None]) == t_leaves
 
         # create leaves
-        n_unique_variables = np.random.uniform(1, self.n_variables)
-        unique_variables = np.random.choice(self.variables, int(n_unique_variables), replace=False).tolist()
-        leaves = [self.get_leaf(unique_variables) for _ in range(t_leaves)]
+        leaves = self.get_leaves(t_leaves=t_leaves)
+
+        assert len(leaves) == t_leaves, f"Expected {t_leaves} leaves, got {len(leaves)}"
 
         # insert leaves into tree
         for pos in range(len(stack) - 1, -1, -1):
             if stack[pos] is None:
-                stack = stack[:pos] + leaves.pop() + stack[pos + 1:]
+                stack = stack[:pos] + [leaves.pop()] + stack[pos + 1:]
         assert len(leaves) == 0
 
         return stack  # type: ignore
