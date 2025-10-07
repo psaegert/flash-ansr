@@ -65,10 +65,6 @@ class Evaluation():
             beam_width: int = 1,
             complexity: str | list[int | float] = 'none',
             preprocess: bool = False,
-            pointwise_close_criterion: float = 0.95,
-            pointwise_close_accuracy_rtol: float = 0.05,
-            pointwise_close_accuracy_atol: float = 0.001,
-            r2_close_criterion: float = 0.95,
             parsimony: float = 0.05,
             device: str = 'cpu') -> None:
 
@@ -77,10 +73,6 @@ class Evaluation():
         self.beam_width = beam_width
         self.complexity = complexity
         self.preprocess = preprocess
-        self.pointwise_close_criterion = pointwise_close_criterion
-        self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
-        self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
-        self.r2_close_criterion = r2_close_criterion
         self.parsimony = parsimony
 
         self.device = device
@@ -109,10 +101,10 @@ class Evaluation():
         if 'beam_width' in config_.keys():
             beams = config_['beam_width']
         elif 'generation_config' in config_.keys():
-            if 'beam_width' in config_['generation_config'].keys():
-                beams = config_['generation_config']['beam_width']
-            elif 'choices' in config_['generation_config'].keys():
-                beams = config_['generation_config']['choices']
+            if 'beam_width' in config_['generation_config']['kwargs'].keys():
+                beams = config_['generation_config']['kwargs']['beam_width']
+            elif 'choices' in config_['generation_config']['kwargs'].keys():
+                beams = config_['generation_config']['kwargs']['choices']
 
         if beams is None:
             raise ValueError('Beam width not found in the configuration.')
@@ -123,10 +115,6 @@ class Evaluation():
             beam_width=beams,
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
-            pointwise_close_criterion=config_["pointwise_close_criterion"],
-            pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
-            pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
-            r2_close_criterion=config_["r2_close_criterion"],
             parsimony=config_.get("parsimony", 0.05),
             device=config_["device"]
         )
@@ -182,17 +170,21 @@ class Evaluation():
 
         max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
 
+        warnings.filterwarnings('ignore', category=RuntimeWarning)
+
         with torch.no_grad():
             collected = 0
-            max_samples = size * 2
             iterator = dataset.iterate(
-                size=max_samples,
+                size=size * 2,  # In case something goes wrong in a few samples, we have enough buffer to still collect 'size' samples
                 max_n_support=max_n_support,
                 n_support=self.n_support * 2 if self.n_support is not None else None,
                 preprocess=self.preprocess,
                 verbose=verbose,
                 batch_size=1
             )
+
+            if verbose:
+                print(f'Starting evaluation on {size} samples...')
 
             for batch in iterator:
                 batch = dataset.collate(batch, device=self.device)
@@ -271,10 +263,9 @@ class Evaluation():
                     sample_results['fit_time'] = fit_time
                     sample_results['prediction_success'] = True
                 except (ConvergenceError, OverflowError, TypeError, ValueError) as exc:
-                    warnings.warn(f'Error while fitting the model: {exc}. Skipping sample.')
+                    warnings.warn(f'Error while fitting the model: {exc}. Filling nan.')
                     error_occured = True
                     sample_results['error'] = str(exc)
-                    continue
 
                 if not error_occured:
                     try:
@@ -285,17 +276,15 @@ class Evaluation():
                     try:
                         model.compile_results(parsimony=self.parsimony)
                     except ConvergenceError as exc:
-                        warnings.warn(f'Could not compile results: {exc}. Skipping sample.')
+                        warnings.warn(f'Could not compile results: {exc}. Filling nan.')
                         error_occured = True
                         sample_results['error'] = str(exc)
-                        continue
 
                 if not error_occured:
                     if not model._results:
-                        warnings.warn('Model produced no results. Skipping sample.')
+                        warnings.warn('Model produced no results. Filling nan.')
                         error_occured = True
                         sample_results['error'] = 'Model produced no results.'
-                        continue
 
                     best_result = model._results[0]
 
@@ -309,10 +298,9 @@ class Evaluation():
                         sample_results['y_pred'] = y_pred
                         sample_results['y_pred_val'] = y_pred_val
                     except (ConvergenceError, ValueError) as exc:
-                        warnings.warn(f'Error while predicting: {exc}. Skipping sample.')
+                        warnings.warn(f'Error while predicting: {exc}. Filling nan.')
                         error_occured = True
                         sample_results['error'] = str(exc)
-                        continue
 
                     predicted_expression_readable = model.get_expression(
                         nth_best_beam=0,

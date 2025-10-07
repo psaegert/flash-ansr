@@ -237,9 +237,10 @@ def main(argv: str = None) -> None:
             import os
             from flash_ansr import FlashANSR, GenerationConfig
             from flash_ansr.eval.evaluation import Evaluation
-            from flash_ansr.utils import substitute_root_path, load_config
+            from flash_ansr.utils import substitute_root_path, load_config, unfold_config
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.model import FlashANSRModel
+            import pprint
 
             if os.path.isdir(substitute_root_path(args.model)):
                 # Load the model
@@ -263,23 +264,15 @@ def main(argv: str = None) -> None:
             else:
                 raise ValueError(f"Invalid dataset configuration: {args.dataset}")
 
-            # Use the same expression space as the model for correct tokenization
-            # FIXME: Is this necessary?
-            # dataset.skeleton_pool.simplipy_engine = model.simplipy_engine
-
             evaluation = Evaluation.from_config(substitute_root_path(args.config))
+
+            if args.verbose:
+                print(f"Loaded evaluation config from {args.config}")
+                pprint.pprint(unfold_config(load_config(substitute_root_path(args.config))))
 
             evaluation_config = load_config(substitute_root_path(args.config))
 
-            if 'generation_config' in evaluation_config:
-                generation_config = GenerationConfig(**evaluation_config['generation_config'])
-            else:
-                generation_config = GenerationConfig(
-                    method='beam_search',
-                    beam_width=evaluation_config['beam_width'],
-                    equivalence_pruning=evaluation_config['equivalence_pruning'],
-                    max_len=evaluation_config['max_len'],
-                )
+            generation_config = GenerationConfig(method=evaluation_config['generation_config']['method'], **evaluation_config['generation_config'].get('kwargs', {}))
 
             results_dict = evaluation.evaluate(
                 model=FlashANSR.load(
@@ -290,7 +283,7 @@ def main(argv: str = None) -> None:
                     refiner_method=evaluation_config.get("refiner_method", 'curve_fit_lm'),
                     refiner_p0_noise=evaluation_config["refiner_p0_noise"],
                     refiner_p0_noise_kwargs=evaluation_config.get("refiner_p0_noise_kwargs", None),
-                    parsimony=evaluation_config.get("parsimony", 0),
+                    parsimony=evaluation_config['parsimony'],
                 ),
                 dataset=dataset,
                 size=args.size,

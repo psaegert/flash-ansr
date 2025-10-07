@@ -22,4 +22,4 @@ generation_config:
     simplify: true
     unique: true
 
-device: cpu
+device: cuda

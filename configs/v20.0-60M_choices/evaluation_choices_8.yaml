@@ -12,7 +12,7 @@ parsimony: 0.05
 generation_config:
   method: 'softmax_sampling'
   kwargs:
-    choices: 32
+    choices: 8
     top_k: 0
     top_p: 1
     max_len: 32
@@ -22,4 +22,4 @@ generation_config:
     simplify: true
     unique: true
 
-device: cpu
+device: cuda

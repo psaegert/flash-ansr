@@ -438,7 +438,7 @@ class FlashANSR(BaseEstimator):
         for result in self._results:
             if 'score' in result:
                 # Recompute the score with the new parsimony coefficient
-                result['score'] = np.log10(result['fvu']) + self.parsimony * len(result['expression'])
+                result['score'] = np.log10(min(result['fvu'], float(np.finfo(np.float32).eps))) + self.parsimony * len(result['expression'])
 
         # Sort the results by the best loss of each beam
         self._results = list(sorted(self._results, key=lambda x: (

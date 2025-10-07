@@ -53,8 +53,8 @@ class TestEvaluation(unittest.TestCase):
         for k, v in results.items():
             print(f"{k}: {len(v)}")
 
+        assert len(set(len(v) for v in results.values())) == 1  # All results have the same length
         assert 'y_pred' in results
         assert 'predicted_expression' in results
         assert len(results['y_pred']) == 2
-        assert all(results['prediction_success'])
         assert all(par == evaluation.parsimony for par in results['parsimony'])
