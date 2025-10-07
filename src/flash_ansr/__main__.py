@@ -401,7 +401,6 @@ def main(argv: str = None) -> None:
             results_dict = evaluation.evaluate(
                 dataset=dataset,
                 simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
-                tokenizer=dataset.tokenizer,
                 results_dict=results_dict,
                 size=size_todo,
                 save_every=100,

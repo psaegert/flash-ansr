@@ -13,7 +13,6 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSRDataset
 from flash_ansr.utils import load_config, substitute_root_path
-from flash_ansr.model.tokenizer import Tokenizer
 
 import simplipy
 
@@ -22,20 +21,16 @@ class PySREvaluation():
     def __init__(
             self,
             n_support: int | None = None,
+            noise_level: float = 0.0,
             timeout_in_seconds: int = 60,
-            niterations: int = 100,
-            pointwise_close_criterion: float = 0.95,
-            pointwise_close_accuracy_rtol: float = 0.05,
-            pointwise_close_accuracy_atol: float = 0.001,
-            r2_close_criterion: float = 0.95) -> None:
+            parsimony: float = 0.0,
+            niterations: int = 100) -> None:
 
         self.n_support = n_support
+        self.noise_level = noise_level
         self.timeout_in_seconds = timeout_in_seconds
         self.niterations = niterations
-        self.pointwise_close_criterion = pointwise_close_criterion
-        self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
-        self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
-        self.r2_close_criterion = r2_close_criterion
+        self.parsimony = parsimony
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "PySREvaluation":
@@ -46,19 +41,15 @@ class PySREvaluation():
 
         return cls(
             n_support=config_["n_support"],
+            noise_level=config_.get("noise_level", 0.0),
             timeout_in_seconds=config_["timeout_in_seconds"],
             niterations=config_["niterations"],
-            pointwise_close_criterion=config_["pointwise_close_criterion"],
-            pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
-            pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
-            r2_close_criterion=config_["r2_close_criterion"]
         )
 
     def evaluate(
             self,
             dataset: FlashANSRDataset,
             simplipy_engine: SimpliPyEngine,
-            tokenizer: Tokenizer,
             results_dict: dict[str, Any] | None = None,
             size: int | None = None,
             save_every: int | None = None,
@@ -113,70 +104,118 @@ class PySREvaluation():
         warnings.filterwarnings("ignore", category=RuntimeWarning)
 
         with torch.no_grad():
-            for batch_id, batch in enumerate(dataset.iterate(size=size, max_n_support=max_n_support, n_support=max_n_support, verbose=verbose)):
+            collected = 0
+            iterator = dataset.iterate(
+                size=size * 2,  # In case something goes wrong in a few samples, we have enough buffer to still collect 'size' samples
+                max_n_support=max_n_support,
+                n_support=self.n_support * 2 if self.n_support is not None else None,
+                verbose=verbose,
+                batch_size=1
+            )
+
+            if verbose:
+                print(f'Starting evaluation on {size} samples...')
+
+            for batch_id, batch in enumerate(iterator):
                 batch = dataset.collate(batch, device='cpu')
 
-                x_tensor = batch['x_tensors']
-                y_tensor = batch['y_tensors']
+                n_support = self.n_support
+                if n_support is None:
+                    n_support = batch['x_tensors'].shape[1] // 2
 
-                X = x_tensor.cpu().numpy()[0, :self.n_support]
-                y = y_tensor.cpu().numpy()[0, :self.n_support, 0]
+                if n_support == 0:
+                    warnings.warn('n_support evaluated to zero. Skipping batch.')
+                    continue
 
-                X_val = x_tensor.cpu().numpy()[0, self.n_support:]
-                y_val = y_tensor.cpu().numpy()[0, self.n_support:, 0]
+                if self.noise_level > 0.0:
+                    batch['y_tensors_noisy'] = batch['y_tensors'] + (
+                        self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors'])
+                    )
+                    if not torch.all(torch.isfinite(batch['y_tensors_noisy'])):
+                        warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
+                        continue
+                else:
+                    batch['y_tensors_noisy'] = batch['y_tensors']
 
-                labels = batch['labels'][0].clone()
+                x_numpy = batch['x_tensors'].cpu().numpy()[0]
+                y_numpy = batch['y_tensors'].cpu().numpy()[0]
+                y_noisy_numpy = batch['y_tensors_noisy'].cpu().numpy()[0]
 
-                results_dict['skeleton'].append(batch['skeleton'][0])
-                results_dict['skeleton_hash'].append(batch['skeleton_hash'][0])
-                results_dict['expression'].append(batch['expression'][0])
+                X = x_numpy[:n_support]
+                y = y_noisy_numpy[:n_support]
 
-                results_dict['input_ids'].append(batch['input_ids'][0].cpu().numpy())
-                results_dict['labels'].append(labels.cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants']])
+                X_val = x_numpy[n_support:]
+                y_val = y_noisy_numpy[n_support:]
 
-                results_dict['x'].append(X)
-                results_dict['y'].append(y)
+                sample_results = {
+                    'skeleton': batch['skeleton'][0],
+                    'skeleton_hash': batch['skeleton_hash'][0],
+                    'expression': batch['expression'][0],
+                    'input_ids': batch['input_ids'][0].cpu().numpy(),
+                    'labels': batch['labels'][0].cpu().numpy(),
+                    'constants': [c.cpu().numpy() for c in batch['constants'][0]],
+                    'x': X,
+                    'y': y_numpy[:n_support],
+                    'y_noisy': y,
+                    'x_val': X_val,
+                    'y_val': y_numpy[n_support:],
+                    'y_noisy_val': y_val,
+                    'n_support': n_support,
+                    'labels_decoded': dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>'),
+                    'parsimony': self.parsimony,
 
-                results_dict['x_val'].append(X_val)
-                results_dict['y_val'].append(y_val)
+                    'fit_time': None,
+                    'predicted_expression': None,
+                    'predicted_expression_prefix': None,
+                    'predicted_expression_simplified': None,
+                    'predicted_expression_encoded': None,
+                    'predicted_constants': None,
+                    'predicted_score': None,
+                    'predicted_log_prob': None,
+                    'y_pred': None,
+                    'y_pred_val': None,
+                    'prediction_success': False,
+                    'error': None,
+                }
 
-                results_dict['n_support'].append(self.n_support)
-
-                # Create the labels for the next token prediction task (i.e. shift the input_ids by one position to the right)
-                labels_decoded = tokenizer.decode(labels.tolist(), special_tokens='<constant>')
-                results_dict['labels_decoded'].append(labels_decoded)
+                error_occured = False
 
                 fit_time_before = time.time()
-                model.fit(X, y)
-                results_dict['fit_time'].append(time.time() - fit_time_before)
+                try:
+                    model.fit(X, y)
+                    sample_results['fit_time'] = time.time() - fit_time_before
+                    sample_results['prediction_success'] = True
+                except Exception as e:
+                    error_occured = True
+                    sample_results['error'] = str(e)
 
-                best_skeleton_decoded = []
-                for token in simplipy_engine.parse(str(model.get_best()['equation'])):
-                    try:
-                        float(token)
-                        best_skeleton_decoded.append('<constant>')
-                    except ValueError:
-                        best_skeleton_decoded.append(token)
-                results_dict['best_skeleton_decoded'].append(best_skeleton_decoded)
+                if not error_occured:
+                    predicted_expression = []
+                    for token in simplipy_engine.parse(str(model.get_best()['equation'])):
+                        try:
+                            float(token)
+                            predicted_expression.append('<constant>')
+                        except ValueError:
+                            predicted_expression.append(token)
+                    sample_results['predicted_expression_prefix'] = predicted_expression
 
-                if dataset.simplipy_engine.is_valid(best_skeleton_decoded):
-                    best_skeleton_decoded = dataset.simplipy_engine.simplify(best_skeleton_decoded, max_pattern_length=4)
-                results_dict['best_skeleton_simplified_decoded'].append(best_skeleton_decoded)
+                    if dataset.simplipy_engine.is_valid(predicted_expression):
+                        predicted_expression = dataset.simplipy_engine.simplify(predicted_expression, max_pattern_length=4)
+                    sample_results['predicted_expression_simplified'] = predicted_expression
 
-                best_skeleton = tokenizer.encode(best_skeleton_decoded, oov='unk')
-                results_dict['best_skeleton'].append(best_skeleton)
+                    y_pred = model.predict(X).reshape(-1, 1)
+                    y_pred_val = model.predict(X_val).reshape(-1, 1)
 
-                y_pred = model.predict(X)
-                y_pred_val = model.predict(X_val)
+                    if not y_pred.shape == y.shape:
+                        raise ValueError(f"Shape of y_pred {y_pred.shape} does not match shape of y {y.shape}.")
+                    if not y_pred_val.shape == y_val.shape:
+                        raise ValueError(f"Shape of y_pred_val {y_pred_val.shape} does not match shape of y_val {y_val.shape}.")
 
-                if not y_pred.shape == y.shape:
-                    raise ValueError(f"Shape of y_pred {y_pred.shape} does not match shape of y {y.shape}.")
-                if not y_pred_val.shape == y_val.shape:
-                    raise ValueError(f"Shape of y_pred_val {y_pred_val.shape} does not match shape of y_val {y_val.shape}.")
+                    sample_results['y_pred'] = y_pred
+                    sample_results['y_pred_val'] = y_pred_val
 
-                results_dict['y_pred'].append(y_pred)
-                results_dict['y_pred_val'].append(y_pred_val)
+                for key, value in sample_results.items():
+                    results_dict[key].append(value)
 
                 if not len(set(len(v) for v in results_dict.values())) == 1:
                     print({k: len(v) for k, v in results_dict.items()})  # Check that all lists have the same length
@@ -190,6 +229,10 @@ class PySREvaluation():
 
                     with open(substitute_root_path(output_file), 'wb') as f:
                         pickle.dump(results_dict, f)
+
+                collected += 1
+                if collected >= size:
+                    break
 
         # Sort the scores alphabetically by key
         results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore

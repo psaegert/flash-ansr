@@ -115,7 +115,7 @@ class Evaluation():
             beam_width=beams,
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
-            parsimony=config_.get("parsimony", 0.05),
+            parsimony=config_['parsimony'],
             device=config_["device"]
         )
 
@@ -241,6 +241,7 @@ class Evaluation():
                     'predicted_expression_encoded': None,
                     'predicted_constants': None,
                     'predicted_score': None,
+                    'predicted_log_prob': None,
                     'y_pred': None,
                     'y_pred_val': None,
                     'prediction_success': False,
@@ -334,6 +335,7 @@ class Evaluation():
 
                     sample_results['predicted_constants'] = predicted_constants
                     sample_results['predicted_score'] = predicted_score
+                    sample_results['predicted_log_prob'] = best_result.get('log_prob', None)
 
                     predicted_expression_encoded = None
                     if isinstance(predicted_expression_prefix, list):
