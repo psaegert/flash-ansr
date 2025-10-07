@@ -1,13 +1,16 @@
 import unittest
 import shutil
 
-from simplipy import SimpliPyEngine
+import torch
 
-from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.eval.evaluation import Evaluation
-from flash_ansr import get_path, FlashANSR, FlashANSRModel, GenerationConfig
+from flash_ansr import get_path, FlashANSR, GenerationConfig, install_model
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.expressions import SkeletonPool
+
+
+MODEL = "psaegert/flash-ansr-v19.0-6M"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class TestEvaluation(unittest.TestCase):
@@ -32,23 +35,26 @@ class TestEvaluation(unittest.TestCase):
         assert evaluation.n_support == 512
 
     def test_evaluate(self):
+        install_model(MODEL)
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
-        ansr = FlashANSR(
-            simplipy_engine=SimpliPyEngine.load('dev_7-3'),
-            flash_ansr_transformer=FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml')),
-            tokenizer=Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml')),
-            generation_config=GenerationConfig(method='beam_search', beam_width=2),
-            numeric_head=False,
-            n_restarts=3,
-            refiner_p0_noise='uniform',
-            refiner_p0_noise_kwargs={'low': -5, 'high': 5},
-        )
+        ansr = FlashANSR.load(
+            directory=get_path('models', MODEL),
+            generation_config=GenerationConfig(method='softmax_sampling', choices=5),
+            n_restarts=2,
+        ).to(DEVICE)
 
         val_dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 
-        evaluation.evaluate(
+        results = evaluation.evaluate(
             model=ansr,
             dataset=val_dataset,
             size=2)
 
-        val_dataset.shutdown()
+        for k, v in results.items():
+            print(f"{k}: {len(v)}")
+
+        assert len(set(len(v) for v in results.values())) == 1  # All results have the same length
+        assert 'y_pred' in results
+        assert 'predicted_expression' in results
+        assert len(results['y_pred']) == 2
+        assert all(par == evaluation.parsimony for par in results['parsimony'])

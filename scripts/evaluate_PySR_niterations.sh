@@ -2,7 +2,7 @@
 
 # Get the first argument and store it in TEST_SET
 if [ $# -eq 0 ]; then
-    echo "Usage: evaluate_pysr.sh <TEST_SET>"
+    echo "Usage: evaluate_PySR_niterations.sh <TEST_SET>"
     exit 1
 else
     TEST_SET=$1

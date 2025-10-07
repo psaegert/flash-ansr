@@ -1,5 +1,7 @@
-from typing import Literal
+from collections.abc import Sequence
+from typing import Any, Literal
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -105,7 +107,170 @@ def reciprocal_rank(logits: torch.Tensor, labels: torch.Tensor, reduction: Liter
             raise ValueError(f"Invalid reduction: {reduction}")
 
 
-def recall(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: int | list[int] | None = None) -> torch.Tensor:
+def _to_python_scalar(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        if value.ndim == 0:
+            return value.item()
+        raise ValueError("Expected scalar tensor when converting to python value")
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value.item()
+        raise ValueError("Expected scalar ndarray when converting to python value")
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _ensure_python_scalars(sequence: list[Any]) -> list[Any]:
+    return [_to_python_scalar(item) for item in sequence]
+
+
+def _is_sequence_like(item: Any) -> bool:
+    if isinstance(item, (str, bytes)):
+        return False
+    if isinstance(item, torch.Tensor):
+        return item.ndim <= 1
+    if isinstance(item, np.ndarray):
+        return item.ndim <= 1
+    return isinstance(item, Sequence)
+
+
+def _flatten_token_sequence(sequence_like: Any, name: str) -> list[Any]:
+    if isinstance(sequence_like, torch.Tensor):
+        if sequence_like.ndim == 0:
+            return [_to_python_scalar(sequence_like)]
+        if sequence_like.ndim == 1:
+            return _ensure_python_scalars(sequence_like.tolist())
+        raise ValueError(f"Expected 1D tensor for {name}, got {sequence_like.ndim}D tensor")
+    if isinstance(sequence_like, np.ndarray):
+        if sequence_like.ndim == 0:
+            return [_to_python_scalar(sequence_like)]
+        if sequence_like.ndim == 1:
+            return _ensure_python_scalars(sequence_like.tolist())
+        raise ValueError(f"Expected 1D ndarray for {name}, got {sequence_like.ndim}D array")
+    if isinstance(sequence_like, (str, bytes)):
+        return [sequence_like]
+    if isinstance(sequence_like, Sequence):
+        return _ensure_python_scalars(list(sequence_like))
+    return [_to_python_scalar(sequence_like)]
+
+
+def _normalize_sequences(data: Any, name: str) -> list[list[Any]]:
+    if isinstance(data, torch.Tensor):
+        if data.ndim == 0:
+            return [[_to_python_scalar(data)]]
+        if data.ndim == 1:
+            return [_ensure_python_scalars(data.tolist())]
+        if data.ndim == 2:
+            return [_ensure_python_scalars(row.tolist()) for row in data]
+        raise ValueError(f"Expected {name} to be 1D or 2D tensor, got {data.ndim}D")
+
+    if isinstance(data, np.ndarray):
+        if data.ndim == 0:
+            return [[_to_python_scalar(data)]]
+        if data.ndim == 1:
+            return [_ensure_python_scalars(data.tolist())]
+        if data.ndim == 2:
+            return [_ensure_python_scalars(row.tolist()) for row in data]
+        raise ValueError(f"Expected {name} to be 1D or 2D ndarray, got {data.ndim}D")
+
+    if isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+        if not data:
+            return [[]]
+        if all(_is_sequence_like(item) for item in data):
+            return [_flatten_token_sequence(item, name) for item in data]
+        return [_ensure_python_scalars(list(data))]
+
+    return [[_to_python_scalar(data)]]
+
+
+def _normalize_ignore_index(ignore_index: Any) -> set[Any]:
+    if ignore_index is None:
+        return set()
+
+    if isinstance(ignore_index, (str, bytes)):
+        return {ignore_index}
+
+    if isinstance(ignore_index, torch.Tensor):
+        if ignore_index.ndim == 0:
+            return {ignore_index.item()}
+        return set(ignore_index.detach().cpu().flatten().tolist())
+
+    if isinstance(ignore_index, np.ndarray):
+        return set(np.asarray(ignore_index).flatten().tolist())
+
+    if isinstance(ignore_index, Sequence) and not isinstance(ignore_index, (str, bytes)):
+        return {_to_python_scalar(item) for item in ignore_index}
+
+    return {_to_python_scalar(ignore_index)}
+
+
+def _prepare_inputs(pred_labels: Any, labels: Any, ignore_index: Any, pred_name: str) -> tuple[list[list[Any]], list[list[Any]], set[Any]]:
+    pred_sequences = _normalize_sequences(pred_labels, pred_name)
+    label_sequences = _normalize_sequences(labels, 'labels')
+
+    if len(pred_sequences) != len(label_sequences):
+        raise ValueError(
+            f"Mismatched number of sequences between {pred_name} ({len(pred_sequences)}) and labels ({len(label_sequences)})."
+        )
+
+    ignore_set = _normalize_ignore_index(ignore_index)
+    return pred_sequences, label_sequences, ignore_set
+
+
+def _apply_reduction(values: torch.Tensor, reduction: Literal['mean', 'sum', 'none']) -> torch.Tensor:
+    if reduction == 'none':
+        return values
+    if reduction == 'mean':
+        if values.numel() == 0:
+            return torch.tensor(float('nan'), dtype=values.dtype)
+        return torch.nanmean(values)
+    if reduction == 'sum':
+        if values.numel() == 0:
+            return torch.tensor(0.0, dtype=values.dtype)
+        return torch.nansum(values)
+    raise ValueError(f"Invalid reduction: {reduction}")
+
+
+def _compute_precision_values(pred_sequences: list[list[Any]], label_sequences: list[list[Any]], ignore_set: set[Any]) -> torch.Tensor:
+    batch_values: list[float] = []
+    for preds, labels in zip(pred_sequences, label_sequences):
+        filtered_preds = [token for token in preds if token not in ignore_set]
+        filtered_labels = [token for token in labels if token not in ignore_set]
+
+        pred_set = set(filtered_preds)
+        label_set = set(filtered_labels)
+
+        if not pred_set:
+            batch_values.append(float('nan'))
+            continue
+
+        true_positives = len(pred_set & label_set)
+        batch_values.append(true_positives / len(pred_set))
+
+    return torch.tensor(batch_values, dtype=torch.float32)
+
+
+def _compute_recall_values(pred_sequences: list[list[Any]], label_sequences: list[list[Any]], ignore_set: set[Any]) -> torch.Tensor:
+    batch_values: list[float] = []
+    for preds, labels in zip(pred_sequences, label_sequences):
+        filtered_preds = [token for token in preds if token not in ignore_set]
+        filtered_labels = [token for token in labels if token not in ignore_set]
+
+        pred_set = set(filtered_preds)
+        label_set = set(filtered_labels)
+
+        if not label_set:
+            batch_values.append(float('nan'))
+            continue
+
+        true_positives = len(pred_set & label_set)
+        batch_values.append(true_positives / len(label_set))
+
+    return torch.tensor(batch_values, dtype=torch.float32)
+
+
+def recall(pred_labels: Any, labels: Any, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: Any | None = None) -> torch.Tensor:
     '''
     Compute the recall of the model's predictions.
 
@@ -125,52 +290,12 @@ def recall(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal['
     torch.Tensor
         The recall scores of the model's predictions.
     '''
-    if pred_labels.ndim != 2:
-        raise ValueError(f"Expected pred_labels to have 2 dimensions (batch_size, sequence_length), got {pred_labels.shape}")
-
-    if labels.ndim != 2:
-        raise ValueError(f"Expected labels to have 2 dimension (batch_size, sequence_length), got {labels.shape}")
-
-    batch_recalls = []
-
-    # Handle ignore_index as a tensor for efficient operations
-    if ignore_index is not None:
-        if isinstance(ignore_index, int):
-            ignore_index = [ignore_index]
-        ignore_index_tensor = torch.tensor(ignore_index, dtype=torch.long, device=labels.device)
-    else:
-        ignore_index_tensor = torch.tensor([], dtype=torch.long, device=labels.device)
-
-    for pred, lbl in zip(pred_labels, labels):
-        # Filter out ignored labels
-        valid_labels_mask = ~torch.isin(lbl, ignore_index_tensor)
-        valid_labels = lbl[valid_labels_mask].unique()
-        pred_unique = pred.unique()
-
-        # Calculate true positives: Valid labels that are predicted
-        true_positives = valid_labels[torch.isin(valid_labels, pred_unique)].numel()
-
-        # Calculate recall
-        if valid_labels.numel() > 0:
-            batch_recalls.append(true_positives / valid_labels.numel())
-        else:
-            batch_recalls.append(float('nan'))  # Handle case where no valid ground truth labels are provided
-
-    recalls = torch.tensor(batch_recalls)
-
-    # Handle reduction
-    match reduction:
-        case 'mean':
-            return torch.nanmean(recalls)
-        case 'sum':
-            return torch.nansum(recalls)
-        case 'none':
-            return recalls
-        case _:
-            raise ValueError(f"Invalid reduction: {reduction}")
+    pred_sequences, label_sequences, ignore_set = _prepare_inputs(pred_labels, labels, ignore_index, 'pred_labels')
+    recalls = _compute_recall_values(pred_sequences, label_sequences, ignore_set)
+    return _apply_reduction(recalls, reduction)
 
 
-def precision(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: int | list[int] | None = None) -> torch.Tensor:
+def precision(pred_labels: Any, labels: Any, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: Any | None = None) -> torch.Tensor:
     '''
     Compute the precision of the model's predictions.
 
@@ -190,53 +315,12 @@ def precision(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Litera
     torch.Tensor
         The precision scores of the model's predictions.
     '''
-    if pred_labels.ndim != 2:
-        raise ValueError(f"Expected pred_labels to have 2 dimensions (batch_size, sequence_length), got {pred_labels.shape}")
-
-    if labels.ndim != 2:
-        raise ValueError(f"Expected labels to have 2 dimension (batch_size, sequence_length), got {labels.shape}")
-
-    batch_precisions = []
-
-    # Convert ignore_index into a tensor for efficient operations
-    if ignore_index is not None:
-        if isinstance(ignore_index, int):
-            ignore_index = [ignore_index]
-        ignore_index_tensor = torch.tensor(ignore_index, dtype=torch.long, device=labels.device)
-    else:
-        ignore_index_tensor = torch.tensor([], dtype=torch.long, device=labels.device)
-
-    for pred, lbl in zip(pred_labels, labels):
-        # Filter out ignored predictions and labels
-        valid_pred_mask = ~torch.isin(pred, ignore_index_tensor)
-        valid_preds = pred[valid_pred_mask]
-        valid_labels_mask = ~torch.isin(lbl, ignore_index_tensor)
-        valid_labels = lbl[valid_labels_mask].unique()
-
-        # Calculate true positives: Predictions that are correct
-        true_positives = valid_preds[torch.isin(valid_preds, valid_labels)].numel()
-
-        # Calculate precision
-        if valid_preds.numel() > 0:
-            batch_precisions.append(true_positives / valid_preds.numel())
-        else:
-            batch_precisions.append(float('nan'))  # Handle case where no valid predictions are provided
-
-    precisions = torch.tensor(batch_precisions)
-
-    # Handle reduction
-    match reduction:
-        case 'mean':
-            return torch.nanmean(precisions)
-        case 'sum':
-            return torch.nansum(precisions)
-        case 'none':
-            return precisions
-        case _:
-            raise ValueError(f"Invalid reduction: {reduction}")
+    pred_sequences, label_sequences, ignore_set = _prepare_inputs(pred_labels, labels, ignore_index, 'pred_labels')
+    precisions = _compute_precision_values(pred_sequences, label_sequences, ignore_set)
+    return _apply_reduction(precisions, reduction)
 
 
-def f1_score(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: int | list[int] | None = None) -> torch.Tensor:
+def f1_score(pred_labels: Any, labels: Any, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: Any | None = None) -> torch.Tensor:
     '''
     Compute the F1 score of the model's predictions.
 
@@ -256,32 +340,14 @@ def f1_score(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal
     torch.Tensor
         The F1 scores of the model's predictions.
     '''
-    if pred_labels.ndim != 2:
-        raise ValueError(f"Expected pred_labels to have 2 dimensions (batch_size, sequence_length), got {pred_labels.shape}")
+    pred_sequences, label_sequences, ignore_set = _prepare_inputs(pred_labels, labels, ignore_index, 'pred_labels')
+    precision_values = _compute_precision_values(pred_sequences, label_sequences, ignore_set)
+    recall_values = _compute_recall_values(pred_sequences, label_sequences, ignore_set)
 
-    if labels.ndim != 2:
-        raise ValueError(f"Expected labels to have 2 dimension (batch_size, sequence_length), got {labels.shape}")
+    f1_scores = 2 * (precision_values * recall_values) / (precision_values + recall_values)
+    f1_scores[torch.isnan(f1_scores)] = 0
 
-    # Compute precision and recall from the same logits and labels
-    prec = precision(pred_labels, labels, ignore_index=ignore_index, reduction='none')
-    rec = recall(pred_labels, labels, ignore_index=ignore_index, reduction='none')
-
-    # Calculate the F1 score using the harmonic mean of precision and recall
-    f1_scores = 2 * (prec * rec) / (prec + rec)
-
-    # Handle cases where the denominator might be zero
-    f1_scores[torch.isnan(f1_scores)] = 0  # Set NaNs resulting from zero division to 0
-
-    # Handle reduction
-    match reduction:
-        case 'mean':
-            return f1_scores.mean()
-        case 'sum':
-            return f1_scores.sum()
-        case 'none':
-            return f1_scores
-        case _:
-            raise ValueError(f"Invalid reduction: {reduction}")
+    return _apply_reduction(f1_scores, reduction)
 
 
 def accuracy(pred_labels: torch.Tensor, labels: torch.Tensor, reduction: Literal['mean', 'sum', 'none'] = 'mean', ignore_index: int | list[int] | None = None) -> torch.Tensor:

@@ -74,7 +74,7 @@ class FlashANSR(BaseEstimator):
             numeric_head: bool = False,
             n_restarts: int = 8,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05):
@@ -110,7 +110,7 @@ class FlashANSR(BaseEstimator):
             numeric_head: bool = False,
             n_restarts: int = 1,
             refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
@@ -438,7 +438,7 @@ class FlashANSR(BaseEstimator):
         for result in self._results:
             if 'score' in result:
                 # Recompute the score with the new parsimony coefficient
-                result['score'] = np.log10(result['fvu']) + self.parsimony * len(result['expression'])
+                result['score'] = np.log10(min(result['fvu'], float(np.finfo(np.float32).eps))) + self.parsimony * len(result['expression'])
 
         # Sort the results by the best loss of each beam
         self._results = list(sorted(self._results, key=lambda x: (

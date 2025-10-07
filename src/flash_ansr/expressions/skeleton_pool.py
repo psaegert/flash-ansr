@@ -526,7 +526,7 @@ class SkeletonPool:
 
         return e, arity
 
-    def get_leaf(self) -> list[str]:
+    def get_leaf(self, unique_variables: list[str]) -> list[str]:
         '''
         Sample a leaf node (either a variable or a constant).
 
@@ -536,7 +536,8 @@ class SkeletonPool:
             The leaf node.
         '''
         if random.random() < self.variable_probability:
-            return [str(random.choice(self.variables))]
+            # return [str(random.choice(self.variables))]
+            return [str(random.choice(unique_variables))]
 
         return ['<constant>']
 
@@ -586,7 +587,9 @@ class SkeletonPool:
         assert len([1 for v in stack if v is None]) == t_leaves
 
         # create leaves
-        leaves = [self.get_leaf() for _ in range(t_leaves)]
+        n_unique_variables = np.random.uniform(1, self.n_variables)
+        unique_variables = np.random.choice(self.variables, int(n_unique_variables), replace=False).tolist()
+        leaves = [self.get_leaf(unique_variables) for _ in range(t_leaves)]
 
         # insert leaves into tree
         for pos in range(len(stack) - 1, -1, -1):
