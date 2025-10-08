@@ -65,7 +65,6 @@ class Evaluation():
             beam_width: int = 1,
             complexity: str | list[int | float] = 'none',
             preprocess: bool = False,
-            parsimony: float = 0.05,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
@@ -73,7 +72,6 @@ class Evaluation():
         self.beam_width = beam_width
         self.complexity = complexity
         self.preprocess = preprocess
-        self.parsimony = parsimony
 
         self.device = device
 
@@ -115,7 +113,6 @@ class Evaluation():
             beam_width=beams,
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
-            parsimony=config_['parsimony'],
             device=config_["device"]
         )
 
@@ -145,7 +142,7 @@ class Evaluation():
         if verbose:
             print(
                 'Evaluating model with configuration: '
-                f'parsimony={self.parsimony}, noise_level={self.noise_level}, '
+                f'model.parsimony={model.parsimony}, noise_level={self.noise_level}, '
                 f'n_support={self.n_support}, complexity={self.complexity}'
             )
 
@@ -180,7 +177,9 @@ class Evaluation():
                 n_support=self.n_support * 2 if self.n_support is not None else None,
                 preprocess=self.preprocess,
                 verbose=verbose,
-                batch_size=1
+                batch_size=1,
+                tqdm_description='Evaluating',
+                tqdm_total=size,
             )
 
             if verbose:
@@ -232,7 +231,7 @@ class Evaluation():
                     'y_noisy_val': y_val,
                     'n_support': n_support,
                     'labels_decoded': dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>'),
-                    'parsimony': self.parsimony,
+                    'parsimony': model.parsimony,
 
                     'fit_time': None,
                     'predicted_expression': None,
@@ -267,19 +266,6 @@ class Evaluation():
                     warnings.warn(f'Error while fitting the model: {exc}. Filling nan.')
                     error_occured = True
                     sample_results['error'] = str(exc)
-
-                if not error_occured:
-                    try:
-                        original_parsimony = model.parsimony
-                    except AttributeError:
-                        original_parsimony = None
-
-                    try:
-                        model.compile_results(parsimony=self.parsimony)
-                    except ConvergenceError as exc:
-                        warnings.warn(f'Could not compile results: {exc}. Filling nan.')
-                        error_occured = True
-                        sample_results['error'] = str(exc)
 
                 if not error_occured:
                     if not model._results:
@@ -345,9 +331,6 @@ class Evaluation():
 
                 for key, value in sample_results.items():
                     results_dict[key].append(value)
-
-                if original_parsimony is not None:
-                    model.parsimony = original_parsimony
 
                 collected += 1
                 if collected >= size:

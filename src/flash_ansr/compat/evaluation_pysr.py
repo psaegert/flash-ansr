@@ -110,7 +110,9 @@ class PySREvaluation():
                 max_n_support=max_n_support,
                 n_support=self.n_support * 2 if self.n_support is not None else None,
                 verbose=verbose,
-                batch_size=1
+                batch_size=1,
+                tqdm_description='Evaluating',
+                tqdm_total=size,
             )
 
             if verbose:

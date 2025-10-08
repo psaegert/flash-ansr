@@ -640,6 +640,8 @@ class FlashANSRDataset:
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         persistent: bool = False,
+        tqdm_description: str = "Generating Batches",
+        tqdm_total: int | None = None,
     ) -> Generator[dict[str, Any], None, None]:
         """Yield batches of generated data, optionally streaming indefinitely.
 
@@ -676,6 +678,12 @@ class FlashANSRDataset:
         persistent:
             Clone tensors before yielding so that the caller can safely mutate
             them after consumption.
+        tqdm_description:
+            Description string for the progress bar.
+        tqdm_total:
+            Optional override for the total number of steps shown in the
+            progress bar. When ``None`` it is derived from ``size`` and
+            ``batch_size``.
 
         Yields
         ------
@@ -710,7 +718,11 @@ class FlashANSRDataset:
 
         # A progress bar is created once so it tracks both queued and completed
         # batches consistently even when prefetching.
-        pbar = tqdm(total=steps, desc="Generating Batches", disable=not verbose)
+        if tqdm_total is not None:
+            pbar_total = tqdm_total
+        else:
+            pbar_total = steps
+        pbar = tqdm(total=pbar_total, desc=tqdm_description, disable=not verbose)
         try:
             # Prefill the work queue
             for _ in range(min(pool_size, steps)):
