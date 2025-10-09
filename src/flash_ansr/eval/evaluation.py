@@ -183,7 +183,7 @@ class Evaluation():
             )
 
             if verbose:
-                print(f'Starting evaluation on {size} samples...')
+                print(f'Starting evaluation on {size} problems...')
 
             for batch in iterator:
                 batch = dataset.collate(batch, device=self.device)

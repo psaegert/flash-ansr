@@ -75,10 +75,37 @@ class PySREvaluation():
             delete_tempfiles=True,
             timeout_in_seconds=self.timeout_in_seconds,
             niterations=self.niterations,
-            unary_operators=['neg', 'abs', 'inv', 'sin', 'cos', 'tan', 'atan', 'exp', 'log'],
-            binary_operators=['+', '-', '*', '/'],
+            unary_operators=[
+                'neg',
+                'abs',
+                'inv',
+                'sin',
+                'cos',
+                'tan',
+                'asin',
+                'acos',
+                'atan',
+                'exp',
+                'log',
+                'pow2(x) = x^2',
+                'pow3(x) = x^3',
+                'pow4(x) = x^4',
+                'pow5(x) = x^5',
+                r'pow1_2(x::T) where {T} = x >= 0 ? T(x^(1/2)) : T(NaN)',
+                r'pow1_3(x::T) where {T} = x >= 0 ? T(x^(1/3)) : T(NaN)',
+                r'pow1_4(x::T) where {T} = x >= 0 ? T(x^(1/4)) : T(NaN)',
+                r'pow1_5(x::T) where {T} = x >= 0 ? T(x^(1/5)) : T(NaN)',
+                'mult2(x) = 2*x',
+                'mult3(x) = 3*x',
+                'mult4(x) = 4*x',
+                'mult5(x) = 5*x',
+                'div2(x) = x/2',
+                'div3(x) = x/3',
+                'div4(x) = x/4',
+                'div5(x) = x/5',
+            ],
+            binary_operators=['+', '-', '*', '/', '^'],
             extra_sympy_mappings={
-                "pow": simplipy.operators.pow,  # type: ignore
                 "pow2": simplipy.operators.pow2,  # type: ignore
                 "pow3": simplipy.operators.pow3,  # type: ignore
                 "pow4": simplipy.operators.pow4,  # type: ignore
@@ -87,9 +114,6 @@ class PySREvaluation():
                 "pow1_3": simplipy.operators.pow1_3,  # type: ignore
                 "pow1_4": simplipy.operators.pow1_4,  # type: ignore
                 "pow1_5": simplipy.operators.pow1_5,  # type: ignore
-                "inv": simplipy.operators.inv,  # type: ignore
-                "asin": simplipy.operators.asin,  # Prevents Julia out of bounds error
-                "acos": simplipy.operators.asin,  # Prevents Julia out of bounds error
                 "mult2": simplipy.operators.mult2,  # type: ignore
                 "mult3": simplipy.operators.mult3,  # type: ignore
                 "mult4": simplipy.operators.mult4,  # type: ignore
@@ -99,6 +123,9 @@ class PySREvaluation():
                 "div4": simplipy.operators.div4,  # type: ignore
                 "div5": simplipy.operators.div5,  # type: ignore
             },
+            constraints={
+                '^': (-1, 3)
+            }
         )
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -116,7 +143,7 @@ class PySREvaluation():
             )
 
             if verbose:
-                print(f'Starting evaluation on {size} samples...')
+                print(f'Starting evaluation on {size} problems...')
 
             for batch_id, batch in enumerate(iterator):
                 batch = dataset.collate(batch, device='cpu')
