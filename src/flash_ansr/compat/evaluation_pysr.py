@@ -15,6 +15,7 @@ from flash_ansr import FlashANSRDataset
 from flash_ansr.utils import load_config, substitute_root_path
 
 import simplipy
+from simplipy.utils import numbers_to_constant
 
 
 class PySREvaluation():
@@ -92,9 +93,9 @@ class PySREvaluation():
                 'pow4(x) = x^4',
                 'pow5(x) = x^5',
                 r'pow1_2(x::T) where {T} = x >= 0 ? T(x^(1/2)) : T(NaN)',
-                r'pow1_3(x::T) where {T} = x >= 0 ? T(x^(1/3)) : T(NaN)',
+                r'pow1_3(x::T) where {T} = x >= 0 ? T(x^(1/3)) :  -T((-x)^(1/3))',
                 r'pow1_4(x::T) where {T} = x >= 0 ? T(x^(1/4)) : T(NaN)',
-                r'pow1_5(x::T) where {T} = x >= 0 ? T(x^(1/5)) : T(NaN)',
+                r'pow1_5(x::T) where {T} = x >= 0 ? T(x^(1/5)) : -T((-x)^(1/5))',
                 'mult2(x) = 2*x',
                 'mult3(x) = 3*x',
                 'mult4(x) = 4*x',
@@ -196,8 +197,7 @@ class PySREvaluation():
                     'fit_time': None,
                     'predicted_expression': None,
                     'predicted_expression_prefix': None,
-                    'predicted_expression_simplified': None,
-                    'predicted_expression_encoded': None,
+                    'predicted_skeleton_prefix': None,
                     'predicted_constants': None,
                     'predicted_score': None,
                     'predicted_log_prob': None,
@@ -219,19 +219,6 @@ class PySREvaluation():
                     sample_results['error'] = str(e)
 
                 if not error_occured:
-                    predicted_expression = []
-                    for token in simplipy_engine.parse(str(model.get_best()['equation'])):
-                        try:
-                            float(token)
-                            predicted_expression.append('<constant>')
-                        except ValueError:
-                            predicted_expression.append(token)
-                    sample_results['predicted_expression_prefix'] = predicted_expression
-
-                    if dataset.simplipy_engine.is_valid(predicted_expression):
-                        predicted_expression = dataset.simplipy_engine.simplify(predicted_expression, max_pattern_length=4)
-                    sample_results['predicted_expression_simplified'] = predicted_expression
-
                     y_pred = model.predict(X).reshape(-1, 1)
                     y_pred_val = model.predict(X_val).reshape(-1, 1)
 
@@ -242,6 +229,11 @@ class PySREvaluation():
 
                     sample_results['y_pred'] = y_pred
                     sample_results['y_pred_val'] = y_pred_val
+
+                    predicted_expression = str(model.get_best()['equation'])
+                    sample_results['predicted_expression'] = predicted_expression
+                    sample_results['predicted_expression_prefix'] = dataset.simplipy_engine.infix_to_prefix(predicted_expression)
+                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(sample_results['predicted_expression_prefix'])
 
                 for key, value in sample_results.items():
                     results_dict[key].append(value)

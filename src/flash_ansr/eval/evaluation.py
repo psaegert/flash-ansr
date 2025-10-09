@@ -11,6 +11,8 @@ from flash_ansr.data import FlashANSRDataset, FlashASNRPreprocessor
 from flash_ansr.refine import ConvergenceError
 from flash_ansr.utils import load_config
 
+from simplipy.utils import numbers_to_constant
+
 
 class Evaluation():
     '''
@@ -236,8 +238,7 @@ class Evaluation():
                     'fit_time': None,
                     'predicted_expression': None,
                     'predicted_expression_prefix': None,
-                    'predicted_expression_simplified': None,
-                    'predicted_expression_encoded': None,
+                    'predicted_skeleton_prefix': None,
                     'predicted_constants': None,
                     'predicted_score': None,
                     'predicted_log_prob': None,
@@ -294,23 +295,16 @@ class Evaluation():
                         nth_best_constants=0,
                         map_variables=True
                     )
-                    predicted_expression_prefix = model.get_expression(
+                    predicted_skeleton_prefix = model.get_expression(
                         nth_best_beam=0,
                         nth_best_constants=0,
                         return_prefix=True,
                         map_variables=False
                     )
 
-                    predicted_expression_simplified = None
-                    if isinstance(predicted_expression_prefix, list) and model.simplipy_engine.is_valid(predicted_expression_prefix):
-                        predicted_expression_simplified = model.simplipy_engine.simplify(
-                            predicted_expression_prefix,
-                            max_pattern_length=4
-                        )
-
                     sample_results['predicted_expression'] = predicted_expression_readable
-                    sample_results['predicted_expression_prefix'] = predicted_expression_prefix
-                    sample_results['predicted_expression_simplified'] = predicted_expression_simplified
+                    sample_results['predicted_expression_prefix'] = predicted_skeleton_prefix
+                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_skeleton_prefix)
 
                     predicted_constants = None
                     predicted_score = None
@@ -322,12 +316,6 @@ class Evaluation():
                     sample_results['predicted_constants'] = predicted_constants
                     sample_results['predicted_score'] = predicted_score
                     sample_results['predicted_log_prob'] = best_result.get('log_prob', None)
-
-                    predicted_expression_encoded = None
-                    if isinstance(predicted_expression_prefix, list):
-                        predicted_expression_encoded = model.tokenizer.encode(predicted_expression_prefix, oov='unk')
-
-                    sample_results['predicted_expression_encoded'] = predicted_expression_encoded
 
                 for key, value in sample_results.items():
                     results_dict[key].append(value)
