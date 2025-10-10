@@ -107,22 +107,22 @@ class PySREvaluation():
             ],
             binary_operators=['+', '-', '*', '/', '^'],
             extra_sympy_mappings={
-                "pow2": simplipy.operators.pow2,  # type: ignore
-                "pow3": simplipy.operators.pow3,  # type: ignore
-                "pow4": simplipy.operators.pow4,  # type: ignore
-                "pow5": simplipy.operators.pow5,  # type: ignore
-                "pow1_2": simplipy.operators.pow1_2,  # type: ignore
-                "pow1_3": simplipy.operators.pow1_3,  # type: ignore
-                "pow1_4": simplipy.operators.pow1_4,  # type: ignore
-                "pow1_5": simplipy.operators.pow1_5,  # type: ignore
-                "mult2": simplipy.operators.mult2,  # type: ignore
-                "mult3": simplipy.operators.mult3,  # type: ignore
-                "mult4": simplipy.operators.mult4,  # type: ignore
-                "mult5": simplipy.operators.mult5,  # type: ignore
-                "div2": simplipy.operators.div2,  # type: ignore
-                "div3": simplipy.operators.div3,  # type: ignore
-                "div4": simplipy.operators.div4,  # type: ignore
-                "div5": simplipy.operators.div5,  # type: ignore
+                "pow2": simplipy.operators.pow2,
+                "pow3": simplipy.operators.pow3,
+                "pow4": simplipy.operators.pow4,
+                "pow5": simplipy.operators.pow5,
+                "pow1_2": simplipy.operators.pow1_2,
+                "pow1_3": lambda x: x**(1 / 3),  # Workaround for https://stackoverflow.com/questions/68577498/sympy-typeerror-cannot-determine-truth-value-of-relational-how-to-make-sure-x
+                "pow1_4": simplipy.operators.pow1_4,
+                "pow1_5": lambda x: x**(1 / 5),
+                "mult2": simplipy.operators.mult2,
+                "mult3": simplipy.operators.mult3,
+                "mult4": simplipy.operators.mult4,
+                "mult5": simplipy.operators.mult5,
+                "div2": simplipy.operators.div2,
+                "div3": simplipy.operators.div3,
+                "div4": simplipy.operators.div4,
+                "div5": simplipy.operators.div5,
             },
             constraints={
                 '^': (-1, 3)

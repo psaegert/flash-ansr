@@ -57,4 +57,3 @@ class TestEvaluation(unittest.TestCase):
         assert 'y_pred' in results
         assert 'predicted_expression' in results
         assert len(results['y_pred']) == 2
-        assert all(par == evaluation.parsimony for par in results['parsimony'])

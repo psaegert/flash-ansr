@@ -21,7 +21,7 @@ for niterations in "${niterations_values[@]}"; do
         -c "{{ROOT}}/configs/PySR_niterations/evaluation_niterations_${niterations}.yaml" \
         -d "{{ROOT}}/data/ansr-data/test_set/$TEST_SET/dataset.yaml" \
         -e "dev_7-3" \
-        -n 256 \
+        -n 512 \
         -o "$output_dir/$TEST_SET.pickle" \
         -v
 done
