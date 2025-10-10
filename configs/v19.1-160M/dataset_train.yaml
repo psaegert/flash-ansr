@@ -1,3 +1,0 @@
-skeleton_pool: './skeleton_pool_train.yaml'
-tokenizer: './tokenizer.yaml'
-padding: 'zero'
