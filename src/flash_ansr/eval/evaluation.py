@@ -26,39 +26,12 @@ class Evaluation():
         Noise level for the constant fitting in units of standard deviations of the target variable. Default is 0.0.
     beam_width : int, optional
         Number of beams for the beam search algorithm. Default is 1.
-    n_restarts : int, optional
-        Number of restarts for constant fitting. Default is 1.
-    max_len : int, optional
-        Maximum length of each beam in tokens. Default is 20.
-    numeric_head : bool, optional
-        Whether to use the numeric head for constant prediction. Default is False.
-    equivalence_pruning : bool, optional
-        Whether to use equivalence pruning in the beam search algorithm. Default is True.
-    pointwise_close_criterion : float, optional
-        Criterion for the pointwise close accuracy. Default is 0.95.
-    pointwise_close_accuracy_rtol : float, optional
-        Relative tolerance for the pointwise close accuracy. Default is 0.05.
-    pointwise_close_accuracy_atol : float, optional
-        Absolute tolerance for the pointwise close accuracy. Default is 0.001.
-    refiner_method : str, optional
-        The optimization method to use. One of
-        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
-        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
-    refiner_p0_noise : str, optional
-        Noise distribution for the initial guess of the refiner. Default is 'normal'.
-    refiner_p0_noise_kwargs : dict, optional
-        Keyword arguments for the noise distribution of the initial guess of the refiner. Default is None.
-    r2_close_criterion : float, optional
-        R^2 Criterion for the R^2 close accuracy. Default is 0.95.
-    parsimony : float, optional
-        Parsimony coefficient applied when ranking the model results. Default is 0.05.
+    complexity : str or list of int/float, optional
+        Complexity constraint for the generated equations. Can be 'none', 'ground_truth', or a list of complexity values. Default is 'none'.
+    preprocess : bool, optional
+        Whether to preprocess the data using FlashASNRPreprocessor. Default is False.
     device : str, optional
-        Device to load the model. Default is 'cpu'.
-
-    Notes
-    -----
-    For more information about the criteria for the pointwise close accuracy and the R^2 close accuracy, see the following paper:
-    https://arxiv.org/abs/2106.06427
+        Device to run the evaluation on. Default is 'cpu'.
     '''
     def __init__(
             self,

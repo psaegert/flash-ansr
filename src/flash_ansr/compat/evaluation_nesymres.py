@@ -5,59 +5,26 @@ import time
 
 import torch
 import numpy as np
-import editdistance
-
-import nltk
-from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.translate.meteor_score import meteor_score
-from rouge_score import rouge_scorer
-
 from sympy import lambdify
 
 from simplipy import SimpliPyEngine
+from simplipy.utils import numbers_to_constant
 
 from flash_ansr import FlashANSRDataset
 from flash_ansr.utils import load_config
-from flash_ansr.eval.token_prediction import (
-    accuracy,
-    precision,
-    recall,
-    f1_score,
-)
-from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.eval.utils import NoOpStemmer
-from flash_ansr.eval.sequences import zss_tree_edit_distance
 
 from nesymres.architectures.model import Model  # type: ignore[import]
-
-
-nltk.download('wordnet', quiet=True)
 
 
 class NeSymReSEvaluation():
     def __init__(
             self,
             n_support: int | None = None,
-            beam_width: int = 1,
-            n_restarts: int = 1,
-            pointwise_close_criterion: float = 0.95,
-            pointwise_close_accuracy_rtol: float = 0.05,
-            pointwise_close_accuracy_atol: float = 0.001,
-            r2_close_criterion: float = 0.95,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
-        self.beam_width = beam_width
-        self.n_restarts = n_restarts
-        self.pointwise_close_criterion = pointwise_close_criterion
-        self.pointwise_close_accuracy_rtol = pointwise_close_accuracy_rtol
-        self.pointwise_close_accuracy_atol = pointwise_close_accuracy_atol
-        self.r2_close_criterion = r2_close_criterion
 
         self.device = device
-
-        self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
-        self.rouge_scorer._tokenizer.tokenize = lambda x: x
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "NeSymReSEvaluation":
@@ -68,12 +35,6 @@ class NeSymReSEvaluation():
 
         return cls(
             n_support=config_["n_support"],
-            beam_width=config_["beam_width"],
-            n_restarts=config_["n_restarts"],
-            pointwise_close_criterion=config_["pointwise_close_criterion"],
-            pointwise_close_accuracy_rtol=config_["pointwise_close_accuracy_rtol"],
-            pointwise_close_accuracy_atol=config_["pointwise_close_accuracy_atol"],
-            r2_close_criterion=config_["r2_close_criterion"],
             device=config_["device"]
         )
 
@@ -82,7 +43,6 @@ class NeSymReSEvaluation():
             model: Model,
             fitfunc: Callable,
             simplipy_engine: SimpliPyEngine,
-            tokenizer: Tokenizer,
             dataset: FlashANSRDataset,
             size: int | None = None,
             verbose: bool = True) -> dict[str, Any]:
@@ -94,167 +54,145 @@ class NeSymReSEvaluation():
         if size is None:
             size = len(dataset.skeleton_pool)
 
-        # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
 
         with torch.no_grad():
-            for batch in dataset.iterate(size=size, n_support=self.n_support * 2 if self.n_support is not None else None, verbose=verbose, tqdm_total=size, batch_size=1):
+            collected = 0
+            iterator = dataset.iterate(
+                size=size * 2,
+                max_n_support=max_n_support,
+                n_support=self.n_support * 2 if self.n_support is not None else None,
+                verbose=verbose,
+                batch_size=1,
+                tqdm_description='Evaluating',
+                tqdm_total=size,
+            )
+
+            if verbose:
+                print(f'Starting evaluation on {size} problems...')
+
+            for batch in iterator:
                 batch = dataset.collate(batch, device=self.device)
 
-                results_dict['input_ids'].append(batch['input_ids'].cpu().numpy())
-                results_dict['labels'].append(batch['labels'].cpu().numpy())
-                results_dict['constants'].append([c.cpu().numpy() for c in batch['constants']])
+                n_support = self.n_support
+                if n_support is None:
+                    n_support = batch['x_tensors'].shape[1] // 2
 
-                results_dict['x'].append(batch['x_tensors'].cpu().numpy()[:, :self.n_support])
-                results_dict['y'].append(batch['y_tensors'].cpu().numpy()[:, :self.n_support])
+                if n_support == 0:
+                    warnings.warn('n_support evaluated to zero. Skipping batch.')
+                    continue
 
-                results_dict['x_val'].append(batch['x_tensors'].cpu().numpy()[:, self.n_support:])
-                results_dict['y_val'].append(batch['y_tensors'].cpu().numpy()[:, self.n_support:])
+                x_numpy = batch['x_tensors'].cpu().numpy()[0]
+                y_numpy = batch['y_tensors'].cpu().numpy()[0]
 
-                results_dict['n_support'].append([batch['x_tensors'].shape[1] // 2] * batch['x_tensors'].shape[0])
+                X = x_numpy[:n_support]
+                y = y_numpy[:n_support]
+                y_fit = y.reshape(-1)
 
-                # Create the labels for the next token prediction task (i.e. shift the batch['input_ids'] by one position to the right)
+                X_val = x_numpy[n_support:]
+                y_val = y_numpy[n_support:]
+
                 labels = batch['labels'][0].clone()
-                labels_decoded = tokenizer.decode(labels.tolist(), special_tokens='<constant>')
+                labels_decoded = dataset.tokenizer.decode(labels.tolist(), special_tokens='<constant>')
 
-                # TODO: For different datasets, sort unused dimensions to the end
-                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                sample_results: dict[str, Any] = {
+                    'skeleton': batch['skeleton'][0],
+                    'skeleton_hash': batch['skeleton_hash'][0],
+                    'expression': batch['expression'][0],
+                    'input_ids': batch['input_ids'][0].cpu().numpy(),
+                    'labels': batch['labels'][0].cpu().numpy(),
+                    'constants': [c.cpu().numpy() for c in batch['constants'][0]],
+                    'x': X,
+                    'y': y,
+                    'y_noisy': y,
+                    'x_val': X_val,
+                    'y_val': y_val,
+                    'y_noisy_val': y_val,
+                    'n_support': n_support,
+                    'labels_decoded': labels_decoded,
+                    'parsimony': getattr(model, 'parsimony', None),
+                    'fit_time': None,
+                    'predicted_expression': None,
+                    'predicted_expression_prefix': None,
+                    'predicted_skeleton_prefix': None,
+                    'predicted_constants': None,
+                    'predicted_score': None,
+                    'predicted_log_prob': None,
+                    'y_pred': None,
+                    'y_pred_val': None,
+                    'prediction_success': False,
+                    'error': None,
+                }
 
-                print(tokenizer.decode(batch['input_ids'][0].tolist(), special_tokens='<constant>'))
-
-                X = batch['x_tensors'].cpu().numpy()[0, :self.n_support]
-                y = batch['y_tensors'].cpu().numpy()[0, :self.n_support, 0]
-
-                X_val = batch['x_tensors'].cpu().numpy()[0, self.n_support:]
-                y_val = batch['y_tensors'].cpu().numpy()[0, self.n_support:, 0]
+                error_occured = False
 
                 try:
-                    fit_time_before = time.time()
-                    nesymres_output = fitfunc(X, y)
-                    fit_time = time.time() - fit_time_before
+                    fit_time_start = time.time()
+                    nesymres_output = fitfunc(X, y_fit)
+                    sample_results['fit_time'] = time.time() - fit_time_start
+                    sample_results['prediction_success'] = True
+                except Exception as exc:  # pragma: no cover - defensive safety
+                    warnings.warn(f'Error while fitting the model: {exc}. Filling nan.')
+                    sample_results['error'] = str(exc)
+                    error_occured = True
 
-                    best_skeleton_decoded = []
-                    for token in simplipy_engine.parse(nesymres_output['best_bfgs_preds'][0]):
-                        try:
-                            float(token)
-                            best_skeleton_decoded.append('<constant>')
-                        except ValueError:
-                            best_skeleton_decoded.append(token)
-                    best_skeleton = tokenizer.encode(best_skeleton_decoded, oov='unk')
+                if not error_occured:
+                    try:
+                        predicted_expr = nesymres_output['best_bfgs_preds'][0]
+                        predicted_expression = str(predicted_expr)
+                        sample_results['predicted_expression'] = predicted_expression
+                        predicted_prefix = simplipy_engine.infix_to_prefix(predicted_expression)
+                        sample_results['predicted_expression_prefix'] = predicted_prefix
+                        sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_prefix)
+                        if nesymres_output.get('best_bfgs_consts') is not None:
+                            predicted_constants = nesymres_output['best_bfgs_consts'][0]
+                            if isinstance(predicted_constants, np.ndarray):
+                                sample_results['predicted_constants'] = predicted_constants.tolist()
+                            elif isinstance(predicted_constants, (list, tuple)):
+                                sample_results['predicted_constants'] = list(predicted_constants)
+                            else:
+                                sample_results['predicted_constants'] = predicted_constants
+                    except (KeyError, IndexError, TypeError, ValueError) as exc:
+                        warnings.warn(f'Error while parsing NeSymReS output: {exc}. Filling nan.')
+                        sample_results['error'] = str(exc)
+                        sample_results['prediction_success'] = False
+                        error_occured = True
 
-                    # Accuracy, precision, recall, F1 score
-                    best_skeleton_tensor = torch.tensor(best_skeleton).unsqueeze(0)
-                    recall_beam_1 = recall(best_skeleton_tensor, labels[:-1].view(1, -1).cpu(), ignore_index=0, reduction='none').cpu()
-                    precision_beam_1 = precision(best_skeleton_tensor, labels[:-1].view(1, -1).cpu(), ignore_index=0, reduction='none').cpu()
-                    f1_score_beam_1 = f1_score(best_skeleton_tensor, labels[:-1].view(1, -1).cpu(), ignore_index=0, reduction='none').cpu()
-                    accuracy_beam_1 = accuracy(best_skeleton_tensor, labels[:-1].view(1, -1).cpu(), ignore_index=0, reduction='none').cpu()
+                if not error_occured:
+                    try:
+                        var_symbols = [f'x_{idx + 1}' for idx in range(X.shape[1])]
+                        evaluate_expression = lambdify(var_symbols, predicted_expr, 'numpy')
 
-                    # BLEU
-                    bleu_beam_1 = sentence_bleu(references=[labels_decoded], hypothesis=best_skeleton_decoded, smoothing_function=SmoothingFunction().method1)
+                        y_pred = np.asarray(evaluate_expression(*X.T), dtype=float).reshape(-1, 1)
 
-                    # ROUGE
-                    rouge = self.rouge_scorer.score(best_skeleton_decoded, labels_decoded)
+                        if X_val.size > 0:
+                            y_pred_val = np.asarray(evaluate_expression(*X_val.T), dtype=float).reshape(-1, 1)
+                        else:
+                            y_pred_val = np.empty_like(y_val)
 
-                    # METEOR
-                    meteor_beam_1 = meteor_score(references=[labels_decoded], hypothesis=best_skeleton_decoded, preprocess=lambda x: x, stemmer=NoOpStemmer())
+                        if y_pred.shape != y.shape:
+                            raise ValueError(f"Shape of y_pred {y_pred.shape} does not match shape of y {y.shape}.")
+                        if y_pred_val.shape != y_val.shape:
+                            raise ValueError(f"Shape of y_pred_val {y_pred_val.shape} does not match shape of y_val {y_val.shape}.")
 
-                    # Edit distance
-                    edit_distance_beam_1 = editdistance.eval(best_skeleton_decoded, labels_decoded)
+                        sample_results['y_pred'] = y_pred
+                        sample_results['y_pred_val'] = y_pred_val
+                    except (NameError, KeyError, ValueError, TypeError, OverflowError) as exc:
+                        warnings.warn(f'Error while computing predictions: {exc}. Filling nan.')
+                        sample_results['error'] = str(exc)
+                        sample_results['prediction_success'] = False
 
-                    # Tree edit distance
-                    if not simplipy_engine.is_valid(best_skeleton_decoded):
-                        tree_edit_distance = float('nan')
-                    else:
-                        tree_edit_distance = zss_tree_edit_distance(best_skeleton_decoded, labels_decoded, simplipy_engine.operator_arity)
+                for key, value in sample_results.items():
+                    results_dict[key].append(value)
 
-                    # Structural accuracy using model.simplipy_engine.check_valid(expression)
-                    structural_accuracy_beam_1 = int(simplipy_engine.is_valid(best_skeleton))
+                collected += 1
+                if collected >= size:
+                    break
 
-                    y_pred = lambdify("x_1,x_2,x_3", nesymres_output['best_bfgs_preds'])(*X.T)[0]
-                    y_pred_val = lambdify("x_1,x_2,x_3", nesymres_output['best_bfgs_preds'])(*X_val.T)[0]
+        if collected < size:
+            warnings.warn(f'Only collected {collected} out of {size} requested samples.')
 
-                    # assert y_pred.shape == y.shape  # Sometimes causes AttributeError: 'int' object has no attribute 'shape'
-
-                    # Fit Data
-                    mse = np.mean((y_pred - y) ** 2)
-                    r2 = 1 - np.sum((y_pred - y) ** 2) / max(np.sum((y - np.mean(y)) ** 2), np.finfo(np.float32).eps)
-
-                    nsrts_accuracy_close = np.mean(np.isclose(y_pred, y, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                    nsrts_accuracy_r2 = r2 > self.r2_close_criterion
-
-                    residuals = y_pred - y
-
-                    # Val Data
-                    mse_val = np.mean((y_pred_val - y_val) ** 2)
-                    r2_val = 1 - np.sum((y_pred_val - y_val) ** 2) / max(np.sum((y_val - np.mean(y_val)) ** 2), np.finfo(np.float32).eps)
-
-                    nsrts_accuracy_close_val = np.mean(np.isclose(y_pred_val, y_val, rtol=self.pointwise_close_accuracy_rtol, atol=self.pointwise_close_accuracy_atol)) > self.pointwise_close_criterion
-                    nsrts_accuracy_r2_val = r2_val > self.r2_close_criterion
-
-                    residuals_val = y_pred_val - y_val
-
-                    results_dict['fit_time'].append(fit_time)
-                    results_dict['recall_beam_1'].extend(recall_beam_1)
-                    results_dict['precision_beam_1'].extend(precision_beam_1)
-                    results_dict['f1_score_beam_1'].extend(f1_score_beam_1)
-                    results_dict['accuracy_beam_1'].extend(accuracy_beam_1)
-                    results_dict['bleu_beam_1'].append(bleu_beam_1)
-
-                    for metric in ['rouge1', 'rouge2', 'rougeL']:
-                        results_dict[f'{metric}_precision_beam_1'].append(rouge[metric].precision)
-                        results_dict[f'{metric}_recall_beam_1'].append(rouge[metric].recall)
-                        results_dict[f'{metric}_fmeasure_beam_1'].append(rouge[metric].fmeasure)
-
-                    results_dict['meteor_beam_1'].append(meteor_beam_1)
-                    results_dict['edit_distance_beam_1'].append(edit_distance_beam_1)
-                    results_dict['tree_edit_distance_beam_1'].append(tree_edit_distance)
-                    results_dict['structural_accuracy_beam_1'].append(structural_accuracy_beam_1)
-
-                    results_dict['mse_beam_1'].append(mse)
-                    results_dict['r2_beam_1'].append(r2)
-                    results_dict['NSRTS_accuracy_close_beam_1'].append(nsrts_accuracy_close)
-                    results_dict['NSRTS_accuracy_r2_beam_1'].append(nsrts_accuracy_r2)
-                    results_dict['residuals_beam_1'].append(residuals)
-
-                    results_dict['mse_val_beam_1'].append(mse_val)
-                    results_dict['r2_val_beam_1'].append(r2_val)
-                    results_dict['NSRTS_accuracy_close_val_beam_1'].append(nsrts_accuracy_close_val)
-                    results_dict['NSRTS_accuracy_r2_val_beam_1'].append(nsrts_accuracy_r2_val)
-                    results_dict['residuals_val_beam_1'].append(residuals_val)
-
-                except (NameError, KeyError, ValueError, TypeError, OverflowError):
-                    results_dict['fit_time'].append(float('nan'))
-                    results_dict['recall_beam_1'].append(float('nan'))
-                    results_dict['precision_beam_1'].append(float('nan'))
-                    results_dict['f1_score_beam_1'].append(float('nan'))
-                    results_dict['accuracy_beam_1'].append(float('nan'))
-                    results_dict['bleu_beam_1'].append(float('nan'))
-
-                    for metric in ['rouge1', 'rouge2', 'rougeL']:
-                        results_dict[f'{metric}_precision_beam_1'].append(float('nan'))
-                        results_dict[f'{metric}_recall_beam_1'].append(float('nan'))
-                        results_dict[f'{metric}_fmeasure_beam_1'].append(float('nan'))
-
-                    results_dict['meteor_beam_1'].append(float('nan'))
-                    results_dict['edit_distance_beam_1'].append(float('nan'))
-                    results_dict['tree_edit_distance_beam_1'].append(float('nan'))
-                    results_dict['structural_accuracy_beam_1'].append(float('nan'))
-
-                    results_dict['mse_beam_1'].append(float('nan'))
-                    results_dict['r2_beam_1'].append(float('nan'))
-                    results_dict['NSRTS_accuracy_close_beam_1'].append(float('nan'))
-                    results_dict['NSRTS_accuracy_r2_beam_1'].append(float('nan'))
-                    results_dict['residuals_beam_1'].append(None)
-
-                    results_dict['mse_val_beam_1'].append(float('nan'))
-                    results_dict['r2_val_beam_1'].append(float('nan'))
-                    results_dict['NSRTS_accuracy_close_val_beam_1'].append(float('nan'))
-                    results_dict['NSRTS_accuracy_r2_val_beam_1'].append(float('nan'))
-                    results_dict['residuals_val_beam_1'].append(None)
-
-                assert len(set(len(v) for v in results_dict.values())) == 1, print({k: len(v) for k, v in results_dict.items()})  # Check that all lists have the same length
-
-        # Sort the scores alphabetically by key
         results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore
 
         return results_dict
