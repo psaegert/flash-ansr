@@ -1,12 +1,6 @@
-from typing import Any, Callable
+from typing import Callable
 
-from nltk.stem.api import StemmerI
 import numpy as np
-
-
-class NoOpStemmer(StemmerI):
-    def stem(self, token: Any) -> Any:
-        return token
 
 
 def bootstrapped_metric_ci(data: np.ndarray, metric: Callable, n: int = 10_000, interval: float = 0.95) -> tuple[float, float, float]:
