@@ -27,8 +27,8 @@ def bootstrapped_metric_ci(data: np.ndarray, metric: Callable, n: int = 10_000, 
         bootstrapped_metrics = np.array([metric(sample) for sample in samples])
 
     # Calculate the median, lower, and upper bounds for the confidence interval
-    median = np.median(bootstrapped_metrics)
-    lower = np.percentile(bootstrapped_metrics, (1 - interval) / 2 * 100)
-    upper = np.percentile(bootstrapped_metrics, (1 + interval) / 2 * 100)
+    median = np.nanmedian(bootstrapped_metrics)
+    lower = np.nanpercentile(bootstrapped_metrics, (1 - interval) / 2 * 100)
+    upper = np.nanpercentile(bootstrapped_metrics, (1 + interval) / 2 * 100)
 
     return median, lower, upper
