@@ -8,10 +8,8 @@ else
     TEST_SET=$1
 fi
 
-# 1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768 1048576
-
 niterations_values=(
-    1 32 1024 32768 1048576
+    1 16 64 256 1024 4096 16384 65536 262144
 )
 
 for niterations in "${niterations_values[@]}"; do
