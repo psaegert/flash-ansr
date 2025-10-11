@@ -68,7 +68,7 @@ def kill_lingering_compat_processes() -> None:
             continue
 
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=2)
         except (psutil.NoSuchProcess, psutil.TimeoutExpired):
             try:
                 proc.kill()

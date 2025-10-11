@@ -1,5 +1,5 @@
 n_support: 512
 timeout_in_seconds: 3600
-niterations: 1024
+niterations: 16
 padding: false
 use_mult_div_operators: false

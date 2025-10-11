@@ -400,10 +400,9 @@ def main(argv: str = None) -> None:
 
             results_dict = evaluation.evaluate(
                 dataset=dataset,
-                simplipy_engine=SimpliPyEngine.load(args.simplipy_engine, install=True),
                 results_dict=results_dict,
                 size=size_todo,
-                save_every=100,
+                save_every=5,
                 output_file=args.output_file,
                 verbose=args.verbose)
 
