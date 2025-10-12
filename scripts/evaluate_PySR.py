@@ -7,7 +7,7 @@ import signal
 from typing import List, Tuple
 
 COMPAT_PYTHON_PATH = "/home/psaegert/miniconda3/envs/flash-ansr-compat/bin/python3.13"
-LOG_FILE = "watchdog.log"
+LOG_FILE = "./watchdog.log"
 _TARGET_EXEC_REALPATH = os.path.realpath(COMPAT_PYTHON_PATH)
 
 
@@ -66,12 +66,16 @@ def find_lingering_compat_processes() -> List[Tuple[psutil.Process, str]]:
     return matches
 
 
-def kill_lingering_compat_processes() -> None:
-    """Terminate lingering flash-ansr compat python processes."""
+def kill_lingering_compat_processes() -> bool:
+    """Terminate lingering flash-ansr compat python processes.
+
+    Returns True when no matching processes remain after the termination attempt,
+    otherwise False.
+    """
     lingering = find_lingering_compat_processes()
     if not lingering:
         log("WATCHDOG: No lingering flash-ansr compat python processes detected.")
-        return
+        return True
 
     log("WATCHDOG: Terminating lingering flash-ansr compat python processes...")
 
@@ -94,21 +98,39 @@ def kill_lingering_compat_processes() -> None:
             continue
         except Exception as exc:  # pragma: no cover - defensive logging
             log(f"WATCHDOG: Failed to kill process {proc.pid}: {exc}")
+    return not bool(find_lingering_compat_processes())
 
 
-def wait_until_no_compat_processes(timeout_seconds: int = 60) -> None:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        lingering = find_lingering_compat_processes()
-        if not lingering:
+def wait_until_no_compat_processes(
+    timeout_seconds: int = 60,
+    max_force_attempts: int = 3,
+    retry_sleep_seconds: float = 5.0,
+) -> None:
+    attempts = 0
+    while True:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            lingering = find_lingering_compat_processes()
+            if not lingering:
+                return
+            time.sleep(1)
+
+        attempts += 1
+        log(
+            "WATCHDOG: Timed out waiting for compat python processes to exit. Forcing termination again."
+        )
+
+        if kill_lingering_compat_processes():
+            log("WATCHDOG: Lingering compat python processes cleared after forced termination.")
             return
-        time.sleep(1)
-    log(
-        "WATCHDOG: Timed out waiting for compat python processes to exit. Forcing termination again."
-    )
-    kill_lingering_compat_processes()
-    if find_lingering_compat_processes():
-        log("WATCHDOG: Warning: compat python processes still detected after forced termination.")
+
+        if attempts > max_force_attempts:
+            raise RuntimeError("Exceeded maximum attempts to clear lingering compat python processes.")
+
+        log(
+            f"WATCHDOG: Waiting {retry_sleep_seconds:.1f}s before re-checking for lingering compat processes."
+        )
+        time.sleep(retry_sleep_seconds)
 
 
 def _safe_cpu_percent(proc: psutil.Process, interval: float | None) -> float:
@@ -207,6 +229,9 @@ def main() -> None:
         log("WATCHDOG: Usage: python watchdog.py <TEST_SET>")
         sys.exit(1)
 
+    log("WATCHDOG: Starting up...")
+    print(f'Log file: {os.path.abspath(LOG_FILE)}')
+
     test_set = sys.argv[1]
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -216,7 +241,11 @@ def main() -> None:
     try:
         while True:
             kill_lingering_compat_processes()
-            wait_until_no_compat_processes()
+            try:
+                wait_until_no_compat_processes()
+            except RuntimeError as err:
+                log(f"WATCHDOG: Aborting start because lingering compat processes remain: {err}")
+                break
             log(f"WATCHDOG: Starting evaluation for test set: {test_set}")
 
             process = subprocess.Popen(
@@ -231,7 +260,11 @@ def main() -> None:
                 return_code = terminate_process_group(process, "Monitor finished but process still alive")
 
             kill_lingering_compat_processes()
-            wait_until_no_compat_processes()
+            try:
+                wait_until_no_compat_processes()
+            except RuntimeError as err:
+                log(f"WATCHDOG: Aborting restart because lingering compat processes remain: {err}")
+                break
 
             if return_code == 0:
                 log("WATCHDOG: Evaluation script finished successfully.")
@@ -256,6 +289,10 @@ def main() -> None:
 
         log("WATCHDOG: Cleaning up lingering compat processes...")
         kill_lingering_compat_processes()
+        try:
+            wait_until_no_compat_processes()
+        except RuntimeError as err:
+            log(f"WATCHDOG: Lingering compat processes could not be cleared during shutdown: {err}")
         log("WATCHDOG: Exiting due to keyboard interrupt.")
     except FileNotFoundError:
         log(f"WATCHDOG: Error: The script '{script_to_run[0]}' was not found.")

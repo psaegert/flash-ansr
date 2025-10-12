@@ -24,7 +24,7 @@ def remove_padding(x: torch.Tensor | np.ndarray, skeleton: list[str], variables:
 
 
 def create_model(timeout_in_seconds: int, niterations: int, use_mult_div_operators: bool) -> PySRRegressor:
-    if not use_mult_div_operators:
+    if use_mult_div_operators:
         additional_unary_operators = [
             'mult2(x) = 2*x',
             'mult3(x) = 3*x',
@@ -47,6 +47,8 @@ def create_model(timeout_in_seconds: int, niterations: int, use_mult_div_operato
     else:
         additional_unary_operators = []
         additional_extra_sympy_mappings = {}
+
+    print(f'Creating PySR model with timeout {timeout_in_seconds=}, {niterations=}, and {use_mult_div_operators=} ...')
 
     return PySRRegressor(
         temp_equation_file=True,
