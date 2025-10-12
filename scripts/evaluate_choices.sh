@@ -17,15 +17,15 @@ fi
 
 # 1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
 choices_values=(
-    1024 2048 4096
+    1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
 )
 
 for choices in "${choices_values[@]}"; do
     flash_ansr evaluate \
-        -c "{{ROOT}}/configs/${CONFIG}_choices/evaluation_choices_${choices}.yaml" \
-        -m "{{ROOT}}/models/ansr-models/${MODEL}/checkpoint_1250000" \
+        -c "{{ROOT}}/configs/evaluation/v21.x_choices/evaluation_choices_${choices}.yaml" \
+        -m "{{ROOT}}/models/ansr-models/${MODEL}" \
         -d "{{ROOT}}/data/ansr-data/test_set/pool_15_10/dataset.yaml" \
-        -n 512 \
+        -n 2048 \
         -o "{{ROOT}}/results/evaluation/${CONFIG}_choices/evaluation_choices_${choices}/pool_15_10.pickle" \
         -v
 done
