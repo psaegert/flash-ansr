@@ -10,7 +10,7 @@ CONFIG_DIR=$2
 TEST_SET=$3
 
 choices_values=(
-    1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
+    1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384
 )
 
 for choices in "${choices_values[@]}"; do
