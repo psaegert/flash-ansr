@@ -9,7 +9,7 @@ else
 fi
 
 niterations_values=(
-    1 16 64 256 1024 4096 16384 65536
+    1 16 64 256 1024
 )
 
 for niterations in "${niterations_values[@]}"; do

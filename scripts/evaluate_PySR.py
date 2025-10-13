@@ -178,10 +178,12 @@ def terminate_process_group(process: subprocess.Popen, reason: str, grace_period
     return process.wait()
 
 
-def monitor_and_kill_if_idle(process: subprocess.Popen, cpu_threshold: float = 10.0, idle_duration_minutes: int = 5) -> int:
+def monitor_and_kill_if_idle(process: subprocess.Popen, cpu_threshold: float = 1000.0, idle_duration_minutes: int = 5) -> int:
     """
     Monitors a process and its children. If the combined CPU usage is below
     a threshold for a specified duration, it terminates the process group.
+    Since the program is multi-threaded, the threshold is set high to account for
+    multiple threads each using some CPU.
     """
     start_time = None
     idle_duration_seconds = idle_duration_minutes * 60
@@ -197,9 +199,9 @@ def monitor_and_kill_if_idle(process: subprocess.Popen, cpu_threshold: float = 1
             total_cpu_percent = _safe_cpu_percent(main_process, interval=1.0)
             for child in children:
                 # Use non-blocking sampling after the parent's blocking sample to reduce delays.
-                total_cpu_percent += _safe_cpu_percent(child, interval=None)
+                total_cpu_percent += _safe_cpu_percent(child, interval=1.0)
 
-            log(f"WATCHDOG: PID: {process.pid}, Total CPU Usage: {total_cpu_percent:.2f}%")
+            log(f"WATCHDOG: PID: {process.pid}, Total CPU Usage: {total_cpu_percent:.2f}% across children: {[child.pid for child in children]}")
 
             if total_cpu_percent < cpu_threshold:
                 if start_time is None:
