@@ -381,6 +381,7 @@ class FlashANSRDataset:
         padding: str = worker_init_args['padding']
         n_per_equation: int = worker_init_args['n_per_equation']
         batch_size: int = worker_init_args['batch_size']
+        oov: Literal['unk', 'raise'] = worker_init_args['tokenizer_oov']
 
     # Connect to shared memory and create numpy views for tensor pools.
         shms = {name: shared_memory.SharedMemory(name=cfg['name']) for name, cfg in shm_configs.items()}
@@ -445,7 +446,7 @@ class FlashANSRDataset:
                                         if variable not in skeleton:
                                             x_support[:, var_idx] = 0
 
-                                input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True)
+                                input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True, oov=oov)
 
                                 # Store the successful sample
                                 temp_samples.append({
@@ -510,25 +511,29 @@ class FlashANSRDataset:
         max_seq_len: int,
         max_n_support: int | None = None,
         num_workers: int | None = None,
+        tokenizer_oov: Literal['unk', 'raise'] = 'raise',
     ) -> None:
         """Initialize shared-memory pools and worker processes on first use.
 
         Parameters
         ----------
-        prefetch_factor:
+        prefetch_factor: int
             Multiplicative factor that determines how many batches are prepared
             ahead of consumption per worker.
-        batch_size:
+        batch_size: int
             Number of samples per batch written into shared memory buffers.
-        n_per_equation:
+        n_per_equation: int
             Number of samples generated from each skeleton before moving on.
-        max_seq_len:
+        max_seq_len: int
             Maximum token length reserved in the shared ``input_ids`` pool.
-        max_n_support:
+        max_n_support: int | None
             Maximum number of support points reserved in shared buffers. When
             ``None`` the skeleton pool default is used.
-        num_workers:
+        num_workers: int | None
             Optional override for the number of producer processes to spawn.
+            Defaults to the CPU count.
+        tokenizer_oov: Literal['unk', 'raise']
+            Strategy used by the tokenizer when encountering out-of-vocabulary tokens
         """
         if self._is_initialized:
             return
@@ -572,7 +577,8 @@ class FlashANSRDataset:
         # 3. Start Worker Processes
         worker_init_args = {
             'skeleton_pool': self.skeleton_pool, 'tokenizer': self.tokenizer,
-            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size
+            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size,
+            'tokenizer_oov': tokenizer_oov,
         }
         self._workers = []
         for _ in range(self._num_workers):
@@ -636,12 +642,13 @@ class FlashANSRDataset:
         max_n_support: int | None = None,
         n_per_equation: int = 1,
         preprocess: bool = False,
-        verbose: bool = False,
+        tokenizer_oov: Literal['unk', 'raise'] = 'raise',
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         persistent: bool = False,
         tqdm_description: str = "Generating Batches",
         tqdm_total: int | None = None,
+        verbose: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
         """Yield batches of generated data, optionally streaming indefinitely.
 
@@ -668,8 +675,6 @@ class FlashANSRDataset:
         preprocess:
             When ``True`` apply the optional ``preprocessor`` before yielding
             each batch.
-        verbose:
-            Display progress information using ``tqdm`` when enabled.
         num_workers:
             Override for the number of producer processes. Defaults to CPU
             count.
@@ -684,6 +689,8 @@ class FlashANSRDataset:
             Optional override for the total number of steps shown in the
             progress bar. When ``None`` it is derived from ``size`` and
             ``batch_size``.
+        verbose:
+            Display progress information using ``tqdm`` when enabled.
 
         Yields
         ------
@@ -710,6 +717,7 @@ class FlashANSRDataset:
             max_seq_len=max_seq_len,
             max_n_support=max_n_support,
             num_workers=num_workers,
+            tokenizer_oov=tokenizer_oov
         )
         pool_size = self._num_workers * prefetch_factor
 
