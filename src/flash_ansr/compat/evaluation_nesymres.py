@@ -67,6 +67,7 @@ class NeSymReSEvaluation():
                 batch_size=1,
                 tqdm_description='Evaluating',
                 tqdm_total=size,
+                tokenizer_oov='unk'  # Do not raise an error if an unknown token (operator) is encountered
             )
 
             if verbose:

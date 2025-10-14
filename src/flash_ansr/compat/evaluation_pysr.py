@@ -163,6 +163,7 @@ class PySREvaluation():
                 batch_size=1,
                 tqdm_description='Evaluating',
                 tqdm_total=size,
+                tokenizer_oov='unk'  # Do not raise an error if an unknown token (operator) is encountered
             )
 
             model = create_model(
@@ -235,6 +236,8 @@ class PySREvaluation():
                     'error': None,
                 }
 
+                error_occured = False
+
                 if not self.padding:
                     used_variables = [variable for variable in dataset.skeleton_pool.variables if variable in sample_results['skeleton']]  # Keep order
                     X = remove_padding(X, sample_results['skeleton'], dataset.skeleton_pool.variables)
@@ -243,8 +246,6 @@ class PySREvaluation():
                     used_variables = None
 
                 print(f'Used variables: {used_variables}')
-
-                error_occured = False
 
                 fit_time_before = time.time()
                 try:
