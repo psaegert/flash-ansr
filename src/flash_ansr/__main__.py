@@ -2,6 +2,7 @@ import datetime
 import argparse
 import sys
 import pickle
+from typing import Any
 from copy import deepcopy
 
 
@@ -274,6 +275,27 @@ def main(argv: str = None) -> None:
 
             generation_config = GenerationConfig(method=evaluation_config['generation_config']['method'], **evaluation_config['generation_config'].get('kwargs', {}))
 
+            size_todo = args.size
+            resolved_output_file = substitute_root_path(args.output_file)
+            results_dict: dict[str, Any] | None = None
+
+            if os.path.exists(resolved_output_file):
+                if args.verbose:
+                    print(f"Loading existing evaluation results from {args.output_file} ...")
+                with open(resolved_output_file, 'rb') as f:
+                    results_dict = pickle.load(f)
+
+                if size_todo is not None and results_dict:
+                    processed = len(results_dict['expression']) if 'expression' in results_dict else len(next(iter(results_dict.values())))
+                    size_todo -= processed
+            else:
+                results_dict = None
+
+            if size_todo is not None and size_todo <= 0:
+                if args.verbose:
+                    print(f"Evaluation already completed for {args.size} samples. Exiting.")
+                sys.exit(0)
+
             results_dict = evaluation.evaluate(
                 model=FlashANSR.load(
                     directory=substitute_root_path(args.model),
@@ -286,16 +308,19 @@ def main(argv: str = None) -> None:
                     parsimony=evaluation_config['parsimony'],
                 ),
                 dataset=dataset,
-                size=args.size,
+                results_dict=results_dict,
+                size=size_todo,
+                save_every=5,
+                output_file=args.output_file,
                 verbose=args.verbose)
 
             if args.verbose:
                 print(f"Saving evaluation results to {args.output_file} ...")
 
-            output_dir = os.path.dirname(substitute_root_path(args.output_file))
+            output_dir = os.path.dirname(resolved_output_file)
             os.makedirs(output_dir, exist_ok=True)
 
-            with open(substitute_root_path(args.output_file), 'wb') as f:
+            with open(resolved_output_file, 'wb') as f:
                 pickle.dump(results_dict, f)
 
             if args.verbose:
@@ -389,7 +414,7 @@ def main(argv: str = None) -> None:
                     results_dict = pickle.load(f)
 
                 if size_todo is not None:
-                    size_todo -= len(results_dict['expression'])
+                    size_todo -= len(results_dict['expression'])  # type: ignore
             else:
                 results_dict = None
 

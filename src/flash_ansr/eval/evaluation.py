@@ -1,4 +1,6 @@
 import time
+import os
+import pickle
 from typing import Any
 from collections import defaultdict
 import warnings
@@ -9,7 +11,7 @@ import numpy as np
 from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.data import FlashANSRDataset, FlashASNRPreprocessor
 from flash_ansr.refine import ConvergenceError
-from flash_ansr.utils import load_config
+from flash_ansr.utils import load_config, substitute_root_path
 
 from simplipy.utils import numbers_to_constant
 
@@ -95,7 +97,10 @@ class Evaluation():
             self,
             model: FlashANSR,
             dataset: FlashANSRDataset,
+            results_dict: dict[str, Any] | None = None,
             size: int | None = None,
+            save_every: int | None = None,
+            output_file: str | None = None,
             verbose: bool = True) -> dict[str, Any]:
         '''
         Evaluate the model on the dataset.
@@ -123,7 +128,39 @@ class Evaluation():
 
         model.to(self.device).eval()
 
-        results_dict = defaultdict(list)
+        if results_dict is None:
+            results_store: defaultdict[str, list[Any]] = defaultdict(list)
+            existing_results = 0
+        else:
+            results_store = defaultdict(list)
+            for key, value in results_dict.items():
+                results_store[key] = list(value)
+
+            lengths = {key: len(value) for key, value in results_store.items()}
+            if lengths and len(set(lengths.values())) != 1:
+                raise ValueError('Existing results_dict has inconsistent lengths.')
+
+            existing_results = next(iter(lengths.values())) if lengths else 0
+
+        if save_every is not None:
+            if output_file is None:
+                raise ValueError('output_file must be provided when save_every is set.')
+            resolved_output_file = substitute_root_path(output_file)
+            output_dir = os.path.dirname(resolved_output_file)
+            os.makedirs(output_dir, exist_ok=True)
+
+        if size is None:
+            size = len(dataset.skeleton_pool) - existing_results
+
+        if size is not None and size <= 0:
+            if size < 0:
+                warnings.warn(
+                    f'Requested evaluation size is smaller than the number of existing results ({existing_results}). '
+                    'Returning existing results without additional evaluation.'
+                )
+            return dict(sorted(dict(results_store).items()))  # type: ignore
+
+        results_dict = results_store
 
         if size is None:
             size = len(dataset.skeleton_pool)
@@ -160,7 +197,7 @@ class Evaluation():
             if verbose:
                 print(f'Starting evaluation on {size} problems...')
 
-            for batch in iterator:
+            for batch_id, batch in enumerate(iterator):
                 batch = dataset.collate(batch, device=self.device)
 
                 n_support = self.n_support
@@ -293,6 +330,12 @@ class Evaluation():
                 for key, value in sample_results.items():
                     results_dict[key].append(value)
 
+                if save_every is not None and resolved_output_file is not None and (batch_id + 1) % save_every == 0:
+                    if verbose:
+                        print(f"Saving intermediate results after {batch_id + 1} batches ...")
+                    with open(resolved_output_file, 'wb') as f:
+                        pickle.dump(results_dict, f)
+
                 collected += 1
                 if collected >= size:
                     break
@@ -301,6 +344,12 @@ class Evaluation():
             warnings.warn(f'Only collected {collected} out of {size} requested samples.')
 
         # Sort the scores alphabetically by key
-        results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore
+        results_sorted = dict(sorted(dict(results_dict).items()))  # type: ignore
 
-        return results_dict
+        if save_every is not None and resolved_output_file is not None:
+            if verbose:
+                print('Saving final evaluation results...')
+            with open(resolved_output_file, 'wb') as f:
+                pickle.dump(results_sorted, f)
+
+        return results_sorted
