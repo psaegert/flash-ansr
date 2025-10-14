@@ -646,8 +646,7 @@ class FlashANSRDataset:
         num_workers: int | None = None,
         prefetch_factor: int = 2,
         persistent: bool = False,
-        tqdm_description: str = "Generating Batches",
-        tqdm_total: int | None = None,
+        tqdm_kwargs: dict[str, Any] | None = None,
         verbose: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
         """Yield batches of generated data, optionally streaming indefinitely.
@@ -683,12 +682,11 @@ class FlashANSRDataset:
         persistent:
             Clone tensors before yielding so that the caller can safely mutate
             them after consumption.
-        tqdm_description:
-            Description string for the progress bar.
-        tqdm_total:
-            Optional override for the total number of steps shown in the
-            progress bar. When ``None`` it is derived from ``size`` and
-            ``batch_size``.
+        tqdm_kwargs:
+            Optional mapping forwarded to :class:`tqdm.tqdm` when displaying the
+            progress bar. Defaults to ``{"desc": "Generating Batches"}`` and
+            automatically sets ``total`` to the computed number of steps and
+            ``disable`` according to ``verbose``.
         verbose:
             Display progress information using ``tqdm`` when enabled.
 
@@ -700,8 +698,14 @@ class FlashANSRDataset:
         if batch_size is None:
             batch_size = 1
 
+        tqdm_kwargs = dict(tqdm_kwargs) if tqdm_kwargs else {}
+
         if self.data is not None:
-            yield from tqdm(self.data, desc="Iterating over pre-compiled dataset", disable=not verbose)
+            precompiled_kwargs = tqdm_kwargs.copy()
+            precompiled_kwargs.setdefault('desc', "Iterating over pre-compiled dataset")
+            precompiled_kwargs.setdefault('disable', not verbose)
+            precompiled_kwargs.setdefault('smoothing', 0.0)
+            yield from tqdm(self.data, **precompiled_kwargs)
             return
 
         if steps is None and size is None:
@@ -726,11 +730,13 @@ class FlashANSRDataset:
 
         # A progress bar is created once so it tracks both queued and completed
         # batches consistently even when prefetching.
-        if tqdm_total is not None:
-            pbar_total = tqdm_total
-        else:
-            pbar_total = steps
-        pbar = tqdm(total=pbar_total, desc=tqdm_description, disable=not verbose)
+        pbar_total = steps
+        progress_kwargs = tqdm_kwargs.copy()
+        progress_kwargs.setdefault('total', pbar_total)
+        progress_kwargs.setdefault('desc', "Generating Batches")
+        progress_kwargs.setdefault('disable', not verbose)
+        progress_kwargs.setdefault('smoothing', 0.0)
+        pbar = tqdm(**progress_kwargs)
         try:
             # Prefill the work queue
             for _ in range(min(pool_size, steps)):

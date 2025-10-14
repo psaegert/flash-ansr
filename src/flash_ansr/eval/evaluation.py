@@ -190,8 +190,7 @@ class Evaluation():
                 preprocess=self.preprocess,
                 verbose=verbose,
                 batch_size=1,
-                tqdm_description='Evaluating',
-                tqdm_total=size,
+                tqdm_kwargs={'desc': 'Evaluating', 'total': size},
                 tokenizer_oov='unk'  # Do not raise an error if an unknown token (operator) is encountered
             )
 
