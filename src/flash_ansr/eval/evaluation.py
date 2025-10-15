@@ -229,21 +229,22 @@ class Evaluation():
                 y_val = y_noisy_numpy[n_support:]
 
                 sample_results = {
-                    'skeleton': batch['skeleton'][0],
-                    'skeleton_hash': batch['skeleton_hash'][0],
-                    'expression': batch['expression'][0],
-                    'input_ids': batch['input_ids'][0].cpu().numpy(),
-                    'labels': batch['labels'][0].cpu().numpy(),
-                    'constants': [c.cpu().numpy() for c in batch['constants'][0]],
-                    'x': X,
-                    'y': y_numpy[:n_support],
-                    'y_noisy': y,
-                    'x_val': X_val,
-                    'y_val': y_numpy[n_support:],
-                    'y_noisy_val': y_val,
-                    'n_support': n_support,
-                    'labels_decoded': dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>'),
+                    'skeleton': list(batch['skeleton'][0]),
+                    'skeleton_hash': tuple(batch['skeleton_hash'][0]) if isinstance(batch['skeleton_hash'][0], (list, tuple)) else batch['skeleton_hash'][0],
+                    'expression': list(batch['expression'][0]),
+                    'input_ids': batch['input_ids'][0].cpu().numpy().copy(),
+                    'labels': batch['labels'][0].cpu().numpy().copy(),
+                    'constants': [c.cpu().numpy().copy() for c in batch['constants'][0]],
+                    'x': X.copy(),
+                    'y': y_numpy[:n_support].copy(),
+                    'y_noisy': y.copy(),
+                    'x_val': X_val.copy(),
+                    'y_val': y_numpy[n_support:].copy(),
+                    'y_noisy_val': y_val.copy(),
+                    'n_support': int(n_support),
+                    'labels_decoded': list(dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>')),
                     'parsimony': model.parsimony,
+                    'noise_level': self.noise_level,
 
                     'fit_time': None,
                     'predicted_expression': None,
@@ -293,8 +294,8 @@ class Evaluation():
                             y_pred_val = model.predict(X_val, nth_best_beam=0, nth_best_constants=0)
                         else:
                             y_pred_val = np.empty_like(y_val)
-                        sample_results['y_pred'] = y_pred
-                        sample_results['y_pred_val'] = y_pred_val
+                        sample_results['y_pred'] = y_pred.copy()
+                        sample_results['y_pred_val'] = y_pred_val.copy()
                     except (ConvergenceError, ValueError) as exc:
                         warnings.warn(f'Error while predicting: {exc}. Filling nan.')
                         error_occured = True
@@ -313,8 +314,8 @@ class Evaluation():
                     )
 
                     sample_results['predicted_expression'] = predicted_expression_readable
-                    sample_results['predicted_expression_prefix'] = predicted_skeleton_prefix
-                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_skeleton_prefix)
+                    sample_results['predicted_expression_prefix'] = predicted_skeleton_prefix.copy()
+                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_skeleton_prefix).copy()
 
                     predicted_constants = None
                     predicted_score = None

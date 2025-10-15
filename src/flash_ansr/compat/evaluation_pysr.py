@@ -221,6 +221,7 @@ class PySREvaluation():
                     'n_support': int(n_support),
                     'labels_decoded': list(dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>')),
                     'parsimony': self.parsimony,
+                    'noise_level': self.noise_level,
 
                     'fit_time': None,
                     'predicted_expression': None,
@@ -237,6 +238,8 @@ class PySREvaluation():
 
                 error_occured = False
 
+                print(sample_results['x'][0])
+
                 if not self.padding:
                     used_variables = [variable for variable in dataset.skeleton_pool.variables if variable in sample_results['skeleton']]  # Keep order
                     X = remove_padding(X, sample_results['skeleton'], dataset.skeleton_pool.variables)
@@ -245,6 +248,8 @@ class PySREvaluation():
                     used_variables = None
 
                 print(f'Used variables: {used_variables}')
+
+                print(X[0])
 
                 fit_time_before = time.time()
                 try:
@@ -272,6 +277,11 @@ class PySREvaluation():
                     predicted_prefix = dataset.simplipy_engine.infix_to_prefix(predicted_expression)
                     sample_results['predicted_expression_prefix'] = predicted_prefix.copy()
                     sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_prefix).copy()
+
+                    if sample_results['predicted_skeleton_prefix'] == sample_results['skeleton']:
+                        print('Perfect skeleton match!')
+                        print(sample_results['y'][:10])
+                        print(sample_results['y_pred'][:10])
 
                 for key, value in sample_results.items():
                     results_dict[key].append(value)
