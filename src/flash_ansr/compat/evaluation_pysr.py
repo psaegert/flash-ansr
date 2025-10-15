@@ -206,20 +206,20 @@ class PySREvaluation():
                 y_val = y_noisy_numpy[n_support:]
 
                 sample_results = {
-                    'skeleton': batch['skeleton'][0],
-                    'skeleton_hash': batch['skeleton_hash'][0],
-                    'expression': batch['expression'][0],
-                    'input_ids': batch['input_ids'][0].cpu().numpy(),
-                    'labels': batch['labels'][0].cpu().numpy(),
-                    'constants': [c.cpu().numpy() for c in batch['constants'][0]],
-                    'x': X,
-                    'y': y_numpy[:n_support],
-                    'y_noisy': y,
-                    'x_val': X_val,
-                    'y_val': y_numpy[n_support:],
-                    'y_noisy_val': y_val,
-                    'n_support': n_support,
-                    'labels_decoded': dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>'),
+                    'skeleton': list(batch['skeleton'][0]),
+                    'skeleton_hash': tuple(batch['skeleton_hash'][0]) if isinstance(batch['skeleton_hash'][0], (list, tuple)) else batch['skeleton_hash'][0],
+                    'expression': list(batch['expression'][0]),
+                    'input_ids': batch['input_ids'][0].cpu().numpy().copy(),
+                    'labels': batch['labels'][0].cpu().numpy().copy(),
+                    'constants': [c.cpu().numpy().copy() for c in batch['constants'][0]],
+                    'x': X.copy(),
+                    'y': y_numpy[:n_support].copy(),
+                    'y_noisy': y.copy(),
+                    'x_val': X_val.copy(),
+                    'y_val': y_numpy[n_support:].copy(),
+                    'y_noisy_val': y_val.copy(),
+                    'n_support': int(n_support),
+                    'labels_decoded': list(dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>')),
                     'parsimony': self.parsimony,
 
                     'fit_time': None,
@@ -264,13 +264,14 @@ class PySREvaluation():
                     if not y_pred_val.shape == y_val.shape:
                         raise ValueError(f"Shape of y_pred_val {y_pred_val.shape} does not match shape of y_val {y_val.shape}.")
 
-                    sample_results['y_pred'] = y_pred
-                    sample_results['y_pred_val'] = y_pred_val
+                    sample_results['y_pred'] = y_pred.copy()
+                    sample_results['y_pred_val'] = y_pred_val.copy()
 
                     predicted_expression = str(model.get_best()['equation'])
                     sample_results['predicted_expression'] = predicted_expression
-                    sample_results['predicted_expression_prefix'] = dataset.simplipy_engine.infix_to_prefix(predicted_expression)
-                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(sample_results['predicted_expression_prefix'])
+                    predicted_prefix = dataset.simplipy_engine.infix_to_prefix(predicted_expression)
+                    sample_results['predicted_expression_prefix'] = predicted_prefix.copy()
+                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_prefix).copy()
 
                 for key, value in sample_results.items():
                     results_dict[key].append(value)
