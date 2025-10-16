@@ -178,7 +178,7 @@ def terminate_process_group(process: subprocess.Popen, reason: str, grace_period
     return process.wait()
 
 
-def monitor_and_kill_if_idle(process: subprocess.Popen, cpu_threshold: float = 1000.0, idle_duration_minutes: int = 1) -> int:
+def monitor_and_kill_if_idle(process: subprocess.Popen, cpu_threshold: float = 1000.0, idle_duration_minutes: int = 5) -> int:
     """
     Monitors a process and its children. If the combined CPU usage is below
     a threshold for a specified duration, it terminates the process group.
@@ -274,7 +274,7 @@ def main() -> None:
             else:
                 log(f"WATCHDOG: Evaluation script terminated with code {return_code}. Restarting...")
 
-            time.sleep(30)
+            time.sleep(10)
 
     except KeyboardInterrupt:
         log("WATCHDOG: Keyboard interrupt received. Shutting down.")

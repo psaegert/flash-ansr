@@ -427,7 +427,7 @@ def main(argv: str = None) -> None:
                 dataset=dataset,
                 results_dict=results_dict,
                 size=size_todo,
-                save_every=5,
+                save_every=1,
                 output_file=args.output_file,
                 verbose=args.verbose)
 
