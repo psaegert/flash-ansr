@@ -106,6 +106,7 @@ class FlashANSRDataset:
         if isinstance(config, str) and isinstance(config_["skeleton_pool"], str):
             if config_["skeleton_pool"].startswith('.'):
                 config_["skeleton_pool"] = os.path.join(os.path.dirname(config), config_["skeleton_pool"])
+            config_["skeleton_pool"] = substitute_root_path(config_["skeleton_pool"])
 
         if os.path.isfile(config_["skeleton_pool"]) or isinstance(config_["skeleton_pool"], dict):
             skeleton_pool = SkeletonPool.from_config(config_["skeleton_pool"])
