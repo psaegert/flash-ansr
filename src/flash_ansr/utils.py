@@ -290,8 +290,70 @@ class GenerationConfig(Mapping[str, Any]):
         The generation method to use.
     config : dict
         The configuration dictionary.
+
+    Notes
+    -----
+    Each generation method ships with sensible defaults plus the knobs listed
+    below. Pass keyword arguments to ``GenerationConfig`` to override any of
+    them.
+
+    - ``beam_search`` keeps the highest scoring partial programs at every
+        decoding step.
+            - ``beam_width`` (32): number of beams tracked during search.
+            - ``max_len`` (32): maximum decoded token length before truncating.
+            - ``mini_batch_size`` (128): batch size used when scoring beams in
+                vectorised forward passes.
+            - ``equivalence_pruning`` (True): if enabled, simplified expressions
+                that canonicalise to duplicates are pruned from the beam.
+
+    - ``softmax_sampling`` draws multiple candidates via stochastic decoding.
+            - ``choices`` (32): how many independent samples to draw.
+            - ``top_k`` (0): optional top-k cutoff applied before sampling (0
+                disables the filter).
+            - ``top_p`` (1): nucleus sampling threshold; values < 1 restrict the
+                cumulative probability mass considered.
+            - ``max_len`` (32): hard stop on sampled sequence length.
+            - ``mini_batch_size`` (128): batch size for batched sampling steps.
+            - ``temperature`` (1): scales logits prior to sampling; <1 sharpens,
+                >1 smooths the distribution.
+            - ``valid_only`` (True): reject samples that cannot be parsed into
+                valid expressions.
+            - ``simplify`` (True): optionally simplify sampled expressions before
+                returning them.
+            - ``unique`` (True): ensure each returned expression is unique after
+                simplification.
+
+    - ``mcts`` runs Monte Carlo Tree Search on the transformer policy.
+            - ``beam_width`` (16): number of completions returned after the search
+                concludes.
+            - ``simulations`` (256): total simulation rollouts executed from the
+                root.
+            - ``uct_c`` (1.4): exploration constant in the UCT score balancing
+                exploitation and exploration.
+            - ``expansion_top_k`` (32): how many highest-probability children to
+                expand per node.
+            - ``max_depth`` (64): maximum token depth before the search or rollout
+                terminates a path.
+            - ``rollout_max_len`` (None): optional cap for rollout length; falls
+                back to ``max_depth`` when ``None``.
+            - ``rollout_policy`` ('sample'): strategy for selecting rollout tokens
+                ('sample' or 'greedy').
+            - ``temperature`` (1.0): sampling temperature applied when the rollout
+                policy is ``'sample'``.
+            - ``dirichlet_alpha`` (None): concentration for optional Dirichlet noise
+                injected at the root to encourage exploration.
+            - ``dirichlet_epsilon`` (0.25): mix ratio between model priors and
+                Dirichlet noise at the root.
+            - ``invalid_penalty`` (1e6): penalty subtracted when a rollout finishes
+                without a valid terminal token.
+            - ``min_visits_before_expansion`` (1): number of visits required before
+                expanding a node's children.
+            - ``reward_transform`` (None): optional callable applied to rewards
+                before backpropagation.
+            - ``completion_sort`` ('reward'): criterion used to rank collected
+                completions (``'reward'`` or ``'log_prob'``).
     '''
-    def __init__(self, method: Literal['beam_search', 'softmax_sampling'] = 'beam_search', **kwargs: Any) -> None:
+    def __init__(self, method: Literal['beam_search', 'softmax_sampling', 'mcts'] = 'beam_search', **kwargs: Any) -> None:
         self.defaults = {
             'beam_search': {
                 'beam_width': 32,
@@ -309,6 +371,22 @@ class GenerationConfig(Mapping[str, Any]):
                 'valid_only': True,
                 'simplify': True,
                 'unique': True
+            },
+            'mcts': {
+                'beam_width': 16,
+                'simulations': 256,
+                'uct_c': 1.4,
+                'expansion_top_k': 32,
+                'max_depth': 64,
+                'rollout_max_len': None,
+                'rollout_policy': 'sample',
+                'temperature': 1.0,
+                'dirichlet_alpha': None,
+                'dirichlet_epsilon': 0.25,
+                'invalid_penalty': 1e6,
+                'min_visits_before_expansion': 1,
+                'reward_transform': None,
+                'completion_sort': 'reward'
             }
         }
 
@@ -321,7 +399,10 @@ class GenerationConfig(Mapping[str, Any]):
 
         # Set defaults if not provided
         if method in self.defaults:
-            for key, value in self.defaults[method].items():
+            method_defaults = self.defaults[method]
+            if not isinstance(method_defaults, dict):
+                raise TypeError(f"Defaults for method '{method}' must be a mapping")
+            for key, value in method_defaults.items():
                 if key not in self.config:
                     self.config[key] = value
 

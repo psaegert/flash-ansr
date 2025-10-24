@@ -8,7 +8,7 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.utils import codify, substitude_constants, identify_constants, apply_variable_mapping
+from flash_ansr.expressions.utils import codify, identify_constants, apply_variable_mapping
 from flash_ansr.utils import pad_input_set
 
 
@@ -175,15 +175,19 @@ class Refiner:
                     loss = np.nan
                 else:
                     loss = np.mean(diff ** 2)  # type: ignore
-            except OverflowError:
+            except (OverflowError, TypeError):
                 loss = np.nan
 
             self._all_constants_values.append((constants, constants_cov, loss))
 
-            self.valid_fit = self.valid_fit or np.isfinite(loss)
+        expected_constants = len(self.constants_symbols)
+        filtered_constants: list[tuple[np.ndarray, np.ndarray, float]] = []
+        for constants, constants_cov, loss in self._all_constants_values:
+            if len(constants) == expected_constants:
+                filtered_constants.append((constants, constants_cov, loss))
 
-        # Sort the constants by loss
-        self._all_constants_values = sorted(self._all_constants_values, key=lambda x: x[-1])
+        self._all_constants_values = sorted(filtered_constants, key=lambda x: x[-1])
+        self.valid_fit = any(np.isfinite(loss) for *_rest, loss in self._all_constants_values)
 
         if not self.valid_fit and converge_error == 'raise':
             raise ConvergenceError(f"The optimization did not converge after {n_restarts} restarts")
@@ -356,12 +360,31 @@ class Refiner:
         list[str] or str
             The transformed expression
         '''
-        constants_values = self._all_constants_values[nth_best_constants][0]
+        constants_values = np.asarray(self._all_constants_values[nth_best_constants][0], dtype=float)
 
-        if len(constants_values) != len(self.constants_symbols) > 0:
-            constants_values = np.full(len(self.constants_symbols), np.nan)
+        expression_tokens = list(expression)
+        if constants_values.size:
+            rounded_constants = np.round(constants_values, precision)
+            constant_iter = iter(rounded_constants.tolist())
 
-        expression_with_values = substitude_constants(expression, np.round(constants_values, precision))
+            for idx, token in enumerate(expression_tokens):
+                is_constant_token = (
+                    token == "<constant>"
+                    or token.startswith("C_")
+                    or token in self.constants_symbols
+                )
+
+                if not is_constant_token:
+                    continue
+
+                try:
+                    value = next(constant_iter)
+                except StopIteration:
+                    break
+
+                expression_tokens[idx] = str(value)
+
+        expression_with_values = expression_tokens
 
         if variable_mapping is not None:
             expression_with_values = apply_variable_mapping(expression_with_values, variable_mapping)

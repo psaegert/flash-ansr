@@ -10,7 +10,7 @@ class TestSimpliPyEngine(unittest.TestCase):
 
         infix_equation_string = space.prefix_to_infix(test_expression)
 
-        assert infix_equation_string == '(sin((1.234 ** x1)) * -423)'
+        assert infix_equation_string == 'sin(1.234 ** x1) * -423'
 
     def test_from_config_dict(self):
         space = SimpliPyEngine(operators={

@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Literal, Any, Iterable, TypedDict, Callable
+from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple
 import warnings
 
 import numpy as np
@@ -15,6 +15,7 @@ from simplipy import SimpliPyEngine
 from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConfig
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.model import FlashANSRModel, Tokenizer
+from flash_ansr.decoding.mcts import MCTSConfig
 
 
 class Result(TypedDict):
@@ -65,6 +66,28 @@ class FlashANSR(BaseEstimator):
         Penalty coefficient that discourages overly complex expressions.
     """
 
+    FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
+
+    @classmethod
+    def _normalize_variance(cls, variance: float) -> float:
+        if not np.isfinite(variance):
+            return cls.FLOAT64_EPS
+        return max(float(variance), cls.FLOAT64_EPS)
+
+    @classmethod
+    def _compute_fvu(cls, loss: float, sample_count: int, variance: float) -> float:
+        if sample_count <= 1:
+            return float(loss)
+        return float(loss) / cls._normalize_variance(variance)
+
+    @classmethod
+    def _score_from_fvu(cls, fvu: float, complexity: int, parsimony: float) -> float:
+        if not np.isfinite(fvu) or fvu <= 0:
+            safe_fvu = cls.FLOAT64_EPS
+        else:
+            safe_fvu = max(float(fvu), cls.FLOAT64_EPS)
+        return float(np.log10(safe_fvu) + parsimony * complexity)
+
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
@@ -99,6 +122,7 @@ class FlashANSR(BaseEstimator):
 
         self._results: list[Result] = []
         self.results: pd.DataFrame = pd.DataFrame()
+        self._mcts_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
 
         self.variable_mapping: dict[str, str] = {}
 
@@ -209,7 +233,29 @@ class FlashANSR(BaseEstimator):
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
-    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+    def _build_mcts_config(self) -> MCTSConfig:
+        cfg = self.generation_config
+
+        reward_transform = getattr(cfg, 'reward_transform', None)
+        if reward_transform is not None and not callable(reward_transform):
+            reward_transform = None
+
+        return MCTSConfig(
+            simulations=getattr(cfg, 'simulations', 256),
+            uct_c=getattr(cfg, 'uct_c', 1.4),
+            expansion_top_k=getattr(cfg, 'expansion_top_k', 32),
+            max_depth=getattr(cfg, 'max_depth', getattr(cfg, 'max_len', 64)),
+            rollout_max_len=getattr(cfg, 'rollout_max_len', None),
+            rollout_policy=getattr(cfg, 'rollout_policy', 'sample'),
+            temperature=getattr(cfg, 'temperature', 1.0),
+            dirichlet_alpha=getattr(cfg, 'dirichlet_alpha', None),
+            dirichlet_epsilon=getattr(cfg, 'dirichlet_epsilon', 0.25),
+            invalid_penalty=getattr(cfg, 'invalid_penalty', 1e6),
+            min_visits_before_expansion=getattr(cfg, 'min_visits_before_expansion', 1),
+            reward_transform=reward_transform,
+        )
+
+    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Generate candidate expression beams from the transformer.
 
         Parameters
@@ -229,25 +275,130 @@ class FlashANSR(BaseEstimator):
             Log probabilities associated with each beam.
         completed : list[bool]
             Flags indicating whether the beam terminated with an end token.
+        rewards : list[float]
+            Decoder-specific score used during search (``nan`` for methods that do
+            not compute one).
 
         Raises
         ------
+
         ValueError
             If an unsupported generation method is requested.
         """
+        self._mcts_cache = {}
+
         match self.generation_config.method:
             case 'beam_search':
-                return self.flash_ansr_transformer.beam_search(
+                beams, log_probs, completed = self.flash_ansr_transformer.beam_search(
                     data=data,
                     complexity=complexity,
                     verbose=verbose,
                     **self.generation_config)
+                rewards = [float('nan')] * len(beams)
+                return beams, log_probs, completed, rewards
             case 'softmax_sampling':
-                return self.flash_ansr_transformer.sample_top_kp(
+                beams, log_probs, completed = self.flash_ansr_transformer.sample_top_kp(
                     data=data,
                     complexity=complexity,
                     verbose=verbose,
                     **self.generation_config)
+                rewards = [float('nan')] * len(beams)
+                return beams, log_probs, completed, rewards
+            case 'mcts':
+                config = self._build_mcts_config()
+                completion_sort = getattr(self.generation_config, 'completion_sort', 'reward')
+
+                x_np = data[..., :self.n_variables].detach().cpu().numpy()
+                y_np = data[..., self.n_variables:].detach().cpu().numpy()
+
+                value_cache: dict[Tuple[int, ...], float] = {}
+                refiner_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
+
+                y_var = float(np.var(y_np)) if y_np.size > 1 else float(np.nan)
+
+                def value_fn(tokens: Tuple[int, ...]) -> float:
+                    if tokens in value_cache:
+                        return value_cache[tokens]
+
+                    try:
+                        expression_tokens, _, _ = self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(list(tokens))
+                    except ValueError:
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    expression_decoded = self.tokenizer.decode(expression_tokens, special_tokens='<constant>')
+
+                    if not self.simplipy_engine.is_valid(expression_decoded):
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    try:
+                        refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
+                            expression=expression_decoded,
+                            X=x_np,
+                            y=y_np,
+                            n_restarts=self.n_restarts,
+                            method=self.refiner_method,
+                            p0_noise=self.refiner_p0_noise,
+                            p0_noise_kwargs=self.refiner_p0_noise_kwargs,
+                            converge_error='ignore')
+                    except ConvergenceError:
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+                    except Exception:
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    loss = refiner._all_constants_values[0][-1]
+                    if np.isnan(loss):
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    fvu = self._compute_fvu(float(loss), y_np.shape[0], y_var)
+                    if not np.isfinite(fvu):
+                        reward = -config.invalid_penalty
+                        value_cache[tokens] = reward
+                        return reward
+
+                    score = self._score_from_fvu(fvu, len(expression_decoded), self.parsimony)
+                    reward = -score
+
+                    constantified_tokens = tuple(self.flash_ansr_transformer.tokenizer.constantify_expression(list(tokens)))
+
+                    refiner_cache[constantified_tokens] = {
+                        'refiner': refiner,
+                        'score': score,
+                        'fvu': fvu,
+                        'loss': float(loss),
+                        'reward': reward,
+                        'fits': copy.deepcopy(refiner._all_constants_values),
+                    }
+
+                    value_cache[tokens] = reward
+                    return reward
+
+                beams, log_probs, completed, rewards = self.flash_ansr_transformer.mcts_decode(
+                    data=data,
+                    config=config,
+                    beam_width=getattr(self.generation_config, 'beam_width', 16),
+                    complexity=complexity,
+                    value_fn=value_fn,
+                    completion_sort=completion_sort,
+                    verbose=verbose,
+                )
+
+                self._mcts_cache = refiner_cache
+                return beams, log_probs, completed, rewards
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 
@@ -353,7 +504,7 @@ class FlashANSR(BaseEstimator):
             np.seterr(all=self.numpy_errors)
 
             for complexity in complexity_list:
-                raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
+                raw_beams, log_probs, _completed_flags, _rewards = self.generate(data_tensor, complexity=complexity, verbose=verbose)
 
                 beams = [self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
@@ -368,6 +519,33 @@ class FlashANSR(BaseEstimator):
                         if self.numeric_head:
                             raise NotImplementedError("Numeric head is not yet implemented")
 
+                        cache_entry = self._mcts_cache.get(tuple(raw_beam))
+                        if cache_entry is not None:
+                            cached_refiner = copy.deepcopy(cache_entry['refiner'])
+                            cached_fits = copy.deepcopy(cache_entry.get('fits', []))
+                            cached_fvu = cache_entry.get('fvu', np.nan)
+                            cached_score = cache_entry.get('score', np.nan)
+
+                            if not cached_refiner.valid_fit or not cached_fits:
+                                continue
+
+                            self._results.append({
+                                'log_prob': log_prob,
+                                'fvu': cached_fvu,
+                                'score': cached_score,
+                                'expression': beam_decoded,
+                                'complexity': len(beam_decoded),
+                                'target_complexity': complexity,
+                                'numeric_prediction': numeric_prediction,
+                                'raw_beam': raw_beam,
+                                'beam': beam,    # type: ignore
+                                'raw_beam_decoded': raw_beam_decoded,
+                                'function': cached_refiner.expression_lambda,
+                                'refiner': cached_refiner,
+                                'fits': cached_fits,
+                            })
+                            continue
+
                         try:
                             refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
                                 expression=beam_decoded,
@@ -380,16 +558,15 @@ class FlashANSR(BaseEstimator):
                                 p0_noise_kwargs=self.refiner_p0_noise_kwargs,
                                 converge_error=converge_error)
 
-                            if not refiner.valid_fit:  # Fit failed
-                                fvu = np.nan
-                                score = np.nan
-                            else:
-                                if y.shape[0] == 1:
-                                    # Cannot compute variance for a single sample. Use loss instead.
-                                    fvu = refiner._all_constants_values[0][-1]
-                                else:
-                                    fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
-                                score = np.log10(fvu) + self.parsimony * len(beam_decoded)
+                            if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+                                if converge_error == 'print':
+                                    print(f"Failed to converge for beam: {beam_decoded}")
+                                continue
+
+                            sample_count = int(y.shape[0])
+                            loss = float(refiner._all_constants_values[0][-1])
+                            fvu = self._compute_fvu(loss, sample_count, y_variance)
+                            score = self._score_from_fvu(fvu, len(beam_decoded), self.parsimony)
 
                             self._results.append({
                                 'log_prob': log_prob,
@@ -438,7 +615,11 @@ class FlashANSR(BaseEstimator):
         for result in self._results:
             if 'score' in result:
                 # Recompute the score with the new parsimony coefficient
-                result['score'] = np.log10(min(result['fvu'], float(np.finfo(np.float32).eps))) + self.parsimony * len(result['expression'])
+                fvu = result.get('fvu', np.nan)
+                if np.isfinite(fvu):
+                    result['score'] = self._score_from_fvu(float(fvu), len(result['expression']), self.parsimony)
+                else:
+                    result['score'] = np.nan
 
         # Sort the results by the best loss of each beam
         self._results = list(sorted(self._results, key=lambda x: (

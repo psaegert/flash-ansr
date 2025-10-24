@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Any, Literal
+from typing import Any, Callable, Literal, Optional, Tuple, TypeAlias
 
 import torch
 from torch import nn
@@ -14,6 +14,11 @@ from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.preprocess import FlashASNRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer
 from flash_ansr.model.transformer import TransformerDecoder
+from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
+
+
+ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
+TerminalFunction: TypeAlias = Callable[[Tuple[int, ...]], bool]
 
 
 class FlashANSRModel(nn.Module):
@@ -350,6 +355,128 @@ class FlashANSRModel(nn.Module):
 
         # Step 9: Return the top 'beam_size' sequences
         return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]], [True] * len(completed_sequences[:beam_width])
+
+    def mcts_decode(
+        self,
+        data: torch.Tensor,
+        config: MCTSConfig,
+        beam_width: int = 16,
+        complexity: int | float | None = None,
+        value_fn: Optional[ValueFunction] = None,
+        terminal_fn: Optional[TerminalFunction] = None,
+        invalid_sequence_fn: Optional[Callable[[Tuple[int, ...]], bool]] = None,
+        completion_sort: str = "reward",
+        verbose: bool = False,
+    ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
+        """Decode expressions using Monte Carlo Tree Search."""
+
+        device = data.device
+
+        if complexity is None:
+            initial_tokens, input_num = [self.tokenizer['<bos>']], None
+        else:
+            initial_tokens, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+
+        base_input_num = input_num[:] if input_num is not None else None
+
+        memory = self._create_memory(data)
+
+        policy_cache: dict[Tuple[int, ...], torch.Tensor] = {}
+
+        def build_input_num_tensor(length: int) -> Optional[torch.Tensor]:
+            if base_input_num is None:
+                return None
+
+            if length <= len(base_input_num):
+                values = base_input_num[:length]
+            else:
+                values = base_input_num + [float('nan')] * (length - len(base_input_num))
+
+            return torch.tensor(values, device=device).unsqueeze(0).unsqueeze(-1)
+
+        def policy_fn(tokens: Tuple[int, ...], _: Optional[Any]) -> PolicyStep:
+            if tokens in policy_cache:
+                return PolicyStep(log_probs=policy_cache[tokens])
+
+            input_ids = torch.tensor(tokens, device=device).unsqueeze(0)
+            input_num_tensor = build_input_num_tensor(len(tokens))
+
+            with torch.no_grad():
+                logits = self.forward(input_ids, None, input_num=input_num_tensor, memory=memory)
+                next_logits = logits[:, -1, :].squeeze(0)
+                log_probs = torch.log_softmax(next_logits, dim=-1)
+
+            policy_cache[tokens] = log_probs
+            return PolicyStep(log_probs=log_probs)
+
+        value_callable: ValueFunction
+        if value_fn is None:
+            def default_value(_: Tuple[int, ...], /) -> float:
+                return 0.0
+
+            value_callable = default_value
+        else:
+            value_callable = value_fn
+
+        terminal_callable: TerminalFunction
+        if terminal_fn is None:
+            eos_token = self.tokenizer['<eos>']
+
+            def default_terminal(tokens: Tuple[int, ...], /) -> bool:
+                return bool(tokens) and tokens[-1] == eos_token
+
+            terminal_callable = default_terminal
+        else:
+            terminal_callable = terminal_fn
+
+        eos_token_id = self.tokenizer['<eos>']
+        pad_token_id = self.tokenizer['<pad>'] if '<pad>' in self.tokenizer else None
+
+        mcts = MonteCarloTreeSearch(
+            policy_fn=policy_fn,
+            value_fn=value_callable,
+            terminal_fn=terminal_callable,
+            config=config,
+            eos_token_id=eos_token_id,
+            pad_token_id=pad_token_id,
+            invalid_sequence_fn=invalid_sequence_fn,
+        )
+
+        with torch.no_grad():
+            mcts.run(
+                initial_tokens,
+                initial_state=None,
+                progress=verbose,
+                progress_desc=f"MCTS decode ({config.simulations} sims)",
+            )
+
+        completions = mcts.get_top_completions(limit=beam_width, by=completion_sort)
+
+        if not completions:
+            try:
+                best_child = mcts.best_child(by="visits")
+                fallback_tokens = list(best_child.tokens)
+                if not fallback_tokens or fallback_tokens[-1] != eos_token_id:
+                    fallback_tokens.append(eos_token_id)
+                completions = [(tuple(fallback_tokens), 0.0, best_child.log_prob)]
+            except Exception:
+                fallback_tokens = initial_tokens + [eos_token_id]
+                completions = [(tuple(fallback_tokens), 0.0, 0.0)]
+
+        sequences: list[list[int]] = []
+        log_probs: list[float] = []
+        rewards: list[float] = []
+
+        for tokens, reward, log_prob in completions:
+            seq = list(tokens)
+            constantified = self.tokenizer.constantify_expression(seq)
+            sequences.append(constantified)  # type: ignore[arg-type]
+            log_probs.append(float(log_prob))
+            rewards.append(float(reward))
+
+        completed_flags = [True] * len(sequences)
+
+        return sequences, log_probs, completed_flags, rewards
 
     def sample_top_kp(
         self, data: torch.Tensor, choices: int = 10, top_k: int = 0, top_p: float = 1, max_len: int = 100,

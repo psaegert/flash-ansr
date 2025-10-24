@@ -52,7 +52,7 @@ build-backend = "setuptools.build_meta"
 
 
 [tool.flake8]
-ignore = ["E501"]
+ignore = ["E501", "W503"]
 exclude = [
     ".git",
 	"__pycache__",
