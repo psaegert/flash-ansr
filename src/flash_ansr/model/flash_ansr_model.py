@@ -467,6 +467,8 @@ class FlashANSRModel(nn.Module):
         log_probs: list[float] = []
         rewards: list[float] = []
 
+        seen_sequences: set[tuple[int, ...]] = set()
+
         for tokens, reward, log_prob in completions:
             seq = list(tokens)
             simplified_seq = seq
@@ -482,6 +484,12 @@ class FlashANSRModel(nn.Module):
                     simplified_seq = before + self.tokenizer.encode(simplified_expression) + after
 
             constantified = self.tokenizer.constantify_expression(simplified_seq)
+            sequence_key = tuple(constantified)  # type: ignore[arg-type]
+
+            if sequence_key in seen_sequences:
+                continue
+
+            seen_sequences.add(sequence_key)
             sequences.append(constantified)  # type: ignore[arg-type]
             log_probs.append(float(log_prob))
             rewards.append(float(reward))
