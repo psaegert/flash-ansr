@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from operator import attrgetter, itemgetter, methodcaller
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
 from tqdm import tqdm
@@ -81,7 +81,16 @@ PolicyFn = Callable[[Tuple[int, ...], Optional[Any]], PolicyStep]
 """Callable returning next-token log-probabilities (and optional child states)."""
 
 
-ValueFn = Callable[[Tuple[int, ...]], float]
+@dataclass(frozen=True)
+class ValueEstimate:
+    reward: float
+    info: Optional[Mapping[str, Any]] = None
+
+
+ValueFnResult = Union[float, ValueEstimate, Tuple[float, Mapping[str, Any]]]
+
+
+ValueFn = Callable[[Tuple[int, ...]], ValueFnResult]
 """Callable scoring a completed sequence; higher is better."""
 
 
@@ -142,9 +151,11 @@ class MonteCarloTreeSearch:
 
         # Accumulates completed sequences encountered during simulations.
         self._completions: list[tuple[Tuple[int, ...], float, float]] = []
+        self._completion_info: list[dict[str, Any]] = []
 
         self.root: Optional[MCTSNode] = None
         self._dirichlet_applied = False
+        self._completion_info.clear()
 
     # ------------------------------------------------------------------
     # Public API
@@ -163,6 +174,7 @@ class MonteCarloTreeSearch:
         self.root.terminal = self.terminal_fn(root_tokens)
         self._dirichlet_applied = False
         self._completions.clear()
+        self._completion_info.clear()
 
         pbar = tqdm(
             total=self.config.simulations,
@@ -358,11 +370,11 @@ class MonteCarloTreeSearch:
         if not self._is_terminal_tokens(tokens):
             return -self.config.invalid_penalty
 
-        reward = self.value_fn(tuple(tokens))
+        reward, info = self._call_value_fn(tuple(tokens))
         if self.config.reward_transform is not None:
             reward = self.config.reward_transform(reward)
 
-        self._register_completion(tuple(tokens), reward, log_prob)
+        self._register_completion(tuple(tokens), reward, log_prob, info)
         return reward
 
     # ------------------------------------------------------------------
@@ -372,10 +384,10 @@ class MonteCarloTreeSearch:
         if not self._is_terminal_tokens(node.tokens):
             return -self.config.invalid_penalty
 
-        reward = self.value_fn(node.tokens)
+        reward, info = self._call_value_fn(node.tokens)
         if self.config.reward_transform is not None:
             reward = self.config.reward_transform(reward)
-        self._register_completion(node.tokens, reward, node.log_prob)
+        self._register_completion(node.tokens, reward, node.log_prob, info)
         return reward
 
     def _backpropagate(self, path: Iterable[MCTSNode], reward: float) -> None:
@@ -455,20 +467,58 @@ class MonteCarloTreeSearch:
     # ------------------------------------------------------------------
     # Internal state helpers
     # ------------------------------------------------------------------
-    def _register_completion(self, tokens: Tuple[int, ...], reward: float, log_prob: float) -> None:
+    def _register_completion(self, tokens: Tuple[int, ...], reward: float, log_prob: float, info: Optional[Mapping[str, Any]] = None) -> None:
+        info_dict: dict[str, Any] = dict(info) if info is not None else {}
+
+        if "length" not in info_dict:
+            info_dict["length"] = len(tokens)
+
+        if "log_fvu" not in info_dict and "fvu" in info_dict:
+            fvu = info_dict.get("fvu")
+            if isinstance(fvu, (int, float)) and fvu > 0:
+                info_dict["log_fvu"] = math.log10(float(fvu))
+
         self._completions.append((tokens, reward, log_prob))
+        self._completion_info.append(info_dict)
 
     def _best_completion_reward(self) -> float:
         if not self._completions:
             return float("-inf")
         return max(reward for _, reward, _ in self._completions)
 
+    def _best_completion_entry(self) -> Optional[tuple[Tuple[int, ...], float, float, dict[str, Any]]]:
+        if not self._completions:
+            return None
+
+        best_index = max(range(len(self._completions)), key=lambda idx: self._completions[idx][1])
+        tokens, reward, log_prob = self._completions[best_index]
+        info = self._completion_info[best_index]
+        return tokens, reward, log_prob, info
+
     def _update_progress_bar(self, pbar: Optional[Any]) -> None:
         if pbar is None:
             return
 
-        best_reward = self._best_completion_reward()
-        postfix: Dict[str, Any] = {"best_reward": f"{best_reward:.3f}"}
+        best_entry = self._best_completion_entry()
+
+        if best_entry is None:
+            postfix: Dict[str, Any] = {"log_fvu": "nan", "length": "nan"}
+        else:
+            tokens, _, _, info = best_entry
+            raw_log_fvu = info.get("log_fvu")
+            length = info.get("length", len(tokens))
+
+            if isinstance(length, float):
+                length_display: Any = f"{length:.1f}"
+            else:
+                length_display = int(length)
+
+            if isinstance(raw_log_fvu, (int, float)) and math.isfinite(raw_log_fvu):
+                log_fvu_display: Any = f"{float(raw_log_fvu):.3f}"
+            else:
+                log_fvu_display = "nan"
+
+            postfix = {"log_fvu": log_fvu_display, "length": length_display}
 
         pbar.update(1)
         pbar.set_postfix(postfix, refresh=False)
@@ -480,3 +530,24 @@ class MonteCarloTreeSearch:
             raise RuntimeError("MCTS has not been executed yet")
         key_fn = self._child_ranking_key(by)
         return sorted(root.children.values(), key=key_fn, reverse=True)
+
+    def _call_value_fn(self, tokens: Tuple[int, ...]) -> tuple[float, dict[str, Any]]:
+        result = self.value_fn(tokens)
+
+        if isinstance(result, ValueEstimate):
+            reward = result.reward
+            info = dict(result.info) if result.info is not None else {}
+        elif isinstance(result, tuple) and len(result) == 2:
+            reward, metadata = result
+            if metadata is None:
+                info = {}
+            elif isinstance(metadata, Mapping):
+                info = dict(metadata)
+            else:
+                info = dict(metadata)
+        else:
+            reward = result  # type: ignore[assignment]
+            info = {}
+
+        reward = float(reward)
+        return reward, info

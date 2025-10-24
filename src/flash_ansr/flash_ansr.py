@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple
+from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Optional
 import warnings
 
 import numpy as np
@@ -311,28 +311,30 @@ class FlashANSR(BaseEstimator):
                 x_np = data[..., :self.n_variables].detach().cpu().numpy()
                 y_np = data[..., self.n_variables:].detach().cpu().numpy()
 
-                value_cache: dict[Tuple[int, ...], float] = {}
+                value_cache: dict[Tuple[int, ...], tuple[float, dict[str, Any]]] = {}
                 refiner_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
 
                 y_var = float(np.var(y_np)) if y_np.size > 1 else float(np.nan)
 
-                def value_fn(tokens: Tuple[int, ...]) -> float:
+                def value_fn(tokens: Tuple[int, ...]) -> tuple[float, dict[str, Any]]:
                     if tokens in value_cache:
+                        return value_cache[tokens]
+
+                    def cache_and_return(reward_value: float, metadata: Optional[dict[str, Any]] = None) -> tuple[float, dict[str, Any]]:
+                        info = dict(metadata) if metadata is not None else {}
+                        value_cache[tokens] = (reward_value, info)
                         return value_cache[tokens]
 
                     try:
                         expression_tokens, _, _ = self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(list(tokens))
                     except ValueError:
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': len(tokens), 'log_fvu': float('nan')})
 
                     expression_decoded = self.tokenizer.decode(expression_tokens, special_tokens='<constant>')
+                    expression_length = len(expression_decoded)
 
                     if not self.simplipy_engine.is_valid(expression_decoded):
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
 
                     try:
                         refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
@@ -345,33 +347,30 @@ class FlashANSR(BaseEstimator):
                             p0_noise_kwargs=self.refiner_p0_noise_kwargs,
                             converge_error='ignore')
                     except ConvergenceError:
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
                     except Exception:
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
 
                     if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
 
                     loss = refiner._all_constants_values[0][-1]
                     if np.isnan(loss):
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
 
                     fvu = self._compute_fvu(float(loss), y_np.shape[0], y_var)
                     if not np.isfinite(fvu):
-                        reward = -config.invalid_penalty
-                        value_cache[tokens] = reward
-                        return reward
+                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
 
                     score = self._score_from_fvu(fvu, len(expression_decoded), self.parsimony)
                     reward = -score
+                    log_fvu = float(np.log10(max(float(fvu), self.FLOAT64_EPS)))
+
+                    metadata = {
+                        'fvu': float(fvu),
+                        'log_fvu': log_fvu,
+                        'length': expression_length,
+                    }
 
                     constantified_tokens = tuple(self.flash_ansr_transformer.tokenizer.constantify_expression(list(tokens)))
 
@@ -379,13 +378,13 @@ class FlashANSR(BaseEstimator):
                         'refiner': refiner,
                         'score': score,
                         'fvu': fvu,
+                        'log_fvu': log_fvu,
                         'loss': float(loss),
                         'reward': reward,
                         'fits': copy.deepcopy(refiner._all_constants_values),
                     }
 
-                    value_cache[tokens] = reward
-                    return reward
+                    return cache_and_return(reward, metadata)
 
                 beams, log_probs, completed, rewards = self.flash_ansr_transformer.mcts_decode(
                     data=data,
