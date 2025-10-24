@@ -469,7 +469,19 @@ class FlashANSRModel(nn.Module):
 
         for tokens, reward, log_prob in completions:
             seq = list(tokens)
-            constantified = self.tokenizer.constantify_expression(seq)
+            simplified_seq = seq
+
+            try:
+                expression_tokens, before, after = self.tokenizer.extract_expression_from_beam(seq)
+            except ValueError:
+                expression_tokens = None
+            else:
+                decoded_expression = self.tokenizer.decode(expression_tokens, special_tokens='<constant>')
+                if self.simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
+                    simplified_expression = self.simplipy_engine.simplify(decoded_expression, max_pattern_length=4)
+                    simplified_seq = before + self.tokenizer.encode(simplified_expression) + after
+
+            constantified = self.tokenizer.constantify_expression(simplified_seq)
             sequences.append(constantified)  # type: ignore[arg-type]
             log_probs.append(float(log_prob))
             rewards.append(float(reward))

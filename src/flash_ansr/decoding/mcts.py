@@ -168,7 +168,6 @@ class MonteCarloTreeSearch:
             total=self.config.simulations,
             desc=progress_desc or "MCTS decode",
             dynamic_ncols=True,
-            leave=False,
             disable=not progress,
         ) if progress else None
 
@@ -469,14 +468,7 @@ class MonteCarloTreeSearch:
             return
 
         best_reward = self._best_completion_reward()
-        postfix: Dict[str, Any] = {
-            "completed": len(self._completions),
-        }
-        if self.root is not None:
-            postfix["root_visits"] = self.root.visits
-
-        if math.isfinite(best_reward):
-            postfix["best_reward"] = f"{best_reward:.3f}"
+        postfix: Dict[str, Any] = {"best_reward": f"{best_reward:.3f}"}
 
         pbar.update(1)
         pbar.set_postfix(postfix, refresh=False)

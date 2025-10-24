@@ -519,33 +519,6 @@ class FlashANSR(BaseEstimator):
                         if self.numeric_head:
                             raise NotImplementedError("Numeric head is not yet implemented")
 
-                        cache_entry = self._mcts_cache.get(tuple(raw_beam))
-                        if cache_entry is not None:
-                            cached_refiner = copy.deepcopy(cache_entry['refiner'])
-                            cached_fits = copy.deepcopy(cache_entry.get('fits', []))
-                            cached_fvu = cache_entry.get('fvu', np.nan)
-                            cached_score = cache_entry.get('score', np.nan)
-
-                            if not cached_refiner.valid_fit or not cached_fits:
-                                continue
-
-                            self._results.append({
-                                'log_prob': log_prob,
-                                'fvu': cached_fvu,
-                                'score': cached_score,
-                                'expression': beam_decoded,
-                                'complexity': len(beam_decoded),
-                                'target_complexity': complexity,
-                                'numeric_prediction': numeric_prediction,
-                                'raw_beam': raw_beam,
-                                'beam': beam,    # type: ignore
-                                'raw_beam_decoded': raw_beam_decoded,
-                                'function': cached_refiner.expression_lambda,
-                                'refiner': cached_refiner,
-                                'fits': cached_fits,
-                            })
-                            continue
-
                         try:
                             refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
                                 expression=beam_decoded,
