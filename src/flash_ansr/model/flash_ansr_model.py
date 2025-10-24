@@ -1,3 +1,4 @@
+import heapq
 import os
 import warnings
 from typing import Any, Callable, Literal, Optional, Tuple, TypeAlias
@@ -233,128 +234,190 @@ class FlashANSRModel(nn.Module):
         # Removed numeric head as it is not present in the new Decoder structure
         return logits
 
-    def beam_search(self, data: torch.Tensor, beam_width: int = 4, max_len: int = 100, mini_batch_size: int = 128, equivalence_pruning: bool = True, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+    def beam_search(
+        self,
+        data: torch.Tensor,
+        beam_width: int = 4,
+        max_len: int = 100,
+        mini_batch_size: int = 128,
+        equivalence_pruning: bool = True,
+        complexity: int | float | None = None,
+        verbose: bool = False,
+        limit_expansions: bool = True,
+    ) -> tuple[list[list[int]], list[float], list[bool]]:
         if complexity is None:
             initial_beam, input_num = [self.tokenizer['<bos>']], None
         else:
             initial_beam, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
 
+        if isinstance(input_num, torch.Tensor):
+            input_num = input_num.tolist()
+
         # Step 1: Initialize the beam with the initial input sequence
         beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
-        completed_sequences = []  # store completed sequences here
+        completed_sequences_heap: list[tuple[float, tuple[int, ...]]] = []
+        completed_sequences_scores: dict[tuple[int, ...], float] = {}
+        simplify_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
         n_pruned = 0
 
         memory = self._create_memory(data)
 
+        eos_token_id = self.tokenizer['<eos>']
+        pad_token_id = self.tokenizer['<pad>']
+
         pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})")
+
+        def register_completed_sequence(seq_tuple: tuple[int, ...], score: float) -> None:
+            nonlocal n_pruned
+
+            existing_score = completed_sequences_scores.get(seq_tuple)
+            if existing_score is not None and score <= existing_score:
+                n_pruned += 1
+                return
+
+            completed_sequences_scores[seq_tuple] = score
+            heapq.heappush(completed_sequences_heap, (score, seq_tuple))
+
+            while len(completed_sequences_scores) > beam_width:
+                prune_score, prune_key = heapq.heappop(completed_sequences_heap)
+                current_score = completed_sequences_scores.get(prune_key)
+                if current_score is None:
+                    continue
+                if current_score != prune_score:
+                    continue
+                del completed_sequences_scores[prune_key]
+                n_pruned += 1
+                break
 
         with torch.no_grad():
             for _ in range(max_len):
-                all_sequences = []
-                all_scores = []
-                # Prepare batched sequences and their scores
-                for seq, score in beams:
-                    if seq[-1] == self.tokenizer['<eos>']:
-                        completed_sequences.append((seq, score))
-                        continue  # Don't expand this sequence further
-                    all_sequences.append(seq)
-                    all_scores.append(score)
+                active_sequences: list[list[int]] = []
+                active_scores: list[float] = []
 
-                if len(all_sequences) == 0:
+                for seq, score in beams:
+                    if seq[-1] == eos_token_id:
+                        register_completed_sequence(tuple(seq), score)
+                        continue  # Don't expand this sequence further
+                    active_sequences.append(seq)
+                    active_scores.append(score)
+
+                if len(active_sequences) == 0:
                     break  # All sequences completed
 
-                # Step 2: Pad the sequences to ensure they all have the same length
-                max_seq_len = max(len(seq) for seq in all_sequences)
-                input_ids_padded = [seq + [self.tokenizer['<pad>']] * (max_seq_len - len(seq)) for seq in all_sequences]
-                input_num_padded = input_num + [torch.nan] * (max_seq_len - len(input_num)) if input_num is not None else None
+                max_seq_len = max(len(seq) for seq in active_sequences)
+                input_ids_padded = [seq + [pad_token_id] * (max_seq_len - len(seq)) for seq in active_sequences]
 
-                # Convert sequences and scores to tensors
-                input_ids_tensor = torch.tensor(input_ids_padded, device=data.device)
-                input_num_tensor = torch.tensor(input_num_padded, device=data.device).unsqueeze(-1) if input_num is not None else None
+                if input_num is not None:
+                    input_num_padded = input_num + [torch.nan] * (max_seq_len - len(input_num))
+                    base_input_num = torch.tensor(input_num_padded, device=data.device, dtype=torch.float32).unsqueeze(0)
+                    input_num_tensor = base_input_num.repeat(len(active_sequences), 1).unsqueeze(-1)
+                else:
+                    input_num_tensor = None
 
-                # Step 3: Run forward pass in mini-batches
-                all_next_token_logits = []  # Collect logits from all mini-batches
-                for start_idx in range(0, len(all_sequences), mini_batch_size):
-                    # Extract the mini-batch
-                    end_idx = min(start_idx + mini_batch_size, len(all_sequences))
+                input_ids_tensor = torch.tensor(input_ids_padded, device=data.device, dtype=torch.long)
+
+                all_next_token_logits: list[torch.Tensor] = []
+                for start_idx in range(0, len(active_sequences), mini_batch_size):
+                    end_idx = min(start_idx + mini_batch_size, len(active_sequences))
                     mini_batch = input_ids_tensor[start_idx:end_idx]
 
-                    # Forward pass for the mini-batch
-                    logits = self.forward(mini_batch, None, input_num=input_num_tensor, memory=memory)
+                    logits = self.forward(mini_batch, None, input_num=input_num_tensor[start_idx:end_idx] if input_num_tensor is not None else None, memory=memory)
 
-                    # Collect the logits for the next token
                     all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)
 
-                # Concatenate logits from all mini-batches into one tensor
-                next_token_logits = torch.cat(all_next_token_logits, dim=0)  # Shape: (total_beams, vocab_size)
-                next_token_log_probs = torch.log_softmax(next_token_logits, dim=-1)  # Shape: (total_beams, vocab_size)
+                next_token_logits = torch.cat(all_next_token_logits, dim=0)
+                next_token_log_probs = torch.log_softmax(next_token_logits, dim=-1)
 
-                # Step 4: Collect all possible next beams
-                all_candidates = []
+                vocab_size = next_token_log_probs.size(-1)
 
-                for i, (seq, score) in enumerate(zip(all_sequences, all_scores)):
-                    # For each token, create a new beam
-                    for token in range(next_token_log_probs.shape[1]):
-                        log_prob = next_token_log_probs[i, token].item()
-
-                        new_seq = seq + [token]
-                        new_score = score + log_prob
-                        all_candidates.append((new_seq, new_score))
-
-                # Step 5: Sort all candidates by score (highest scores first)
-                all_candidates = sorted(all_candidates, key=lambda x: x[1], reverse=True)
-
-                # Step 6: Simplify completed sequences and filter out duplicates
-                if equivalence_pruning:
-                    all_candidates_unique: list[tuple] = []
-                    for candidate in all_candidates:
-                        if candidate[0][-1] == self.tokenizer['<eos>']:
-                            candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(candidate[0])
-                            candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
-
-                            if self.simplipy_engine.is_valid(candidate_expression_decoded) and len(candidate_expression_decoded) > 1:
-                                candidate_simplified = self.tokenizer.encode(self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=4))
-
-                                # Add back everything before <bos> and after <eos>
-                                candidate_simplified = before + candidate_simplified + after
-
-                                if candidate_simplified not in [seq for seq, _ in all_candidates_unique] and candidate_simplified not in [seq for seq, _ in completed_sequences]:
-                                    all_candidates_unique.append((candidate_simplified, candidate[1]))
-                                else:
-                                    n_pruned += 1
-                        else:
-                            all_candidates_unique.append(candidate)
-
-                    # Step 7: Select the top 'beam_size' candidates to be the new beams
-                    beams = all_candidates_unique[:beam_width]
-
+                if limit_expansions:
+                    expansion_factor = 2 if equivalence_pruning else 1
+                    expansion_per_beam = max(1, min(vocab_size, beam_width * expansion_factor))
+                    top_log_probs, top_token_ids = torch.topk(next_token_log_probs, k=expansion_per_beam, dim=-1)
                 else:
-                    beams = all_candidates[:beam_width]
+                    expansion_per_beam = vocab_size
+                    top_log_probs = next_token_log_probs
+                    top_token_ids = torch.arange(vocab_size, device=next_token_log_probs.device, dtype=torch.long).unsqueeze(0).expand(next_token_log_probs.size(0), -1)
 
-                for beam, score in beams:
-                    if beam[0] != self.tokenizer['<bos>']:
-                        raise ValueError(f"Beam must start with <bos> token. Got {beam}.")
+                active_scores_tensor = torch.tensor(active_scores, device=data.device)
+                candidate_scores = active_scores_tensor.unsqueeze(-1) + top_log_probs
 
-                # If no beams are left to expand, break early
+                flat_scores = candidate_scores.reshape(-1)
+                flat_parent_indices = torch.arange(len(active_sequences), device=data.device).repeat_interleave(expansion_per_beam)
+                flat_token_indices = top_token_ids.reshape(-1)
+
+                sorted_scores, sorted_indices = torch.sort(flat_scores, descending=True)
+
+                next_beams: list[tuple[list[int], float]] = []
+                next_beam_set: set[tuple[int, ...]] = set()
+
+                for rank_idx in range(sorted_indices.numel()):
+                    parent_idx = int(flat_parent_indices[sorted_indices[rank_idx]])
+                    token_id = int(flat_token_indices[sorted_indices[rank_idx]])
+                    base_seq = active_sequences[parent_idx]
+                    new_seq = base_seq + [token_id]
+                    new_score = float(sorted_scores[rank_idx].item())
+
+                    if token_id == eos_token_id:
+                        if equivalence_pruning:
+                            candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
+                            expr_key = tuple(candidate_expression)
+
+                            simplified_tuple = simplify_cache.get(expr_key)
+                            if simplified_tuple is None:
+                                candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
+
+                                if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
+                                    n_pruned += 1
+                                    continue
+
+                                simplified_tokens = self.tokenizer.encode(
+                                    self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=4)
+                                )
+                                simplified_tuple = tuple(before + simplified_tokens + after)
+                                simplify_cache[expr_key] = simplified_tuple
+                        else:
+                            simplified_tuple = tuple(new_seq)
+
+                        register_completed_sequence(simplified_tuple, new_score)
+                        continue
+                    else:
+                        seq_tuple = tuple(new_seq)
+                        if equivalence_pruning:
+                            if seq_tuple in next_beam_set:
+                                n_pruned += 1
+                                continue
+                            next_beam_set.add(seq_tuple)
+
+                        next_beams.append((new_seq, new_score))
+
+                    if len(next_beams) >= beam_width:
+                        break
+
+                beams = next_beams[:beam_width]
+
                 if not beams:
                     break
 
-                pbar.set_postfix({'completed': len(completed_sequences), 'pruned': n_pruned})
+                pbar.set_postfix({'completed': len(completed_sequences_scores), 'pruned': n_pruned})
                 pbar.update(1)
 
         # Step 7: Combine completed sequences with current beams (in case they are incomplete)
-        completed_sequences.extend(beams)
+        combined_sequences: list[tuple[list[int], float]] = [
+            (list(seq_tuple), score) for seq_tuple, score in completed_sequences_scores.items()
+        ]
+        combined_sequences.extend(beams)
 
         # Step 7.4: Constantify the expressions in completed sequences
-        for i, (seq, score) in enumerate(completed_sequences):
+        for i, (seq, score) in enumerate(combined_sequences):
             constantified_seq = self.tokenizer.constantify_expression(seq)
-            completed_sequences[i] = (constantified_seq, score)
+            combined_sequences[i] = (constantified_seq, score)
 
         # Step 8: Sort all sequences by score (highest scores first)
-        completed_sequences = sorted(completed_sequences, key=lambda x: x[1], reverse=True)
+        combined_sequences = sorted(combined_sequences, key=lambda x: x[1], reverse=True)
 
         # Step 9: Return the top 'beam_size' sequences
-        return [seq for seq, _ in completed_sequences[:beam_width]], [score for _, score in completed_sequences[:beam_width]], [True] * len(completed_sequences[:beam_width])
+        return [seq for seq, _ in combined_sequences[:beam_width]], [score for _, score in combined_sequences[:beam_width]], [True] * len(combined_sequences[:beam_width])
 
     def mcts_decode(
         self,

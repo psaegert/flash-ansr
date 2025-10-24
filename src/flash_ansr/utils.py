@@ -305,6 +305,8 @@ class GenerationConfig(Mapping[str, Any]):
                 vectorised forward passes.
             - ``equivalence_pruning`` (True): if enabled, simplified expressions
                 that canonicalise to duplicates are pruned from the beam.
+            - ``limit_expansions`` (True): cap per-beam expansions to the
+                highest-scoring tokens (set ``False`` to examine every token).
 
     - ``softmax_sampling`` draws multiple candidates via stochastic decoding.
             - ``choices`` (32): how many independent samples to draw.
@@ -359,7 +361,8 @@ class GenerationConfig(Mapping[str, Any]):
                 'beam_width': 32,
                 'max_len': 32,
                 'mini_batch_size': 128,
-                'equivalence_pruning': True
+                'equivalence_pruning': True,
+                'limit_expansions': True
             },
             'softmax_sampling': {
                 'choices': 32,
