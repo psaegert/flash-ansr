@@ -127,13 +127,30 @@ class Refiner:
         # Since the SimpliPyEngine is already initialized, we can use the same global scope
         self.expression_lambda = self.simplipy_engine.code_to_lambda(self.expression_code)
 
-        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float:
+        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> np.ndarray:
             if len(constants) == 0:
                 y_pred = self.expression_lambda(*X.T)
             else:
                 y_pred = self.expression_lambda(*X.T, *constants)
 
-            return y_pred.flatten()
+            n_samples = X.shape[0]
+
+            if isinstance(y_pred, torch.Tensor):
+                y_pred = y_pred.detach().cpu().numpy()
+
+            if isinstance(y_pred, np.ndarray):
+                if y_pred.ndim == 0:
+                    y_pred = np.full((n_samples,), float(y_pred))
+                else:
+                    y_pred = y_pred.reshape(-1)
+                    if y_pred.size == 1 and n_samples > 1:
+                        y_pred = np.full((n_samples,), float(y_pred[0]))
+                    elif y_pred.size != n_samples:
+                        y_pred = np.resize(y_pred, n_samples)
+            else:
+                y_pred = np.full((n_samples,), y_pred)
+
+            return np.asarray(y_pred, dtype=float)
 
         # Forget all previous results
         self._all_constants_values = []
