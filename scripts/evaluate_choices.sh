@@ -1,19 +1,23 @@
 # !/bin/bash
 
-if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 <model> <config_dir> <test_set>"
+if [ "$#" -ne 4 ]; then
+    echo "Usage: $0 <model> <config_dir> <test_set> <max_choices>"
     exit 1
 fi
 
 MODEL=$1
 CONFIG_DIR=$2
 TEST_SET=$3
+MAX_CHOICES=$4
 
 choices_values=(
     1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384
 )
 
 for choices in "${choices_values[@]}"; do
+    if [ "$choices" -gt "$MAX_CHOICES" ]; then
+        break
+    fi
     flash_ansr evaluate \
         -c "{{ROOT}}/configs/evaluation/${CONFIG_DIR}/evaluation_choices_${choices}.yaml" \
         -m "{{ROOT}}/models/ansr-models/${MODEL}" \
