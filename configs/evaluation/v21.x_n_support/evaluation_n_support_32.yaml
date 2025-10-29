@@ -1,0 +1,25 @@
+n_support: 32
+
+n_restarts: 8
+numeric_head: false
+refiner_method: 'curve_fit_lm'
+refiner_p0_noise: 'normal'
+refiner_p0_noise_kwargs:
+  loc: 0.0
+  scale: 5
+parsimony: 0.05
+
+generation_config:
+  method: 'softmax_sampling'
+  kwargs:
+    choices: 128
+    top_k: 0
+    top_p: 1
+    max_len: 32
+    mini_batch_size: 128
+    temperature: 1
+    valid_only: true
+    simplify: true
+    unique: true
+
+device: cuda

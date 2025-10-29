@@ -432,6 +432,8 @@ class FlashANSR(BaseEstimator):
         ValueError
             If ``y`` has more than one output dimension or cannot be reshaped.
         """
+        # TODO: Support lists
+        # TODO: Support 0-d and 1-d tensors
 
         if len(X.shape) == 1:
             X = X.reshape(-1, 1)
@@ -559,6 +561,8 @@ class FlashANSR(BaseEstimator):
                         except ConvergenceError:
                             if converge_error == 'print':
                                 print(f"Failed to converge for beam: {beam_decoded}")
+                            elif converge_error == 'raise':
+                                raise
 
             self.compile_results(self.parsimony)
 
@@ -634,6 +638,9 @@ class FlashANSR(BaseEstimator):
         ValueError
             If the model has not been fitted before prediction.
         """
+        # TODO: Support lists
+        # TODO: Support 0-d and 1-d tensors
+
         X = self._truncate_input(X)
 
         if isinstance(X, pd.DataFrame):

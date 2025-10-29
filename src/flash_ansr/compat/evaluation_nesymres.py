@@ -1,7 +1,8 @@
-from typing import Any, Callable
-from collections import defaultdict
-import warnings
+import functools
 import time
+import warnings
+from collections import defaultdict
+from typing import Any, Callable
 
 import torch
 import numpy as np
@@ -20,9 +21,13 @@ class NeSymReSEvaluation():
     def __init__(
             self,
             n_support: int | None = None,
+            noise_level: float = 0.0,
+            beam_width: int | None = None,
             device: str = 'cpu') -> None:
 
         self.n_support = n_support
+        self.noise_level = noise_level
+        self.beam_width = beam_width
 
         self.device = device
 
@@ -35,6 +40,8 @@ class NeSymReSEvaluation():
 
         return cls(
             n_support=config_["n_support"],
+            noise_level=config_.get("noise_level", 0.0),
+            beam_width=config_.get("beam_width"),
             device=config_["device"]
         )
 
@@ -48,6 +55,17 @@ class NeSymReSEvaluation():
             verbose: bool = True) -> dict[str, Any]:
 
         model.to(self.device).eval()
+
+        if self.beam_width is not None:
+            cfg_params = None
+            if isinstance(fitfunc, functools.partial):
+                keywords = fitfunc.keywords or {}
+                cfg_params = keywords.get('cfg_params')
+            elif hasattr(fitfunc, 'cfg_params'):
+                cfg_params = getattr(fitfunc, 'cfg_params')
+
+            if cfg_params is not None and hasattr(cfg_params, 'beam_size'):
+                cfg_params.beam_size = self.beam_width
 
         results_dict = defaultdict(list)
 
@@ -83,15 +101,28 @@ class NeSymReSEvaluation():
                     warnings.warn('n_support evaluated to zero. Skipping batch.')
                     continue
 
+                if self.noise_level > 0.0:
+                    y_tensors_noisy = batch['y_tensors'] + (
+                        self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors'])
+                    )
+                    if not torch.all(torch.isfinite(y_tensors_noisy)):
+                        warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
+                        continue
+                else:
+                    y_tensors_noisy = batch['y_tensors']
+
                 x_numpy = batch['x_tensors'].cpu().numpy()[0]
                 y_numpy = batch['y_tensors'].cpu().numpy()[0]
+                y_noisy_numpy = y_tensors_noisy.cpu().numpy()[0]
 
                 X = x_numpy[:n_support]
                 y = y_numpy[:n_support]
-                y_fit = y.reshape(-1)
+                y_noisy = y_noisy_numpy[:n_support]
+                y_fit = y_noisy.reshape(-1)
 
                 X_val = x_numpy[n_support:]
                 y_val = y_numpy[n_support:]
+                y_noisy_val = y_noisy_numpy[n_support:]
 
                 labels = batch['labels'][0].clone()
                 labels_decoded = dataset.tokenizer.decode(labels.tolist(), special_tokens='<constant>')
@@ -105,13 +136,15 @@ class NeSymReSEvaluation():
                     'constants': [c.cpu().numpy() for c in batch['constants'][0]],
                     'x': X,
                     'y': y,
-                    'y_noisy': y,
+                    'y_noisy': y_noisy,
                     'x_val': X_val,
                     'y_val': y_val,
-                    'y_noisy_val': y_val,
+                    'y_noisy_val': y_noisy_val,
                     'n_support': n_support,
                     'labels_decoded': labels_decoded,
                     'parsimony': getattr(model, 'parsimony', None),
+                    'beam_width': self.beam_width,
+                    'noise_level': self.noise_level,
                     'fit_time': None,
                     'predicted_expression': None,
                     'predicted_expression_prefix': None,

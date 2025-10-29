@@ -458,6 +458,7 @@ class FlashANSRDataset:
                                         'skeleton': skeleton,
                                         'skeleton_hash': skeleton_hash,
                                         'expression': substitude_constants(skeleton, values=literals, inplace=False),
+                                        'n_support': int(x_support.shape[0]),
                                     }
                                 })
                                 sample_found = True  # Success, move to next sample for this skeleton

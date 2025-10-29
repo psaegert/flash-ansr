@@ -149,7 +149,7 @@ class PySREvaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
-        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2
+        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2 if self.n_support is None else self.n_support * 2
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -177,6 +177,10 @@ class PySREvaluation():
             for batch_id, batch in enumerate(iterator):
                 batch = dataset.collate(batch, device='cpu')
 
+                # Remove padding (not needed for single sample batches, and will interfere with fitting)
+                batch['x_tensors'] = batch['x_tensors'][0][:batch['n_support'][0]]
+                batch['y_tensors'] = batch['y_tensors'][0][:batch['n_support'][0]]
+
                 n_support = self.n_support
                 if n_support is None:
                     n_support = batch['x_tensors'].shape[1] // 2
@@ -195,9 +199,9 @@ class PySREvaluation():
                 else:
                     batch['y_tensors_noisy'] = batch['y_tensors']
 
-                x_numpy = batch['x_tensors'].cpu().numpy()[0]
-                y_numpy = batch['y_tensors'].cpu().numpy()[0]
-                y_noisy_numpy = batch['y_tensors_noisy'].cpu().numpy()[0]
+                x_numpy = batch['x_tensors'].cpu().numpy()
+                y_numpy = batch['y_tensors'].cpu().numpy()
+                y_noisy_numpy = batch['y_tensors_noisy'].cpu().numpy()
 
                 X = x_numpy[:n_support]
                 y = y_noisy_numpy[:n_support]
@@ -293,9 +297,6 @@ class PySREvaluation():
                 time.sleep(0.1)  # For good measure
 
                 if save_every is not None and (batch_id + 1) % save_every == 0:
-                    if verbose:
-                        print(f"Saving intermediate results after {batch_id + 1} batches ...")
-
                     with open(substitute_root_path(output_file), 'wb') as f:
                         pickle.dump(results_dict, f)
 
