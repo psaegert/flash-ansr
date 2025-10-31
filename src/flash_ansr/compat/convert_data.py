@@ -96,7 +96,7 @@ class SOOSEParser(TestSetParaser):
         n_too_many_variables = 0
 
         expression_dict = {}
-        for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOOSE Data'):
+        for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOOSE Data', smoothing=0.0):
             # Parse and simplify
             prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
 
@@ -160,7 +160,7 @@ class FeynmanParser(TestSetParaser):
         n_too_many_variables = 0
 
         expression_dict = {}
-        for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Feynman Data', total=len(test_set_df)):
+        for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Feynman Data', total=len(test_set_df), smoothing=0.0):
             if row['# variables'] > len(base_skeleton_pool.variables):
                 n_too_many_variables += 1
                 continue
@@ -230,7 +230,7 @@ class NguyenParser(TestSetParaser):
 
         expression_dict = {}
 
-        for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Nguyen Data', total=len(test_set_df)):
+        for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Nguyen Data', total=len(test_set_df), smoothing=0.0):
             expression = str(row['Equation'])
 
             # Parse and simplify

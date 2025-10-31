@@ -181,6 +181,7 @@ class MonteCarloTreeSearch:
             desc=progress_desc or "MCTS decode",
             dynamic_ncols=True,
             disable=not progress,
+            smoothing=0.0
         ) if progress else None
 
         try:

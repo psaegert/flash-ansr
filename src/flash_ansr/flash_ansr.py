@@ -513,7 +513,7 @@ class FlashANSR(BaseEstimator):
                 beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
                 # Fit the refiner to each beam
-                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
+                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams), smoothing=0.0):
                     if self.simplipy_engine.is_valid(beam_decoded):
                         numeric_prediction = None
 

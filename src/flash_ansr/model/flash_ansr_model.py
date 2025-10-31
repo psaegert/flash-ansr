@@ -265,7 +265,7 @@ class FlashANSRModel(nn.Module):
         eos_token_id = self.tokenizer['<eos>']
         pad_token_id = self.tokenizer['<pad>']
 
-        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})")
+        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})", smoothing=0.0)
 
         def register_completed_sequence(seq_tuple: tuple[int, ...], score: float) -> None:
             nonlocal n_pruned
@@ -587,7 +587,7 @@ class FlashANSRModel(nn.Module):
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
         with torch.no_grad():
-            pbar = tqdm(total=max_len - 1, disable=not verbose, desc="Generating tokens")
+            pbar = tqdm(total=max_len - 1, disable=not verbose, desc="Generating tokens", smoothing=0.0)
             for current_length in range(1, max_len):
                 if is_finished.all():
                     break
@@ -648,7 +648,7 @@ class FlashANSRModel(nn.Module):
         filtered_is_valid = []
         seen_expressions = set()
 
-        pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing")
+        pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing", smoothing=0.0)
         for seq, score in pbar_post:
             try:
                 # Assuming these methods exist on your tokenizer/class

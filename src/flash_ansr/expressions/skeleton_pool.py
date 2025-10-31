@@ -288,7 +288,7 @@ class SkeletonPool:
             A dictionary mapping skeletons to their compiled codes.
         '''
         codes = {}
-        for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose):
+        for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose, smoothing=0.0):
             # Codify the Expression
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
             prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
@@ -788,7 +788,7 @@ class SkeletonPool:
         n_skipped = 0
         n_created = len(self.skeletons)
 
-        pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
+        pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose, smoothing=0.0)
 
         while n_created < size:
             try:

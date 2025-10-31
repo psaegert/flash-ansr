@@ -1,0 +1,4 @@
+# skeleton_pool: "{{ROOT}}/data/ansr-data/v22.x/skeleton_pool_val/"
+skeleton_pool: './skeleton_pool_val.yaml'
+tokenizer: './tokenizer.yaml'
+padding: 'zero'

@@ -331,7 +331,7 @@ class GenerationConfig(Mapping[str, Any]):
             - ``simulations`` (256): total simulation rollouts executed from the
                 root.
             - ``uct_c`` (1.4): exploration constant in the UCT score balancing
-                exploitation and exploration.
+                exploitation (uct_c = 0) and exploration (large uct_c).
             - ``expansion_top_k`` (32): how many highest-probability children to
                 expand per node.
             - ``max_depth`` (64): maximum token depth before the search or rollout

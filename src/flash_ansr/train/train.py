@@ -454,7 +454,7 @@ class Trainer:
             else:
                 steps = size // batch_size
 
-            pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating")
+            pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating", smoothing=0.0)
             for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=preprocess):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
