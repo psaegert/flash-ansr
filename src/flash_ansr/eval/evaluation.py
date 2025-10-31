@@ -175,7 +175,10 @@ class Evaluation():
             holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=verbose)
 
         if self.preprocess:
-            dataset.preprocessor = FlashASNRPreprocessor(model.simplipy_engine, format_probs={'complexity': 1.0})
+            dataset.preprocessor = FlashASNRPreprocessor(
+                simplipy_engine=model.simplipy_engine,
+                tokenizer=model.tokenizer,
+            )
 
         max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2 if self.n_support is None else self.n_support * 2
 

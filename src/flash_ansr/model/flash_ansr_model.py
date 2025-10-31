@@ -244,17 +244,23 @@ class FlashANSRModel(nn.Module):
         complexity: int | float | None = None,
         verbose: bool = False,
         limit_expansions: bool = True,
+        *,
+        initial_tokens: list[int] | None = None,
+        input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
-        if complexity is None:
-            initial_beam, input_num = [self.tokenizer['<bos>']], None
+        if initial_tokens is not None:
+            base_tokens = list(initial_tokens)
+            base_input_num = list(input_num) if input_num is not None else None
+        elif complexity is None:
+            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
         else:
-            initial_beam, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+            base_tokens, base_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
 
-        if isinstance(input_num, torch.Tensor):
-            input_num = input_num.tolist()
+        if isinstance(base_input_num, torch.Tensor):
+            base_input_num = base_input_num.tolist()
 
         # Step 1: Initialize the beam with the initial input sequence
-        beams = [(initial_beam, 0.0)]  # each beam is a tuple: (sequence, score)
+        beams = [(base_tokens, 0.0)]  # each beam is a tuple: (sequence, score)
         completed_sequences_heap: list[tuple[float, tuple[int, ...]]] = []
         completed_sequences_scores: dict[tuple[int, ...], float] = {}
         simplify_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
@@ -307,10 +313,10 @@ class FlashANSRModel(nn.Module):
                 max_seq_len = max(len(seq) for seq in active_sequences)
                 input_ids_padded = [seq + [pad_token_id] * (max_seq_len - len(seq)) for seq in active_sequences]
 
-                if input_num is not None:
-                    input_num_padded = input_num + [torch.nan] * (max_seq_len - len(input_num))
-                    base_input_num = torch.tensor(input_num_padded, device=data.device, dtype=torch.float32).unsqueeze(0)
-                    input_num_tensor = base_input_num.repeat(len(active_sequences), 1).unsqueeze(-1)
+                if base_input_num is not None:
+                    input_num_padded = base_input_num + [torch.nan] * (max_seq_len - len(base_input_num))
+                    base_input_num_tensor = torch.tensor(input_num_padded, device=data.device, dtype=torch.float32).unsqueeze(0)
+                    input_num_tensor = base_input_num_tensor.repeat(len(active_sequences), 1).unsqueeze(-1)
                 else:
                     input_num_tensor = None
 
@@ -430,17 +436,22 @@ class FlashANSRModel(nn.Module):
         invalid_sequence_fn: Optional[Callable[[Tuple[int, ...]], bool]] = None,
         completion_sort: str = "reward",
         verbose: bool = False,
+        *,
+        initial_tokens: list[int] | None = None,
+        input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Decode expressions using Monte Carlo Tree Search."""
 
         device = data.device
 
-        if complexity is None:
-            initial_tokens, input_num = [self.tokenizer['<bos>']], None
+        if initial_tokens is not None:
+            base_tokens = list(initial_tokens)
+            base_input_num = list(input_num) if input_num is not None else None
+        elif complexity is None:
+            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
         else:
-            initial_tokens, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
-
-        base_input_num = input_num[:] if input_num is not None else None
+            base_tokens, formatted_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+            base_input_num = formatted_input_num[:] if formatted_input_num is not None else None
 
         memory = self._create_memory(data)
 
@@ -507,7 +518,7 @@ class FlashANSRModel(nn.Module):
 
         with torch.no_grad():
             mcts.run(
-                initial_tokens,
+                base_tokens,
                 initial_state=None,
                 progress=verbose,
                 progress_desc=f"MCTS decode ({config.simulations} sims)",
@@ -523,7 +534,7 @@ class FlashANSRModel(nn.Module):
                     fallback_tokens.append(eos_token_id)
                 completions = [(tuple(fallback_tokens), 0.0, best_child.log_prob)]
             except Exception:
-                fallback_tokens = initial_tokens + [eos_token_id]
+                fallback_tokens = base_tokens + [eos_token_id]
                 completions = [(tuple(fallback_tokens), 0.0, 0.0)]
 
         sequences: list[list[int]] = []
@@ -562,57 +573,94 @@ class FlashANSRModel(nn.Module):
         return sequences, log_probs, completed_flags, rewards
 
     def sample_top_kp(
-        self, data: torch.Tensor, choices: int = 10, top_k: int = 0, top_p: float = 1, max_len: int = 100,
-        mini_batch_size: int = 128, complexity: int | float | None = None,
-        temperature: float = 1.0, valid_only: bool = True, simplify: bool = True, unique: bool = True, verbose: bool = False
+        self,
+        data: torch.Tensor,
+        choices: int = 10,
+        top_k: int = 0,
+        top_p: float = 1,
+        max_len: int = 100,
+        mini_batch_size: int = 128,
+        complexity: int | float | None = None,
+        temperature: float = 1.0,
+        valid_only: bool = True,
+        simplify: bool = True,
+        unique: bool = True,
+        verbose: bool = False,
+        *,
+        initial_tokens: list[int] | None = None,
+        input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
 
         device = data.device
 
         # --- 1. Vectorized Initialization ---
-        if complexity is None:
-            initial_token, input_num = [self.tokenizer['<bos>']], None
+        if initial_tokens is not None:
+            base_tokens = list(initial_tokens)
+            base_input_num = list(input_num) if input_num is not None else None
+        elif complexity is None:
+            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
         else:
-            initial_token, input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+            base_tokens, formatted_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+            base_input_num = formatted_input_num[:] if formatted_input_num is not None else None
+
+        prefix_length = len(base_tokens)
+        if prefix_length > max_len:
+            raise ValueError(f"Initial token prefix length ({prefix_length}) exceeds max_len ({max_len}).")
 
         # Pre-allocate tensors on the target device
         sequences = torch.full((choices, max_len), self.tokenizer['<pad>'], device=device, dtype=torch.long)
-        sequences[:, 0] = initial_token[0]
+        if prefix_length > 0:
+            prefix_tensor = torch.tensor(base_tokens, device=device, dtype=torch.long)
+            sequences[:, :prefix_length] = prefix_tensor
 
         scores = torch.zeros(choices, device=device, dtype=torch.float)
         is_finished = torch.zeros(choices, device=device, dtype=torch.bool)
 
+        eos_token = self.tokenizer['<eos>']
+        if prefix_length > 0 and base_tokens[-1] == eos_token:
+            is_finished[:] = True
+
         memory = self._create_memory(data)
-        input_num_tensor = torch.tensor(input_num, device=device).unsqueeze(-1) if input_num is not None else None
+
+        def build_input_num_tensor(current_length: int, batch_size: int) -> torch.Tensor | None:
+            if base_input_num is None:
+                return None
+
+            if current_length <= len(base_input_num):
+                values = base_input_num[:current_length]
+            else:
+                values = base_input_num + [float('nan')] * (current_length - len(base_input_num))
+
+            tensor = torch.tensor(values, device=device, dtype=torch.float32).unsqueeze(0)
+            return tensor.repeat(batch_size, 1).unsqueeze(-1)
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
         with torch.no_grad():
-            pbar = tqdm(total=max_len - 1, disable=not verbose, desc="Generating tokens", smoothing=0.0)
-            for current_length in range(1, max_len):
+            total_steps = max(0, max_len - prefix_length)
+            pbar = tqdm(total=total_steps, disable=not verbose, desc="Generating tokens", smoothing=0.0)
+            for current_length in range(prefix_length, max_len):
                 if is_finished.all():
                     break
 
-                # Get indices of all sequences that are not yet finished
                 active_indices = (~is_finished).nonzero(as_tuple=True)[0]
+                if active_indices.numel() == 0:
+                    break
 
-                # Process active sequences in mini-batches to manage memory
                 for start_idx in range(0, len(active_indices), mini_batch_size):
                     batch_indices = active_indices[start_idx: start_idx + mini_batch_size]
 
-                    # Prepare input for the current batch
                     input_ids_tensor = sequences[batch_indices, :current_length]
+                    input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
 
-                    # Forward pass for the batch
                     logits = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
-                    next_token_logits = logits[:, -1, :]  # Shape: (batch_size, vocab_size)
+                    next_token_logits = logits[:, -1, :]
 
                     original_scores = torch.log_softmax(next_token_logits, dim=-1)
 
-                    # --- Filtering (top-k, top-p, temperature) ---
                     if top_k > 0:
                         top_k_val = min(top_k, next_token_logits.size(-1))
                         ignore_mask = next_token_logits < torch.topk(next_token_logits, top_k_val, dim=1)[0][..., -1, None]
-                        next_token_logits[ignore_mask] = -float('Inf')
+                        next_token_logits[ignore_mask] = -float('inf')
 
                     if temperature != 1.0:
                         next_token_logits /= temperature
@@ -624,34 +672,29 @@ class FlashANSRModel(nn.Module):
                         sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                         sorted_indices_to_remove[..., 0] = 0
                         indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                        next_token_logits[indices_to_remove] = -float('Inf')
+                        next_token_logits[indices_to_remove] = -float('inf')
 
-                    # Sample next tokens for the batch
                     probs = torch.softmax(next_token_logits, dim=-1)
                     sampled_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)
 
-                    # Update the main tensors with the results for the batch
                     sequences[batch_indices, current_length] = sampled_tokens
                     scores[batch_indices] += torch.gather(original_scores, 1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
-                    is_finished[batch_indices] |= (sampled_tokens == self.tokenizer['<eos>'])
+                    is_finished[batch_indices] |= (sampled_tokens == eos_token)
 
                 pbar.update(1)
             pbar.close()
 
-        # Move results to CPU for post-processing
         completed_sequences = sequences.cpu().tolist()
         completed_scores = scores.cpu().tolist()
 
-        # --- 3. Single-threaded Post-processing (same as original) ---
-        filtered_sequences = []
-        filtered_scores = []
-        filtered_is_valid = []
-        seen_expressions = set()
+        filtered_sequences: list[list[int]] = []
+        filtered_scores: list[float] = []
+        filtered_is_valid: list[bool] = []
+        seen_expressions: set[tuple[str, ...]] = set()
 
         pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing", smoothing=0.0)
         for seq, score in pbar_post:
             try:
-                # Assuming these methods exist on your tokenizer/class
                 encoded_expression, _, _ = self.tokenizer.extract_expression_from_beam(seq)
                 encoded_expression = self.tokenizer.constantify_expression(encoded_expression)
             except (ValueError, IndexError):
@@ -676,20 +719,18 @@ class FlashANSRModel(nn.Module):
                     seen_expressions.add(expression_tuple)
 
             elif not valid_only:
-                # Clean up the sequence to remove padding before appending
                 try:
-                    end_idx = seq.index(self.tokenizer['<eos>']) + 1
+                    end_idx = seq.index(eos_token) + 1
                     filtered_sequences.append(seq[:end_idx])
                 except ValueError:
-                    filtered_sequences.append(seq)  # Append full sequence if no <eos>
+                    filtered_sequences.append(seq)
                 filtered_scores.append(score)
                 filtered_is_valid.append(False)
 
-        # Sort final results by score
-        sorted_indices = sorted(range(len(filtered_scores)), key=lambda i: filtered_scores[i], reverse=True)  # type: ignore
-        final_sequences = [filtered_sequences[i] for i in sorted_indices]
-        final_scores = [filtered_scores[i] for i in sorted_indices]
-        final_is_valid = [filtered_is_valid[i] for i in sorted_indices]
+        sorted_order = sorted(range(len(filtered_scores)), key=lambda i: filtered_scores[i], reverse=True)  # type: ignore[arg-type]
+        final_sequences = [filtered_sequences[i] for i in sorted_order]
+        final_scores = [filtered_scores[i] for i in sorted_order]
+        final_is_valid = [filtered_is_valid[i] for i in sorted_order]
 
         return final_sequences, final_scores, final_is_valid
 

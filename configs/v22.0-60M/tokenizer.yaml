@@ -6,7 +6,19 @@ special_tokens:
   - "<cls>"
   - "<mask>"
   - "<constant>"
-  - "<ctrl_complexity>"
+  - "<prompt>"
+  - "</prompt>"
+  - "<expression>"
+  - "</expression>"
+  - "<complexity>"
+  - "</complexity>"
+  - "<float>"
+  - "<allowed_term>"
+  - "</allowed_term>"
+  - "<include_term>"
+  - "</include_term>"
+  - "<exclude_term>"
+  - "</exclude_term>"
   - '0'
   - '1'
   - '(-1)'

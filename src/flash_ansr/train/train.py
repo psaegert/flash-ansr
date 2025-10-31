@@ -358,6 +358,37 @@ class Trainer:
         """
         self.total_pflops += 6 * (self.encoder_parameters * encoder_tokens + self.decoder_parameters * decoder_tokens) * batch_size * 1e-15
 
+    def _apply_prompt_mask(self, batch: dict[str, torch.Tensor]) -> None:
+        """Mask loss contributions for prompt tokens when available."""
+        prompt_mask = batch.get('prompt_mask')
+        if prompt_mask is None:
+            return
+
+        if not isinstance(prompt_mask, torch.Tensor):
+            prompt_mask = torch.as_tensor(prompt_mask, device=self.device, dtype=torch.bool)
+            batch['prompt_mask'] = prompt_mask
+        else:
+            if prompt_mask.dtype != torch.bool:
+                prompt_mask = prompt_mask.to(dtype=torch.bool)
+            batch['prompt_mask'] = prompt_mask.to(device=self.device)
+
+        labels = batch.get('labels')
+        if labels is None or not isinstance(labels, torch.Tensor):
+            return
+
+        if labels.device != self.device:
+            labels = labels.to(self.device)
+            batch['labels'] = labels
+
+        target_mask = batch['prompt_mask'][..., 1:]
+        if target_mask.shape[-1] > labels.shape[-1]:
+            target_mask = target_mask[..., :labels.shape[-1]]
+        elif target_mask.shape[-1] < labels.shape[-1]:
+            labels = labels[..., :target_mask.shape[-1]]
+            batch['labels'] = labels
+
+        labels[target_mask] = self.metrics_ignore_index
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -384,6 +415,7 @@ class Trainer:
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
             micro_batch = self.train_dataset.collate(micro_batch, device=self.device)
+            self._apply_prompt_mask(micro_batch)
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
@@ -457,6 +489,7 @@ class Trainer:
             pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating", smoothing=0.0)
             for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=preprocess):
                 batch = self.val_dataset.collate(batch, device=self.device)
+                self._apply_prompt_mask(batch)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):

@@ -1,6 +1,7 @@
 import os
 import copy
-from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Optional
+import numbers
+from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Optional, Sequence
 import warnings
 
 import numpy as np
@@ -32,6 +33,7 @@ class Result(TypedDict):
     score: float
     target_complexity: int | float | None
     fvu: float
+    prompt_metadata: dict[str, list[list[str]]] | None
 
 
 class FlashANSR(BaseEstimator):
@@ -125,6 +127,10 @@ class FlashANSR(BaseEstimator):
         self._mcts_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
 
         self.variable_mapping: dict[str, str] = {}
+        self._prompt_prefix_tokens: list[int] | None = None
+        self._prompt_prefix_numeric: list[float] | None = None
+        self._prompt_prefix_mask: list[bool] | None = None
+        self._prompt_metadata: dict[str, list[list[str]]] | None = None
 
     @classmethod
     def load(
@@ -255,7 +261,43 @@ class FlashANSR(BaseEstimator):
             reward_transform=reward_transform,
         )
 
-    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
+    def _prepare_prompt_prefix(
+            self,
+            *,
+            prompt_complexity: int | float | None,
+            prompt_allowed_terms: Iterable[Sequence[Any]] | None,
+            prompt_include_terms: Iterable[Sequence[Any]] | None,
+            prompt_exclude_terms: Iterable[Sequence[Any]] | None,
+    ) -> tuple[list[int], list[float], list[bool], dict[str, list[list[str]]]] | None:
+        preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+        if preprocessor is None or not hasattr(preprocessor, 'serialize_prompt_prefix'):
+            return None
+
+        serialized = preprocessor.serialize_prompt_prefix(
+            complexity=prompt_complexity,
+            allowed_terms=prompt_allowed_terms,
+            include_terms=prompt_include_terms,
+            exclude_terms=prompt_exclude_terms,
+        )
+
+        prompt_tokens = list(serialized['input_ids'])
+        prompt_numeric = [float(value) for value in serialized['input_num']]
+        prompt_mask = list(serialized['prompt_mask'])
+        metadata_raw = serialized.get('prompt_metadata', {})
+        if not isinstance(metadata_raw, dict):
+            metadata: dict[str, list[list[str]]] = {}
+        else:
+            metadata = {key: [list(term) for term in value] for key, value in metadata_raw.items()}
+
+        return prompt_tokens, prompt_numeric, prompt_mask, metadata
+
+    def generate(
+        self,
+        data: torch.Tensor,
+        complexity: int | float | None = None,
+        verbose: bool = False,
+        prompt_tokens: list[int] | None = None,
+        prompt_numeric: list[float] | None = None) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Generate candidate expression beams from the transformer.
 
         Parameters
@@ -293,6 +335,8 @@ class FlashANSR(BaseEstimator):
                     data=data,
                     complexity=complexity,
                     verbose=verbose,
+                    initial_tokens=prompt_tokens,
+                    input_num=prompt_numeric,
                     **self.generation_config)
                 rewards = [float('nan')] * len(beams)
                 return beams, log_probs, completed, rewards
@@ -301,6 +345,8 @@ class FlashANSR(BaseEstimator):
                     data=data,
                     complexity=complexity,
                     verbose=verbose,
+                    initial_tokens=prompt_tokens,
+                    input_num=prompt_numeric,
                     **self.generation_config)
                 rewards = [float('nan')] * len(beams)
                 return beams, log_probs, completed, rewards
@@ -394,6 +440,8 @@ class FlashANSR(BaseEstimator):
                     value_fn=value_fn,
                     completion_sort=completion_sort,
                     verbose=verbose,
+                    initial_tokens=prompt_tokens,
+                    input_num=prompt_numeric,
                 )
 
                 self._mcts_cache = refiner_cache
@@ -402,13 +450,18 @@ class FlashANSR(BaseEstimator):
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 
     def fit(
-            self,
-            X: np.ndarray | torch.Tensor | pd.DataFrame,
-            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-            complexity: int | float | Iterable | None = None,
-            variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
-            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-            verbose: bool = False) -> None:
+        self,
+        X: np.ndarray | torch.Tensor | pd.DataFrame,
+        y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+        complexity: int | float | Iterable | None = None,
+        variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
+        converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
+        verbose: bool = False,
+        *,
+        prompt_complexity: int | float | None = None,
+        prompt_allowed_terms: Iterable[Sequence[Any]] | None = None,
+        prompt_include_terms: Iterable[Sequence[Any]] | None = None,
+        prompt_exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
         Parameters
@@ -426,6 +479,18 @@ class FlashANSR(BaseEstimator):
             Handling strategy when the refiner fails to converge.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
+        prompt_complexity : int or float or None, optional
+            Keyword-only control that injects a target complexity into the prompt
+            prefix. Defaults to ``complexity`` when it is a scalar.
+        prompt_allowed_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only list of term token sequences that may appear in the
+            generated expression.
+        prompt_include_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only subset of allowed terms that the expression should
+            prioritise using.
+        prompt_exclude_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only list of term token sequences that should be discouraged
+            during generation.
 
         Raises
         ------
@@ -470,6 +535,33 @@ class FlashANSR(BaseEstimator):
         else:
             complexity_list = complexity  # type: ignore
 
+        prompt_complexity_value: int | float | None = prompt_complexity
+        if prompt_complexity_value is None and isinstance(complexity, numbers.Real):
+            prompt_complexity_value = complexity
+
+        prompt_prefix = self._prepare_prompt_prefix(
+            prompt_complexity=prompt_complexity_value,
+            prompt_allowed_terms=prompt_allowed_terms,
+            prompt_include_terms=prompt_include_terms,
+            prompt_exclude_terms=prompt_exclude_terms,
+        )
+
+        if prompt_prefix is not None:
+            prompt_tokens, prompt_numeric, prompt_mask, prompt_metadata = prompt_prefix
+            self._prompt_prefix_tokens = prompt_tokens
+            self._prompt_prefix_numeric = prompt_numeric
+            self._prompt_prefix_mask = prompt_mask
+            self._prompt_metadata = prompt_metadata
+        else:
+            prompt_tokens = None
+            prompt_numeric = None
+            prompt_mask = None
+            prompt_metadata = None
+            self._prompt_prefix_tokens = None
+            self._prompt_prefix_numeric = None
+            self._prompt_prefix_mask = None
+            self._prompt_metadata = None
+
         with torch.no_grad():
             # Convert the input data to a tensor
             if not isinstance(X, torch.Tensor):
@@ -505,7 +597,13 @@ class FlashANSR(BaseEstimator):
             np.seterr(all=self.numpy_errors)
 
             for complexity in complexity_list:
-                raw_beams, log_probs, _completed_flags, _rewards = self.generate(data_tensor, complexity=complexity, verbose=verbose)
+                raw_beams, log_probs, _completed_flags, _rewards = self.generate(
+                    data_tensor,
+                    complexity=complexity,
+                    verbose=verbose,
+                    prompt_tokens=prompt_tokens,
+                    prompt_numeric=prompt_numeric,
+                )
 
                 beams = [self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
@@ -556,6 +654,7 @@ class FlashANSR(BaseEstimator):
                                 'function': refiner.expression_lambda,
                                 'refiner': refiner,
                                 'fits': copy.deepcopy(refiner._all_constants_values),
+                                'prompt_metadata': copy.deepcopy(prompt_metadata) if prompt_metadata is not None else None,
                             })
 
                         except ConvergenceError:

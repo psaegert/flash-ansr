@@ -1,3 +1,13 @@
 skeleton_pool: './skeleton_pool_train.yaml'
 tokenizer: './tokenizer.yaml'
 padding: 'zero'
+preprocessor:
+  prompt:
+    attach_prompt_tags: true
+    attach_expression_tags: true
+    section_probs:
+      prompt: 1.0
+      complexity: 1.0
+      allowed_terms: 1.0
+      include_terms: 1.0
+      exclude_terms: 1.0

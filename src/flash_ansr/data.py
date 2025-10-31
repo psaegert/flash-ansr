@@ -117,10 +117,15 @@ class FlashANSRDataset:
 
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
-        if 'preprocessor' in config_.keys() and config_['preprocessor'] is not None:
-            preprocessor = FlashASNRPreprocessor.from_config(config_['preprocessor'])
-        else:
-            preprocessor = None
+        preprocessor_cfg = config_.get('preprocessor') if isinstance(config_, dict) else None
+        preprocessor: FlashASNRPreprocessor | None = None
+        if preprocessor_cfg is not None:
+            preprocessor = FlashASNRPreprocessor.from_config(
+                preprocessor_cfg,
+                simplipy_engine=skeleton_pool.simplipy_engine,
+                tokenizer=tokenizer,
+                skeleton_pool=skeleton_pool,
+            )
 
         return cls(
             skeleton_pool=skeleton_pool,
@@ -301,6 +306,17 @@ class FlashANSRDataset:
                 batch['input_num'] = torch.stack(padded_input_num).unsqueeze(-1)
             else:  # Already a tensor
                 batch['input_num'] = batch['input_num'].to(device=device, dtype=torch.float32)
+
+        if 'prompt_mask' in batch:
+            if isinstance(batch['prompt_mask'][0], list):
+                max_length_prompt_mask = max(len(seq) for seq in batch['prompt_mask'])
+                padded_prompt_masks = [
+                    self._pad_sequence(seq, max_length_prompt_mask, False, device=device, dtype=torch.bool)
+                    for seq in batch['prompt_mask']
+                ]
+                batch['prompt_mask'] = torch.stack(padded_prompt_masks)
+            else:
+                batch['prompt_mask'] = batch['prompt_mask'].to(device=device, dtype=torch.bool)
 
         if 'complexities' in batch:
             batch['complexities'] = [
