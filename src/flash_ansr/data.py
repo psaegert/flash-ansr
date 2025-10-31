@@ -21,7 +21,7 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
-from flash_ansr.preprocess import FlashASNRPreprocessor
+from flash_ansr.preprocess import FlashANSRPreprocessor
 
 
 class FlashANSRDataset:
@@ -32,7 +32,7 @@ class FlashANSRDataset:
         skeleton_pool: SkeletonPool,
         tokenizer: Tokenizer,
         padding: Literal['random', 'zero'],
-        preprocessor: FlashASNRPreprocessor | None = None,
+        preprocessor: FlashANSRPreprocessor | None = None,
     ) -> None:
         """Create a dataset tied to a skeleton pool and tokenizer.
 
@@ -118,9 +118,9 @@ class FlashANSRDataset:
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
         preprocessor_cfg = config_.get('preprocessor') if isinstance(config_, dict) else None
-        preprocessor: FlashASNRPreprocessor | None = None
+        preprocessor: FlashANSRPreprocessor | None = None
         if preprocessor_cfg is not None:
-            preprocessor = FlashASNRPreprocessor.from_config(
+            preprocessor = FlashANSRPreprocessor.from_config(
                 preprocessor_cfg,
                 simplipy_engine=skeleton_pool.simplipy_engine,
                 tokenizer=tokenizer,
@@ -252,7 +252,7 @@ class FlashANSRDataset:
             Mini-batch produced either by :meth:`iterate` or a precompiled
             dataset. Expected to include ``input_ids``, ``x_tensors``,
             ``y_tensors`` and optionally ``constants``, ``input_num`` and
-            ``complexities``.
+            ``complexity``.
         device:
             Torch device on which tensors should reside.
 
@@ -318,10 +318,10 @@ class FlashANSRDataset:
             else:
                 batch['prompt_mask'] = batch['prompt_mask'].to(device=device, dtype=torch.bool)
 
-        if 'complexities' in batch:
-            batch['complexities'] = [
+        if 'complexity' in batch:
+            batch['complexity'] = [
                 torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None
-                for c in batch['complexities']
+                for c in batch['complexity']
             ]
 
         # 5. Create labels

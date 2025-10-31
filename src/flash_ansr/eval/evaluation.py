@@ -9,7 +9,7 @@ import torch
 import numpy as np
 
 from flash_ansr.flash_ansr import FlashANSR
-from flash_ansr.data import FlashANSRDataset, FlashASNRPreprocessor
+from flash_ansr.data import FlashANSRDataset, FlashANSRPreprocessor
 from flash_ansr.refine import ConvergenceError
 from flash_ansr.utils import load_config, substitute_root_path
 
@@ -175,7 +175,7 @@ class Evaluation():
             holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=verbose)
 
         if self.preprocess:
-            dataset.preprocessor = FlashASNRPreprocessor(
+            dataset.preprocessor = FlashANSRPreprocessor(
                 simplipy_engine=model.simplipy_engine,
                 tokenizer=model.tokenizer,
             )
@@ -273,7 +273,7 @@ class Evaluation():
                     if self.complexity == 'none':
                         model.fit(X, y)
                     elif self.complexity == 'ground_truth':
-                        model.fit(X, y, complexity=batch['complexities'])
+                        model.fit(X, y, complexity=batch['complexity'])
                     elif isinstance(self.complexity, list):
                         model.fit(X, y, complexity=self.complexity)
                     else:

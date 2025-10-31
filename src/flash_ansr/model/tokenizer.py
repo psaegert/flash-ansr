@@ -189,17 +189,44 @@ class Tokenizer:
         return iter(self.vocab)
 
     def extract_expression_from_beam(self, beam: list[int]) -> tuple[list[int], list[int], list[int]]:
+        start_token = self.token2idx.get('<expression>')
+        end_token = self.token2idx.get('</expression>')
 
-        if self['<bos>'] not in beam or self['<eos>'] not in beam:
-            raise ValueError(f"Beam must contain <bos> and <eos> tokens. Got {beam}.")
+        if start_token is None or end_token is None:
+            expression = list(beam)
+            before: list[int] = []
+            after: list[int] = []
 
-        bos_index = beam.index(self.token2idx['<bos>'])
-        eos_index = beam.index(self.token2idx['<eos>'])
+            bos_id = self.token2idx.get('<bos>')
+            if bos_id is not None and expression and expression[0] == bos_id:
+                before = expression[:1]
+                expression = expression[1:]
 
-        before = beam[:bos_index + 1]
-        after = beam[eos_index:]
+            eos_id = self.token2idx.get('<eos>')
+            if eos_id is not None and eos_id in expression:
+                eos_index = expression.index(eos_id)
+                after = expression[eos_index:]
+                expression = expression[:eos_index]
 
-        return beam[bos_index + 1:eos_index], before, after
+            return expression, before, after
+
+        try:
+            expr_start = beam.index(start_token)
+        except ValueError as exc:
+            raise ValueError(f"Beam must contain <expression> token. Got {beam}.") from exc
+
+        try:
+            expr_end = beam.index(end_token, expr_start + 1)
+        except ValueError as exc:
+            raise ValueError(f"Beam must contain </expression> token after <expression>. Got {beam}.") from exc
+
+        if expr_end <= expr_start + 1:
+            return [], beam[:expr_start + 1], beam[expr_end:]
+
+        before = beam[:expr_start + 1]
+        after = beam[expr_end:]
+
+        return beam[expr_start + 1:expr_end], before, after
 
     def constantify_expression(self, expression: list[int] | list[str]) -> list[int] | list[str]:
         # Replace mult4, div3 etc by multiplication with <constant>

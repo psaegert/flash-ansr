@@ -6,7 +6,7 @@ from pathlib import Path
 from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSR, GenerationConfig
-from flash_ansr.preprocess import FlashASNRPreprocessor
+from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.expressions.skeleton_pool import SkeletonPool
 
@@ -29,7 +29,7 @@ def skeleton_pool() -> SkeletonPool:
 
 
 class _DummyModel:
-    def __init__(self, tokenizer: Tokenizer, preprocessor: FlashASNRPreprocessor) -> None:
+    def __init__(self, tokenizer: Tokenizer, preprocessor: FlashANSRPreprocessor) -> None:
         self.tokenizer = tokenizer
         self.preprocessor = preprocessor
         self.device = torch.device("cpu")
@@ -74,7 +74,7 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     tokenizer: Tokenizer,
     skeleton_pool: SkeletonPool,
 ) -> None:
-    preprocessor = FlashASNRPreprocessor(
+    preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         skeleton_pool=skeleton_pool,

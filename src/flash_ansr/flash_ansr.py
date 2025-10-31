@@ -17,6 +17,7 @@ from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConf
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
+from flash_ansr.preprocess import FlashANSRPreprocessor
 
 
 class Result(TypedDict):
@@ -269,7 +270,7 @@ class FlashANSR(BaseEstimator):
             prompt_include_terms: Iterable[Sequence[Any]] | None,
             prompt_exclude_terms: Iterable[Sequence[Any]] | None,
     ) -> tuple[list[int], list[float], list[bool], dict[str, list[list[str]]]] | None:
-        preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+        preprocessor: FlashANSRPreprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
         if preprocessor is None or not hasattr(preprocessor, 'serialize_prompt_prefix'):
             return None
 
@@ -292,12 +293,12 @@ class FlashANSR(BaseEstimator):
         return prompt_tokens, prompt_numeric, prompt_mask, metadata
 
     def generate(
-        self,
-        data: torch.Tensor,
-        complexity: int | float | None = None,
-        verbose: bool = False,
-        prompt_tokens: list[int] | None = None,
-        prompt_numeric: list[float] | None = None) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
+            self,
+            data: torch.Tensor,
+            complexity: int | float | None = None,
+            verbose: bool = False,
+            prompt_tokens: list[int] | None = None,
+            prompt_numeric: list[float] | None = None) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Generate candidate expression beams from the transformer.
 
         Parameters
@@ -450,18 +451,18 @@ class FlashANSR(BaseEstimator):
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 
     def fit(
-        self,
-        X: np.ndarray | torch.Tensor | pd.DataFrame,
-        y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-        complexity: int | float | Iterable | None = None,
-        variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
-        converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-        verbose: bool = False,
-        *,
-        prompt_complexity: int | float | None = None,
-        prompt_allowed_terms: Iterable[Sequence[Any]] | None = None,
-        prompt_include_terms: Iterable[Sequence[Any]] | None = None,
-        prompt_exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
+            self,
+            X: np.ndarray | torch.Tensor | pd.DataFrame,
+            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+            complexity: int | float | Iterable | None = None,
+            variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
+            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
+            verbose: bool = False,
+            *,
+            prompt_complexity: int | float | None = None,
+            prompt_allowed_terms: Iterable[Sequence[Any]] | None = None,
+            prompt_include_terms: Iterable[Sequence[Any]] | None = None,
+            prompt_exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
         Parameters

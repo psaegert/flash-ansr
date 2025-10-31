@@ -7,8 +7,12 @@ import pytest
 from simplipy import SimpliPyEngine
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocess import FlashASNRPreprocessor
+from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.preprocess_features import (
+    AllowedTermsConfig,
+    DistributionSpec,
+    ExcludeTermsConfig,
+    IncludeTermsConfig,
     PromptFeatureExtractor,
     PromptFeatureExtractorConfig,
 )
@@ -41,10 +45,29 @@ def test_extract_basic_prompt_features(
     random.seed(0)
     np.random.seed(0)
     config = PromptFeatureExtractorConfig(
-        max_cover_terms=8,
-        extra_allowed_range=(0, 0),
-        include_terms_range=(1, 1),
-        exclude_terms_range=(1, 1),
+        allowed_terms=AllowedTermsConfig(
+            probability=1.0,
+            actual_terms=DistributionSpec.constant(4),
+            generated_terms=DistributionSpec.constant(0),
+            length=DistributionSpec.constant(3),
+            min_length=1,
+            max_relative_length=1.0,
+            force_expression_term=True,
+        ),
+        include_terms=IncludeTermsConfig(
+            probability=1.0,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(1),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        exclude_terms=ExcludeTermsConfig(
+            probability=1.0,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(2),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
         max_random_term_attempts=8,
     )
 
@@ -76,10 +99,24 @@ def test_exclude_terms_skip_existing_terms(
     random.seed(1)
     np.random.seed(1)
     config = PromptFeatureExtractorConfig(
-        max_cover_terms=8,
-        extra_allowed_range=(0, 0),
-        include_terms_range=(0, 0),
-        exclude_terms_range=(1, 1),
+        allowed_terms=AllowedTermsConfig(
+            probability=1.0,
+            actual_terms=DistributionSpec.constant(4),
+            generated_terms=DistributionSpec.constant(0),
+            length=DistributionSpec.constant(3),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        include_terms=IncludeTermsConfig(
+            probability=0.0,
+        ),
+        exclude_terms=ExcludeTermsConfig(
+            probability=1.0,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(2),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
         max_random_term_attempts=8,
     )
 
@@ -108,10 +145,28 @@ def test_include_terms_subset_of_allowed(
     random.seed(2)
     np.random.seed(2)
     config = PromptFeatureExtractorConfig(
-        max_cover_terms=8,
-        extra_allowed_range=(1, 1),
-        include_terms_range=(2, 2),
-        exclude_terms_range=(1, 1),
+        allowed_terms=AllowedTermsConfig(
+            probability=1.0,
+            actual_terms=DistributionSpec.constant(6),
+            generated_terms=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(3),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        include_terms=IncludeTermsConfig(
+            probability=1.0,
+            count=DistributionSpec.constant(2),
+            length=DistributionSpec.constant(2),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        exclude_terms=ExcludeTermsConfig(
+            probability=1.0,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(2),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
         max_random_term_attempts=8,
     )
 
@@ -141,16 +196,24 @@ def test_preprocessor_prompt_mask_alignment(
     random.seed(3)
     np.random.seed(3)
 
-    preprocessor = FlashASNRPreprocessor(
+    preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         skeleton_pool=skeleton_pool,
         prompt_config={
             'prompt_feature': {
-                'max_cover_terms': 8,
-                'extra_allowed_range': (0, 0),
-                'include_terms_range': (0, 0),
-                'exclude_terms_range': (0, 0),
+                'prompt_probability': 1.0,
+                'allowed_terms': {
+                    'probability': 1.0,
+                    'actual_terms': {'distribution': 'uniform_int', 'params': {'low': 3, 'high': 3}},
+                    'generated_terms': 0,
+                    'length': 3,
+                    'min_length': 1,
+                    'max_relative_length': 1.0,
+                    'force_expression_term': True,
+                },
+                'include_terms': {'probability': 0.0},
+                'exclude_terms': {'probability': 0.0},
                 'max_random_term_attempts': 8,
             },
         },
@@ -181,7 +244,7 @@ def test_preprocessor_prompt_mask_disabled(
     tokenizer: Tokenizer,
     skeleton_pool: SkeletonPool,
 ) -> None:
-    preprocessor = FlashASNRPreprocessor(
+    preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         skeleton_pool=skeleton_pool,
@@ -209,7 +272,7 @@ def test_serialize_prompt_prefix(
     tokenizer: Tokenizer,
     skeleton_pool: SkeletonPool,
 ) -> None:
-    preprocessor = FlashASNRPreprocessor(
+    preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         skeleton_pool=skeleton_pool,
@@ -224,6 +287,8 @@ def test_serialize_prompt_prefix(
     assert tokens[:5] == ['<bos>', '<prompt>', '<complexity>', '<float>', '</complexity>']
     assert tokens[5:9] == ['<allowed_term>', '+', 'x1', '</allowed_term>']
     assert tokens[9:] == ['</prompt>', '<expression>']
+    assert serialized['prompt_disabled'] is False
+    assert serialized['missing_tokens'] == []
 
     numeric = serialized['input_num']
     assert len(numeric) == len(tokens)
@@ -236,6 +301,56 @@ def test_serialize_prompt_prefix(
     assert mask[0] is False  # <bos>
     assert all(mask[i] is True for i in range(1, len(tokens) - 1))
     assert mask[-1] is False  # <expression>
+
+    metadata = serialized['prompt_metadata']
+    assert metadata['allowed_terms'] == [['+', 'x1']]
+    assert metadata['include_terms'] == []
+    assert metadata['exclude_terms'] == []
+
+
+def test_serialize_prompt_prefix_without_prompt_tokens(
+    simplipy_engine: SimpliPyEngine,
+    skeleton_pool: SkeletonPool,
+) -> None:
+    tokenizer = Tokenizer(
+        vocab=['+', 'x1'],
+        special_tokens=[
+            '<pad>',
+            '<bos>',
+            '<eos>',
+            '<unk>',
+            '<cls>',
+            '<mask>',
+            '<constant>',
+            '<expression>',
+        ],
+    )
+
+    preprocessor = FlashANSRPreprocessor(
+        simplipy_engine=simplipy_engine,
+        tokenizer=tokenizer,
+        skeleton_pool=skeleton_pool,
+    )
+
+    serialized = preprocessor.serialize_prompt_prefix(
+        complexity=5,
+        allowed_terms=[['+', 'x1']],
+    )
+
+    tokens = [tokenizer[idx] for idx in serialized['input_ids']]
+    assert tokens == ['<bos>', '<expression>']
+
+    assert all(flag is False for flag in serialized['prompt_mask'])
+    assert serialized['prompt_disabled'] is True
+    assert set(serialized['missing_tokens']) == {
+        '<prompt>',
+        '</prompt>',
+        '<complexity>',
+        '<float>',
+        '</complexity>',
+        '<allowed_term>',
+        '</allowed_term>',
+    }
 
     metadata = serialized['prompt_metadata']
     assert metadata['allowed_terms'] == [['+', 'x1']]

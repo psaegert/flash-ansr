@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
-from flash_ansr.preprocess import FlashASNRPreprocessor
+from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer
 from flash_ansr.model.transformer import TransformerDecoder
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
@@ -117,7 +117,7 @@ class FlashANSRModel(nn.Module):
             nn.Dropout(p=decoder_dropout),
             nn.Linear(decoder_model_dim, len(self.tokenizer)))
 
-        self.preprocessor = FlashASNRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
+        self.preprocessor = FlashANSRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
         self.memory: torch.Tensor | None = None
 
@@ -216,6 +216,8 @@ class FlashANSRModel(nn.Module):
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
+            if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
+                numeric_embeddings = numeric_embeddings.squeeze(-2)
         else:
             numeric_embeddings = None
 
@@ -234,6 +236,28 @@ class FlashANSRModel(nn.Module):
         # Removed numeric head as it is not present in the new Decoder structure
         return logits
 
+    def _resolve_generation_prefix(
+        self,
+        *,
+        initial_tokens: list[int] | None,
+        input_num: list[float] | None,
+        complexity: int | float | None,
+    ) -> tuple[list[int], list[float] | None]:
+        if initial_tokens is not None:
+            tokens = list(initial_tokens)
+            numeric = [float(value) for value in input_num] if input_num is not None else None
+            return tokens, numeric
+
+        if self.preprocessor is None:
+            return [self.tokenizer['<bos>']], None
+
+        serialized = self.preprocessor.serialize_prompt_prefix(complexity=complexity)
+
+        tokens = [int(token) for token in serialized['input_ids']]
+        numeric_values = [float(value) for value in serialized['input_num']]
+
+        return tokens, numeric_values
+
     def beam_search(
         self,
         data: torch.Tensor,
@@ -248,13 +272,11 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
-        if initial_tokens is not None:
-            base_tokens = list(initial_tokens)
-            base_input_num = list(input_num) if input_num is not None else None
-        elif complexity is None:
-            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
-        else:
-            base_tokens, base_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
+        base_tokens, base_input_num = self._resolve_generation_prefix(
+            initial_tokens=initial_tokens,
+            input_num=input_num,
+            complexity=complexity,
+        )
 
         if isinstance(base_input_num, torch.Tensor):
             base_input_num = base_input_num.tolist()
@@ -444,14 +466,11 @@ class FlashANSRModel(nn.Module):
 
         device = data.device
 
-        if initial_tokens is not None:
-            base_tokens = list(initial_tokens)
-            base_input_num = list(input_num) if input_num is not None else None
-        elif complexity is None:
-            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
-        else:
-            base_tokens, formatted_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
-            base_input_num = formatted_input_num[:] if formatted_input_num is not None else None
+        base_tokens, base_input_num = self._resolve_generation_prefix(
+            initial_tokens=initial_tokens,
+            input_num=input_num,
+            complexity=complexity,
+        )
 
         memory = self._create_memory(data)
 
@@ -594,14 +613,11 @@ class FlashANSRModel(nn.Module):
         device = data.device
 
         # --- 1. Vectorized Initialization ---
-        if initial_tokens is not None:
-            base_tokens = list(initial_tokens)
-            base_input_num = list(input_num) if input_num is not None else None
-        elif complexity is None:
-            base_tokens, base_input_num = [self.tokenizer['<bos>']], None
-        else:
-            base_tokens, formatted_input_num = self.preprocessor.format_complexity([self.tokenizer['<bos>']], complexity=complexity)
-            base_input_num = formatted_input_num[:] if formatted_input_num is not None else None
+        base_tokens, base_input_num = self._resolve_generation_prefix(
+            initial_tokens=initial_tokens,
+            input_num=input_num,
+            complexity=complexity,
+        )
 
         prefix_length = len(base_tokens)
         if prefix_length > max_len:
@@ -695,11 +711,11 @@ class FlashANSRModel(nn.Module):
         pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing", smoothing=0.0)
         for seq, score in pbar_post:
             try:
-                encoded_expression, _, _ = self.tokenizer.extract_expression_from_beam(seq)
-                encoded_expression = self.tokenizer.constantify_expression(encoded_expression)
+                encoded_expression, before, after = self.tokenizer.extract_expression_from_beam(seq)
             except (ValueError, IndexError):
                 continue
 
+            encoded_expression = self.tokenizer.constantify_expression(encoded_expression)
             expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
@@ -710,8 +726,9 @@ class FlashANSRModel(nn.Module):
                 if unique and expression_tuple in seen_expressions:
                     continue
 
-                filtered_sequence = self.tokenizer.encode(expression, add_bos=True, add_eos=True)
-                filtered_sequences.append(filtered_sequence)
+                expression_tokens = self.tokenizer.encode(expression)
+                reconstructed_sequence = before + expression_tokens + after
+                filtered_sequences.append(reconstructed_sequence)
                 filtered_scores.append(score)
                 filtered_is_valid.append(True)
 

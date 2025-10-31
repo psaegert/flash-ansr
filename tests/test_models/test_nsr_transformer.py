@@ -74,7 +74,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         logits = nsr.forward(input_tokens, x)
 
-        assert logits.shape == (256, 17, 57)
+        assert logits.shape == (256, 17, len(nsr.tokenizer))
 
     def test_save_load_relative(self):
         # Create from config
