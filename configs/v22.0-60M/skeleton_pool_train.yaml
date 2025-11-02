@@ -10,10 +10,11 @@ holdout_pools: [
 sample_strategy:
   n_operator_distribution: "length_exponential"
   min_operators: 0
-  max_operators: 15
-  power: 1.4
-  max_length: 31
-  max_tries: 1
+  max_operators: 20
+  power: 0.7
+  lambda: 1
+  max_length: 41
+  max_tries: 4
   independent_dimensions: True
 
 allow_nan: False
@@ -53,7 +54,7 @@ n_support_prior:
     min_value: 16
     max_value: 512
 
-variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x15', 'x16', 'x17', 'x18', 'x19', 'x20']
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x18', 'x19', 'x20']
 
 operator_weights:
   "+": 10
