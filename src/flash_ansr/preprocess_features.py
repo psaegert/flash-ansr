@@ -519,10 +519,12 @@ class PromptFeatureExtractor:
         unique_subtrees = self._deduplicate_terms(all_subtrees)
         expression_length = len(expression_list)
 
-        actual_terms = self._sample_actual_allowed_terms(unique_subtrees, expression_length)
+        allowed_section_enabled = self._is_section_enabled(self.config.allowed_terms.probability)
+
+        actual_terms = self._sample_actual_allowed_terms(unique_subtrees, expression_length, allowed_section_enabled)
         existing_keys = {tuple(term) for term in actual_terms}
 
-        generated_terms = self._sample_generated_allowed_terms(expression_length, existing_keys)
+        generated_terms = self._sample_generated_allowed_terms(expression_length, existing_keys, allowed_section_enabled)
         allowed_terms = self._deduplicate_terms(actual_terms + generated_terms)
 
         include_terms = self._sample_include_terms(allowed_terms, expression_length)
@@ -559,8 +561,21 @@ class PromptFeatureExtractor:
     # ------------------------------------------------------------------
     # Term collection and sampling
     # ------------------------------------------------------------------
-    def _sample_actual_allowed_terms(self, subtrees: list[list[str]], expression_length: int) -> list[list[str]]:
-        if not subtrees:
+    @staticmethod
+    def _is_section_enabled(probability: float) -> bool:
+        if probability <= 0:
+            return False
+        if probability >= 1:
+            return True
+        return random.random() < probability
+
+    def _sample_actual_allowed_terms(
+        self,
+        subtrees: list[list[str]],
+        expression_length: int,
+        section_enabled: bool,
+    ) -> list[list[str]]:
+        if not section_enabled or not subtrees:
             return []
 
         cfg = self.config.allowed_terms
@@ -610,7 +625,11 @@ class PromptFeatureExtractor:
         self,
         expression_length: int,
         existing_keys: set[tuple[str, ...]],
+        section_enabled: bool,
     ) -> list[list[str]]:
+        if not section_enabled:
+            return []
+
         cfg = self.config.allowed_terms
         count = cfg.generated_terms.sample_int(minimum=0)
         if count <= 0:
@@ -641,7 +660,7 @@ class PromptFeatureExtractor:
 
     def _sample_include_terms(self, allowed_terms: list[list[str]], expression_length: int) -> list[list[str]]:
         cfg = self.config.include_terms
-        if cfg.probability <= 0:
+        if not self._is_section_enabled(cfg.probability):
             return []
 
         min_len, max_len = self._resolve_length_bounds(cfg.min_length, cfg.max_relative_length, expression_length)
@@ -679,7 +698,7 @@ class PromptFeatureExtractor:
         include_terms: list[list[str]],
     ) -> list[list[str]]:
         cfg = self.config.exclude_terms
-        if cfg.probability <= 0:
+        if not self._is_section_enabled(cfg.probability):
             return []
 
         count = cfg.count.sample_int(minimum=0)

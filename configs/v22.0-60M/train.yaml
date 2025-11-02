@@ -22,6 +22,7 @@ val_size: 100_000
 
 compile_mode: 'reduce-overhead'
 gradient_checkpointing: False
+preprocess: true
 
 wandb_watch_log: null
 wandb_watch_log_freq: 1000

@@ -5,8 +5,9 @@ training/validation loop as well as utilities for configuration driven
 initialisation and experiment logging.
 """
 
-import os
 import copy
+import os
+from collections import Counter
 from typing import Any, Literal
 
 import torch
@@ -145,6 +146,14 @@ class Trainer:
         self.total_pflops = 0.0
         self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
         self.decoder_parameters = sum(p.numel() for p in self.model.decoder.parameters() if p.requires_grad)
+        tokenizer_mapping = getattr(self.model.tokenizer, "token2idx", {})
+        if not isinstance(tokenizer_mapping, dict):
+            tokenizer_mapping = {}
+        self._prompt_token_ids: dict[str, int | None] = {
+            "complexity": tokenizer_mapping.get("<complexity>"),
+        }
+        self.prompt_combo_counts: Counter[str] = Counter()
+        self.prompt_total_samples = 0
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
@@ -200,6 +209,8 @@ class Trainer:
             val_dataset = FlashANSRDataset.from_config(config_["val_dataset"])
         else:
             raise ValueError(f"val_dataset must be a dict or path to a file or directory, not {config_['val_dataset']}")
+
+        config_.setdefault('preprocess', False)
 
         return cls(
             model=model,
@@ -439,6 +450,74 @@ class Trainer:
 
         labels[target_mask] = self.metrics_ignore_index
 
+    def _update_prompt_statistics(self, batch: dict[str, Any]) -> None:
+        """Accumulate prompt feature combination counts for analytics logging."""
+        prompt_metadata = batch.get('prompt_metadata')
+        input_ids = batch.get('input_ids')
+
+        if not isinstance(prompt_metadata, list) or input_ids is None:
+            return
+
+        try:
+            metadata_len = len(prompt_metadata)
+        except TypeError:
+            return
+
+        try:
+            input_len = len(input_ids)
+        except TypeError:
+            input_len = 0
+
+        sample_count = min(metadata_len, input_len)
+        if sample_count == 0:
+            return
+
+        complexity_token_id = self._prompt_token_ids.get('complexity')
+
+        for idx in range(sample_count):
+            metadata = prompt_metadata[idx]
+            if not isinstance(metadata, dict):
+                continue
+
+            allowed_present = bool(metadata.get('allowed_terms'))
+            include_present = bool(metadata.get('include_terms'))
+            exclude_present = bool(metadata.get('exclude_terms'))
+
+            try:
+                sequence = input_ids[idx]
+            except (IndexError, TypeError):
+                continue
+
+            complexity_present = self._sequence_contains_token(sequence, complexity_token_id)
+
+            combo_key = f"{int(allowed_present)}{int(include_present)}{int(exclude_present)}{int(complexity_present)}"
+            self.prompt_combo_counts[combo_key] += 1
+            self.prompt_total_samples += 1
+
+    @staticmethod
+    def _sequence_contains_token(sequence: Any, token_id: int | None) -> bool:
+        if token_id is None:
+            return False
+
+        if isinstance(sequence, torch.Tensor):
+            return bool((sequence == token_id).any().item())
+
+        if isinstance(sequence, (list, tuple)):
+            return token_id in sequence
+
+        if hasattr(sequence, 'tolist'):
+            try:
+                as_list = sequence.tolist()
+                if isinstance(as_list, (list, tuple)):
+                    return token_id in as_list
+            except TypeError:
+                return False
+
+        try:
+            return token_id in sequence
+        except TypeError:
+            return False
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -459,6 +538,8 @@ class Trainer:
 
         total_ce_loss = 0.0
         total_loss = 0.0
+        if preprocess:
+            self._update_prompt_statistics(batch)
 
         # Split the batch into micro-batches to support gradient accumulation
         for acc_step in range(self.gradient_accumulation_steps):
@@ -620,6 +701,11 @@ class Trainer:
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
             "total_pflops": self.total_pflops,
         }
+        if self.prompt_total_samples > 0:
+            log_data["prompt_combo/total_samples"] = self.prompt_total_samples
+            for combo_key, count in sorted(self.prompt_combo_counts.items()):
+                log_data[f"prompt_combo/count_{combo_key}"] = count
+                log_data[f"prompt_combo/ratio_{combo_key}"] = count / self.prompt_total_samples
         wandb.log(log_data, step=step)  # type: ignore
 
     def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
