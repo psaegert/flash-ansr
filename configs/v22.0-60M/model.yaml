@@ -20,7 +20,7 @@ decoder_input_dim: 512
 decoder_model_dim: 512
 decoder_n_heads: 8
 decoder_n_layers: 8
-decoder_max_seq_len: 512
+decoder_max_seq_len: 128
 decoder_ffn_hidden_dim: 1536
 decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'

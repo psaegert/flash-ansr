@@ -92,6 +92,8 @@ class FlashANSRModel(nn.Module):
         if self.encoder.output_dim != decoder_model_dim:
             decoder_input_dim = self.encoder.output_dim
 
+        self._configured_decoder_max_seq_len = int(decoder_max_seq_len)
+
         self.decoder = TransformerDecoder(
             vocab_size=len(tokenizer),
             input_dim=decoder_input_dim,
@@ -128,6 +130,18 @@ class FlashANSRModel(nn.Module):
     @property
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    @property
+    def decoder_max_seq_len(self) -> int:
+        """Return the configured maximum decoder sequence length."""
+        if hasattr(self, '_configured_decoder_max_seq_len'):
+            return int(self._configured_decoder_max_seq_len)
+
+        rope = getattr(getattr(self, 'decoder', None), 'rope', None)
+        if rope is None or not hasattr(rope, 'max_seq_len'):
+            raise AttributeError("Decoder does not expose a rotary embedding max_seq_len")
+
+        return int(getattr(rope, 'max_seq_len'))
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRModel":

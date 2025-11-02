@@ -7,7 +7,6 @@ initialisation and experiment logging.
 
 import copy
 import os
-from collections import Counter
 from typing import Any, Literal
 
 import torch
@@ -138,6 +137,11 @@ class Trainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.config = config or {}
         self.device = torch.device("cpu")  # Updated during ``run``
+        default_worker_preprocess = self.train_dataset.preprocessor is not None
+        if isinstance(self.config, dict) and 'worker_preprocess' in self.config:
+            self.worker_preprocess = bool(self.config.get('worker_preprocess'))
+        else:
+            self.worker_preprocess = default_worker_preprocess
 
         # Metrics and Loss Functions
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
@@ -152,8 +156,8 @@ class Trainer:
         self._prompt_token_ids: dict[str, int | None] = {
             "complexity": tokenizer_mapping.get("<complexity>"),
         }
-        self.prompt_combo_counts: Counter[str] = Counter()
         self.prompt_total_samples = 0
+        self.decoder_max_seq_len = self._resolve_decoder_max_seq_len()
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Trainer":
@@ -250,6 +254,21 @@ class Trainer:
             else:
                 print("PYTORCH_CUDA_ALLOC_CONF is not set.")
 
+    def _resolve_decoder_max_seq_len(self) -> int:
+        max_seq_len = getattr(self.model, 'decoder_max_seq_len', None)
+        if max_seq_len is None:
+            decoder = getattr(self.model, 'decoder', None)
+            rope = getattr(decoder, 'rope', None) if decoder is not None else None
+            max_seq_len = getattr(rope, 'max_seq_len', None) if rope is not None else None
+
+        if max_seq_len is None:
+            raise ValueError("Unable to determine decoder max sequence length from model.")
+
+        if hasattr(max_seq_len, 'item'):
+            max_seq_len = max_seq_len.item()
+
+        return int(max_seq_len)
+
     def run_training(
             self,
             steps: int,
@@ -261,6 +280,7 @@ class Trainer:
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
+            preprocess_in_worker: bool | None = None,
             verbose: bool = False) -> FlashANSRModel:
         """Execute the core training loop.
 
@@ -284,6 +304,11 @@ class Trainer:
             Limit the number of validation examples processed.
         validate_batch_size : int, default=128
             Batch size used for validation passes.
+        preprocess_in_worker : bool or None, optional
+            When ``True`` run dataset preprocessing inside producer workers
+            instead of the main process. Defaults to the trainer configuration
+            when ``None`` (which enables worker preprocessing whenever the
+            dataset has a preprocessor).
         verbose : bool, default=False
             If ``True`` display progress bars and additional logs.
 
@@ -293,6 +318,10 @@ class Trainer:
             The trained model instance.
         """
 
+        worker_preprocess = self.worker_preprocess if preprocess_in_worker is None else bool(preprocess_in_worker)
+        if not preprocess:
+            worker_preprocess = False
+
         try:
             if compile_mode is not None:
                 self.model = torch.compile(self.model, mode=compile_mode)
@@ -300,13 +329,19 @@ class Trainer:
             self._setup_training_state(device, verbose=verbose)
 
             pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
-            for step, batch in enumerate(self.train_dataset.iterate(steps=steps, batch_size=self.batch_size, preprocess=preprocess)):
+            for step, batch in enumerate(
+                    self.train_dataset.iterate(
+                        steps=steps,
+                        batch_size=self.batch_size,
+                        preprocess=preprocess,
+                        preprocess_in_worker=worker_preprocess,
+                        max_seq_len=self.decoder_max_seq_len)):
                 self._train_step(batch, step, preprocess, do_optimizer_step=True)
 
                 pbar.update(1)
 
                 if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
-                    self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, verbose)
+                    self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, worker_preprocess, verbose)
 
                 if checkpoint_interval is not None and checkpoint_directory is not None and (step + 1) % checkpoint_interval == 0:
                     self._save_checkpoint(step + 1, checkpoint_directory)
@@ -336,6 +371,7 @@ class Trainer:
             wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
+            preprocess_in_worker: bool | None = None,
             verbose: bool = False) -> FlashANSRModel:
         """Train the model while managing the experiment lifecycle via W&B.
 
@@ -371,6 +407,10 @@ class Trainer:
             W&B ``watch`` setting controlling what to log.
         wandb_watch_log_freq : int, default=1000
             Frequency (steps) for W&B gradient/parameter logging.
+        preprocess_in_worker : bool or None, optional
+            When ``True`` run preprocessing inside dataset workers. Defaults to
+            the trainer configuration when omitted (which enables worker
+            preprocessing when available).
         verbose : bool, default=False
             When ``True`` print progress information to stdout.
 
@@ -402,6 +442,7 @@ class Trainer:
                 validate_interval=validate_interval,
                 validate_size=validate_size,
                 validate_batch_size=validate_batch_size,
+                preprocess_in_worker=preprocess_in_worker,
                 verbose=verbose
             )
 
@@ -450,74 +491,6 @@ class Trainer:
 
         labels[target_mask] = self.metrics_ignore_index
 
-    def _update_prompt_statistics(self, batch: dict[str, Any]) -> None:
-        """Accumulate prompt feature combination counts for analytics logging."""
-        prompt_metadata = batch.get('prompt_metadata')
-        input_ids = batch.get('input_ids')
-
-        if not isinstance(prompt_metadata, list) or input_ids is None:
-            return
-
-        try:
-            metadata_len = len(prompt_metadata)
-        except TypeError:
-            return
-
-        try:
-            input_len = len(input_ids)
-        except TypeError:
-            input_len = 0
-
-        sample_count = min(metadata_len, input_len)
-        if sample_count == 0:
-            return
-
-        complexity_token_id = self._prompt_token_ids.get('complexity')
-
-        for idx in range(sample_count):
-            metadata = prompt_metadata[idx]
-            if not isinstance(metadata, dict):
-                continue
-
-            allowed_present = bool(metadata.get('allowed_terms'))
-            include_present = bool(metadata.get('include_terms'))
-            exclude_present = bool(metadata.get('exclude_terms'))
-
-            try:
-                sequence = input_ids[idx]
-            except (IndexError, TypeError):
-                continue
-
-            complexity_present = self._sequence_contains_token(sequence, complexity_token_id)
-
-            combo_key = f"{int(allowed_present)}{int(include_present)}{int(exclude_present)}{int(complexity_present)}"
-            self.prompt_combo_counts[combo_key] += 1
-            self.prompt_total_samples += 1
-
-    @staticmethod
-    def _sequence_contains_token(sequence: Any, token_id: int | None) -> bool:
-        if token_id is None:
-            return False
-
-        if isinstance(sequence, torch.Tensor):
-            return bool((sequence == token_id).any().item())
-
-        if isinstance(sequence, (list, tuple)):
-            return token_id in sequence
-
-        if hasattr(sequence, 'tolist'):
-            try:
-                as_list = sequence.tolist()
-                if isinstance(as_list, (list, tuple)):
-                    return token_id in as_list
-            except TypeError:
-                return False
-
-        try:
-            return token_id in sequence
-        except TypeError:
-            return False
-
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -538,8 +511,6 @@ class Trainer:
 
         total_ce_loss = 0.0
         total_loss = 0.0
-        if preprocess:
-            self._update_prompt_statistics(batch)
 
         # Split the batch into micro-batches to support gradient accumulation
         for acc_step in range(self.gradient_accumulation_steps):
@@ -587,7 +558,7 @@ class Trainer:
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
-    def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, verbose: bool) -> None:
+    def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, worker_preprocess: bool, verbose: bool) -> None:
         """Evaluate the model on the validation split and log aggregate metrics.
 
         Parameters
@@ -600,6 +571,8 @@ class Trainer:
             Number of samples per validation batch.
         preprocess : bool
             Whether to preprocess validation batches.
+        worker_preprocess : bool
+            Whether preprocessing should run inside dataset workers.
         verbose : bool
             If ``True`` display a validation progress bar.
         """
@@ -618,7 +591,12 @@ class Trainer:
                 steps = size // batch_size
 
             pbar = tqdm(total=steps, leave=False, position=1, disable=not verbose, desc="Validating", smoothing=0.0)
-            for batch in self.val_dataset.iterate(size=size, batch_size=batch_size, preprocess=preprocess):
+            for batch in self.val_dataset.iterate(
+                    size=size,
+                    batch_size=batch_size,
+                    preprocess=preprocess,
+                    preprocess_in_worker=worker_preprocess,
+                    max_seq_len=self.decoder_max_seq_len):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
@@ -701,11 +679,7 @@ class Trainer:
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
             "total_pflops": self.total_pflops,
         }
-        if self.prompt_total_samples > 0:
-            log_data["prompt_combo/total_samples"] = self.prompt_total_samples
-            for combo_key, count in sorted(self.prompt_combo_counts.items()):
-                log_data[f"prompt_combo/count_{combo_key}"] = count
-                log_data[f"prompt_combo/ratio_{combo_key}"] = count / self.prompt_total_samples
+
         wandb.log(log_data, step=step)  # type: ignore
 
     def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:

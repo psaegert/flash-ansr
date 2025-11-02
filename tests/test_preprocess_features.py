@@ -1,5 +1,6 @@
 import math
 import random
+from itertools import count
 from pathlib import Path
 
 import numpy as np
@@ -356,3 +357,103 @@ def test_serialize_prompt_prefix_without_prompt_tokens(
     assert metadata['allowed_terms'] == [['+', 'x1']]
     assert metadata['include_terms'] == []
     assert metadata['exclude_terms'] == []
+
+
+def test_is_section_enabled_probability_distribution() -> None:
+    random.seed(42)
+    trials = 500
+    probability = 0.37
+    hits = sum(PromptFeatureExtractor._is_section_enabled(probability) for _ in range(trials))
+    assert hits / trials == pytest.approx(probability, abs=0.06)
+
+
+def test_extract_respects_section_enable_flags(
+    simplipy_engine: SimpliPyEngine,
+    tokenizer: Tokenizer,
+    skeleton_pool: SkeletonPool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    random.seed(123)
+    np.random.seed(123)
+
+    config = PromptFeatureExtractorConfig(
+        allowed_terms=AllowedTermsConfig(
+            probability=0.9,
+            actual_terms=DistributionSpec.constant(3),
+            generated_terms=DistributionSpec.constant(0),
+            length=DistributionSpec.constant(1),
+            force_expression_term=False,
+        ),
+        include_terms=IncludeTermsConfig(
+            probability=0.6,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(1),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        exclude_terms=ExcludeTermsConfig(
+            probability=0.4,
+            count=DistributionSpec.constant(1),
+            length=DistributionSpec.constant(1),
+            min_length=1,
+            max_relative_length=1.0,
+        ),
+        max_random_term_attempts=8,
+    )
+
+    extractor = PromptFeatureExtractor(
+        simplipy_engine=simplipy_engine,
+        tokenizer=tokenizer,
+        config=config,
+        skeleton_pool=skeleton_pool,
+    )
+
+    decisions = iter([
+        True, True, True,
+        True, False, True,
+        True, True, False,
+        False, True, True,
+    ])
+
+    recorded_probabilities: list[float] = []
+
+    def fake_is_section_enabled(probability: float) -> bool:
+        recorded_probabilities.append(probability)
+        try:
+            return next(decisions)
+        except StopIteration as exc:
+            raise AssertionError("No decision stub available") from exc
+
+    symbol_counter = count()
+
+    def fake_generate_term(
+        self: PromptFeatureExtractor,
+        *,
+        desired_length: int,
+        min_length: int,
+        max_length: int,
+    ) -> list[str] | None:
+        idx = next(symbol_counter)
+        length = max(desired_length, 1)
+        return [f"gen_{idx}_{i}" for i in range(length)]
+
+    monkeypatch.setattr(PromptFeatureExtractor, "_is_section_enabled", staticmethod(fake_is_section_enabled))
+    monkeypatch.setattr(PromptFeatureExtractor, "_generate_term_via_skeleton_pool", fake_generate_term)
+
+    expression = ['+', 'x1', 'x2']
+
+    features = [extractor.extract(expression) for _ in range(4)]
+
+    allowed_flags = [bool(item.allowed_terms) for item in features]
+    include_flags = [bool(item.include_terms) for item in features]
+    exclude_flags = [bool(item.exclude_terms) for item in features]
+
+    expected_flags = [
+        (True, True, True),
+        (True, False, True),
+        (True, True, False),
+        (False, False, True),
+    ]
+
+    assert list(zip(allowed_flags, include_flags, exclude_flags)) == expected_flags
+    assert recorded_probabilities == [0.9, 0.6, 0.4, 0.9, 0.6, 0.4, 0.9, 0.6, 0.4, 0.9, 0.6, 0.4]

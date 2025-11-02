@@ -1,6 +1,8 @@
 """Utilities for generating and managing Flash-ANSR training datasets."""
 
+import copy
 import os
+import random
 import warnings
 import time
 from typing import Any, Generator, Literal
@@ -66,6 +68,8 @@ class FlashANSRDataset:
         self._available_slots_queue: mp.Queue | None = None
         self._workers: list[mp.Process] = []
         self._num_workers = 0
+        self._worker_preprocess_enabled = False
+        self._preprocessor_prompt_config = copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
 
     def __del__(self) -> None:
         """Warn and free multiprocessing resources when GC'd without shutdown."""
@@ -374,6 +378,13 @@ class FlashANSRDataset:
         )
 
     @staticmethod
+    def _inject_preprocessed_fields(batch: dict[str, Any], samples: list[dict[str, Any]]) -> None:
+        if not samples:
+            return
+        for key in samples[0].keys():
+            batch[key] = [sample[key] for sample in samples]
+
+    @staticmethod
     def _producer_worker(
         work_queue: mp.Queue,
         result_queue: mp.Queue,
@@ -399,8 +410,21 @@ class FlashANSRDataset:
         n_per_equation: int = worker_init_args['n_per_equation']
         batch_size: int = worker_init_args['batch_size']
         oov: Literal['unk', 'raise'] = worker_init_args['tokenizer_oov']
+        worker_preprocess: bool = worker_init_args.get('worker_preprocess', False)
+        max_seq_len: int = worker_init_args.get('max_seq_len', 128)
+        eos_token_id = tokenizer['<eos>']
+        prompt_config = worker_init_args.get('preprocessor_prompt_config')
+        preprocessor: FlashANSRPreprocessor | None = None
+        if worker_preprocess and prompt_config is not None:
+            preprocessor = FlashANSRPreprocessor(
+                simplipy_engine=skeleton_pool.simplipy_engine,
+                tokenizer=tokenizer,
+                skeleton_pool=skeleton_pool,
+                prompt_config=prompt_config,
+            )
+        random.seed(os.getpid())
 
-    # Connect to shared memory and create numpy views for tensor pools.
+        # Connect to shared memory and create numpy views for tensor pools.
         shms = {name: shared_memory.SharedMemory(name=cfg['name']) for name, cfg in shm_configs.items()}
         pools = {name: np.ndarray(cfg['shape'], dtype=cfg['dtype'], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
 
@@ -423,6 +447,7 @@ class FlashANSRDataset:
                 # Local buffers for data that can't be pre-allocated
                 constants_batch = []
                 metadata_batch = []
+                preprocessed_batch: list[dict[str, Any]] | None = [] if preprocessor is not None else None
 
                 # Generate one full batch.
                 i = 0
@@ -464,6 +489,9 @@ class FlashANSRDataset:
                                             x_support[:, var_idx] = 0
 
                                 input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True, oov=oov)
+                                if len(input_ids) > max_seq_len:
+                                    input_ids = input_ids[:max_seq_len]
+                                    input_ids[-1] = eos_token_id
 
                                 # Store the successful sample
                                 temp_samples.append({
@@ -507,13 +535,22 @@ class FlashANSRDataset:
 
                             constants_batch.append(sample['constants'])
                             metadata_batch.append(sample['metadata'])
+                            if preprocessed_batch is not None and preprocessor is not None:
+                                instance = {
+                                    'input_ids': list(sample['input_ids']),
+                                    'skeletons': list(sample['metadata'].get('skeleton', [])),
+                                }
+                                preprocessed_batch.append(preprocessor._format_single(instance))
 
                             i += 1  # Increment main batch counter
                     # If not succeeded, we do nothing. The main `while i < batch_size` loop continues,
                     # effectively discarding the failed skeleton and its partial samples.
 
                 # Batch is complete, finalize and notify main process.
-                metadata_list[slot_idx] = {'metadata': metadata_batch, 'constants': constants_batch}
+                payload: dict[str, Any] = {'metadata': metadata_batch, 'constants': constants_batch}
+                if preprocessed_batch is not None:
+                    payload['preprocessed'] = preprocessed_batch
+                metadata_list[slot_idx] = payload
                 result_queue.put(slot_idx)
 
         finally:
@@ -530,6 +567,7 @@ class FlashANSRDataset:
         max_n_support: int | None = None,
         num_workers: int | None = None,
         tokenizer_oov: Literal['unk', 'raise'] = 'raise',
+        worker_preprocess: bool = False,
     ) -> None:
         """Initialize shared-memory pools and worker processes on first use.
 
@@ -552,6 +590,9 @@ class FlashANSRDataset:
             Defaults to the CPU count.
         tokenizer_oov: Literal['unk', 'raise']
             Strategy used by the tokenizer when encountering out-of-vocabulary tokens
+        worker_preprocess: bool
+            Whether producer workers should perform preprocessing before
+            yielding batches.
         """
         if self._is_initialized:
             return
@@ -594,9 +635,15 @@ class FlashANSRDataset:
 
         # 3. Start Worker Processes
         worker_init_args = {
-            'skeleton_pool': self.skeleton_pool, 'tokenizer': self.tokenizer,
-            'padding': self.padding, 'n_per_equation': n_per_equation, 'batch_size': batch_size,
+            'skeleton_pool': self.skeleton_pool,
+            'tokenizer': self.tokenizer,
+            'padding': self.padding,
+            'n_per_equation': n_per_equation,
+            'batch_size': batch_size,
             'tokenizer_oov': tokenizer_oov,
+            'worker_preprocess': worker_preprocess,
+            'preprocessor_prompt_config': self._preprocessor_prompt_config,
+            'max_seq_len': max_seq_len,
         }
         self._workers = []
         for _ in range(self._num_workers):
@@ -649,6 +696,7 @@ class FlashANSRDataset:
             self._available_slots_queue = None
             self._workers.clear()
             self._num_workers = 0
+            self._worker_preprocess_enabled = False
 
     def iterate(
         self,
@@ -656,10 +704,11 @@ class FlashANSRDataset:
         steps: int | None = None,
         batch_size: int | None = None,
         n_support: int | None = None,
-        max_seq_len: int = 128,
+        max_seq_len: int = 512,
         max_n_support: int | None = None,
         n_per_equation: int = 1,
         preprocess: bool = False,
+        preprocess_in_worker: bool | None = None,
         tokenizer_oov: Literal['unk', 'raise'] = 'raise',
         num_workers: int | None = None,
         prefetch_factor: int = 2,
@@ -692,6 +741,11 @@ class FlashANSRDataset:
         preprocess:
             When ``True`` apply the optional ``preprocessor`` before yielding
             each batch.
+        preprocess_in_worker:
+            When ``True`` and ``preprocess`` is enabled, execute preprocessing
+            inside producer workers instead of the main process. When omitted,
+            worker-side preprocessing is enabled automatically if a
+            preprocessor is configured for the dataset.
         num_workers:
             Override for the number of producer processes. Defaults to CPU
             count.
@@ -718,6 +772,29 @@ class FlashANSRDataset:
 
         tqdm_kwargs = dict(tqdm_kwargs) if tqdm_kwargs else {}
 
+        use_worker_preprocess = False
+        if preprocess:
+            if self.preprocessor is None:
+                if preprocess_in_worker:
+                    warnings.warn(
+                        "worker preprocessing requested but no preprocessor configured; falling back to main process.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+            else:
+                if preprocess_in_worker is None:
+                    use_worker_preprocess = True
+                else:
+                    use_worker_preprocess = bool(preprocess_in_worker)
+
+        if self._is_initialized and self._worker_preprocess_enabled != use_worker_preprocess:
+            raise RuntimeError(
+                "Cannot switch worker preprocessing mode while workers are active."
+                " Call `dataset.shutdown()` before iterating with a new mode."
+            )
+
+        self._worker_preprocess_enabled = use_worker_preprocess
+
         if self.data is not None:
             precompiled_kwargs = tqdm_kwargs.copy()
             precompiled_kwargs.setdefault('desc', "Iterating over pre-compiled dataset")
@@ -739,7 +816,8 @@ class FlashANSRDataset:
             max_seq_len=max_seq_len,
             max_n_support=max_n_support,
             num_workers=num_workers,
-            tokenizer_oov=tokenizer_oov
+            tokenizer_oov=tokenizer_oov,
+            worker_preprocess=use_worker_preprocess,
         )
         pool_size = self._num_workers * prefetch_factor
 
@@ -767,24 +845,37 @@ class FlashANSRDataset:
 
                 # Construct batch
                 metadata_and_constants = self._metadata_pool[completed_slot_idx]
+                metadata_batch = metadata_and_constants['metadata']
+                metadata_fields: dict[str, list[Any]] = {}
+                if metadata_batch:
+                    for key in metadata_batch[0]:
+                        metadata_fields[key] = [entry[key] for entry in metadata_batch]
+
                 batch_dict = {
                     'x_tensors': torch.from_numpy(self._pools['x_tensors'][completed_slot_idx]),
                     'y_tensors': torch.from_numpy(self._pools['y_tensors'][completed_slot_idx]),
                     'data_attn_mask': torch.from_numpy(self._pools['data_attn_mask'][completed_slot_idx]).to(torch.bool),
                     'input_ids': torch.from_numpy(self._pools['input_ids'][completed_slot_idx]),
                     'constants': [torch.from_numpy(c) for c in metadata_and_constants['constants']],
-                    **{k: [d[k] for d in metadata_and_constants['metadata']] for k in metadata_and_constants['metadata'][0]}
                 }
+                batch_dict.update(metadata_fields)
+
+                preprocessed_batch = metadata_and_constants.get('preprocessed')
+                if preprocess:
+                    if use_worker_preprocess:
+                        if preprocessed_batch is not None:
+                            self._inject_preprocessed_fields(batch_dict, preprocessed_batch)
+                        elif self.preprocessor:
+                            batch_dict = self.preprocessor.format(batch_dict)
+                    elif self.preprocessor:
+                        batch_dict = self.preprocessor.format(batch_dict)
 
                 if persistent:
                     # Clone tensors so that downstream consumers can mutate them
                     # without influencing the shared-memory buffers.
                     batch_dict = {k: v.clone() if isinstance(v, torch.Tensor) else [t.clone() for t in v] if k == 'constants' else v for k, v in batch_dict.items()}  # type: ignore
 
-                if preprocess and self.preprocessor:
-                    yield self.preprocessor.format(batch_dict)
-                else:
-                    yield batch_dict
+                yield batch_dict
 
                 pbar.update(1)
 

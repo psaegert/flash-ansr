@@ -13,8 +13,8 @@ preprocessor:
         actual_terms:
           distribution: uniform_int
           params:
-            low: 12
-            high: 36
+            low: 1
+            high: 2
         generated_terms:
           distribution: uniform_int
           params:
@@ -34,8 +34,8 @@ preprocessor:
         count:
           distribution: uniform_int
           params:
-            low: 0
-            high: 3
+            low: 1
+            high: 2
         length:
           distribution: triangular
           params:
@@ -49,8 +49,8 @@ preprocessor:
         count:
           distribution: uniform_int
           params:
-            low: 0
-            high: 4
+            low: 1
+            high: 2
         length:
           distribution: triangular
           params:
