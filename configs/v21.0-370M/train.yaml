@@ -26,5 +26,5 @@ gradient_checkpointing: False
 wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
-steps: 2_000_000
+steps: 3_000_000
 device: cuda
