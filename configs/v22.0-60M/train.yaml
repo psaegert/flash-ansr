@@ -27,5 +27,5 @@ preprocess: true
 wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
-steps: 8_000_000
+steps: 10_000_000
 device: cuda
