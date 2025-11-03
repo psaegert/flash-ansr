@@ -63,7 +63,7 @@ Symbolic Regression has been approached with many different methods and paradigm
 - `64` GB Storage (subject to change)
 
 ## Software
-- Python $\geq$ 3.11
+- Python $\geq$ 3.10
 - `pip` $\geq$ 21.3 with PEP 660 (see https://pip.pypa.io/en/stable/news/#v21-3)
 - (Ubuntu 22.04.3 LTS)
 
@@ -102,8 +102,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import FlashANSR, GenerationConfig, install_model, get_path
 
 # Specify the model
-# Here: https://huggingface.co/psaegert/flash-ansr-v7.20
-MODEL = "psaegert/flash-ansr-v7.20"
+# Here: https://huggingface.co/psaegert/flash-ansr-v21.0-60M
+MODEL = "psaegert/flash-ansr-v21.0-60M"
 
 # Download the latest snapshot of the model
 # By default, the model is downloaded to the directory `./models/` in the package root
@@ -142,7 +142,6 @@ Use, copy or modify a config in `./configs`:
 ├── my_config
 │   ├── dataset_train.yaml          # Link to skeleton pool and padding for training
 │   ├── dataset_val.yaml            # Link to skeleton pool and padding for validation
-│   ├── evaluation.yaml             # Evaluation settings
 │   ├── tokenizer.yaml              # Tokenizer settings
 │   ├── model.yaml                  # Model settings and link to simplipy engine
 │   ├── skeleton_pool_train.yaml    # Sampling and holdout settings for training
@@ -150,10 +149,12 @@ Use, copy or modify a config in `./configs`:
 │   └── train.yaml                  # Data and schedule for training
 ```
 
-Run the training and evaluation pipeline with
+Use the helper scripts to import data, build validation sets, and kick off training:
 
 ```sh
-./scripts/run.sh my_config
+./scripts/import_test_sets.sh                     # optional, required only once per checkout
+./scripts/generate_validation_set.sh my_config    # prepares validation skeletons
+./scripts/train.sh my_config                      # trains using configs/my_config
 ```
 
 For more information see below.
@@ -185,9 +186,9 @@ git clone https://huggingface.co/psaegert/ansr-data data/ansr-data
 External datasets must be imported into the ANSR format:
 
 ```sh
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/soose_nc/nc.csv" -p "soose" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/feynman/FeynmanEquations.csv" -p "feynman" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/nguyen/nguyen.csv" -p "nguyen" -e "{{ROOT}}/configs/test_set/expression_space.yaml" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/soose_nc/nc.csv" -p "soose" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/feynman/FeynmanEquations.csv" -p "feynman" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/nguyen/nguyen.csv" -p "nguyen" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool" -v
 ```
 
 with
@@ -196,7 +197,7 @@ with
 
 - `-p` the name of the parser implemented in `./src/flash_ansr/compat/convert_data.py`
 
-- `-e` the expression space
+- `-e` the SimpliPy engine version to use for simplification
 
 - `-b` the config of a base skeleton pool to add the data to
 
@@ -209,7 +210,6 @@ This will create and save a skeleton pool with the parsed imported skeletons in 
 ```sh
 ./data/ansr-data/test_set/<test_set>
 └── skeleton_pool
-    ├── expression_space.yaml
     ├── skeleton_pool.yaml
     └── skeletons.pkl
 ```
@@ -275,18 +275,34 @@ cd NeuralSymbolicRegressionThatScales
 pip install -e src/
 pip install lightning
 ```
-1. Navigate back to this repository and run the evaluation
+6. Navigate back to this repository and run the evaluation via the CLI
 ```sh
-cd flash-ansr
-./scripts/evaluate_nesymres <test_set>
+flash_ansr evaluate-nesymres \
+  -ce "/path/to/NeuralSymbolicRegressionThatScales/configs/<eq_setting>.yaml" \
+  -cm "/path/to/NeuralSymbolicRegressionThatScales/configs/<model>.yaml" \
+  -c "{{ROOT}}/configs/${CONFIG}/evaluation.yaml" \
+  -m "{{ROOT}}/models/nesymres/100M" \
+  -d "{{ROOT}}/data/ansr-data/test_set/<test_set>/dataset.yaml" \
+  -e "dev_7-3" \
+  -n 5000 \
+  -o "{{ROOT}}/results/evaluation/${CONFIG}/nesymres_<test_set>.pickle" \
+  -v
 ```
+Adjust the `-ce`, `-cm`, and `-m` arguments to point at the files produced by your NeSymReS checkout. Run `flash_ansr evaluate-nesymres -h` for the complete list of options.
 
 #### 4.2 Evaluate PySR
 1. Install [PySR](https://github.com/MilesCranmer/PySR) in the same environment as flash-ansr.
-2. Run the evaluation
+2. Run the evaluation using the built-in CLI
 ```sh
-./scripts/evaluate_pysr <test_set>
+flash_ansr evaluate-pysr \
+  -c "{{ROOT}}/configs/${CONFIG}/evaluation.yaml" \
+  -d "{{ROOT}}/data/ansr-data/test_set/<test_set>/dataset.yaml" \
+  -e "dev_7-3" \
+  -n 5000 \
+  -o "{{ROOT}}/results/evaluation/${CONFIG}/pysr_<test_set>.pickle" \
+  -v
 ```
+Use `flash_ansr evaluate-pysr -h` to discover additional flags (for example to change the sample count).
 
 # Development
 
@@ -309,7 +325,7 @@ Test the package with `./scripts/pytest.sh`. Run pylint with `./scripts/pylint.s
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.3.0},
+    version = {0.4.0},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```

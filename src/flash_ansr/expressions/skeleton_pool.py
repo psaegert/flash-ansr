@@ -4,7 +4,7 @@ import random
 import pickle
 
 from types import CodeType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
@@ -36,8 +36,8 @@ class SkeletonPool:
         The prior distribution for the support points.
     n_support_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the number of support points.
-    holdout_pools : list[SkeletonPool] or None, optional
-        A list of SkeletonPools (i.e. sets of skeletons) to exclude from sampling.
+    holdout_pools : Sequence[SkeletonPool | str] or None, optional
+        SkeletonPools or paths to pools to exclude when sampling.
     allow_nan : bool, optional
         Whether to allow NaNs in the support points.
     simplify : bool, optional
@@ -54,7 +54,7 @@ class SkeletonPool:
             n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
             variables: list[str],
             operator_weights: dict[str, float] | None = None,
-            holdout_pools: list["SkeletonPool"] | None = None,
+            holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
             simplify: bool = True) -> None:
         self.simplipy_engine = simplipy_engine
@@ -63,13 +63,12 @@ class SkeletonPool:
         self.n_variables = len(self.variables)
         self.operator_weights = operator_weights or {op: 1.0 for op in self.simplipy_engine.operator_arity.keys()}
 
-        np.random.default_rng(seed=0)
         self.holdout_X = np.random.uniform(-10, 10, (512, 100))  # HACK: Hardcoded large number that is sliced as needed
         self.holdout_C = np.random.uniform(-10, 10, (100,))
         self.holdout_y: set[tuple] = set()
         self.holdout_skeletons: set[tuple[str, ...]] = set()
 
-        self.holdout_pools: list["SkeletonPool"] = []
+        self.holdout_pools: list["SkeletonPool | str"] = []
         for holdout_pool in holdout_pools or []:
             self.register_holdout_pool(holdout_pool)
 
@@ -212,7 +211,7 @@ class SkeletonPool:
             variables: list[str],
             operator_weights: dict[str, float] | None = None,
             skeleton_codes: dict[tuple[str], tuple[CodeType, list[str]]] | None = None,
-            holdout_pools: list["SkeletonPool"] | None = None,
+            holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
             simplify: bool = True) -> "SkeletonPool":
         '''
@@ -238,8 +237,8 @@ class SkeletonPool:
             A dictionary mapping operators to their weights.
         skeleton_codes : dict[tuple[str], tuple[CodeType, list[str]]] or None, optional
             A dictionary mapping skeletons to their compiled codes.
-        holdout_pools : list[SkeletonPool] or None, optional
-            A list of SkeletonPools (i.e. sets of skeletons) to exclude from sampling.
+        holdout_pools : Sequence[SkeletonPool | str] or None, optional
+            SkeletonPools or paths to pools to exclude when sampling.
         allow_nan : bool, optional
             Whether to allow NaNs in the support points.
         simplify : bool, optional
@@ -259,7 +258,7 @@ class SkeletonPool:
             n_support_prior=n_support_prior,
             variables=variables,
             operator_weights=operator_weights,
-            holdout_pools=holdout_pools or [],
+            holdout_pools=holdout_pools,
             allow_nan=allow_nan,
             simplify=simplify
         )
@@ -349,8 +348,6 @@ class SkeletonPool:
 
         # Evaluate the expression and check if its image is in the holdout images (functional equivalence)
         f = self.simplipy_engine.code_to_lambda(code)
-
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
         try:
             expression_image = safe_f(f, self.holdout_X[:, :self.n_variables], self.holdout_C[:len(constants)]).round(4)
             expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
@@ -413,31 +410,41 @@ class SkeletonPool:
 
         return flatten_nested_list(stack)[::-1]
 
-    def register_holdout_pool(self, holdout_pool: "SkeletonPool") -> None:
+    def register_holdout_pool(self, holdout_pool: "SkeletonPool | str") -> None:
         '''
         Register a holdout pool to exclude from sampling: Cache the skeletons and their images to compare against when sampling.
 
         Parameters
         ----------
         holdout_pool : SkeletonPool or str
-            The holdout pool to register.
+            The holdout pool object or path to register.
         '''
         if isinstance(holdout_pool, str):
-            _, holdout_pool = SkeletonPool.load(holdout_pool)
+            if holdout_pool in self.holdout_pools:
+                return
 
-        for skeleton in holdout_pool.skeletons:
+            _, holdout_pool_obj = SkeletonPool.load(holdout_pool)
+            self.holdout_pools.append(holdout_pool)
+        else:
+            if any(existing is holdout_pool for existing in self.holdout_pools if not isinstance(existing, str)):
+                return
+
+            holdout_pool_obj = holdout_pool
+            self.holdout_pools.append(holdout_pool_obj)
+
+        for skeleton in holdout_pool_obj.skeletons:
             # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = holdout_pool.remove_num(skeleton)
-            executable_prefix_expression = holdout_pool.simplipy_engine.operators_to_realizations(no_constant_expression)
+            no_constant_expression = holdout_pool_obj.remove_num(skeleton)
+            executable_prefix_expression = holdout_pool_obj.simplipy_engine.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
-            code_string = holdout_pool.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, holdout_pool.variables + constants)
+            code_string = holdout_pool_obj.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, holdout_pool_obj.variables + constants)
 
             # Evaluate the Expression and store the result
-            f = holdout_pool.simplipy_engine.code_to_lambda(code)
+            f = holdout_pool_obj.simplipy_engine.code_to_lambda(code)
             warnings.filterwarnings("ignore", category=RuntimeWarning)
             try:
-                expression_image = safe_f(f, self.holdout_X[:, :holdout_pool.n_variables], self.holdout_C[:len(constants)]).round(4)
+                expression_image = safe_f(f, self.holdout_X[:, :holdout_pool_obj.n_variables], self.holdout_C[:len(constants)]).round(4)
                 expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
             except OverflowError:
                 self.holdout_skeletons.add(tuple(no_constant_expression))

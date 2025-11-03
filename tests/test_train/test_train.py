@@ -10,6 +10,7 @@ from unittest import mock
 import torch
 
 from flash_ansr import SkeletonPool, get_path
+from flash_ansr.utils import load_config
 from flash_ansr.train import Trainer
 
 
@@ -97,7 +98,6 @@ def _build_dummy_trainer() -> Trainer:
     trainer._prompt_token_ids = {"complexity": None}
     trainer.prompt_combo_counts = Counter()
     trainer.prompt_total_samples = 0
-    trainer._apply_prompt_mask = lambda batch: None
     trainer._update_total_pflops = lambda **_: None
     trainer._log_metrics = lambda *args, **kwargs: None
     return trainer
@@ -136,3 +136,83 @@ def test_train_step_skips_prompt_statistics_when_preprocess_disabled() -> None:
         trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=False)
 
     spy.assert_not_called()
+
+
+def test_train_step_logs_numeric_loss_for_constant_tokens() -> None:
+    trainer_config = load_config(get_path('configs', 'test', 'train.yaml'))
+    model_config = load_config(get_path('configs', 'test', 'model.yaml'))
+    model_config['use_numeric_head'] = True
+    trainer_config['model'] = model_config
+    trainer_config['train_dataset'] = get_path('configs', 'test', 'dataset_train.yaml')
+    trainer_config['val_dataset'] = get_path('configs', 'test', 'dataset_val.yaml')
+
+    trainer = Trainer.from_config(trainer_config)
+    trainer.device = torch.device('cpu')
+    trainer.model.to(trainer.device)
+    trainer.scaler = torch.amp.GradScaler(enabled=False)
+    trainer.gradient_accumulation_steps = 1
+
+    tokenizer = trainer.model.tokenizer
+    input_tokens = [
+        tokenizer['<bos>'],
+        tokenizer['<expression>'],
+        tokenizer['*'],
+        tokenizer['x1'],
+        tokenizer['<constant>'],
+        tokenizer['</expression>'],
+        tokenizer['<eos>'],
+    ]
+
+    support_points = 4
+    n_variables = trainer.model.encoder_max_n_variables - 1
+    x_support = torch.zeros((support_points, n_variables), dtype=torch.float32)
+    x_support[:, 0] = torch.linspace(-1.0, 1.0, steps=support_points)
+    y_support = (2.0 * x_support[:, 0]).unsqueeze(-1)
+    data_attn_mask = torch.ones((1, support_points), dtype=torch.bool)
+
+    raw_batch = {
+        'input_ids': [input_tokens],
+        'x_tensors': [x_support],
+        'y_tensors': [y_support],
+        'constants': [torch.tensor([2.0], dtype=torch.float32)],
+        'data_attn_mask': data_attn_mask,
+        'prompt_metadata': [{}],
+    }
+
+    trainer.train_dataset._ensure_numeric_channel(raw_batch)
+    collated_batch = trainer.train_dataset.collate(raw_batch, device=trainer.device)
+    trainer._apply_prompt_mask = lambda batch: None
+
+    metrics_spy = mock.Mock()
+    trainer._log_metrics = metrics_spy  # type: ignore[assignment]
+
+    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
+        trainer._train_step(batch=collated_batch, step=0, preprocess=False)
+
+    metrics_spy.assert_called_once()
+    numeric_loss = metrics_spy.call_args.args[-1]
+    assert numeric_loss is not None
+    assert numeric_loss >= 0.0
+
+
+def test_apply_prompt_mask_sets_ignore_indices() -> None:
+    trainer = _build_dummy_trainer()
+    trainer.device = torch.device('cpu')
+
+    labels = torch.tensor([[10, 11, 12, 13]], dtype=torch.long)
+    prompt_mask = torch.tensor([[False, True, False, True, False]], dtype=torch.bool)
+
+    batch = {
+        'labels': labels.clone(),
+        'prompt_mask': prompt_mask,
+    }
+
+    trainer._apply_prompt_mask(batch)
+
+    updated_labels = batch['labels']
+    assert updated_labels.shape == labels.shape
+    assert updated_labels[0, 0] == trainer.metrics_ignore_index
+    assert updated_labels[0, 1] == 11
+    assert updated_labels[0, 2] == trainer.metrics_ignore_index
+    assert updated_labels[0, 3] == 13
+    assert batch['prompt_mask'].dtype == torch.bool

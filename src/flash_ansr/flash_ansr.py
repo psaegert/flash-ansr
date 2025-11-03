@@ -1,6 +1,8 @@
 import os
 import copy
+import math
 import numbers
+import re
 from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Optional, Sequence
 import warnings
 
@@ -19,10 +21,12 @@ from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocess import FlashANSRPreprocessor
 
+_CONSTANT_TOKEN_PATTERN = re.compile(r"C_\d+")
+
 
 class Result(TypedDict):
     refiner: Refiner
-    numeric_prediction: torch.Tensor | None
+    numeric_prediction: torch.Tensor | np.ndarray | None
     beam: list[int]
     log_prob: float
     expression: list[str]
@@ -132,6 +136,7 @@ class FlashANSR(BaseEstimator):
         self._prompt_prefix_numeric: list[float] | None = None
         self._prompt_prefix_mask: list[bool] | None = None
         self._prompt_metadata: dict[str, list[list[str]]] | None = None
+        self._generated_numeric_sequences = None  # type: Optional[list[list[float]]]
 
     @classmethod
     def load(
@@ -329,6 +334,7 @@ class FlashANSR(BaseEstimator):
             If an unsupported generation method is requested.
         """
         self._mcts_cache = {}
+        self._generated_numeric_sequences = None
 
         match self.generation_config.method:
             case 'beam_search':
@@ -339,6 +345,7 @@ class FlashANSR(BaseEstimator):
                     initial_tokens=prompt_tokens,
                     input_num=prompt_numeric,
                     **self.generation_config)
+                self._generated_numeric_sequences = self.flash_ansr_transformer.get_latest_numeric_sequences()
                 rewards = [float('nan')] * len(beams)
                 return beams, log_probs, completed, rewards
             case 'softmax_sampling':
@@ -349,6 +356,7 @@ class FlashANSR(BaseEstimator):
                     initial_tokens=prompt_tokens,
                     input_num=prompt_numeric,
                     **self.generation_config)
+                self._generated_numeric_sequences = self.flash_ansr_transformer.get_latest_numeric_sequences()
                 rewards = [float('nan')] * len(beams)
                 return beams, log_probs, completed, rewards
             case 'mcts':
@@ -445,10 +453,50 @@ class FlashANSR(BaseEstimator):
                     input_num=prompt_numeric,
                 )
 
+                self._generated_numeric_sequences = self.flash_ansr_transformer.get_latest_numeric_sequences()
                 self._mcts_cache = refiner_cache
                 return beams, log_probs, completed, rewards
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
+
+    def _extract_numeric_prediction(self, raw_beam: list[int], numeric_sequence: list[float]) -> np.ndarray | None:
+        """Derive constant initial guesses from a generated numeric sequence."""
+        if numeric_sequence is None:
+            return None
+
+        try:
+            expression_tokens, before, _ = self.tokenizer.extract_expression_from_beam(raw_beam)
+        except ValueError:
+            expression_tokens = list(raw_beam)
+            before = []
+
+        start_idx = len(before)
+        expr_numeric = list(numeric_sequence[start_idx:start_idx + len(expression_tokens)])
+
+        if len(expr_numeric) < len(expression_tokens):
+            expr_numeric.extend([float('nan')] * (len(expression_tokens) - len(expr_numeric)))
+        elif len(expr_numeric) > len(expression_tokens):
+            expr_numeric = expr_numeric[:len(expression_tokens)]
+
+        constant_values: list[float] = []
+        expected_constants = 0
+
+        for token_id, numeric_value in zip(expression_tokens, expr_numeric):
+            token_str = self.tokenizer[int(token_id)]
+            if token_str == '<constant>' or _CONSTANT_TOKEN_PATTERN.match(token_str):
+                expected_constants += 1
+                if math.isfinite(numeric_value):
+                    constant_values.append(float(numeric_value))
+                else:
+                    return None
+
+        if expected_constants == 0:
+            return None
+
+        if len(constant_values) != expected_constants:
+            return None
+
+        return np.asarray(constant_values, dtype=float)
 
     def fit(
             self,
@@ -611,13 +659,20 @@ class FlashANSR(BaseEstimator):
                 raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
                 beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
-                # Fit the refiner to each beam
-                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams), smoothing=0.0):
-                    if self.simplipy_engine.is_valid(beam_decoded):
-                        numeric_prediction = None
+                numeric_sequences = self._generated_numeric_sequences or []
 
-                        if self.numeric_head:
-                            raise NotImplementedError("Numeric head is not yet implemented")
+                # Fit the refiner to each beam
+                beam_iterator = zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs)
+                for idx, (raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob) in enumerate(
+                        tqdm(beam_iterator, desc="Fitting Constants", disable=not verbose, total=len(beams), smoothing=0.0)):
+                    if self.simplipy_engine.is_valid(beam_decoded):
+                        numeric_prediction: np.ndarray | None = None
+
+                        if self.numeric_head and idx < len(numeric_sequences):
+                            numeric_sequence = numeric_sequences[idx]
+                            numeric_prediction = self._extract_numeric_prediction(raw_beam, numeric_sequence)
+                            if numeric_prediction is not None:
+                                numeric_prediction = numeric_prediction.astype(np.float32)
 
                         try:
                             refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
@@ -648,7 +703,7 @@ class FlashANSR(BaseEstimator):
                                 'expression': beam_decoded,
                                 'complexity': len(beam_decoded),
                                 'target_complexity': complexity,
-                                'numeric_prediction': numeric_prediction,
+                                'numeric_prediction': numeric_prediction.copy() if isinstance(numeric_prediction, np.ndarray) else None,
                                 'raw_beam': raw_beam,
                                 'beam': beam,    # type: ignore
                                 'raw_beam_decoded': raw_beam_decoded,

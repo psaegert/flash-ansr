@@ -1,11 +1,13 @@
 """Utilities for generating and managing Flash-ANSR training datasets."""
 
 import copy
+import math
 import os
 import random
+import re
 import warnings
 import time
-from typing import Any, Generator, Literal
+from typing import Any, Generator, Literal, Sequence
 import signal
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -24,6 +26,8 @@ from flash_ansr.utils import load_config, save_config, substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.utils import substitude_constants
 from flash_ansr.preprocess import FlashANSRPreprocessor
+
+_CONSTANT_TOKEN_PATTERN = re.compile(r"C_\\d+")
 
 
 class FlashANSRDataset:
@@ -246,6 +250,80 @@ class FlashANSRDataset:
             (0, max_length - len(sequence)),
             value=pad_value
         )
+
+    def _build_numeric_sequences(
+        self,
+        input_ids: Sequence[Sequence[int]] | torch.Tensor,
+        constants: Sequence[torch.Tensor | Sequence[float]],
+    ) -> list[list[float]]:
+        sequences: list[list[float]] = []
+        for seq_tensor, const_tensor in zip(input_ids, constants):
+            if isinstance(seq_tensor, torch.Tensor):
+                seq_list = seq_tensor.tolist()
+            else:
+                seq_list = list(seq_tensor)
+
+            tokens = [self.tokenizer[int(token)] for token in seq_list]
+
+            if isinstance(const_tensor, torch.Tensor):
+                const_values = [float(value) for value in const_tensor.tolist()]
+            else:
+                const_values = [float(value) for value in const_tensor]
+
+            const_index = 0
+            numeric_seq: list[float] = []
+
+            for token in tokens:
+                if token == '<pad>':
+                    numeric_seq.append(float('nan'))
+                    continue
+
+                if token == '<constant>' or _CONSTANT_TOKEN_PATTERN.match(token):
+                    if const_index < len(const_values):
+                        numeric_seq.append(const_values[const_index])
+                        const_index += 1
+                    else:
+                        numeric_seq.append(float('nan'))
+                else:
+                    numeric_seq.append(float('nan'))
+
+            sequences.append(numeric_seq)
+
+        return sequences
+
+    def _ensure_numeric_channel(self, batch: dict[str, Any]) -> None:
+        input_ids = batch.get('input_ids')
+        constants = batch.get('constants')
+
+        if input_ids is None or constants is None:
+            return
+
+        computed_numeric = self._build_numeric_sequences(input_ids, constants)
+
+        existing_numeric = batch.get('input_num')
+        if existing_numeric is None:
+            batch['input_num'] = computed_numeric
+            return
+
+        if isinstance(existing_numeric, torch.Tensor):
+            existing_list = existing_numeric.tolist()
+        else:
+            existing_list = [[float(value) if value is not None else float('nan') for value in seq] for seq in existing_numeric]
+
+        merged: list[list[float]] = []
+        for existing_seq, computed_seq in zip(existing_list, computed_numeric):
+            existing_copy = list(existing_seq)
+            if len(existing_copy) < len(computed_seq):
+                existing_copy.extend([float('nan')] * (len(computed_seq) - len(existing_copy)))
+            merged_seq: list[float] = []
+            for idx, computed_val in enumerate(computed_seq):
+                if math.isnan(computed_val):
+                    merged_seq.append(float(existing_copy[idx]) if idx < len(existing_copy) else float('nan'))
+                else:
+                    merged_seq.append(computed_val)
+            merged.append(merged_seq)
+
+        batch['input_num'] = merged
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = 'cpu') -> dict[str, Any]:
         """Pad, stack, and post-process a dataloader batch in-place.
@@ -869,6 +947,8 @@ class FlashANSRDataset:
                             batch_dict = self.preprocessor.format(batch_dict)
                     elif self.preprocessor:
                         batch_dict = self.preprocessor.format(batch_dict)
+
+                self._ensure_numeric_channel(batch_dict)
 
                 if persistent:
                     # Clone tensors so that downstream consumers can mutate them
