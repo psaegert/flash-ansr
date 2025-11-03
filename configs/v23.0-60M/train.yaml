@@ -9,9 +9,9 @@ optimizer:
 
 lr_schedule:
   - [0, 0.0]
-  - [1_000_000, 1e-4]  # 10% of steps warmup
-  - [8_000_000, 1e-4]
-  - [10_000_000, 0.0]  # 20% of steps cooldown
+  - [500_000, 1e-4]  # 10% of steps warmup
+  - [4_000_000, 1e-4]
+  - [5_000_000, 0.0]  # 20% of steps cooldown
 
 batch_size: 128
 
@@ -27,6 +27,6 @@ preprocess: true
 wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
-steps: 10_000_000
+steps: 5_000_000
 device: cuda
-numeric_loss_weight: 1
+numeric_loss_weight: 0.05

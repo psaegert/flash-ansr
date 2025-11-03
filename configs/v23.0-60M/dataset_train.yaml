@@ -7,7 +7,7 @@ preprocessor:
       max_random_term_attempts: 64
       prompt_probability: 0.5
       complexity:
-        probability: 0.5
+        probability: 1
       allowed_terms:
         probability: 0
         actual_terms:
@@ -30,7 +30,7 @@ preprocessor:
         max_relative_length: 0.45
         force_expression_term: false
       include_terms:
-        probability: 0.5
+        probability: 0
         count:
           distribution: uniform_int
           params:
@@ -45,7 +45,7 @@ preprocessor:
         min_length: 1
         max_relative_length: 0.45
       exclude_terms:
-        probability: 0.5
+        probability: 0
         count:
           distribution: uniform_int
           params:
