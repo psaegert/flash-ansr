@@ -10,7 +10,6 @@ from unittest import mock
 import torch
 
 from flash_ansr import SkeletonPool, get_path
-from flash_ansr.utils import load_config
 from flash_ansr.train import Trainer
 
 
@@ -31,7 +30,7 @@ class TestTrain(unittest.TestCase):
     @mock.patch('wandb.init')
     @mock.patch('wandb.log')
     def test_train(self, mock_log, mock_init):
-        trainer = Trainer.from_config(get_path('configs', 'test', 'train.yaml'))
+        trainer = Trainer.from_config(get_path('configs', 'test', 'train_no_numeric_head.yaml'))
 
         steps = 2
         device = 'cpu'
@@ -49,6 +48,17 @@ class TestTrain(unittest.TestCase):
             wandb_mode="disabled",
             validate_size=10,
             validate_interval=1)
+
+        trainer.train_dataset.shutdown()
+        trainer.val_dataset.shutdown()
+
+    @mock.patch('wandb.init')
+    @mock.patch('wandb.log')
+    def test_train_numeric_head_initialises(self, mock_log, mock_init):
+        trainer = Trainer.from_config(get_path('configs', 'test', 'train_numeric_head.yaml'))
+        assert trainer.model.use_numeric_head is True
+        trainer.train_dataset.shutdown()
+        trainer.val_dataset.shutdown()
 
 
 class _DummyDataset:
@@ -139,14 +149,7 @@ def test_train_step_skips_prompt_statistics_when_preprocess_disabled() -> None:
 
 
 def test_train_step_logs_numeric_loss_for_constant_tokens() -> None:
-    trainer_config = load_config(get_path('configs', 'test', 'train.yaml'))
-    model_config = load_config(get_path('configs', 'test', 'model.yaml'))
-    model_config['use_numeric_head'] = True
-    trainer_config['model'] = model_config
-    trainer_config['train_dataset'] = get_path('configs', 'test', 'dataset_train.yaml')
-    trainer_config['val_dataset'] = get_path('configs', 'test', 'dataset_val.yaml')
-
-    trainer = Trainer.from_config(trainer_config)
+    trainer = Trainer.from_config(get_path('configs', 'test', 'train_numeric_head.yaml'))
     trainer.device = torch.device('cpu')
     trainer.model.to(trainer.device)
     trainer.scaler = torch.amp.GradScaler(enabled=False)
@@ -193,6 +196,9 @@ def test_train_step_logs_numeric_loss_for_constant_tokens() -> None:
     numeric_loss = metrics_spy.call_args.args[-1]
     assert numeric_loss is not None
     assert numeric_loss >= 0.0
+
+    trainer.train_dataset.shutdown()
+    trainer.val_dataset.shutdown()
 
 
 def test_apply_prompt_mask_sets_ignore_indices() -> None:

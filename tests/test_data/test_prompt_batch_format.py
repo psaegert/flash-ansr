@@ -52,12 +52,12 @@ def test_collate_preserves_prompt_metadata_alignment() -> None:
     batch = copy.deepcopy(raw_batch)
     collated = dataset.collate(batch, device='cpu')
 
-    assert tuple(collated['input_ids'].shape) == (2, 3)
-    assert tuple(collated['prompt_mask'].shape) == (2, 3)
-    assert collated['labels'].shape == (2, 2)
+    assert tuple(collated['input_ids'].shape) == (2, 4)
+    assert tuple(collated['prompt_mask'].shape) == (2, 4)
+    assert collated['labels'].shape == (2, 3)
     assert not collated['prompt_mask'][0, 0].item()
     assert collated['prompt_mask'][0, 2].item()
-    assert not collated['prompt_mask'][1, 2].item()  # padding introduced for shorter sample
+    assert not collated['prompt_mask'][1, 2:].any()
 
     assert collated['labels'][0].tolist() == collated['input_ids'][0, 1:].tolist()
     assert collated['labels'][1].tolist() == collated['input_ids'][1, 1:].tolist()

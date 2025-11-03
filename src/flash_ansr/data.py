@@ -251,6 +251,12 @@ class FlashANSRDataset:
             value=pad_value
         )
 
+    @staticmethod
+    def _next_power_of_two(value: int) -> int:
+        if value <= 1:
+            return 1
+        return 1 << (value - 1).bit_length()
+
     def _build_numeric_sequences(
         self,
         input_ids: Sequence[Sequence[int]] | torch.Tensor,
@@ -344,17 +350,61 @@ class FlashANSRDataset:
             The normalized batch dictionary with additional fields ``labels`` and
             ``expression_ids``.
         """
-        # 1. Pad and stack 'input_ids' (variable-length sequences)
-        # We handle this first because it's a list of lists.
+        pad_token_id = self.tokenizer['<pad>']
+
+        def _adjust_length(tensor: torch.Tensor, target_length: int, pad_value: Any) -> torch.Tensor:
+            if tensor.size(1) == target_length:
+                return tensor
+            if tensor.size(1) > target_length:
+                return tensor[:, :target_length, ...]
+            pad_shape = (tensor.size(0), target_length - tensor.size(1), *tensor.shape[2:])
+            pad_tensor = torch.full(pad_shape, pad_value, dtype=tensor.dtype, device=tensor.device)
+            return torch.cat([tensor, pad_tensor], dim=1)
+
         if isinstance(batch['input_ids'][0], list):
-            max_length_input_ids = max(len(seq) for seq in batch['input_ids'])
+            token_lengths = [len(seq) for seq in batch['input_ids']]
+        else:
+            token_mask = batch['input_ids'] != pad_token_id
+            if token_mask.ndim == 1:
+                token_lengths = [int(token_mask.sum().item())]
+            else:
+                token_lengths = [int(length) for length in token_mask.sum(dim=1).tolist()]
+
+        numeric_lengths: list[int] = []
+        if 'input_num' in batch:
+            if isinstance(batch['input_num'][0], list):
+                numeric_lengths = [len(seq) for seq in batch['input_num']]
+            else:
+                numeric_tensor = batch['input_num']
+                if numeric_tensor.dim() == 3:
+                    numeric_tensor = numeric_tensor.squeeze(-1)
+                numeric_mask = torch.isfinite(numeric_tensor)
+                numeric_lengths = [int(length) for length in numeric_mask.sum(dim=1).tolist()]
+
+        prompt_lengths: list[int] = []
+        if 'prompt_mask' in batch:
+            prompt_field = batch['prompt_mask']
+            if isinstance(prompt_field, list) and prompt_field:
+                prompt_lengths = [len(seq) for seq in prompt_field]
+            elif isinstance(prompt_field, torch.Tensor):
+                prompt_lengths = [prompt_field.shape[1]] * prompt_field.shape[0]
+
+        combined_lengths = token_lengths.copy() if token_lengths else []
+        combined_lengths.extend(numeric_lengths)
+        combined_lengths.extend(prompt_lengths)
+        max_sequence_length = max(combined_lengths) if combined_lengths else 1
+        token_bucket_length = self._next_power_of_two(max_sequence_length)
+
+        if isinstance(batch['input_ids'][0], list):
             padded_input_ids = [
-                self._pad_sequence(seq, max_length_input_ids, self.tokenizer['<pad>'], device=device, dtype=torch.long)
+                self._pad_sequence(seq, token_bucket_length, pad_token_id, device=device, dtype=torch.long)
                 for seq in batch['input_ids']
             ]
             batch['input_ids'] = torch.stack(padded_input_ids)
-        else:  # It's likely already a padded tensor
-            batch['input_ids'] = batch['input_ids'].to(device=device, dtype=torch.long)
+        else:
+            current_tensor = batch['input_ids'].to(device=device, dtype=torch.long)
+            token_bucket_length = min(token_bucket_length, current_tensor.size(1))
+            batch['input_ids'] = _adjust_length(current_tensor, token_bucket_length, pad_token_id)
 
         # 2. Stack dense tensors ('x_tensors', 'y_tensors')
         for k, dtype in [
@@ -365,6 +415,21 @@ class FlashANSRDataset:
             if isinstance(batch[k], list):
                 batch[k] = torch.stack(batch[k])
             batch[k] = batch[k].to(device=device, dtype=dtype)
+
+        if 'data_attn_mask' in batch:
+            batch['data_attn_mask'] = batch['data_attn_mask'].to(device=device, dtype=torch.bool)
+        else:
+            attn_shape = batch['x_tensors'].shape[:2]
+            batch['data_attn_mask'] = torch.ones(attn_shape, device=device, dtype=torch.bool)
+
+        support_lengths = batch['data_attn_mask'].sum(dim=1)
+        max_support_length = int(support_lengths.max().item()) if support_lengths.numel() > 0 else 1
+        support_bucket_length = self._next_power_of_two(max_support_length)
+        support_bucket_length = min(support_bucket_length, batch['x_tensors'].shape[1])
+        if support_bucket_length < batch['x_tensors'].shape[1]:
+            batch['x_tensors'] = batch['x_tensors'][:, :support_bucket_length, :]
+            batch['y_tensors'] = batch['y_tensors'][:, :support_bucket_length, :]
+            batch['data_attn_mask'] = batch['data_attn_mask'][:, :support_bucket_length]
 
         # 3. Handle 'constants' (ragged data)
         # Since constants have variable lengths, they CANNOT be stacked.
@@ -379,26 +444,31 @@ class FlashANSRDataset:
 
         # 4. Handle other optional fields
         if 'input_num' in batch:
+            target_length = token_bucket_length
             if isinstance(batch['input_num'][0], list):
-                max_length_input_num = max(len(seq) for seq in batch['input_num'])
                 padded_input_num = [
-                    self._pad_sequence(seq, max_length_input_num, torch.nan, device=device, dtype=torch.float32)
+                    self._pad_sequence(seq, target_length, torch.nan, device=device, dtype=torch.float32)
                     for seq in batch['input_num']
                 ]
                 batch['input_num'] = torch.stack(padded_input_num).unsqueeze(-1)
-            else:  # Already a tensor
-                batch['input_num'] = batch['input_num'].to(device=device, dtype=torch.float32)
+            else:
+                input_num_tensor = batch['input_num']
+                if input_num_tensor.dim() == 2:
+                    input_num_tensor = input_num_tensor.unsqueeze(-1)
+                input_num_tensor = input_num_tensor.to(device=device, dtype=torch.float32)
+                batch['input_num'] = _adjust_length(input_num_tensor, target_length, float('nan'))
 
         if 'prompt_mask' in batch:
+            target_length = token_bucket_length
             if isinstance(batch['prompt_mask'][0], list):
-                max_length_prompt_mask = max(len(seq) for seq in batch['prompt_mask'])
                 padded_prompt_masks = [
-                    self._pad_sequence(seq, max_length_prompt_mask, False, device=device, dtype=torch.bool)
+                    self._pad_sequence(seq, target_length, False, device=device, dtype=torch.bool)
                     for seq in batch['prompt_mask']
                 ]
                 batch['prompt_mask'] = torch.stack(padded_prompt_masks)
             else:
-                batch['prompt_mask'] = batch['prompt_mask'].to(device=device, dtype=torch.bool)
+                prompt_mask_tensor = batch['prompt_mask'].to(device=device, dtype=torch.bool)
+                batch['prompt_mask'] = _adjust_length(prompt_mask_tensor, target_length, False)
 
         if 'complexity' in batch:
             batch['complexity'] = [

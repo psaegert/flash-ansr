@@ -127,6 +127,7 @@ class FlashANSRModel(nn.Module):
             self.constant_value_head = nn.Sequential(
                 nn.Linear(decoder_model_dim, decoder_model_dim),
                 nn.GELU(),
+                nn.Dropout(p=decoder_dropout),
                 nn.Linear(decoder_model_dim, 1),
             )
         else:

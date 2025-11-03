@@ -247,12 +247,9 @@ class Trainer:
         self.device = torch.device(device)
         self.model.to(self.device)
 
-        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
         self.total_pflops = 0.0
 
         if verbose:
-            print(f"Padding sets to M_max = {self.max_set_size}")
-
             config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
             if config_value:
                 print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")
@@ -580,11 +577,10 @@ class Trainer:
                     constant_mask = (micro_batch['input_ids'] == self.constant_token_id) & torch.isfinite(numeric_targets)
 
                     if constant_mask.any():
-                        numeric_diff = (numeric_pred - numeric_targets).pow(2)
-                        masked_values = numeric_diff[constant_mask]
-                        numeric_loss_val = masked_values.mean()
-                        total_numeric_loss_sum += float(masked_values.sum().item())
-                        total_numeric_count += int(masked_values.numel())
+                        numeric_diff = (numeric_pred[constant_mask] - numeric_targets[constant_mask]).pow(2)
+                        numeric_loss_val = numeric_diff.mean()
+                        total_numeric_loss_sum += float(numeric_diff.sum().item())
+                        total_numeric_count += int(numeric_diff.numel())
                     else:
                         numeric_loss_val = torch.zeros((), device=self.device, dtype=logits.dtype)
 
