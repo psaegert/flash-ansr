@@ -3,7 +3,7 @@ tokenizer: './tokenizer.yaml'
 
 pre_encoder_noise_scale: 0.1
 
-encoder_max_n_variables: 11
+encoder_max_n_variables: 12
 encoder_dim: 512
 encoder_n_heads: 8
 encoder_n_isab: 4
