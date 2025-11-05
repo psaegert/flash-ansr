@@ -9,7 +9,8 @@ from simplipy import SimpliPyEngine
 from simplipy.utils import remap_expression
 
 from flash_ansr import SkeletonPool  # Parse expressions with SimpliPyEngine.parse_infix_expression
-from flash_ansr.expressions.utils import codify, identify_constants
+from flash_ansr.expressions.compilation import codify
+from flash_ansr.expressions.token_ops import identify_constants
 
 
 class TestSetParaser:

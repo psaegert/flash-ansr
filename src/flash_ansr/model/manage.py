@@ -3,7 +3,7 @@ import os
 
 from huggingface_hub import snapshot_download
 
-from flash_ansr.utils import get_path
+from flash_ansr.utils.paths import get_path
 
 
 def install_model(model: str, local_dir: str | None = None, verbose: bool = True) -> None:

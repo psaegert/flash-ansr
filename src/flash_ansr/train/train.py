@@ -19,9 +19,11 @@ from tqdm import tqdm
 
 from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
-from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
+from flash_ansr.utils.config_io import load_config, save_config, unfold_config
+from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
-from flash_ansr.train.utils import OptimizerFactory, pw_linear_schedule
+from flash_ansr.train.optimizers import get_optimizer
+from flash_ansr.train.schedules import pw_linear_schedule
 
 # ---------------------------------------------------------------------------
 # Compatibility patches
@@ -187,8 +189,12 @@ class Trainer:
         print(f'Creating model from {config_["model"]}')
         model = FlashANSRModel.from_config(config_["model"])
 
-        print(f'Loading optimizer with config {config_["optimizer"]}')
-        optimizer = OptimizerFactory.get_optimizer(config_['optimizer']['name'], params=model.parameters(), **config_['optimizer'].get('kwargs', {}))
+        print(f"Loading optimizer with config {config_['optimizer']}")
+        optimizer = get_optimizer(
+            config_['optimizer']['name'],
+            params=model.parameters(),
+            **config_['optimizer'].get('kwargs', {}),
+        )
 
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
@@ -244,12 +250,9 @@ class Trainer:
         self.device = torch.device(device)
         self.model.to(self.device)
 
-        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
         self.total_pflops = 0.0
 
         if verbose:
-            print(f"Padding sequences to max set size of {self.max_set_size}")
-
             config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
             if config_value:
                 print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")

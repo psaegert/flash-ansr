@@ -4,7 +4,7 @@ import tempfile
 
 import torch
 
-from flash_ansr.model.transformer import TransformerDecoder
+from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr import FlashANSRModel, get_path, SetTransformer
 
 

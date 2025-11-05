@@ -22,9 +22,10 @@ from datasets import Dataset, load_from_disk, disable_progress_bars
 from simplipy import SimpliPyEngine
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.utils import load_config, save_config, substitute_root_path
+from flash_ansr.utils.config_io import load_config, save_config
+from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
-from flash_ansr.expressions.utils import substitude_constants
+from flash_ansr.expressions.token_ops import substitute_constants
 from flash_ansr.preprocess import FlashANSRPreprocessor
 
 _CONSTANT_TOKEN_PATTERN = re.compile(r"C_\\d+")
@@ -649,7 +650,7 @@ class FlashANSRDataset:
                                     'metadata': {
                                         'skeleton': skeleton,
                                         'skeleton_hash': skeleton_hash,
-                                        'expression': substitude_constants(skeleton, values=literals, inplace=False),
+                                        'expression': substitute_constants(skeleton, values=literals, inplace=False),
                                         'n_support': int(x_support.shape[0]),
                                     }
                                 })

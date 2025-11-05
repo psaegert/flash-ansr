@@ -12,8 +12,12 @@ import numpy as np
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.utils import codify, identify_constants, generate_ubi_dist, get_distribution, flatten_nested_list, safe_f
+from flash_ansr.utils.config_io import load_config, save_config
+from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.expressions.compilation import codify, safe_f
+from flash_ansr.expressions.distributions import get_distribution
+from flash_ansr.expressions.structure import generate_ubi_dist
+from flash_ansr.expressions.token_ops import identify_constants, flatten_nested_list
 
 
 class NoValidSampleFoundError(Exception):
@@ -408,7 +412,7 @@ class SkeletonPool:
 
             i -= 1
 
-        return flatten_nested_list(stack)[::-1]
+        return flatten_nested_list(stack, reverse=True)
 
     def register_holdout_pool(self, holdout_pool: "SkeletonPool | str") -> None:
         '''

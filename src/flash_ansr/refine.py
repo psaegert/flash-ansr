@@ -8,8 +8,9 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.utils import codify, identify_constants, apply_variable_mapping
-from flash_ansr.utils import pad_input_set
+from flash_ansr.expressions.compilation import codify
+from flash_ansr.expressions.token_ops import identify_constants, apply_variable_mapping
+from flash_ansr.utils.tensor_ops import pad_input_set
 
 
 class ConvergenceError(Exception):

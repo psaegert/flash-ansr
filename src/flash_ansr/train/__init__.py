@@ -1,2 +1,3 @@
 from .train import Trainer
-from .utils import OptimizerFactory, pw_linear_schedule
+from .optimizers import get_optimizer
+from .schedules import pw_linear_schedule

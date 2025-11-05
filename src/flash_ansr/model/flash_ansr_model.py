@@ -9,12 +9,13 @@ from tqdm import tqdm
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.utils import load_config, save_config, substitute_root_path
+from flash_ansr.utils.config_io import load_config, save_config
+from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.preprocess import FlashANSRPreprocessor
-from flash_ansr.model.set_transformer import SetTransformer
-from flash_ansr.model.transformer import TransformerDecoder
+from flash_ansr.model.encoders import SetTransformer
+from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
 
 

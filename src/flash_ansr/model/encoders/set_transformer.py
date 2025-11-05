@@ -1,12 +1,13 @@
-from typing import Optional, Union, List
+"""Set Transformer encoder building blocks."""
+from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from flash_ansr.model.set_encoder import SetEncoder
-from flash_ansr.model.generic import get_norm_layer, FeedForward, SetNormBase
+from flash_ansr.model.components import FeedForward, SetNormBase, get_norm_layer
+from flash_ansr.model.encoders.base import SetEncoder
 
 
 class MultiheadAttentionBlock(nn.Module):
@@ -40,7 +41,7 @@ class MultiheadAttentionBlock(nn.Module):
         dropout: float = 0.0,
         bias: bool = True,
         is_self_attention: bool = False,
-        query_is_projected: bool = False  # New flag
+        query_is_projected: bool = False
     ):
         super().__init__()
         if dim_out % n_heads != 0:

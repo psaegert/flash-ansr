@@ -15,7 +15,7 @@ from flash_ansr.preprocess_features import (
     PromptFeatureExtractorConfig,
     PromptFeatures,
 )
-from flash_ansr.utils import load_config
+from flash_ansr.utils.config_io import load_config
 
 
 @dataclass

@@ -150,7 +150,8 @@ def main(argv: str = None) -> None:
             from simplipy import SimpliPyEngine
             from flash_ansr.expressions import SkeletonPool
             from flash_ansr.compat import ParserFactory
-            from flash_ansr.utils import substitute_root_path, load_config
+            from flash_ansr.utils.config_io import load_config
+            from flash_ansr.utils.paths import substitute_root_path
 
             import pandas as pd
 
@@ -192,7 +193,8 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'Training model from {args.config}')
             from flash_ansr.train.train import Trainer
-            from flash_ansr.utils import substitute_root_path, load_config, save_config
+            from flash_ansr.utils.config_io import load_config, save_config
+            from flash_ansr.utils.paths import substitute_root_path
 
             trainer = Trainer.from_config(args.config)
 
@@ -236,9 +238,11 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'Evaluating config {args.config} with model {args.model} on {args.dataset}')
             import os
-            from flash_ansr import FlashANSR, GenerationConfig
+            from flash_ansr import FlashANSR
             from flash_ansr.eval.evaluation import Evaluation
-            from flash_ansr.utils import substitute_root_path, load_config, unfold_config
+            from flash_ansr.utils.config_io import load_config, unfold_config
+            from flash_ansr.utils.generation import GenerationConfig
+            from flash_ansr.utils.paths import substitute_root_path
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.model import FlashANSRModel
             import pprint
@@ -331,7 +335,8 @@ def main(argv: str = None) -> None:
             import os
             from simplipy import SimpliPyEngine
             from flash_ansr.compat.evaluation_nesymres import NeSymReSEvaluation
-            from flash_ansr.utils import substitute_root_path, load_config
+            from flash_ansr.utils.config_io import load_config
+            from flash_ansr.utils.paths import substitute_root_path
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.compat.nesymres import load_nesymres
 
@@ -385,7 +390,8 @@ def main(argv: str = None) -> None:
             import os
             from simplipy import SimpliPyEngine
             from flash_ansr.compat.evaluation_pysr import PySREvaluation
-            from flash_ansr.utils import substitute_root_path, load_config
+            from flash_ansr.utils.config_io import load_config
+            from flash_ansr.utils.paths import substitute_root_path
             from flash_ansr.data import FlashANSRDataset
 
             evaluation_config = load_config(substitute_root_path(args.config))
@@ -448,7 +454,7 @@ def main(argv: str = None) -> None:
             import wandb
             import pandas as pd
 
-            from flash_ansr.utils import substitute_root_path
+            from flash_ansr.utils.paths import substitute_root_path
 
             api = wandb.Api()  # type: ignore
 
@@ -473,7 +479,8 @@ def main(argv: str = None) -> None:
             if args.verbose:
                 print(f'Benchmarking dataset {args.config}')
             from flash_ansr.data import FlashANSRDataset
-            from flash_ansr.utils import substitute_root_path, load_config, save_config
+            from flash_ansr.utils.config_io import load_config, save_config
+            from flash_ansr.utils.paths import substitute_root_path
             import pandas as pd
 
             dataset = FlashANSRDataset.from_config(substitute_root_path(args.config))

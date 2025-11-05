@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import math
 from operator import attrgetter, itemgetter, methodcaller
 from dataclasses import dataclass, field

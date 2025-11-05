@@ -13,7 +13,9 @@ from sklearn.base import BaseEstimator
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.utils import substitute_root_path, pad_input_set, GenerationConfig
+from flash_ansr.utils.generation import GenerationConfig
+from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig

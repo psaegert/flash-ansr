@@ -3,7 +3,7 @@ from typing import Iterator, Any, Literal
 
 import torch
 
-from flash_ansr.utils import load_config
+from flash_ansr.utils.config_io import load_config
 
 
 class Tokenizer:

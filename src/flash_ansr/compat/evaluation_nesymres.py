@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 from simplipy.utils import numbers_to_constant
 
 from flash_ansr import FlashANSRDataset
-from flash_ansr.utils import load_config
+from flash_ansr.utils.config_io import load_config
 
 from nesymres.architectures.model import Model  # type: ignore[import]
 
