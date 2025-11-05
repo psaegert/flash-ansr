@@ -17,7 +17,7 @@ from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer
 from flash_ansr.model.transformer import TransformerDecoder
-from flash_ansr.model.mdf import MixtureDensityNetwork, NoiseType, negative_log_likelihood, sample_from_mixture
+from flash_ansr.model.mdn import MixtureDensityNetwork, NoiseType, negative_log_likelihood, sample_from_mixture
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
 
 
@@ -182,8 +182,16 @@ class FlashANSRModel(nn.Module):
             elif head_type == 'mdn':
                 self.numeric_head_kind = 'mdn'
                 n_components = int(self.numeric_head_config.get('n_components', 5))
-                hidden_dim = int(self.numeric_head_config.get('hidden_dim', decoder_model_dim))
                 dim_out = int(self.numeric_head_config.get('dim_out', 1))
+                hidden_layers_cfg = self.numeric_head_config.get('hidden_layers')
+                if hidden_layers_cfg is None:
+                    default_hidden_dim = int(self.numeric_head_config.get('hidden_dim', decoder_model_dim))
+                    default_hidden_depth = int(self.numeric_head_config.get('hidden_depth', MixtureDensityNetwork.DEFAULT_HIDDEN_DEPTH))
+                    hidden_layers = [default_hidden_dim] * max(default_hidden_depth, 0)
+                elif isinstance(hidden_layers_cfg, int):
+                    hidden_layers = [int(hidden_layers_cfg)]
+                else:
+                    hidden_layers = [int(width) for width in hidden_layers_cfg]
                 noise_type_cfg = self.numeric_head_config.get('noise_type', 'diagonal')
                 if isinstance(noise_type_cfg, NoiseType):
                     noise_type = noise_type_cfg
@@ -204,7 +212,7 @@ class FlashANSRModel(nn.Module):
                     dim_in=decoder_model_dim,
                     dim_out=dim_out,
                     n_components=n_components,
-                    hidden_dim=hidden_dim,
+                    hidden_dims=hidden_layers,
                     noise_type=noise_type,
                     fixed_noise_level=fixed_noise_level,
                 )
@@ -216,13 +224,6 @@ class FlashANSRModel(nn.Module):
 
         self.memory: torch.Tensor | None = None
         self._latest_numeric_sequences: list[list[float]] | None = None
-
-    @staticmethod
-    def _split_forward_output(output: Any) -> tuple[torch.Tensor, NumericHeadPrediction | torch.Tensor | None]:
-        if isinstance(output, (tuple, list)):
-            logits, numeric = output
-            return logits, numeric  # type: ignore[return-value]
-        return output, None  # type: ignore[return-value]
 
     @staticmethod
     def _normalize_numeric_prefix(tokens: Sequence[int], numeric: Sequence[float] | torch.Tensor | None) -> list[float]:
@@ -280,20 +281,51 @@ class FlashANSRModel(nn.Module):
         if numeric_output is None or not torch.is_tensor(targets):
             return None, None
 
-        if mask.numel() == 0 or not mask.any():
+        if mask.numel() == 0:
+            return None, None
+
+        if mask.dtype != torch.bool:
+            mask = mask.to(dtype=torch.bool)
+
+        finite_targets = torch.isfinite(targets)
+        mask = mask & finite_targets
+
+        if not mask.any():
             return None, None
 
         if isinstance(numeric_output, NumericHeadPrediction):
             if numeric_output.kind == 'deterministic':
                 if numeric_output.values is None:
                     return None, None
-                per_element = (numeric_output.values - targets).pow(2)[mask]
+                masked_values = numeric_output.values.masked_select(mask)
+                masked_targets = targets.masked_select(mask)
+                finite_predictions = torch.isfinite(masked_values)
+                if not finite_predictions.all():
+                    masked_values = masked_values[finite_predictions]
+                    masked_targets = masked_targets[finite_predictions]
+                if masked_values.numel() == 0:
+                    return None, None
+                per_element = (masked_values - masked_targets).pow(2)
             elif numeric_output.kind == 'mdn':
-                per_element = numeric_output.negative_log_likelihood(targets, eps=eps)[mask]
+                safe_targets = torch.where(mask, targets, torch.zeros_like(targets))
+                safe_targets = torch.nan_to_num(safe_targets, nan=0.0, posinf=0.0, neginf=0.0)
+                per_position_loss = numeric_output.negative_log_likelihood(safe_targets, eps=eps)
+                per_element = per_position_loss.masked_select(mask)
+                finite_losses = torch.isfinite(per_element)
+                if not finite_losses.all():
+                    per_element = per_element[finite_losses]
             else:  # pragma: no cover - defensive branch
                 return None, None
         else:
-            per_element = (numeric_output - targets).pow(2)[mask]
+            masked_predictions = numeric_output.masked_select(mask)
+            masked_targets = targets.masked_select(mask)
+            finite_predictions = torch.isfinite(masked_predictions)
+            if not finite_predictions.all():
+                masked_predictions = masked_predictions[finite_predictions]
+                masked_targets = masked_targets[finite_predictions]
+            if masked_predictions.numel() == 0:
+                return None, None
+            per_element = (masked_predictions - masked_targets).pow(2)
 
         if per_element.numel() == 0:
             return None, None
@@ -401,7 +433,14 @@ class FlashANSRModel(nn.Module):
 
         return memory
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        input_tokens: torch.Tensor,
+        data: torch.Tensor | None,
+        input_num: torch.Tensor | None = None,
+        memory: torch.Tensor | None = None,
+        data_attn_mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, NumericHeadPrediction | None]:
         if memory is not None:
             self.memory = memory
         elif data is not None:
@@ -432,7 +471,7 @@ class FlashANSRModel(nn.Module):
         decoder_output = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
 
         logits = self.next_token_head(decoder_output)
-        numeric_prediction: NumericHeadPrediction | torch.Tensor | None = None
+        numeric_prediction: NumericHeadPrediction | None = None
         if self.use_numeric_head and self.constant_value_head is not None:
             if self.numeric_head_kind == 'deterministic':
                 deterministic_values: torch.Tensor = self.constant_value_head(decoder_output)
@@ -445,9 +484,7 @@ class FlashANSRModel(nn.Module):
             else:  # pragma: no cover - defensive branch
                 raise ValueError(f"Unsupported numeric head kind: {self.numeric_head_kind}")
 
-        if numeric_prediction is None:
-            return logits
-        return logits, numeric_prediction  # type: ignore[return-value]
+        return logits, numeric_prediction
 
     def _resolve_generation_prefix(
         self,
@@ -539,8 +576,7 @@ class FlashANSRModel(nn.Module):
 
             input_ids = torch.tensor([seq], device=data.device, dtype=torch.long)
             numeric_tensor = self._numeric_sequences_to_tensor([numeric_seq], device=data.device)
-            output = self.forward(input_ids, None, input_num=numeric_tensor, memory=memory)
-            _, numeric_pred = self._split_forward_output(output)
+            _, numeric_pred = self.forward(input_ids, None, input_num=numeric_tensor, memory=memory)
             if numeric_pred is None:
                 return float('nan')
             try:
@@ -577,8 +613,7 @@ class FlashANSRModel(nn.Module):
                     mini_batch = input_ids_tensor[start_idx:end_idx]
                     numeric_batch = numeric_tensor[start_idx:end_idx] if numeric_tensor is not None else None
 
-                    output = self.forward(mini_batch, None, input_num=numeric_batch, memory=memory)
-                    logits, _ = self._split_forward_output(output)
+                    logits, _ = self.forward(mini_batch, None, input_num=numeric_batch, memory=memory)
 
                     all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)
 
@@ -740,8 +775,7 @@ class FlashANSRModel(nn.Module):
             input_num_tensor = build_input_num_tensor(len(tokens))
 
             with torch.no_grad():
-                output = self.forward(input_ids, None, input_num=input_num_tensor, memory=memory)
-                logits, _ = self._split_forward_output(output)
+                logits, _ = self.forward(input_ids, None, input_num=input_num_tensor, memory=memory)
                 next_logits = logits[:, -1, :].squeeze(0)
                 log_probs = torch.log_softmax(next_logits, dim=-1)
 
@@ -898,8 +932,7 @@ class FlashANSRModel(nn.Module):
 
             input_ids = seq_tensor.to(device=device, dtype=torch.long).unsqueeze(0)
             numeric_input = numeric_tensor.to(device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
-            output = self.forward(input_ids, None, input_num=numeric_input, memory=memory)
-            _, numeric_pred = self._split_forward_output(output)
+            _, numeric_pred = self.forward(input_ids, None, input_num=numeric_input, memory=memory)
             if numeric_pred is None:
                 return float('nan')
             try:
@@ -929,8 +962,7 @@ class FlashANSRModel(nn.Module):
                     else:
                         input_num_tensor = None
 
-                    output = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
-                    logits, _ = self._split_forward_output(output)
+                    logits, _ = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
                     next_token_logits = logits[:, -1, :]
 
                     original_scores = torch.log_softmax(next_token_logits, dim=-1)

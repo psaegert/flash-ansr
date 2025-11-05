@@ -25,6 +25,7 @@ SOFTWARE."""
 
 import math
 from enum import Enum, auto
+from typing import Sequence
 
 import torch
 import torch.nn as nn
@@ -49,7 +50,17 @@ class MixtureDensityNetwork(nn.Module):
     dim_out: int; dimensionality of the response variable
     n_components: int; number of components in the mixture model
     """
-    def __init__(self, dim_in: int, dim_out: int, n_components: int, hidden_dim: int, noise_type: NoiseType = NoiseType.DIAGONAL, fixed_noise_level: float | None = None) -> None:
+    DEFAULT_HIDDEN_DEPTH = 2
+
+    def __init__(
+        self,
+        dim_in: int,
+        dim_out: int,
+        n_components: int,
+        hidden_dims: Sequence[int] | int | None = None,
+        noise_type: NoiseType = NoiseType.DIAGONAL,
+        fixed_noise_level: float | None = None,
+    ) -> None:
         super().__init__()
         if noise_type is NoiseType.FIXED and fixed_noise_level is None:
             raise ValueError("fixed_noise_level must be provided when noise_type is FIXED")
@@ -62,20 +73,35 @@ class MixtureDensityNetwork(nn.Module):
         }[noise_type]
         self.dim_in, self.dim_out, self.n_components = dim_in, dim_out, n_components
         self.noise_type, self.fixed_noise_level = noise_type, fixed_noise_level
-        self.pi_network = nn.Sequential(
-            nn.Linear(dim_in, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, n_components),
-        )
-        self.normal_network = nn.Sequential(
-            nn.Linear(dim_in, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, dim_out * n_components + num_sigma_channels)
-        )
+        self.hidden_dims = self._normalise_hidden_dims(hidden_dims, default_dim=dim_in)
+        self.pi_network = self._build_head(dim_in, self.hidden_dims, n_components)
+        normal_output_dim = dim_out * n_components + num_sigma_channels
+        self.normal_network = self._build_head(dim_in, self.hidden_dims, normal_output_dim)
+
+    @staticmethod
+    def _normalise_hidden_dims(hidden_dims: Sequence[int] | int | None, *, default_dim: int) -> list[int]:
+        if hidden_dims is None:
+            return [default_dim] * MixtureDensityNetwork.DEFAULT_HIDDEN_DEPTH
+        if isinstance(hidden_dims, int):
+            if hidden_dims <= 0:
+                raise ValueError("hidden_dims must be positive integers")
+            return [hidden_dims]
+        dims = [int(dim) for dim in hidden_dims]
+        for dim in dims:
+            if dim <= 0:
+                raise ValueError("hidden_dims must contain positive integers")
+        return dims
+
+    @staticmethod
+    def _build_head(input_dim: int, hidden_dims: Sequence[int], output_dim: int) -> nn.Sequential:
+        layers: list[nn.Module] = []
+        previous_dim = input_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(previous_dim, hidden_dim))
+            layers.append(nn.GELU())
+            previous_dim = hidden_dim
+        layers.append(nn.Linear(previous_dim, output_dim))
+        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor, eps: float = 1e-6) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """

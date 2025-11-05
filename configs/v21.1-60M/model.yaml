@@ -4,29 +4,29 @@ tokenizer: './tokenizer.yaml'
 pre_encoder_noise_scale: 0.1
 
 encoder_max_n_variables: 11
-encoder_dim: 128
-encoder_n_heads: 4
+encoder_dim: 512
+encoder_n_heads: 8
 encoder_n_isab: 4
-encoder_n_sab: 2
-encoder_n_inducing_points: 32
-encoder_n_seeds: 32
-encoder_ffn_hidden_dim: 128
+encoder_n_sab: 3
+encoder_n_inducing_points: 64
+encoder_n_seeds: 64
+encoder_ffn_hidden_dim: 1536
 encoder_dropout: 0.1
 encoder_attn_norm: 'rms_set'
 encoder_ffn_norm: 'rms_set'
 encoder_output_norm: 'rms_set'
 
-decoder_input_dim: 128
-decoder_model_dim: 128
-decoder_n_heads: 4
-decoder_n_layers: 4
+decoder_input_dim: 512
+decoder_model_dim: 512
+decoder_n_heads: 8
+decoder_n_layers: 8
 decoder_max_seq_len: 128
-decoder_ffn_hidden_dim: 128
+decoder_ffn_hidden_dim: 1536
 decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'
 decoder_block_cross_attn_norm: 'rms'
 decoder_block_ffn_norm: 'rms'
-decoder_cross_attn_kv_norm: 'rms_set'
+decoder_cross_attn_kv_norm: 'rms'
 decoder_output_norm: 'rms'
 decoder_use_rope_self_attn: true
 decoder_use_rope_cross_attn: false
@@ -34,8 +34,8 @@ decoder_use_rope_cross_attn: false
 use_checkpointing: false
 use_numeric_head: true
 numeric_head_config:
-  type: mdn
-  n_components: 3
-  hidden_layers: [128, 128]
+  type: "mdn"
+  n_components: 8
+  hidden_layers: [512, 512, 512]
   dim_out: 1
-  noise_type: diagonal
+  noise_type: "diagonal"

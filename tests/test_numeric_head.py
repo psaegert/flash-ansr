@@ -9,7 +9,7 @@ import torch.nn as nn
 from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.model.flash_ansr_model import FlashANSRModel, NumericHeadPrediction
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.model.mdf import MixtureDensityNetwork
+from flash_ansr.model.mdn import MixtureDensityNetwork
 from flash_ansr.utils import GenerationConfig, get_path, load_config
 
 
@@ -82,9 +82,9 @@ def test_forward_without_numeric_head_returns_logits_only() -> None:
     input_tokens = torch.full((batch_size, seq_len), model.tokenizer['<bos>'], dtype=torch.long)
     data_tensor = torch.zeros((batch_size, set_size, model.encoder_max_n_variables), dtype=torch.float32)
 
-    output = model.forward(input_tokens, data_tensor, input_num=None)
-    assert isinstance(output, torch.Tensor)
-    assert output.shape == (batch_size, seq_len, len(model.tokenizer))
+    logits, numeric_pred = model.forward(input_tokens, data_tensor, input_num=None)
+    assert logits.shape == (batch_size, seq_len, len(model.tokenizer))
+    assert numeric_pred is None
 
 
 def test_forward_with_deterministic_numeric_head_returns_predictions() -> None:
@@ -210,7 +210,7 @@ def _install_symbolic_forward(
             token_idx = target_tokens[min(step, len(target_tokens) - 1)]
             logits[:, step, token_idx] = 0.0
 
-        return logits
+        return logits, None
 
     original_forward = model.forward
     model.forward = fake_forward.__get__(model, FlashANSRModel)

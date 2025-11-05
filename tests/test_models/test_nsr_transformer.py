@@ -31,7 +31,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         print(input_tokens.shape, x.shape)
 
-        logits = nsr.forward(input_tokens, x)
+        logits, _ = nsr.forward(input_tokens, x)
         assert logits.shape == (batch_size, sequence_length, len(nsr.tokenizer))
 
     def test_nsr_beam_search(self):
@@ -72,7 +72,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         for i in range(32):
             input_tokens[i, random_padding_beginnings[i]:] = 0
 
-        logits = nsr.forward(input_tokens, x)
+        logits, _ = nsr.forward(input_tokens, x)
 
         assert logits.shape == (256, 17, len(nsr.tokenizer))
 
@@ -138,8 +138,8 @@ class TestFlashANSRTransformer(unittest.TestCase):
         modified_input = input_tokens.clone()
         modified_input[:, 3] = 3
 
-        output = nsr.forward(input_tokens, x)
-        modified_output = nsr.forward(modified_input, x)
+        output, _ = nsr.forward(input_tokens, x)
+        modified_output, _ = nsr.forward(modified_input, x)
 
         assert torch.allclose(output[:, :3], modified_output[:, :3])
         assert not torch.allclose(output[:, 3:], modified_output[:, 3:])
