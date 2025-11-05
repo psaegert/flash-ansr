@@ -301,7 +301,6 @@ def main(argv: str = None) -> None:
                     directory=substitute_root_path(args.model),
                     generation_config=generation_config,
                     n_restarts=evaluation_config['n_restarts'],
-                    numeric_head=evaluation_config['numeric_head'],
                     refiner_method=evaluation_config.get("refiner_method", 'curve_fit_lm'),
                     refiner_p0_noise=evaluation_config["refiner_p0_noise"],
                     refiner_p0_noise_kwargs=evaluation_config.get("refiner_p0_noise_kwargs", None),

@@ -32,10 +32,3 @@ decoder_use_rope_self_attn: true
 decoder_use_rope_cross_attn: false
 
 use_checkpointing: false
-use_numeric_head: true
-numeric_head_config:
-  type: mdn
-  n_components: 3
-  hidden_layers: [128, 128]
-  dim_out: 1
-  noise_type: diagonal

@@ -8,7 +8,7 @@ initialisation and experiment logging.
 import copy
 import os
 from collections import Counter
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import torch
 
@@ -18,7 +18,6 @@ from torch import nn
 from tqdm import tqdm
 
 from flash_ansr.model import FlashANSRModel
-from flash_ansr.model.flash_ansr_model import NumericHeadPrediction
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils import load_config, save_config, substitute_root_path, unfold_config
 from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
@@ -148,10 +147,6 @@ class Trainer:
         # Metrics and Loss Functions
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
-        self.numeric_loss_weight = float(self.config.get('numeric_loss_weight', 1.0))
-        self.numeric_loss_fn = nn.MSELoss(reduction='none')
-        self.constant_token_id = self.model.tokenizer['<constant>']
-        self.numeric_sigma_clamp_epsilon = float(self.config.get('numeric_sigma_clamp_epsilon', 1e-6))
 
         self.total_pflops = 0.0
         self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
@@ -162,7 +157,7 @@ class Trainer:
         self._prompt_token_ids: dict[str, int | None] = {
             "complexity": tokenizer_mapping.get("<complexity>"),
         }
-        self.prompt_combo_counts: Counter[tuple[tuple[Any, ...], tuple[Any, ...], tuple[Any, ...]]] = Counter()
+        self.prompt_combo_counts: Counter[tuple] = Counter()
         self.prompt_total_samples = 0
         self.decoder_max_seq_len = self._resolve_decoder_max_seq_len()
 
@@ -249,9 +244,12 @@ class Trainer:
         self.device = torch.device(device)
         self.model.to(self.device)
 
+        self.max_set_size = self.train_dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value']
         self.total_pflops = 0.0
 
         if verbose:
+            print(f"Padding sequences to max set size of {self.max_set_size}")
+
             config_value = os.environ.get('PYTORCH_CUDA_ALLOC_CONF')
             if config_value:
                 print(f"PYTORCH_CUDA_ALLOC_CONF is set to: '{config_value}'")
@@ -496,33 +494,37 @@ class Trainer:
         labels[target_mask] = self.metrics_ignore_index
 
     @staticmethod
-    def _canonicalize_prompt_terms(terms: Any) -> tuple[tuple[Any, ...], ...]:
-        if not terms:
-            return tuple()
+    def _canonicalize_prompt_terms(terms: Any) -> tuple[tuple[str, ...], ...]:
+        """Return a hashable representation of prompt terms."""
+        if not isinstance(terms, Sequence) or isinstance(terms, (str, bytes)):
+            if terms is None or terms == []:
+                return tuple()
+            return ((str(terms),),)
 
-        normalised: list[tuple[Any, ...]] = []
+        canonical_terms: list[tuple[str, ...]] = []
         for term in terms:
-            if isinstance(term, (list, tuple)):
-                normalised.append(tuple(term))
-            else:
-                normalised.append((term,))
-        return tuple(normalised)
+            if isinstance(term, Sequence) and not isinstance(term, (str, bytes)):
+                canonical_terms.append(tuple(str(t) for t in term))
+            elif term is not None:
+                canonical_terms.append((str(term),))
+        return tuple(sorted(canonical_terms))
 
     def _update_prompt_statistics(self, batch: dict[str, Any]) -> None:
+        """Track prompt metadata usage statistics for diagnostics."""
         prompt_metadata = batch.get('prompt_metadata')
-        if not prompt_metadata:
+        if not prompt_metadata or not isinstance(prompt_metadata, Sequence):
             return
 
         for metadata in prompt_metadata:
             if not isinstance(metadata, dict):
                 continue
 
-            allowed_terms = self._canonicalize_prompt_terms(metadata.get('allowed_terms'))
-            include_terms = self._canonicalize_prompt_terms(metadata.get('include_terms'))
-            exclude_terms = self._canonicalize_prompt_terms(metadata.get('exclude_terms'))
+            allowed = self._canonicalize_prompt_terms(metadata.get('allowed_terms'))
+            include = self._canonicalize_prompt_terms(metadata.get('include_terms'))
+            exclude = self._canonicalize_prompt_terms(metadata.get('exclude_terms'))
+            key = (allowed, include, exclude)
 
-            combo_key = (allowed_terms, include_terms, exclude_terms)
-            self.prompt_combo_counts[combo_key] += 1
+            self.prompt_combo_counts[key] += 1
             self.prompt_total_samples += 1
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
@@ -543,94 +545,25 @@ class Trainer:
         self.model.train()
         self.optimizer.zero_grad()
 
-        if preprocess and batch.get('prompt_metadata'):
-            self._update_prompt_statistics(batch)
-
         total_ce_loss = 0.0
-        total_numeric_loss_sum = 0.0
-        total_numeric_count = 0
-        total_token_count = 0
         total_loss = 0.0
-        total_sigma_sum = 0.0
-        total_sigma_count = 0
-        sigma_min_value = float('inf')
-        sigma_max_value = float('-inf')
-        sigma_clamp_count = 0
 
         # Split the batch into micro-batches to support gradient accumulation
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
             micro_batch = self.train_dataset.collate(micro_batch, device=self.device)
+            if preprocess:
+                self._update_prompt_statistics(micro_batch)
             self._apply_prompt_mask(micro_batch)
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                logits, numeric_pred = self.model(
-                    micro_batch['input_ids'],
-                    data_tensor,
-                    input_num=micro_batch.get('input_num', None),
-                    data_attn_mask=micro_batch['data_attn_mask'].to(self.device),
-                )
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device))
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
-
-                token_mask = flat_labels != self.metrics_ignore_index
-                token_count_tensor = torch.sum(token_mask, dtype=logits.dtype)
-                token_count_tensor = token_count_tensor.to(device=logits.device)
-                token_count = int(token_count_tensor.item())
-                total_token_count += token_count
-
-                numeric_loss_val: torch.Tensor | None = None
-                if numeric_pred is not None and 'input_num' in micro_batch:
-                    numeric_targets = micro_batch['input_num'].squeeze(-1)
-                    constant_mask = (micro_batch['input_ids'] == self.constant_token_id) & torch.isfinite(numeric_targets)
-
-                    if constant_mask.any():
-                        numeric_loss_val, _ = self.model.compute_numeric_loss(
-                            numeric_pred,
-                            numeric_targets,
-                            constant_mask,
-                        )
-                        numeric_count_tensor = torch.sum(constant_mask, dtype=logits.dtype).to(device=logits.device)
-                        numeric_count_value = int(numeric_count_tensor.item())
-                        if isinstance(numeric_pred, NumericHeadPrediction) and numeric_pred.kind == 'mdn' and numeric_pred.sigma is not None:
-                            sigma_values = numeric_pred.sigma
-                            sigma_mask = constant_mask.unsqueeze(-1).unsqueeze(-1).expand_as(sigma_values)
-                            masked_sigma = sigma_values.masked_select(sigma_mask)
-                            if masked_sigma.numel() > 0:
-                                masked_sigma_det = masked_sigma.detach()
-                                finite_sigma = torch.isfinite(masked_sigma_det)
-                                if not finite_sigma.all():
-                                    masked_sigma_det = masked_sigma_det[finite_sigma]
-                                if masked_sigma_det.numel() > 0:
-                                    total_sigma_sum += float(masked_sigma_det.sum().item())
-                                    total_sigma_count += masked_sigma_det.numel()
-                                    min_value = float(masked_sigma_det.min().item())
-                                    max_value = float(masked_sigma_det.max().item())
-                                    if min_value < sigma_min_value:
-                                        sigma_min_value = min_value
-                                    if max_value > sigma_max_value:
-                                        sigma_max_value = max_value
-                                    sigma_clamp_count += int((masked_sigma_det <= self.numeric_sigma_clamp_epsilon).sum().item())
-
-                        if numeric_loss_val is not None:
-                            per_element_mean = numeric_loss_val
-                            numeric_sum_tensor = per_element_mean * numeric_count_tensor
-
-                            total_numeric_loss_sum += float(numeric_sum_tensor.detach().item())
-                            total_numeric_count += numeric_count_value
-
-                            if token_count > 0:
-                                numeric_loss_val = numeric_sum_tensor / token_count_tensor
-                            else:
-                                numeric_loss_val = torch.zeros((), device=self.device, dtype=logits.dtype)
-                        else:
-                            numeric_loss_val = torch.zeros((), device=self.device, dtype=logits.dtype)
-                    else:
-                        numeric_loss_val = torch.zeros((), device=self.device, dtype=logits.dtype)
 
                 # Force every parameter to contribute to the loss so that gradient
                 # tracking tools (e.g. wandb.watch) do not encounter ``None`` gradients
@@ -639,8 +572,6 @@ class Trainer:
                 zero_loss = 0.0 * param_sum
 
                 loss = ce_loss / self.gradient_accumulation_steps + zero_loss
-                if numeric_loss_val is not None:
-                    loss = loss + self.numeric_loss_weight * numeric_loss_val / self.gradient_accumulation_steps
 
             # If the loss is nan or inf, stop the training
             if not torch.isfinite(loss):
@@ -661,46 +592,7 @@ class Trainer:
             self.scaler.update()
 
             # Log metrics and update scheduler after the optimizer step
-            if total_token_count > 0:
-                per_token_numeric_loss = total_numeric_loss_sum / total_token_count
-                numeric_token_fraction = total_numeric_count / total_token_count
-            else:
-                per_token_numeric_loss = 0.0
-                numeric_token_fraction = 0.0
-
-            if total_numeric_count > 0:
-                per_constant_numeric_loss = total_numeric_loss_sum / total_numeric_count
-            else:
-                per_constant_numeric_loss = 0.0
-            if total_sigma_count > 0:
-                sigma_mean = total_sigma_sum / total_sigma_count
-                sigma_min = sigma_min_value
-                sigma_max = sigma_max_value
-                sigma_clamp_fraction = sigma_clamp_count / total_sigma_count
-                sigma_count_logged = total_sigma_count
-            else:
-                sigma_mean = None
-                sigma_min = None
-                sigma_max = None
-                sigma_clamp_fraction = None
-                sigma_count_logged = None
-            self._log_metrics(
-                step,
-                flat_logits,
-                flat_labels,
-                total_ce_loss,
-                total_loss,
-                total_gradient_norm,
-                per_token_numeric_loss,
-                per_constant_numeric_loss,
-                numeric_token_fraction,
-                total_numeric_count,
-                sigma_mean,
-                sigma_min,
-                sigma_max,
-                sigma_clamp_fraction,
-                sigma_count_logged,
-            )
+            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -727,16 +619,8 @@ class Trainer:
         val_ce_loss = 0.0
         val_mrr = 0.0
         val_acc_at_1 = 0.0
-        val_numeric_loss_sum = 0.0
-        val_numeric_count = 0
-        val_token_count = 0
         total_items = 0
         total_batches = 0
-        val_sigma_sum = 0.0
-        val_sigma_count = 0
-        val_sigma_min_value = float('inf')
-        val_sigma_max_value = float('-inf')
-        val_sigma_clamp_count = 0
 
         with torch.no_grad():
             if size is None:
@@ -756,13 +640,7 @@ class Trainer:
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits, numeric_pred = self.model(
-                        batch['input_ids'],
-                        data_tensor,
-                        input_num=batch.get('input_num', None),
-                        data_attn_mask=batch['data_attn_mask'].to(self.device),
-                    )
-
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device))
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
@@ -771,46 +649,8 @@ class Trainer:
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                     total_items += flat_labels.shape[0]
 
-                    valid_indices = flat_labels != self.metrics_ignore_index
-                    val_token_count += int(valid_indices.sum().item())
-
-                    if numeric_pred is not None and 'input_num' in batch:
-                        numeric_targets = batch['input_num'].squeeze(-1)
-                        constant_mask = (batch['input_ids'] == self.constant_token_id) & torch.isfinite(numeric_targets)
-                        if constant_mask.any():
-                            numeric_loss_val, _ = self.model.compute_numeric_loss(
-                                numeric_pred,
-                                numeric_targets,
-                                constant_mask,
-                            )
-                            numeric_count_tensor = torch.sum(constant_mask, dtype=logits.dtype).to(device=logits.device)
-                            numeric_count_value = int(numeric_count_tensor.item())
-                            if isinstance(numeric_pred, NumericHeadPrediction) and numeric_pred.kind == 'mdn' and numeric_pred.sigma is not None:
-                                sigma_values = numeric_pred.sigma
-                                sigma_mask = constant_mask.unsqueeze(-1).unsqueeze(-1).expand_as(sigma_values)
-                                masked_sigma = sigma_values.masked_select(sigma_mask)
-                                if masked_sigma.numel() > 0:
-                                    masked_sigma_det = masked_sigma.detach()
-                                    finite_sigma = torch.isfinite(masked_sigma_det)
-                                    if not finite_sigma.all():
-                                        masked_sigma_det = masked_sigma_det[finite_sigma]
-                                    if masked_sigma_det.numel() > 0:
-                                        val_sigma_sum += float(masked_sigma_det.sum().item())
-                                        val_sigma_count += masked_sigma_det.numel()
-                                        min_value = float(masked_sigma_det.min().item())
-                                        max_value = float(masked_sigma_det.max().item())
-                                        if min_value < val_sigma_min_value:
-                                            val_sigma_min_value = min_value
-                                        if max_value > val_sigma_max_value:
-                                            val_sigma_max_value = max_value
-                                        val_sigma_clamp_count += int((masked_sigma_det <= self.numeric_sigma_clamp_epsilon).sum().item())
-
-                            if numeric_loss_val is not None:
-                                numeric_sum_tensor = numeric_loss_val * numeric_count_tensor
-                                val_numeric_loss_sum += float(numeric_sum_tensor.detach().item())
-                                val_numeric_count += numeric_count_value
-
                 # Filter out ignored indices for metric calculation
+                valid_indices = flat_labels != self.metrics_ignore_index
                 if valid_indices.any():
                     val_mrr += reciprocal_rank(flat_logits[valid_indices], flat_labels[valid_indices])
                     val_acc_at_1 += correct_token_predictions_at_k(flat_logits[valid_indices], flat_labels[valid_indices], k=1)
@@ -821,47 +661,11 @@ class Trainer:
 
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
-        if val_token_count > 0:
-            avg_val_numeric_loss_per_token = val_numeric_loss_sum / val_token_count
-            val_numeric_token_fraction = val_numeric_count / val_token_count
-        else:
-            avg_val_numeric_loss_per_token = 0.0
-            val_numeric_token_fraction = 0.0
-        if val_numeric_count > 0:
-            avg_val_numeric_loss_per_constant = val_numeric_loss_sum / val_numeric_count
-        else:
-            avg_val_numeric_loss_per_constant = 0.0
-        if val_sigma_count > 0:
-            val_numeric_sigma_mean = val_sigma_sum / val_sigma_count
-            val_numeric_sigma_min = val_sigma_min_value
-            val_numeric_sigma_max = val_sigma_max_value
-            val_numeric_sigma_clamp_fraction = val_sigma_clamp_count / val_sigma_count
-            val_sigma_count_logged = val_sigma_count
-        else:
-            val_numeric_sigma_mean = None
-            val_numeric_sigma_min = None
-            val_numeric_sigma_max = None
-            val_numeric_sigma_clamp_fraction = None
-            val_sigma_count_logged = None
         avg_val_mrr = val_mrr / total_batches if total_batches > 0 else 0.0
         avg_val_acc_at_1 = val_acc_at_1 / total_batches if total_batches > 0 else 0.0
 
         # Log averaged validation metrics
-        self._log_validation_metrics(
-            step,
-            avg_val_ce_loss,
-            avg_val_mrr,
-            avg_val_acc_at_1,
-            avg_val_numeric_loss_per_token,
-            avg_val_numeric_loss_per_constant,
-            val_numeric_token_fraction,
-            val_numeric_count,
-            val_numeric_sigma_mean,
-            val_numeric_sigma_min,
-            val_numeric_sigma_max,
-            val_numeric_sigma_clamp_fraction,
-            val_sigma_count_logged,
-        )
+        self._log_validation_metrics(step, avg_val_ce_loss, avg_val_mrr, avg_val_acc_at_1)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Persist model weights, optimiser state, and config for ``step``.
@@ -885,24 +689,25 @@ class Trainer:
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
 
-    def _log_metrics(
-            self,
-            step: int,
-            logits: torch.Tensor,
-            labels: torch.Tensor,
-            ce_loss: float,
-            total_loss: float,
-            total_gradient_norm: torch.Tensor,
-            numeric_loss_per_token: float | None,
-            numeric_loss_per_constant: float | None = None,
-            numeric_token_fraction: float | None = None,
-            numeric_token_count: int | None = None,
-            numeric_sigma_mean: float | None = None,
-            numeric_sigma_min: float | None = None,
-            numeric_sigma_max: float | None = None,
-            numeric_sigma_clamp_fraction: float | None = None,
-            numeric_sigma_count: int | None = None) -> None:
-        """Submit training metrics for the current batch to Weights & Biases."""
+    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+        """Submit training metrics for the current batch to Weights & Biases.
+
+        Parameters
+        ----------
+        step : int
+            Global training step the metrics correspond to.
+        logits : torch.Tensor
+            Model logits for the current batch.
+        labels : torch.Tensor
+            Ground-truth labels aligned with ``logits``.
+        ce_loss : float
+            Cross-entropy loss for the batch.
+        total_loss : float
+            Total loss (including auxiliary terms) for the batch.
+        total_gradient_norm : torch.Tensor
+            Gradient norm measured after clipping.
+        """
+
         log_data = {
             "total_gradient_norm": total_gradient_norm.item(),
             "train_ce_loss": ce_loss,
@@ -912,63 +717,26 @@ class Trainer:
             "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
             "total_pflops": self.total_pflops,
         }
-        if numeric_loss_per_token is not None:
-            log_data["train_numeric_loss_per_token"] = numeric_loss_per_token
-        if numeric_loss_per_constant is not None:
-            log_data["train_numeric_loss_per_constant"] = numeric_loss_per_constant
-        if numeric_token_fraction is not None:
-            log_data["train_numeric_token_fraction"] = numeric_token_fraction
-        if numeric_token_count is not None:
-            log_data["train_numeric_token_count"] = numeric_token_count
-        if numeric_sigma_mean is not None:
-            log_data["train_numeric_sigma_mean"] = numeric_sigma_mean
-        if numeric_sigma_min is not None:
-            log_data["train_numeric_sigma_min"] = numeric_sigma_min
-        if numeric_sigma_max is not None:
-            log_data["train_numeric_sigma_max"] = numeric_sigma_max
-        if numeric_sigma_clamp_fraction is not None:
-            log_data["train_numeric_sigma_clamp_fraction"] = numeric_sigma_clamp_fraction
-        if numeric_sigma_count is not None:
-            log_data["train_numeric_sigma_count"] = numeric_sigma_count
 
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(
-            self,
-            step: int,
-            val_ce_loss: float,
-            val_mrr: float,
-            val_acc_at_1: float,
-            val_numeric_loss_per_token: float | None,
-            val_numeric_loss_per_constant: float | None = None,
-            val_numeric_token_fraction: float | None = None,
-            val_numeric_token_count: int | None = None,
-            val_numeric_sigma_mean: float | None = None,
-            val_numeric_sigma_min: float | None = None,
-            val_numeric_sigma_max: float | None = None,
-            val_numeric_sigma_clamp_fraction: float | None = None,
-            val_numeric_sigma_count: int | None = None) -> None:
+    def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
+        """Submit aggregated validation metrics to Weights & Biases.
+
+        Parameters
+        ----------
+        step : int
+            Global training step the metrics correspond to.
+        val_ce_loss : float
+            Mean validation cross-entropy loss.
+        val_mrr : float
+            Mean reciprocal rank on the validation set.
+        val_acc_at_1 : float
+            Accuracy at one token prediction on the validation set.
+        """
         log_data = {
             "val_ce_loss": val_ce_loss,
             "val_mean_reciprocal_rank": val_mrr,
             "val_correct_token_predictions_at_1": val_acc_at_1,
         }
-        if val_numeric_loss_per_token is not None:
-            log_data["val_numeric_loss_per_token"] = val_numeric_loss_per_token
-        if val_numeric_loss_per_constant is not None:
-            log_data["val_numeric_loss_per_constant"] = val_numeric_loss_per_constant
-        if val_numeric_token_fraction is not None:
-            log_data["val_numeric_token_fraction"] = val_numeric_token_fraction
-        if val_numeric_token_count is not None:
-            log_data["val_numeric_token_count"] = val_numeric_token_count
-        if val_numeric_sigma_mean is not None:
-            log_data["val_numeric_sigma_mean"] = val_numeric_sigma_mean
-        if val_numeric_sigma_min is not None:
-            log_data["val_numeric_sigma_min"] = val_numeric_sigma_min
-        if val_numeric_sigma_max is not None:
-            log_data["val_numeric_sigma_max"] = val_numeric_sigma_max
-        if val_numeric_sigma_clamp_fraction is not None:
-            log_data["val_numeric_sigma_clamp_fraction"] = val_numeric_sigma_clamp_fraction
-        if val_numeric_sigma_count is not None:
-            log_data["val_numeric_sigma_count"] = val_numeric_sigma_count
         wandb.log(log_data, step=step)  # type: ignore

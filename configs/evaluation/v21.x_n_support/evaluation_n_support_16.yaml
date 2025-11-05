@@ -1,7 +1,6 @@
 n_support: 16
 
 n_restarts: 8
-numeric_head: false
 refiner_method: 'curve_fit_lm'
 refiner_p0_noise: 'normal'
 refiner_p0_noise_kwargs:
