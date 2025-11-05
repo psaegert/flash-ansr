@@ -577,10 +577,15 @@ class Trainer:
                     constant_mask = (micro_batch['input_ids'] == self.constant_token_id) & torch.isfinite(numeric_targets)
 
                     if constant_mask.any():
-                        numeric_diff = (numeric_pred[constant_mask] - numeric_targets[constant_mask]).pow(2)
-                        numeric_loss_val = numeric_diff.mean()
-                        total_numeric_loss_sum += float(numeric_diff.sum().item())
-                        total_numeric_count += int(numeric_diff.numel())
+                        numeric_loss_val, numeric_elements = self.model.compute_numeric_loss(
+                            numeric_pred,
+                            numeric_targets,
+                            constant_mask,
+                        )
+
+                        if numeric_elements is not None:
+                            total_numeric_loss_sum += float(numeric_elements.sum().item())
+                            total_numeric_count += int(numeric_elements.numel())
                     else:
                         numeric_loss_val = torch.zeros((), device=self.device, dtype=logits.dtype)
 
@@ -685,10 +690,14 @@ class Trainer:
                         numeric_targets = batch['input_num'].squeeze(-1)
                         constant_mask = (batch['input_ids'] == self.constant_token_id) & torch.isfinite(numeric_targets)
                         if constant_mask.any():
-                            numeric_diff = (numeric_pred - numeric_targets).pow(2)
-                            masked_values = numeric_diff[constant_mask]
-                            val_numeric_loss_sum += float(masked_values.sum().item())
-                            val_numeric_count += int(masked_values.numel())
+                            numeric_loss_val, numeric_elements = self.model.compute_numeric_loss(
+                                numeric_pred,
+                                numeric_targets,
+                                constant_mask,
+                            )
+                            if numeric_elements is not None:
+                                val_numeric_loss_sum += float(numeric_elements.sum().item())
+                                val_numeric_count += int(numeric_elements.numel())
 
                 # Filter out ignored indices for metric calculation
                 valid_indices = flat_labels != self.metrics_ignore_index
@@ -758,7 +767,7 @@ class Trainer:
         wandb.log(log_data, step=step)  # type: ignore
 
     @staticmethod
-    def _split_model_output(output: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def _split_model_output(output: Any) -> tuple[torch.Tensor, Any]:
         if isinstance(output, (tuple, list)):
             logits, numeric = output
             return logits, numeric  # type: ignore[return-value]

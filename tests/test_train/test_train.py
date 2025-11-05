@@ -54,9 +54,19 @@ class TestTrain(unittest.TestCase):
 
     @mock.patch('wandb.init')
     @mock.patch('wandb.log')
-    def test_train_numeric_head_initialises(self, mock_log, mock_init):
+    def test_train_numeric_head_mdn_initialises(self, mock_log, mock_init):
         trainer = Trainer.from_config(get_path('configs', 'test', 'train_numeric_head.yaml'))
         assert trainer.model.use_numeric_head is True
+        assert trainer.model.numeric_head_kind == 'mdn'
+        trainer.train_dataset.shutdown()
+        trainer.val_dataset.shutdown()
+
+    @mock.patch('wandb.init')
+    @mock.patch('wandb.log')
+    def test_train_numeric_head_deterministic_initialises(self, mock_log, mock_init):
+        trainer = Trainer.from_config(get_path('configs', 'test', 'train_numeric_head_deterministic.yaml'))
+        assert trainer.model.use_numeric_head is True
+        assert trainer.model.numeric_head_kind == 'deterministic'
         trainer.train_dataset.shutdown()
         trainer.val_dataset.shutdown()
 
@@ -148,8 +158,8 @@ def test_train_step_skips_prompt_statistics_when_preprocess_disabled() -> None:
     spy.assert_not_called()
 
 
-def test_train_step_logs_numeric_loss_for_constant_tokens() -> None:
-    trainer = Trainer.from_config(get_path('configs', 'test', 'train_numeric_head.yaml'))
+def _run_train_step_for_config(config_filename: str) -> float:
+    trainer = Trainer.from_config(get_path('configs', 'test', config_filename))
     trainer.device = torch.device('cpu')
     trainer.model.to(trainer.device)
     trainer.scaler = torch.amp.GradScaler(enabled=False)
@@ -198,7 +208,19 @@ def test_train_step_logs_numeric_loss_for_constant_tokens() -> None:
     assert numeric_loss >= 0.0
 
     trainer.train_dataset.shutdown()
-    trainer.val_dataset.shutdown()
+    if trainer.val_dataset is not None:
+        trainer.val_dataset.shutdown()
+    return float(numeric_loss)
+
+
+def test_train_step_logs_numeric_loss_for_constant_tokens_mdn() -> None:
+    numeric_loss = _run_train_step_for_config('train_numeric_head.yaml')
+    assert numeric_loss >= 0.0
+
+
+def test_train_step_logs_numeric_loss_for_constant_tokens_deterministic() -> None:
+    numeric_loss = _run_train_step_for_config('train_numeric_head_deterministic.yaml')
+    assert numeric_loss >= 0.0
 
 
 def test_apply_prompt_mask_sets_ignore_indices() -> None:

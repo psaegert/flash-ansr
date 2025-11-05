@@ -2,6 +2,7 @@ import heapq
 import math
 import os
 import warnings
+from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional, Sequence, Tuple, TypeAlias
 
 import torch
@@ -16,11 +17,51 @@ from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.model.set_transformer import SetTransformer
 from flash_ansr.model.transformer import TransformerDecoder
+from flash_ansr.model.mdf import MixtureDensityNetwork, NoiseType, negative_log_likelihood, sample_from_mixture
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
 TerminalFunction: TypeAlias = Callable[[Tuple[int, ...]], bool]
+
+
+@dataclass(slots=True)
+class NumericHeadPrediction:
+    kind: Literal['deterministic', 'mdn']
+    values: torch.Tensor | None = None
+    log_pi: torch.Tensor | None = None
+    mu: torch.Tensor | None = None
+    sigma: torch.Tensor | None = None
+
+    def sample(self) -> torch.Tensor:
+        if self.kind == 'deterministic':
+            if self.values is None:
+                raise ValueError("deterministic numeric head requires `values`")
+            return self.values.clone()
+        if self.log_pi is None or self.mu is None or self.sigma is None:
+            raise ValueError("mixture density output missing parameters")
+        sample = sample_from_mixture(self.log_pi, self.mu, self.sigma)
+        return sample
+
+    def mean(self) -> torch.Tensor:
+        if self.kind == 'deterministic':
+            if self.values is None:
+                raise ValueError("deterministic numeric head requires `values`")
+            return self.values
+        if self.log_pi is None or self.mu is None:
+            raise ValueError("mixture density output missing parameters")
+        mixing = torch.softmax(self.log_pi, dim=-1)
+        expectation = torch.sum(mixing.unsqueeze(-1) * self.mu, dim=-2)
+        if expectation.shape[-1] == 1:
+            expectation = expectation.squeeze(-1)
+        return expectation
+
+    def negative_log_likelihood(self, target: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        if self.kind != 'mdn':
+            raise ValueError("negative log likelihood is only defined for mixture outputs")
+        if self.log_pi is None or self.mu is None or self.sigma is None:
+            raise ValueError("mixture density output missing parameters")
+        return negative_log_likelihood(self.log_pi, self.mu, self.sigma, target, eps)
 
 
 class FlashANSRModel(nn.Module):
@@ -61,6 +102,7 @@ class FlashANSRModel(nn.Module):
 
         use_checkpointing: bool = False,
         use_numeric_head: bool = False,
+        numeric_head_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
 
@@ -122,16 +164,53 @@ class FlashANSRModel(nn.Module):
             nn.Linear(decoder_model_dim, len(self.tokenizer)))
 
         self.use_numeric_head = bool(use_numeric_head)
-        self.constant_value_head: nn.Module | None
+        self.numeric_head_config = dict(numeric_head_config or {})
+        self.constant_value_head: nn.Module | None = None
+        self.numeric_head_kind: Literal['none', 'deterministic', 'mdn'] = 'none'
+        self.numeric_head_dim_out = 1
         if self.use_numeric_head:
-            self.constant_value_head = nn.Sequential(
-                nn.Linear(decoder_model_dim, decoder_model_dim),
-                nn.GELU(),
-                nn.Dropout(p=decoder_dropout),
-                nn.Linear(decoder_model_dim, 1),
-            )
-        else:
-            self.constant_value_head = None
+            head_type = str(self.numeric_head_config.get('type', 'mdn')).lower()
+            if head_type == 'deterministic':
+                self.numeric_head_kind = 'deterministic'
+                self.constant_value_head = nn.Sequential(
+                    nn.Linear(decoder_model_dim, decoder_model_dim),
+                    nn.GELU(),
+                    nn.Dropout(p=decoder_dropout),
+                    nn.Linear(decoder_model_dim, 1),
+                )
+                self.numeric_head_dim_out = 1
+            elif head_type == 'mdn':
+                self.numeric_head_kind = 'mdn'
+                n_components = int(self.numeric_head_config.get('n_components', 5))
+                hidden_dim = int(self.numeric_head_config.get('hidden_dim', decoder_model_dim))
+                dim_out = int(self.numeric_head_config.get('dim_out', 1))
+                noise_type_cfg = self.numeric_head_config.get('noise_type', 'diagonal')
+                if isinstance(noise_type_cfg, NoiseType):
+                    noise_type = noise_type_cfg
+                elif isinstance(noise_type_cfg, str):
+                    key = noise_type_cfg.replace('-', '_').upper()
+                    try:
+                        noise_type = NoiseType[key]
+                    except KeyError as exc:  # pragma: no cover - config error handling
+                        raise ValueError(f"Unknown numeric head noise type: {noise_type_cfg}") from exc
+                else:
+                    raise TypeError("noise_type must be either a string or NoiseType enum")
+
+                fixed_noise_level = self.numeric_head_config.get('fixed_noise_level')
+                if fixed_noise_level is not None:
+                    fixed_noise_level = float(fixed_noise_level)
+
+                self.constant_value_head = MixtureDensityNetwork(
+                    dim_in=decoder_model_dim,
+                    dim_out=dim_out,
+                    n_components=n_components,
+                    hidden_dim=hidden_dim,
+                    noise_type=noise_type,
+                    fixed_noise_level=fixed_noise_level,
+                )
+                self.numeric_head_dim_out = dim_out
+            else:
+                raise ValueError(f"Unsupported numeric head type: {head_type}")
 
         self.preprocessor = FlashANSRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
@@ -139,7 +218,7 @@ class FlashANSRModel(nn.Module):
         self._latest_numeric_sequences: list[list[float]] | None = None
 
     @staticmethod
-    def _split_forward_output(output: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def _split_forward_output(output: Any) -> tuple[torch.Tensor, NumericHeadPrediction | torch.Tensor | None]:
         if isinstance(output, (tuple, list)):
             logits, numeric = output
             return logits, numeric  # type: ignore[return-value]
@@ -167,6 +246,60 @@ class FlashANSRModel(nn.Module):
     def _numeric_sequences_to_tensor(numeric_sequences: Sequence[Sequence[float]], device: torch.device) -> torch.Tensor:
         numeric_tensor = torch.tensor(numeric_sequences, device=device, dtype=torch.float32)
         return numeric_tensor.unsqueeze(-1)
+
+    @staticmethod
+    def _sample_numeric_at(numeric_output: NumericHeadPrediction | torch.Tensor, *, batch_index: int, position_index: int) -> float:
+        if isinstance(numeric_output, NumericHeadPrediction):
+            sample = numeric_output.sample()
+        else:
+            sample = numeric_output
+
+        sample = sample.detach()
+
+        if sample.dim() == 0:
+            value = sample
+        elif sample.dim() == 1:
+            value = sample[position_index]
+        else:
+            value = sample[batch_index, position_index]
+
+        value_tensor = torch.as_tensor(value, dtype=torch.float32)
+        if value_tensor.numel() > 1:
+            value_tensor = value_tensor.mean()
+
+        return float(value_tensor.item())
+
+    def compute_numeric_loss(
+        self,
+        numeric_output: NumericHeadPrediction | torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        eps: float = 1e-6,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        if numeric_output is None or not torch.is_tensor(targets):
+            return None, None
+
+        if mask.numel() == 0 or not mask.any():
+            return None, None
+
+        if isinstance(numeric_output, NumericHeadPrediction):
+            if numeric_output.kind == 'deterministic':
+                if numeric_output.values is None:
+                    return None, None
+                per_element = (numeric_output.values - targets).pow(2)[mask]
+            elif numeric_output.kind == 'mdn':
+                per_element = numeric_output.negative_log_likelihood(targets, eps=eps)[mask]
+            else:  # pragma: no cover - defensive branch
+                return None, None
+        else:
+            per_element = (numeric_output - targets).pow(2)[mask]
+
+        if per_element.numel() == 0:
+            return None, None
+
+        loss = per_element.mean()
+        return loss, per_element.detach()
 
     def get_latest_numeric_sequences(self) -> list[list[float]] | None:
         """Return the numeric sequences from the most recent decode call."""
@@ -244,6 +377,7 @@ class FlashANSRModel(nn.Module):
 
             use_checkpointing=config_["use_checkpointing"],
             use_numeric_head=config_.get("use_numeric_head", False),
+            numeric_head_config=config_.get("numeric_head_config") or config_.get("numeric_head"),
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -298,9 +432,18 @@ class FlashANSRModel(nn.Module):
         decoder_output = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
 
         logits = self.next_token_head(decoder_output)
-        numeric_prediction = None
+        numeric_prediction: NumericHeadPrediction | torch.Tensor | None = None
         if self.use_numeric_head and self.constant_value_head is not None:
-            numeric_prediction = self.constant_value_head(decoder_output).squeeze(-1)
+            if self.numeric_head_kind == 'deterministic':
+                deterministic_values: torch.Tensor = self.constant_value_head(decoder_output)
+                if deterministic_values.size(-1) == 1:
+                    deterministic_values = deterministic_values.squeeze(-1)
+                numeric_prediction = NumericHeadPrediction(kind='deterministic', values=deterministic_values)
+            elif self.numeric_head_kind == 'mdn':
+                log_pi, mu, sigma = self.constant_value_head(decoder_output)
+                numeric_prediction = NumericHeadPrediction(kind='mdn', log_pi=log_pi, mu=mu, sigma=sigma)
+            else:  # pragma: no cover - defensive branch
+                raise ValueError(f"Unsupported numeric head kind: {self.numeric_head_kind}")
 
         if numeric_prediction is None:
             return logits
@@ -400,7 +543,10 @@ class FlashANSRModel(nn.Module):
             _, numeric_pred = self._split_forward_output(output)
             if numeric_pred is None:
                 return float('nan')
-            return float(numeric_pred[0, len(seq) - 1].item())
+            try:
+                return self._sample_numeric_at(numeric_pred, batch_index=0, position_index=len(seq) - 1)
+            except (IndexError, ValueError):  # pragma: no cover - defensive guard
+                return float('nan')
 
         with torch.no_grad():
             for _ in range(max_len):
@@ -756,7 +902,10 @@ class FlashANSRModel(nn.Module):
             _, numeric_pred = self._split_forward_output(output)
             if numeric_pred is None:
                 return float('nan')
-            return float(numeric_pred[0, input_ids.shape[1] - 1].item())
+            try:
+                return self._sample_numeric_at(numeric_pred, batch_index=0, position_index=int(input_ids.shape[1] - 1))
+            except (IndexError, ValueError):  # pragma: no cover - defensive guard
+                return float('nan')
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
         with torch.no_grad():
