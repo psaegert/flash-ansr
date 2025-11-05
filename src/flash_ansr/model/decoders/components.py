@@ -6,7 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from flash_ansr.model.components import FeedForward, get_norm_layer
+from flash_ansr.model.common import FeedForward, get_norm_layer
 
 
 class RotaryEmbedding(nn.Module):

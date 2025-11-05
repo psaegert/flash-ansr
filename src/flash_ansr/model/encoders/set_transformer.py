@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from flash_ansr.model.components import FeedForward, SetNormBase, get_norm_layer
+from flash_ansr.model.common import FeedForward, SetNormBase, get_norm_layer
 from flash_ansr.model.encoders.base import SetEncoder
 
 

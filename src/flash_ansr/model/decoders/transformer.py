@@ -4,7 +4,7 @@ from typing import Optional
 import torch
 from torch import nn
 
-from flash_ansr.model.components import get_norm_layer
+from flash_ansr.model.common import get_norm_layer
 from flash_ansr.model.decoders.components import RotaryEmbedding, TransformerDecoderBlock
 
 

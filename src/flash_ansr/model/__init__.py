@@ -4,7 +4,7 @@ from .pre_encoder import IEEE75432PreEncoder
 from .tokenizer import Tokenizer
 from .manage import install_model, remove_model
 
-from .components import (
+from .common import (
     FeedForward,
     OriginalSetNorm,
     RMSNorm,
