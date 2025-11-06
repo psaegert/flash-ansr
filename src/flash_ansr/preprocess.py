@@ -16,6 +16,7 @@ from flash_ansr.preprocess_features import (
     PromptFeatures,
 )
 from flash_ansr.utils.config_io import load_config
+from flash_ansr.utils.numeric import merge_numeric_sequence
 
 
 @dataclass
@@ -142,7 +143,11 @@ class FlashANSRPreprocessor:
 
             try:
                 features = self._feature_extractor.extract(skeleton_tokens)
-                return self._serialize_prompt(features)
+                serialized = self._serialize_prompt(features)
+                existing_numeric = instance.get('input_num')
+                if existing_numeric is not None:
+                    serialized['input_num'] = merge_numeric_sequence(existing_numeric, serialized['input_num'])
+                return serialized
             except ValueError:
                 return self._format_single_fallback(instance)
 
@@ -164,7 +169,7 @@ class FlashANSRPreprocessor:
         modified_input_ids = input_ids
         input_num = [np.nan] * len(modified_input_ids)
 
-        return {
+        serialized = {
             'complexity': complexity,
             'input_ids': modified_input_ids,
             'input_num': input_num,
@@ -175,6 +180,12 @@ class FlashANSRPreprocessor:
                 'exclude_terms': [],
             },
         }
+
+        existing_numeric = instance.get('input_num')
+        if existing_numeric is not None:
+            serialized['input_num'] = merge_numeric_sequence(existing_numeric, serialized['input_num'])
+
+        return serialized
 
     # ------------------------------------------------------------------
     # Prompt serialization helpers

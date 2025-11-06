@@ -1,6 +1,8 @@
 # Models & Data
 /models
 data
+!/src/flash_ansr/data
+!/src/flash_ansr/data/**/*.py
 /results
 
 .vscode/

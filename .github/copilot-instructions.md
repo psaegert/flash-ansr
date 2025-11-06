@@ -18,6 +18,7 @@
 - **CLI & Scripts** The package entry point (`flash_ansr.__main__`) drives data import, skeleton generation, training, and evaluation; scripts in `scripts/` are thin wrappers calling these subcommands.
 - Use `flash_ansr install <repo>` or `install_model` (`src/flash_ansr/model/manage.py`) to pull Hugging Face checkpoints into `models/`; tests assume `psaegert/flash-ansr-v21.0-60M` is cached.
 - Generation/evaluation pipelines expect datasets under `data/ansr-data/**`; helper scripts (`import_test_sets.sh`, `generate_validation_set.sh`) bake in the directory layout from the README instructions.
+- When using the CLI, you must activate the `flash-ansr` conda environment to ensure dependencies are found.
 - **Coding Conventions** Keep tensors float32 except explicit precision modules; numeric embeddings live in `FlashANSRModel.numeric_embedding` and expect NaNs for padding.
 - Treat model configs as immutable at runtime; prefer cloning (`copy.deepcopy`) when you need per-run tweaks to avoid leaking state into saved YAMLs.
 - Prompt metadata is propagated through batches as lists; when adding dataloader fields, update `FlashANSRDataset.collate` to pad/stack them consistently.
@@ -33,4 +34,3 @@
 - When touching decoding paths, update `tests/test_inference.py` and ensure beams still decode to valid expressions (no stray `<constant>` placeholders).
 - Save evaluation outputs as pickles following the existing schema (`expression`, `log_prob`, `fits`, etc.) so downstream notebooks under `experimental/` keep working.
 - Ask the user before deleting or overwriting models/datasets; existing CLIs already prompt—follow that pattern in new commands.
-- When using the CLI, make sure to use or activate the `flash-ansr` conda environment
