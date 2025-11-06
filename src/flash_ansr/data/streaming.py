@@ -12,7 +12,7 @@ import numpy as np
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.token_ops import substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocess import FlashANSRPreprocessor
+from flash_ansr.preprocessing import FlashANSRPreprocessor
 
 
 @dataclass

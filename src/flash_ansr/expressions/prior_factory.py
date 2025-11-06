@@ -1,14 +1,9 @@
 """Factory helpers for constructing prior distribution callables."""
-
-from __future__ import annotations
-
 from typing import Any, Callable
 
 import numpy as np
 
 from flash_ansr.expressions.distributions import get_distribution
-
-__all__ = ["build_prior_callable"]
 
 
 def build_prior_callable(config: dict[str, Any] | list[dict[str, Any]]) -> Callable:

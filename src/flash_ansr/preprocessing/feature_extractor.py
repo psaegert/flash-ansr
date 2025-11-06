@@ -1,3 +1,4 @@
+"""Prompt feature extraction and configuration helpers."""
 import math
 import random
 from dataclasses import dataclass, field, replace
@@ -7,19 +8,9 @@ from typing import Iterable, Mapping, Sequence, cast
 import numpy as np
 from simplipy import SimpliPyEngine
 
+from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.expressions.skeleton_pool import SkeletonPool, NoValidSampleFoundError
-
-
-@dataclass(frozen=True)
-class PromptFeatures:
-    """Container holding the symbolic constraints extracted for a prompt."""
-
-    expression_tokens: list[str]
-    complexity: int
-    allowed_terms: list[list[str]]
-    include_terms: list[list[str]]
-    exclude_terms: list[list[str]]
+from flash_ansr.preprocessing.schemas import PromptFeatures
 
 
 @dataclass(frozen=True)
@@ -33,30 +24,30 @@ class DistributionSpec:
         name = self.name.lower()
         if name in {"constant", "deterministic"}:
             return self._get_float("value", 0.0)
-        elif name in {"uniform_int", "randint"}:
+        if name in {"uniform_int", "randint"}:
             low = self._get_int("low", 0)
             high = self._get_int("high", low)
             if high < low:
                 low, high = high, low
             return float(np.random.randint(low, high + 1))
-        elif name in {"uniform", "uniform_float"}:
+        if name in {"uniform", "uniform_float"}:
             low_value = self._get_float("low", 0.0)
             high_value = self._get_float("high", low_value)
             if high_value < low_value:
                 low_value, high_value = high_value, low_value
             return float(np.random.uniform(low_value, high_value))
-        elif name == "poisson":
+        if name == "poisson":
             lam = max(0.0, self._get_float("lam", self._get_float("lambda", 0.0)))
             return float(np.random.poisson(lam))
-        elif name == "geometric":
+        if name == "geometric":
             p = self._get_float("p", 0.5)
             p = min(max(p, 1e-8), 1.0)
             return float(np.random.geometric(p))
-        elif name in {"normal", "gaussian"}:
+        if name in {"normal", "gaussian"}:
             mean = self._get_float("mean", self._get_float("loc", 0.0))
             std = self._get_float("std", self._get_float("scale", 1.0))
             return float(np.random.normal(mean, std))
-        elif name == "triangular":
+        if name == "triangular":
             left = self._get_float("left", self._get_float("low", 0.0))
             right = self._get_float("right", self._get_float("high", 1.0))
             if right < left:
@@ -64,8 +55,7 @@ class DistributionSpec:
             mode_default = (left + right) / 2
             mode = self._get_float("mode", mode_default)
             return float(np.random.triangular(left, mode, right))
-        else:
-            raise ValueError(f"Unsupported distribution '{self.name}'.")
+        raise ValueError(f"Unsupported distribution '{self.name}'.")
 
     def sample_int(self, *, minimum: int = 0, maximum: int | None = None) -> int:
         value = int(round(self.sample()))
@@ -111,7 +101,7 @@ class DistributionSpec:
                 params = cls._normalize_params(params_obj)
                 return cls(name=str(data["distribution"]), params=params)
             if len(data) == 1:
-                (name, params_val), = data.items()
+                ((name, params_val),) = data.items()
                 params = cls._normalize_params(params_val)
                 return cls(name=str(name), params=params)
         raise TypeError(f"Unsupported distribution specification: {data!r}")
@@ -311,11 +301,11 @@ class TermSelectionConfig(PromptSectionConfig):
 
 
 class IncludeTermsConfig(TermSelectionConfig):
-    pass
+    """Configuration for included prompt terms."""
 
 
 class ExcludeTermsConfig(TermSelectionConfig):
-    pass
+    """Configuration for excluded prompt terms."""
 
 
 @dataclass
@@ -536,9 +526,14 @@ class PromptFeatureExtractor:
             exclude_terms=exclude_terms,
         )
 
-    # ------------------------------------------------------------------
-    # Prefix expression parsing utilities
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_section_enabled(probability: float) -> bool:
+        if probability <= 0:
+            return False
+        if probability >= 1:
+            return True
+        return random.random() < probability
+
     def _parse_prefix_expression(self, tokens: Sequence[str], idx: int) -> tuple[_ExpressionNode, int]:
         if idx >= len(tokens):
             raise ValueError("Unexpected end of tokens while parsing prefix expression.")
@@ -555,17 +550,6 @@ class PromptFeatureExtractor:
             children.append(child)
 
         return _ExpressionNode(token, children), idx
-
-    # ------------------------------------------------------------------
-    # Term collection and sampling
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _is_section_enabled(probability: float) -> bool:
-        if probability <= 0:
-            return False
-        if probability >= 1:
-            return True
-        return random.random() < probability
 
     def _sample_actual_allowed_terms(
         self,
@@ -782,9 +766,6 @@ class PromptFeatureExtractor:
 
         return fallback
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def _resolve_length_bounds(min_length: int, max_relative: float, expression_length: int) -> tuple[int, int]:
         min_tokens = max(1, min_length)

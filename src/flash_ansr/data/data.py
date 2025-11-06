@@ -14,7 +14,7 @@ from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
 from flash_ansr.expressions import SkeletonPool
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocess import FlashANSRPreprocessor
+from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
 

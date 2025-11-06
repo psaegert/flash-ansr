@@ -1,7 +1,4 @@
 """Holdout management for expression skeleton sampling."""
-
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Callable, Sequence, Tuple
 import warnings
@@ -9,8 +6,6 @@ import warnings
 import numpy as np
 
 from flash_ansr.expressions.compilation import safe_f
-
-__all__ = ["HoldoutManager"]
 
 
 @dataclass

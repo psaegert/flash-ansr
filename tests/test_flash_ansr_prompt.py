@@ -7,6 +7,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSR, GenerationConfig
 from flash_ansr.preprocess import FlashANSRPreprocessor
+from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.expressions.skeleton_pool import SkeletonPool
 
@@ -82,18 +83,18 @@ def test_flash_ansr_fit_uses_prompt_prefix(
 
     model = _DummyModel(tokenizer=tokenizer, preprocessor=preprocessor)
 
-    captured: dict[str, list[float] | list[int] | None] = {}
+    captured: dict[str, object | None] = {}
 
     def _fake_generate(
         self: FlashANSR,
         data: torch.Tensor,
+        *,
+        prompt_prefix: PromptPrefix | None = None,
         complexity: int | float | None = None,
         verbose: bool = False,
-        prompt_tokens: list[int] | None = None,
-        prompt_numeric: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
-        captured['prompt_tokens'] = list(prompt_tokens) if prompt_tokens is not None else None
-        captured['prompt_numeric'] = list(prompt_numeric) if prompt_numeric is not None else None
+        captured['prompt_prefix'] = prompt_prefix
+        captured['complexity'] = complexity
 
         beam_tokens = [
             tokenizer['<bos>'],
@@ -121,16 +122,19 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     ansr.fit(
         X,
         y,
-        prompt_complexity=7,
-        prompt_allowed_terms=[["x1"]],
-        prompt_include_terms=[["x1"]],
-        prompt_exclude_terms=[["x2"]],
+        complexity=7,
+        allowed_terms=[["x1"]],
+        include_terms=[["x1"]],
+        exclude_terms=[["x2"]],
     )
 
-    assert 'prompt_tokens' in captured and captured['prompt_tokens'] is not None
-    assert 'prompt_numeric' in captured and captured['prompt_numeric'] is not None
+    assert captured.get('prompt_prefix') is not None
+    assert captured.get('complexity') == 7
 
-    prompt_tokens = [tokenizer[idx] for idx in captured['prompt_tokens']]  # type: ignore[arg-type]
+    prompt_prefix = captured['prompt_prefix']
+    assert prompt_prefix is not None
+
+    prompt_tokens = [tokenizer[idx] for idx in prompt_prefix.tokens]
     expected_prefix = [
         '<bos>',
         '<prompt>',
@@ -151,7 +155,7 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     ]
     assert prompt_tokens[: len(expected_prefix)] == expected_prefix
 
-    prompt_numeric = captured['prompt_numeric']  # type: ignore[assignment]
+    prompt_numeric = prompt_prefix.numeric
     assert prompt_numeric[3] == pytest.approx(7.0)
     assert all(
         np.isnan(value) for idx, value in enumerate(prompt_numeric) if idx != 3

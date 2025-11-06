@@ -13,7 +13,7 @@ from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
-from flash_ansr.preprocess import FlashANSRPreprocessor
+from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
 from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
@@ -254,10 +254,15 @@ class FlashANSRModel(nn.Module):
     def _resolve_generation_prefix(
         self,
         *,
-        initial_tokens: list[int] | None,
-        input_num: list[float] | None,
-        complexity: int | float | None,
+        prompt_prefix: PromptPrefix | None,
+        initial_tokens: list[int] | None = None,
+        input_num: list[float] | None = None,
     ) -> tuple[list[int], list[float] | None]:
+        if prompt_prefix is not None:
+            tokens = [int(token) for token in prompt_prefix.tokens]
+            numeric_values = [float(value) for value in prompt_prefix.numeric]
+            return tokens, numeric_values
+
         if initial_tokens is not None:
             tokens = list(initial_tokens)
             numeric = [float(value) for value in input_num] if input_num is not None else None
@@ -266,7 +271,7 @@ class FlashANSRModel(nn.Module):
         if self.preprocessor is None:
             return [self.tokenizer['<bos>']], None
 
-        serialized = self.preprocessor.serialize_prompt_prefix(complexity=complexity)
+        serialized = self.preprocessor.serialize_prompt_prefix()
 
         tokens = [int(token) for token in serialized['input_ids']]
         numeric_values = [float(value) for value in serialized['input_num']]
@@ -280,17 +285,17 @@ class FlashANSRModel(nn.Module):
         max_len: int = 100,
         mini_batch_size: int = 128,
         equivalence_pruning: bool = True,
-        complexity: int | float | None = None,
         verbose: bool = False,
         limit_expansions: bool = True,
         *,
+        prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
         base_tokens, base_input_num = self._resolve_generation_prefix(
+            prompt_prefix=prompt_prefix,
             initial_tokens=initial_tokens,
             input_num=input_num,
-            complexity=complexity,
         )
 
         if isinstance(base_input_num, torch.Tensor):
@@ -467,13 +472,13 @@ class FlashANSRModel(nn.Module):
         data: torch.Tensor,
         config: MCTSConfig,
         beam_width: int = 16,
-        complexity: int | float | None = None,
         value_fn: Optional[ValueFunction] = None,
         terminal_fn: Optional[TerminalFunction] = None,
         invalid_sequence_fn: Optional[Callable[[Tuple[int, ...]], bool]] = None,
         completion_sort: str = "reward",
         verbose: bool = False,
         *,
+        prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
@@ -482,9 +487,9 @@ class FlashANSRModel(nn.Module):
         device = data.device
 
         base_tokens, base_input_num = self._resolve_generation_prefix(
+            prompt_prefix=prompt_prefix,
             initial_tokens=initial_tokens,
             input_num=input_num,
-            complexity=complexity,
         )
 
         memory = self._create_memory(data)
@@ -614,13 +619,13 @@ class FlashANSRModel(nn.Module):
         top_p: float = 1,
         max_len: int = 100,
         mini_batch_size: int = 128,
-        complexity: int | float | None = None,
         temperature: float = 1.0,
         valid_only: bool = True,
         simplify: bool = True,
         unique: bool = True,
         verbose: bool = False,
         *,
+        prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
@@ -629,9 +634,9 @@ class FlashANSRModel(nn.Module):
 
         # --- 1. Vectorized Initialization ---
         base_tokens, base_input_num = self._resolve_generation_prefix(
+            prompt_prefix=prompt_prefix,
             initial_tokens=initial_tokens,
             input_num=input_num,
-            complexity=complexity,
         )
 
         prefix_length = len(base_tokens)

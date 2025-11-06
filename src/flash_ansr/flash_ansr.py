@@ -1,7 +1,7 @@
 import os
 import copy
 import numbers
-from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Optional, Sequence
+from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Sequence
 import warnings
 
 import numpy as np
@@ -13,13 +13,14 @@ from sklearn.base import BaseEstimator
 
 from simplipy import SimpliPyEngine
 
+from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
+from flash_ansr.model import FlashANSRModel, Tokenizer
+from flash_ansr.decoding.mcts import MCTSConfig
+from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
+from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.utils.generation import GenerationConfig
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.tensor_ops import pad_input_set
-from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.model import FlashANSRModel, Tokenizer
-from flash_ansr.decoding.mcts import MCTSConfig
-from flash_ansr.preprocess import FlashANSRPreprocessor
 
 
 class Result(TypedDict):
@@ -33,7 +34,7 @@ class Result(TypedDict):
     function: Callable
     fits: list[tuple[np.ndarray, np.ndarray, float]]
     score: float
-    target_complexity: int | float | None
+    requested_complexity: int | float | None
     fvu: float
     prompt_metadata: dict[str, list[list[str]]] | None
 
@@ -125,9 +126,7 @@ class FlashANSR(BaseEstimator):
         self._mcts_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
 
         self.variable_mapping: dict[str, str] = {}
-        self._prompt_prefix_tokens: list[int] | None = None
-        self._prompt_prefix_numeric: list[float] | None = None
-        self._prompt_prefix_mask: list[bool] | None = None
+        self._prompt_prefix: PromptPrefix | None = None
         self._prompt_metadata: dict[str, list[list[str]]] | None = None
 
     @classmethod
@@ -255,51 +254,28 @@ class FlashANSR(BaseEstimator):
             reward_transform=reward_transform,
         )
 
-    def _prepare_prompt_prefix(
-            self,
-            *,
-            prompt_complexity: int | float | None,
-            prompt_allowed_terms: Iterable[Sequence[Any]] | None,
-            prompt_include_terms: Iterable[Sequence[Any]] | None,
-            prompt_exclude_terms: Iterable[Sequence[Any]] | None,
-    ) -> tuple[list[int], list[float], list[bool], dict[str, list[list[str]]]] | None:
-        preprocessor: FlashANSRPreprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
-        if preprocessor is None or not hasattr(preprocessor, 'serialize_prompt_prefix'):
-            return None
-
-        serialized = preprocessor.serialize_prompt_prefix(
-            complexity=prompt_complexity,
-            allowed_terms=prompt_allowed_terms,
-            include_terms=prompt_include_terms,
-            exclude_terms=prompt_exclude_terms,
-        )
-
-        prompt_tokens = list(serialized['input_ids'])
-        prompt_numeric = [float(value) for value in serialized['input_num']]
-        prompt_mask = list(serialized['prompt_mask'])
-        metadata_raw = serialized.get('prompt_metadata', {})
-        if not isinstance(metadata_raw, dict):
-            metadata: dict[str, list[list[str]]] = {}
-        else:
-            metadata = {key: [list(term) for term in value] for key, value in metadata_raw.items()}
-
-        return prompt_tokens, prompt_numeric, prompt_mask, metadata
-
     def generate(
-            self,
-            data: torch.Tensor,
-            complexity: int | float | None = None,
-            verbose: bool = False,
-            prompt_tokens: list[int] | None = None,
-            prompt_numeric: list[float] | None = None) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
+        self,
+        data: torch.Tensor,
+        *,
+        prompt_prefix: PromptPrefix | None = None,
+        complexity: int | float | None = None,
+        verbose: bool = False,
+    ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Generate candidate expression beams from the transformer.
 
         Parameters
         ----------
         data : torch.Tensor
             Batched input tensor where the final feature corresponds to targets.
+        prompt_prefix : PromptPrefix or None, optional
+            Serialized prompt metadata to seed generation. When omitted, the
+            method will synthesize a minimal prefix from ``complexity``
+            (if provided) so that all prompt hints share the same entry point.
         complexity : int or float or None, optional
-            Target expression complexity supplied to the generator.
+            Numeric prompt hint that is only used when ``prompt_prefix`` is not
+            supplied. Callers should prefer constructing a full
+            :class:`PromptPrefix` via the preprocessing pipeline.
         verbose : bool, optional
             If ``True``, progress output is emitted where supported.
 
@@ -323,119 +299,62 @@ class FlashANSR(BaseEstimator):
         """
         self._mcts_cache = {}
 
+        generation_kwargs = dict(self.generation_config)
+
+        effective_prompt = prompt_prefix
+        if effective_prompt is None and complexity is not None:
+            preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+            effective_prompt = prepare_prompt_prefix(
+                preprocessor,
+                complexity=complexity,
+                allowed_terms=None,
+                include_terms=None,
+                exclude_terms=None,
+            )
+
         match self.generation_config.method:
             case 'beam_search':
-                beams, log_probs, completed = self.flash_ansr_transformer.beam_search(
+                beams, log_probs, completed, rewards = run_beam_search(
+                    self.flash_ansr_transformer,
                     data=data,
-                    complexity=complexity,
                     verbose=verbose,
-                    initial_tokens=prompt_tokens,
-                    input_num=prompt_numeric,
-                    **self.generation_config)
-                rewards = [float('nan')] * len(beams)
+                    prompt_prefix=effective_prompt,
+                    generation_kwargs=generation_kwargs,
+                )
                 return beams, log_probs, completed, rewards
             case 'softmax_sampling':
-                beams, log_probs, completed = self.flash_ansr_transformer.sample_top_kp(
+                beams, log_probs, completed, rewards = run_softmax_sampling(
+                    self.flash_ansr_transformer,
                     data=data,
-                    complexity=complexity,
                     verbose=verbose,
-                    initial_tokens=prompt_tokens,
-                    input_num=prompt_numeric,
-                    **self.generation_config)
-                rewards = [float('nan')] * len(beams)
+                    prompt_prefix=effective_prompt,
+                    generation_kwargs=generation_kwargs,
+                )
                 return beams, log_probs, completed, rewards
             case 'mcts':
                 config = self._build_mcts_config()
-                completion_sort = getattr(self.generation_config, 'completion_sort', 'reward')
+                completion_sort = generation_kwargs.get('completion_sort', 'reward')
+                beam_width = generation_kwargs.get('beam_width', 16)
 
-                x_np = data[..., :self.n_variables].detach().cpu().numpy()
-                y_np = data[..., self.n_variables:].detach().cpu().numpy()
-
-                value_cache: dict[Tuple[int, ...], tuple[float, dict[str, Any]]] = {}
-                refiner_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
-
-                y_var = float(np.var(y_np)) if y_np.size > 1 else float(np.nan)
-
-                def value_fn(tokens: Tuple[int, ...]) -> tuple[float, dict[str, Any]]:
-                    if tokens in value_cache:
-                        return value_cache[tokens]
-
-                    def cache_and_return(reward_value: float, metadata: Optional[dict[str, Any]] = None) -> tuple[float, dict[str, Any]]:
-                        info = dict(metadata) if metadata is not None else {}
-                        value_cache[tokens] = (reward_value, info)
-                        return value_cache[tokens]
-
-                    try:
-                        expression_tokens, _, _ = self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(list(tokens))
-                    except ValueError:
-                        return cache_and_return(-config.invalid_penalty, {'length': len(tokens), 'log_fvu': float('nan')})
-
-                    expression_decoded = self.tokenizer.decode(expression_tokens, special_tokens='<constant>')
-                    expression_length = len(expression_decoded)
-
-                    if not self.simplipy_engine.is_valid(expression_decoded):
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-
-                    try:
-                        refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
-                            expression=expression_decoded,
-                            X=x_np,
-                            y=y_np,
-                            n_restarts=self.n_restarts,
-                            method=self.refiner_method,
-                            p0_noise=self.refiner_p0_noise,
-                            p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                            converge_error='ignore')
-                    except ConvergenceError:
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-                    except Exception:
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-
-                    if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-
-                    loss = refiner._all_constants_values[0][-1]
-                    if np.isnan(loss):
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-
-                    fvu = self._compute_fvu(float(loss), y_np.shape[0], y_var)
-                    if not np.isfinite(fvu):
-                        return cache_and_return(-config.invalid_penalty, {'length': expression_length, 'log_fvu': float('nan')})
-
-                    score = self._score_from_fvu(fvu, len(expression_decoded), self.parsimony)
-                    reward = -score
-                    log_fvu = float(np.log10(max(float(fvu), self.FLOAT64_EPS)))
-
-                    metadata = {
-                        'fvu': float(fvu),
-                        'log_fvu': log_fvu,
-                        'length': expression_length,
-                    }
-
-                    constantified_tokens = tuple(self.flash_ansr_transformer.tokenizer.constantify_expression(list(tokens)))
-
-                    refiner_cache[constantified_tokens] = {
-                        'refiner': refiner,
-                        'score': score,
-                        'fvu': fvu,
-                        'log_fvu': log_fvu,
-                        'loss': float(loss),
-                        'reward': reward,
-                        'fits': copy.deepcopy(refiner._all_constants_values),
-                    }
-
-                    return cache_and_return(reward, metadata)
-
-                beams, log_probs, completed, rewards = self.flash_ansr_transformer.mcts_decode(
+                beams, log_probs, completed, rewards, refiner_cache = run_mcts_generation(
+                    transformer=self.flash_ansr_transformer,
+                    tokenizer=self.tokenizer,
+                    simplipy_engine=self.simplipy_engine,
                     data=data,
                     config=config,
-                    beam_width=getattr(self.generation_config, 'beam_width', 16),
-                    complexity=complexity,
-                    value_fn=value_fn,
+                    beam_width=beam_width,
                     completion_sort=completion_sort,
+                    n_variables=self.n_variables,
+                    n_restarts=self.n_restarts,
+                    refiner_method=self.refiner_method,
+                    refiner_p0_noise=self.refiner_p0_noise,
+                    refiner_p0_noise_kwargs=self.refiner_p0_noise_kwargs,
+                    parsimony=self.parsimony,
+                    compute_fvu=self._compute_fvu,
+                    score_from_fvu=self._score_from_fvu,
+                    float64_eps=self.FLOAT64_EPS,
+                    prompt_prefix=effective_prompt,
                     verbose=verbose,
-                    initial_tokens=prompt_tokens,
-                    input_num=prompt_numeric,
                 )
 
                 self._mcts_cache = refiner_cache
@@ -443,19 +362,37 @@ class FlashANSR(BaseEstimator):
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 
+    def _prepare_prompt_prefix(
+            self,
+            *,
+            complexity: int | float | None,
+            allowed_terms: Iterable[Sequence[Any]] | None,
+            include_terms: Iterable[Sequence[Any]] | None,
+            exclude_terms: Iterable[Sequence[Any]] | None) -> PromptPrefix | None:
+        preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+        prompt_prefix = prepare_prompt_prefix(
+            preprocessor,
+            complexity=complexity,
+            allowed_terms=allowed_terms,
+            include_terms=include_terms,
+            exclude_terms=exclude_terms,
+        )
+
+        self._prompt_prefix = prompt_prefix
+        return prompt_prefix
+
     def fit(
             self,
             X: np.ndarray | torch.Tensor | pd.DataFrame,
             y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-            complexity: int | float | Iterable | None = None,
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             verbose: bool = False,
             *,
-            prompt_complexity: int | float | None = None,
-            prompt_allowed_terms: Iterable[Sequence[Any]] | None = None,
-            prompt_include_terms: Iterable[Sequence[Any]] | None = None,
-            prompt_exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
+            complexity: int | float | None = None,
+            allowed_terms: Iterable[Sequence[Any]] | None = None,
+            include_terms: Iterable[Sequence[Any]] | None = None,
+            exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
         Parameters
@@ -464,25 +401,22 @@ class FlashANSR(BaseEstimator):
             Feature matrix where rows index observations and columns variables.
         y : ndarray or Tensor or DataFrame or Series
             Target values. Multi-output targets are unsupported.
-        complexity : int or float or Iterable or None, optional
-            Desired expression complexity. Iterables allow sweeping multiple
-            complexity targets. ``None`` defers to the generator defaults.
         variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
             Mapping from internal variable tokens to descriptive names.
         converge_error : {'raise', 'ignore', 'print'}, optional
             Handling strategy when the refiner fails to converge.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
-        prompt_complexity : int or float or None, optional
+        complexity : int or float or None, optional
             Keyword-only control that injects a target complexity into the prompt
-            prefix. Defaults to ``complexity`` when it is a scalar.
-        prompt_allowed_terms : Iterable[Sequence[str]] or None, optional
+            prefix.
+        allowed_terms : Iterable[Sequence[str]] or None, optional
             Keyword-only list of term token sequences that may appear in the
             generated expression.
-        prompt_include_terms : Iterable[Sequence[str]] or None, optional
+        include_terms : Iterable[Sequence[str]] or None, optional
             Keyword-only subset of allowed terms that the expression should
             prioritise using.
-        prompt_exclude_terms : Iterable[Sequence[str]] or None, optional
+        exclude_terms : Iterable[Sequence[str]] or None, optional
             Keyword-only list of term token sequences that should be discouraged
             during generation.
 
@@ -523,38 +457,8 @@ class FlashANSR(BaseEstimator):
                 # column i -> column name
                 self.variable_mapping = {f"x{i + 1}": name for i, name in enumerate(X.columns)}
 
-        # Normalize ``complexity`` into an iterable so downstream logic can iterate uniformly.
-        if complexity is None or not hasattr(complexity, '__iter__'):
-            complexity_list: list[int | float | None] = [complexity]
-        else:
-            complexity_list = complexity  # type: ignore
-
-        prompt_complexity_value: int | float | None = prompt_complexity
-        if prompt_complexity_value is None and isinstance(complexity, numbers.Real):
-            prompt_complexity_value = complexity
-
-        prompt_prefix = self._prepare_prompt_prefix(
-            prompt_complexity=prompt_complexity_value,
-            prompt_allowed_terms=prompt_allowed_terms,
-            prompt_include_terms=prompt_include_terms,
-            prompt_exclude_terms=prompt_exclude_terms,
-        )
-
-        if prompt_prefix is not None:
-            prompt_tokens, prompt_numeric, prompt_mask, prompt_metadata = prompt_prefix
-            self._prompt_prefix_tokens = prompt_tokens
-            self._prompt_prefix_numeric = prompt_numeric
-            self._prompt_prefix_mask = prompt_mask
-            self._prompt_metadata = prompt_metadata
-        else:
-            prompt_tokens = None
-            prompt_numeric = None
-            prompt_mask = None
-            prompt_metadata = None
-            self._prompt_prefix_tokens = None
-            self._prompt_prefix_numeric = None
-            self._prompt_prefix_mask = None
-            self._prompt_metadata = None
+        if complexity is not None and not isinstance(complexity, numbers.Real):
+            raise TypeError("complexity must be a real scalar when provided")
 
         with torch.no_grad():
             # Convert the input data to a tensor
@@ -590,66 +494,86 @@ class FlashANSR(BaseEstimator):
             numpy_errors_before = np.geterr()
             np.seterr(all=self.numpy_errors)
 
-            for complexity in complexity_list:
-                raw_beams, log_probs, _completed_flags, _rewards = self.generate(
-                    data_tensor,
-                    complexity=complexity,
-                    verbose=verbose,
-                    prompt_tokens=prompt_tokens,
-                    prompt_numeric=prompt_numeric,
-                )
+            prompt_prefix = self._prepare_prompt_prefix(
+                complexity=complexity,
+                allowed_terms=allowed_terms,
+                include_terms=include_terms,
+                exclude_terms=exclude_terms,
+            )
 
-                beams = [self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
+            metadata_snapshot: dict[str, list[list[str]]] | None
+            if prompt_prefix is not None:
+                metadata_snapshot = copy.deepcopy(prompt_prefix.metadata)
+            else:
+                metadata_snapshot = None
 
-                raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
-                beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
+            self._prompt_metadata = copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None
 
-                # Fit the refiner to each beam
-                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams), smoothing=0.0):
-                    if self.simplipy_engine.is_valid(beam_decoded):
-                        try:
-                            refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
-                                expression=beam_decoded,
-                                X=X.cpu().numpy(),
-                                y=y.cpu().numpy(),
-                                n_restarts=self.n_restarts,
-                                method=self.refiner_method,
-                                p0=None,
-                                p0_noise=self.refiner_p0_noise,
-                                p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                                converge_error=converge_error)
+            raw_beams, log_probs, _completed_flags, _rewards = self.generate(
+                data_tensor,
+                prompt_prefix=prompt_prefix,
+                complexity=complexity,
+                verbose=verbose,
+            )
 
-                            if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
-                                if converge_error == 'print':
-                                    print(f"Failed to converge for beam: {beam_decoded}")
-                                continue
+            beams = [self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
-                            sample_count = int(y.shape[0])
-                            loss = float(refiner._all_constants_values[0][-1])
-                            fvu = self._compute_fvu(loss, sample_count, y_variance)
-                            score = self._score_from_fvu(fvu, len(beam_decoded), self.parsimony)
+            raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
+            beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
-                            self._results.append({
-                                'log_prob': log_prob,
-                                'fvu': fvu,
-                                'score': score,
-                                'expression': beam_decoded,
-                                'complexity': len(beam_decoded),
-                                'target_complexity': complexity,
-                                'raw_beam': raw_beam,
-                                'beam': beam,    # type: ignore
-                                'raw_beam_decoded': raw_beam_decoded,
-                                'function': refiner.expression_lambda,
-                                'refiner': refiner,
-                                'fits': copy.deepcopy(refiner._all_constants_values),
-                                'prompt_metadata': copy.deepcopy(prompt_metadata) if prompt_metadata is not None else None,
-                            })
+            # Fit the refiner to each beam
+            for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(
+                zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs),
+                desc="Fitting Constants",
+                disable=not verbose,
+                total=len(beams),
+                smoothing=0.0,
+            ):
+                if self.simplipy_engine.is_valid(beam_decoded):
+                    try:
+                        refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
+                            expression=beam_decoded,
+                            X=X.cpu().numpy(),
+                            y=y.cpu().numpy(),
+                            n_restarts=self.n_restarts,
+                            method=self.refiner_method,
+                            p0=None,
+                            p0_noise=self.refiner_p0_noise,
+                            p0_noise_kwargs=self.refiner_p0_noise_kwargs,
+                            converge_error=converge_error,
+                        )
 
-                        except ConvergenceError:
+                        if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
                             if converge_error == 'print':
                                 print(f"Failed to converge for beam: {beam_decoded}")
-                            elif converge_error == 'raise':
-                                raise
+                            continue
+
+                        sample_count = int(y.shape[0])
+                        loss = float(refiner._all_constants_values[0][-1])
+                        fvu = self._compute_fvu(loss, sample_count, y_variance)
+                        score = self._score_from_fvu(fvu, len(beam_decoded), self.parsimony)
+
+                        self._results.append({
+                            'log_prob': log_prob,
+                            'fvu': fvu,
+                            'score': score,
+                            'expression': beam_decoded,
+                            'complexity': len(beam_decoded),
+                            'requested_complexity': complexity,
+                            'raw_beam': raw_beam,
+                            'beam': beam,  # type: ignore
+                            'raw_beam_decoded': raw_beam_decoded,
+                            'function': refiner.expression_lambda,
+                            'refiner': refiner,
+                            'fits': copy.deepcopy(refiner._all_constants_values),
+                            'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
+                        })
+
+                    except ConvergenceError:
+                        if converge_error == 'print':
+                            print(f"Failed to converge for beam: {beam_decoded}")
+                        elif converge_error == 'raise':
+                            raise
 
             self.compile_results(self.parsimony)
 
