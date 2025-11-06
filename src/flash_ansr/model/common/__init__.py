@@ -1,6 +1,5 @@
 """Shared neural network components for Flash-ANSR models."""
 from flash_ansr.model.common.components import (
-    DynLogNorm,
     FeedForward,
     OriginalSetNorm,
     RMSNorm,
