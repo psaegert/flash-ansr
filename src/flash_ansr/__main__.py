@@ -241,7 +241,7 @@ def main(argv: str = None) -> None:
             from flash_ansr import FlashANSR
             from flash_ansr.eval.evaluation import Evaluation
             from flash_ansr.utils.config_io import load_config, unfold_config
-            from flash_ansr.utils.generation import GenerationConfig
+            from flash_ansr.utils.generation import create_generation_config
             from flash_ansr.utils.paths import substitute_root_path
             from flash_ansr.data import FlashANSRDataset
             from flash_ansr.model import FlashANSRModel
@@ -277,7 +277,10 @@ def main(argv: str = None) -> None:
 
             evaluation_config = load_config(substitute_root_path(args.config))
 
-            generation_config = GenerationConfig(method=evaluation_config['generation_config']['method'], **evaluation_config['generation_config'].get('kwargs', {}))
+            generation_config = create_generation_config(
+                method=evaluation_config['generation_config']['method'],
+                **evaluation_config['generation_config'].get('kwargs', {}),
+            )
 
             size_todo = args.size
             resolved_output_file = substitute_root_path(args.output_file)

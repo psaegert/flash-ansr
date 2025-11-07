@@ -18,7 +18,7 @@ from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
 from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.utils.generation import GenerationConfig
+from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.tensor_ops import pad_input_set
 
@@ -52,7 +52,7 @@ class FlashANSR(BaseEstimator):
         Tokenizer mapping model outputs to expression tokens.
     generation_config : GenerationConfig, optional
         Configuration that controls candidate generation. If ``None`` a default
-        ``GenerationConfig`` is created.
+        :class:`SoftmaxSamplingConfig` is created.
     n_restarts : int, optional
         Number of optimizer restarts used by the refiner when fitting constants.
     refiner_method : {'curve_fit_lm', 'minimize_bfgs'}
@@ -111,7 +111,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs = {'low': -5, 'high': 5}
 
         if generation_config is None:
-            generation_config = GenerationConfig()
+            generation_config = SoftmaxSamplingConfig()
 
         self.generation_config = generation_config
         self.n_restarts = n_restarts
@@ -299,7 +299,7 @@ class FlashANSR(BaseEstimator):
         """
         self._mcts_cache = {}
 
-        generation_kwargs = dict(self.generation_config)
+        generation_kwargs = self.generation_config.to_kwargs()
 
         effective_prompt = prompt_prefix
         if effective_prompt is None and complexity is not None:

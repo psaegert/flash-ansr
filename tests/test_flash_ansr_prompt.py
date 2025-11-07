@@ -5,7 +5,7 @@ from pathlib import Path
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr import FlashANSR, GenerationConfig
+from flash_ansr import FlashANSR, BeamSearchConfig
 from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.model.tokenizer import Tokenizer
@@ -112,7 +112,7 @@ def test_flash_ansr_fit_uses_prompt_prefix(
         simplipy_engine=simplipy_engine,
         flash_ansr_transformer=model,
         tokenizer=tokenizer,
-        generation_config=GenerationConfig(method='beam_search', beam_width=1, max_len=8),
+        generation_config=BeamSearchConfig(beam_width=1, max_len=8),
         n_restarts=1,
     )
 

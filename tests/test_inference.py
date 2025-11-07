@@ -4,8 +4,15 @@ import unittest
 import numpy as np
 import torch
 
-from flash_ansr import FlashANSR, get_path, install_model
-from flash_ansr.utils import GenerationConfig
+from flash_ansr import (
+    FlashANSR,
+    GenerationConfig,
+    BeamSearchConfig,
+    SoftmaxSamplingConfig,
+    MCTSGenerationConfig,
+    get_path,
+    install_model,
+)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -112,8 +119,7 @@ class TestInference(unittest.TestCase):
                                  f"Beam {beam_idx} fit {fit_idx} prefix retains <constant> placeholders")
 
     def test_beam_search_inference(self) -> None:
-        generation_config = GenerationConfig(
-            method='beam_search',
+        generation_config = BeamSearchConfig(
             beam_width=8,
             max_len=24,
             mini_batch_size=32,
@@ -126,8 +132,7 @@ class TestInference(unittest.TestCase):
         self._assert_valid_results(nsr)
 
     def test_softmax_sampling_inference(self) -> None:
-        generation_config = GenerationConfig(
-            method='softmax_sampling',
+        generation_config = SoftmaxSamplingConfig(
             choices=16,
             top_k=8,
             top_p=0.95,
@@ -144,8 +149,7 @@ class TestInference(unittest.TestCase):
         self._assert_valid_results(nsr)
 
     def test_mcts_inference(self) -> None:
-        generation_config = GenerationConfig(
-            method='mcts',
+        generation_config = MCTSGenerationConfig(
             beam_width=6,
             simulations=24,
             expansion_top_k=12,

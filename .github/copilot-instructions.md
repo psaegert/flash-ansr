@@ -7,7 +7,7 @@
 - `FlashANSRDataset` (`src/flash_ansr/data.py`) streams procedurally generated samples via multiprocessing; always call `dataset.shutdown()` on early exits to release shared memory.
 - Preprocessing (`src/flash_ansr/preprocess.py`) can inject prompt constraints on the fly; set probabilities in `preprocessor.prompt` configs and guard for missing tokenizer tokens via `serialize_prompt_prefix` warnings.
 - Datasets, models, and trainers read YAML through `flash_ansr.utils.load_config`, which normalises `./` and `{{ROOT}}` paths; keep relative paths stable when copying configs.
-- **Generation** `GenerationConfig` (in `flash_ansr/utils.py`) exposes beam search, nucleus sampling, and MCTS; pass overrides through configs instead of branching inside model code.
+- **Generation** Use `BeamSearchConfig`, `SoftmaxSamplingConfig`, or `MCTSGenerationConfig` (all in `flash_ansr/utils/generation.py`) to tune decoding; pass overrides through these configs instead of branching inside model code.
 - Beam search/equivalence pruning rely on the simplifier cache inside `FlashANSRModel.beam_search`; if you extend pruning logic, maintain the heap+dict invariants.
 - Monte Carlo search (`src/flash_ansr/decoding/mcts.py`) expects a callable reward; reuse `FlashANSR._build_mcts_config` when wiring new policies.
 - **Training** `Trainer` (`src/flash_ansr/train/train.py`) wires the model, optimizer factory, LR schedule, datasets, and W&B logging; use `Trainer.from_config` to keep CLI, scripts, and tests aligned.

@@ -4,7 +4,12 @@ import shutil
 import torch
 
 from flash_ansr.eval.evaluation import Evaluation
-from flash_ansr import get_path, FlashANSR, GenerationConfig, install_model
+from flash_ansr import (
+    get_path,
+    FlashANSR,
+    SoftmaxSamplingConfig,
+    install_model,
+)
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.expressions import SkeletonPool
 
@@ -39,7 +44,7 @@ class TestEvaluation(unittest.TestCase):
         evaluation = Evaluation.from_config(get_path('configs', 'test', 'evaluation.yaml'))
         ansr = FlashANSR.load(
             directory=get_path('models', MODEL),
-            generation_config=GenerationConfig(method='softmax_sampling', choices=5),
+            generation_config=SoftmaxSamplingConfig(choices=5),
             n_restarts=2,
         ).to(DEVICE)
 
