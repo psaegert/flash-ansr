@@ -1,10 +1,5 @@
 simplipy_engine: 'dev_7-3'
-holdout_pools: [
-  "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/",
-  "{{ROOT}}/data/ansr-data/test_set/pool_15_10/skeleton_pool/"
-]
+holdout_pools: ["{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool/", "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool/", "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool/", "{{ROOT}}/data/ansr-data/test_set/pool_15_10/skeleton_pool/"]
 
 sample_strategy:
   n_operator_distribution: "length_exponential"
@@ -14,10 +9,10 @@ sample_strategy:
   lambda: 1
   max_length: 51
   max_tries: 4
-  independent_dimensions: True
+  independent_dimensions: true
 
-allow_nan: False
-simplify: True
+allow_nan: false
+simplify: true
 
 literal_prior:
   name: 'normal'
@@ -25,33 +20,28 @@ literal_prior:
     loc: 0
     scale: 5
 
-support_prior:
-  name: "sampler"
-  kwargs:
-    base_dist_name: "uniform"
-    base_kwargs:
-      min_value: -30
-      max_value: 30
-    param_samplers:
-      low:
-        name: "normal"
-        kwargs: {loc: 0, scale: 10}
-      high:
-        name: "normal"
-        kwargs: {loc: 0, scale: 10}
-
-support_scale_prior:
-  name: "constant"
-  kwargs:
-    value: 0
-
-n_support_prior:
-  name: "uniform"
-  kwargs:
-    low: 1
-    high: 1024
-    min_value: 1
-    max_value: 1024
+support_sampler:
+  support_prior:
+    name: "sampler"
+    kwargs:
+      base_dist_name: "uniform"
+      base_kwargs:
+        min_value: -30
+        max_value: 30
+      param_samplers:
+        low:
+          name: "normal"
+          kwargs: {loc: 0, scale: 10}
+        high:
+          name: "normal"
+          kwargs: {loc: 0, scale: 10}
+  n_support_prior:
+    name: "uniform"
+    kwargs:
+      low: 1
+      high: 1024
+      min_value: 1
+      max_value: 1024
 
 variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x18', 'x19', 'x20', 'x21', 'x22', 'x23', 'x24', 'x25']
 

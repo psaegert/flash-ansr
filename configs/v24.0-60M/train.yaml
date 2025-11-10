@@ -9,22 +9,23 @@ optimizer:
 
 lr_schedule:
   - [0, 0.0]
-  - [300_000, 1e-4]  # 10% of steps warmup
-  - [2_400_000, 1e-4]
-  - [3_000_000, 0.0]  # 20% of steps cooldown
+  - [600_000, 1e-4]  # 15% warmup
+  - [3_200_000, 1e-4]
+  - [3_800_000, 0.0]  # 15% cooldown
 
 batch_size: 128
 
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
-val_size: 100_000
+val_size: 150_000
 
 compile_mode: 'reduce-overhead'
 gradient_checkpointing: False
+preprocess: false
 
 wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
-steps: 2_000_000
+steps: 3_800_000
 device: cuda

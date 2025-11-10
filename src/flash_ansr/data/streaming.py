@@ -80,7 +80,12 @@ class SharedMemoryWorkerPool:
         self.pool_size = self._num_workers * prefetch_factor
 
         if max_n_support is None:
-            max_n_support = self.skeleton_pool.n_support_prior_config["kwargs"]["max_value"]
+            max_n_support = self.skeleton_pool.support_sampler.configured_max_n_support
+            if max_n_support is None:
+                raise ValueError(
+                    "Support sampler configuration must define a maximum support size via "
+                    "'n_support_prior.kwargs.max_value' or an equivalent field."
+                )
 
         shm_configs: dict[str, dict[str, Any]] = {
             "x_tensors": {

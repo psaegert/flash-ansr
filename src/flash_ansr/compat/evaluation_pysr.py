@@ -150,7 +150,14 @@ class PySREvaluation():
 
         # HACK
         dataset.skeleton_pool.sample_strategy["max_tries"] = 100
-        max_n_support = dataset.skeleton_pool.n_support_prior_config['kwargs']['max_value'] * 2 if self.n_support is None else self.n_support * 2
+        base_max_n_support = dataset.skeleton_pool.support_sampler.configured_max_n_support
+        if base_max_n_support is None and self.n_support is None:
+            raise ValueError(
+                "Support sampler configuration must define a maximum support size when evaluation does not "
+                "override 'n_support'."
+            )
+
+        max_n_support = base_max_n_support * 2 if self.n_support is None else self.n_support * 2
 
         warnings.filterwarnings("ignore", category=RuntimeWarning)
 

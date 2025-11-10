@@ -1,5 +1,5 @@
 """Preprocessing pipeline responsible for prompt enrichment."""
-from __future__ import annotations
+from __future__ import annotations  # necessary for type annotations
 
 import random
 from dataclasses import dataclass, field

@@ -1,7 +1,4 @@
 """Beam-style generation helpers."""
-
-from __future__ import annotations
-
 from typing import Any, Iterable
 
 from flash_ansr.model import FlashANSRModel

@@ -1,7 +1,4 @@
 """Helpers for constructing and merging numeric token channels."""
-
-from __future__ import annotations
-
 import math
 import re
 from typing import TYPE_CHECKING, Any, Iterable, Sequence

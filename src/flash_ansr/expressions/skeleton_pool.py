@@ -2,6 +2,7 @@ import os
 import warnings
 import random
 import pickle
+from copy import deepcopy
 
 from types import CodeType
 from typing import Any, Callable, Sequence
@@ -18,6 +19,7 @@ from flash_ansr.expressions.compilation import codify
 from flash_ansr.expressions.prior_factory import build_prior_callable
 from flash_ansr.expressions.holdout import HoldoutManager
 from flash_ansr.expressions.skeleton_sampling import SkeletonSampler
+from flash_ansr.expressions.support_sampling import SupportSampler, SupportSamplingError
 from flash_ansr.expressions.token_ops import identify_constants, flatten_nested_list
 
 
@@ -37,10 +39,18 @@ class SkeletonPool:
         The strategy to use for sampling skeletons.
     literal_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the literals.
-    support_prior : dict[str, Any] | list[dict[str, Any]]
-        The prior distribution for the support points.
-    n_support_prior : dict[str, Any] | list[dict[str, Any]]
-        The prior distribution for the number of support points.
+    support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support prior. When provided, it will overwrite the
+        corresponding entry in ``support_sampler_config``.
+    support_scale_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support-scale prior. Merged into ``support_sampler_config``
+        when supplied.
+    n_support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support-count prior. Merged into ``support_sampler_config``
+        when supplied.
+    support_sampler_config : dict[str, Any] or None, optional
+        Unified configuration describing how support points are generated (priors,
+        uniqueness constraints, quantized behaviour, etc.).
     holdout_pools : Sequence[SkeletonPool | str] or None, optional
         SkeletonPools or paths to pools to exclude when sampling.
     allow_nan : bool, optional
@@ -54,10 +64,11 @@ class SkeletonPool:
             simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
             literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
             variables: list[str],
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_sampler_config: dict[str, Any] | None = None,
             operator_weights: dict[str, float] | None = None,
             holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
@@ -92,32 +103,26 @@ class SkeletonPool:
         else:
             raise ValueError("literal_prior must be either a dict, list of dicts, or a callable")
 
-        if isinstance(support_prior, (dict, list)):
-            self.support_prior_config = support_prior
-            self.support_prior: Callable = build_prior_callable(support_prior)
-        elif callable(support_prior):
-            self.support_prior = support_prior
-        else:
-            raise ValueError("support_prior must be either a dict, list of dicts, or a callable")
+        support_config = deepcopy(support_sampler_config) if support_sampler_config is not None else {}
 
-        if isinstance(support_scale_prior, (dict, list)):
-            self.support_scale_prior_config = support_scale_prior
-            self.support_scale_prior: Callable = build_prior_callable(support_scale_prior)
-        elif callable(support_scale_prior):
-            self.support_scale_prior = support_scale_prior
-        else:
-            raise ValueError("support_scale_prior must be either a dict, list of dicts, or a callable")
+        if support_prior is not None:
+            support_config["support_prior"] = support_prior
+        if support_scale_prior is not None:
+            support_config["support_scale_prior"] = support_scale_prior
+        if n_support_prior is not None:
+            support_config["n_support_prior"] = n_support_prior
 
-        if isinstance(n_support_prior, (dict, list)):
-            self.n_support_prior_config = n_support_prior
-            self.n_support_prior: Callable = build_prior_callable(n_support_prior)
-        elif callable(n_support_prior):
-            self.n_support_prior = n_support_prior
-        else:
-            raise ValueError("n_support_prior must be either a dict, list of dicts, or a callable")
+        self.support_sampler_config = support_config
 
         self.allow_nan = allow_nan
         self.simplify = simplify
+
+        independent_dims = self.sample_strategy.get('independent_dimensions', False)
+        self.support_sampler = SupportSampler(
+            n_variables=self.n_variables,
+            independent_dimensions=independent_dims,
+            config=self.support_sampler_config,
+        )
 
         self.operator_probs: np.ndarray | None = None
 
@@ -146,14 +151,17 @@ class SkeletonPool:
             if config_["simplipy_engine"].startswith('.'):
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
 
+        support_sampler_cfg = deepcopy(config_.get("support_sampler")) if config_.get("support_sampler") else {}
+        for key in ("support_prior", "support_scale_prior", "n_support_prior"):
+            if key in config_ and key not in support_sampler_cfg:
+                support_sampler_cfg[key] = config_[key]
+
         return cls(
             simplipy_engine=SimpliPyEngine.load(config_["simplipy_engine"], install=True),
             sample_strategy=config_["sample_strategy"],
             literal_prior=config_["literal_prior"],
-            support_prior=config_["support_prior"],
-            support_scale_prior=config_["support_scale_prior"],
-            n_support_prior=config_["n_support_prior"],
             variables=config_["variables"],
+            support_sampler_config=support_sampler_cfg,
             operator_weights=config_.get("operator_weights"),
             holdout_pools=config_["holdout_pools"],
             allow_nan=config_["allow_nan"],
@@ -167,10 +175,11 @@ class SkeletonPool:
             simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
             literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
-            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
             variables: list[str],
+            support_sampler_config: dict[str, Any] | None = None,
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
             operator_weights: dict[str, float] | None = None,
             skeleton_codes: dict[tuple[str], tuple[CodeType, list[str]]] | None = None,
             holdout_pools: Sequence["SkeletonPool | str"] | None = None,
@@ -189,12 +198,17 @@ class SkeletonPool:
             The strategy to use for sampling skeletons.
         literal_prior : dict[str, Any] | list[dict[str, Any]]
             The prior distribution for the literals.
-        support_prior : dict[str, Any] | list[dict[str, Any]]
-            The prior distribution for the support points.
-        n_support_prior : dict[str, Any] | list[dict[str, Any]]
-            The prior distribution for the number of support points.
         variables : list[str]
             The variables to use in the expressions.
+        support_sampler_config : dict[str, Any] or None, optional
+            Unified support sampling configuration. If provided alongside the legacy
+            priors below, the legacy values overwrite matching keys within this config.
+        support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support prior.
+        support_scale_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support-scale prior.
+        n_support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support-count prior.
         operator_weights : dict[str, float] or None, optional
             A dictionary mapping operators to their weights.
         skeleton_codes : dict[tuple[str], tuple[CodeType, list[str]]] or None, optional
@@ -215,10 +229,11 @@ class SkeletonPool:
             simplipy_engine=simplipy_engine,
             sample_strategy=sample_strategy,
             literal_prior=literal_prior,
+            variables=variables,
             support_prior=support_prior,
             support_scale_prior=support_scale_prior,
             n_support_prior=n_support_prior,
-            variables=variables,
+            support_sampler_config=support_sampler_config,
             operator_weights=operator_weights,
             holdout_pools=holdout_pools,
             allow_nan=allow_nan,
@@ -566,25 +581,22 @@ class SkeletonPool:
         '''
         expression_callable = self.simplipy_engine.code_to_lambda(code)
         if n_support is None:
-            n_support = int(np.round(self.n_support_prior(size=1))[0])
+            n_support = self.support_sampler.sample_n_support()
 
         for _ in range(self.sample_strategy['max_tries']):
             literals = self.literal_prior(size=n_constants).astype(np.float32)
 
-            support_prior = support_prior or self.support_prior
-            support_scale_prior = support_scale_prior or self.support_scale_prior
+            override_support_prior = SupportSampler.ensure_prior_callable(support_prior) if support_prior is not None else None
+            override_support_scale = SupportSampler.ensure_prior_callable(support_scale_prior) if support_scale_prior is not None else None
 
-            # Use the default support prior as defined by the configuration
-            if self.sample_strategy.get('independent_dimensions', False):
-                # Sample each dimension independently
-                # Generate support samples for each variable
-                support_samples = [support_prior(size=(n_support, 1)) for _ in range(len(self.variables))]
-                # Apply scaling to each variable's support samples
-                scaled_support_samples = [samples * 10**support_scale_prior(size=1) for samples in support_samples]
-                # Concatenate along axis 1
-                x_support = np.concatenate(scaled_support_samples, axis=1).astype(np.float32)
-            else:
-                x_support = (support_prior(size=(n_support, len(self.variables))) * 10**support_scale_prior(size=1)).astype(np.float32)
+            try:
+                x_support = self.support_sampler.sample(
+                    n_support=n_support,
+                    support_prior=override_support_prior,
+                    support_scale_prior=override_support_scale,
+                )
+            except SupportSamplingError:
+                continue
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -706,11 +718,9 @@ class SkeletonPool:
             simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            support_prior=self.support_prior,
-            support_scale_prior=self.support_scale_prior,
-            n_support_prior=self.n_support_prior,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in train_keys},
             variables=self.variables,
+            support_sampler_config=deepcopy(self.support_sampler_config),
             operator_weights=self.operator_weights,
             holdout_pools=self.holdout_pools,
             allow_nan=self.allow_nan)
@@ -719,11 +729,9 @@ class SkeletonPool:
             simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            support_prior=self.support_prior,
-            support_scale_prior=self.support_scale_prior,
-            n_support_prior=self.n_support_prior,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in test_keys},
             variables=self.variables,
+            support_sampler_config=deepcopy(self.support_sampler_config),
             operator_weights=self.operator_weights,
             holdout_pools=self.holdout_pools,
             allow_nan=self.allow_nan)

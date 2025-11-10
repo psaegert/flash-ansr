@@ -79,12 +79,27 @@ def gamma_dist(
     return samples
 
 
+def binomial_dist(
+    n: int,
+    p: float,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    size: Any = 1,
+) -> np.ndarray:
+    """Sample from a binomial distribution with optional clipping."""
+    samples = np.random.binomial(int(n), float(p), size=size)
+    if min_value is not None and max_value is not None:
+        return np.clip(samples, min_value, max_value)
+    return samples
+
+
 BASE_DISTRIBUTIONS: dict[str, Callable[..., np.ndarray]] = {
     "uniform": uniform_dist,
     "normal": normal_dist,
     "log_uniform": log_uniform_dist,
     "log_normal": log_normal_dist,
     "gamma": gamma_dist,
+    "binomial": binomial_dist,
 }
 
 
