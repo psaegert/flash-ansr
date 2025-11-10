@@ -58,6 +58,65 @@ class Refiner:
             if module not in globals():
                 globals()[module] = importlib.import_module(module)
 
+    def _initialize_expression(self, expression: list[str], n_inputs: int) -> None:
+        '''
+        Prepare internal state for the given expression without fitting constants.
+        '''
+        if not self.simplipy_engine.is_valid(expression, verbose=True):
+            raise ValueError("The expression is not valid")
+
+        self.input_expression = expression
+        self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
+        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(self.input_expression)
+        self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
+
+        self.expression_code = codify(
+            code_string=self.code_string,
+            variables=[f'x{i + 1}' for i in range(n_inputs)] + self.constants_symbols
+        )
+
+        # Since the SimpliPyEngine is already initialized, we can use the same global scope
+        self.expression_lambda = self.simplipy_engine.code_to_lambda(self.expression_code)
+
+    def _assign_fits(self, fits: list[tuple[np.ndarray, np.ndarray | None, float]]) -> None:
+        '''
+        Consume serialized fit results and update the refiner state.
+        '''
+        expected_constants = len(self.constants_symbols)
+
+        filtered: list[tuple[np.ndarray, np.ndarray, float]] = []
+        for constants, cov, loss in fits:
+            constants_array = np.asarray(constants, dtype=float)
+
+            if expected_constants != len(constants_array):
+                continue
+
+            cov_array = np.asarray(cov) if cov is not None else np.asarray([], dtype=float)
+            filtered.append((constants_array, cov_array, float(loss)))
+
+        self._all_constants_values = sorted(filtered, key=lambda item: item[-1])
+        self.valid_fit = any(np.isfinite(entry[-1]) for entry in self._all_constants_values)
+        if self._all_constants_values:
+            self.loss = float(self._all_constants_values[0][-1])
+        else:
+            self.loss = np.inf
+
+    @classmethod
+    def from_serialized(
+            cls,
+            simplipy_engine: SimpliPyEngine,
+            n_variables: int,
+            expression: list[str],
+            n_inputs: int,
+            fits: list[tuple[np.ndarray, np.ndarray | None, float]]) -> 'Refiner':
+        '''
+        Reconstruct a Refiner from cached fit results.
+        '''
+        refiner = cls(simplipy_engine=simplipy_engine, n_variables=n_variables)
+        refiner._initialize_expression(expression, n_inputs)
+        refiner._assign_fits(fits)
+        return refiner
+
     def fit(
             self,
             expression: list[str],
@@ -112,21 +171,7 @@ class Refiner:
         Refiner
             The refiner object
         '''
-        if not self.simplipy_engine.is_valid(expression, verbose=True):
-            raise ValueError("The expression is not valid")
-
-        self.input_expression = expression
-        self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
-        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(self.input_expression)
-        self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
-
-        self.expression_code = codify(
-            code_string=self.code_string,
-            variables=[f'x{i + 1}' for i in range(X.shape[1])] + self.constants_symbols
-        )
-
-        # Since the SimpliPyEngine is already initialized, we can use the same global scope
-        self.expression_lambda = self.simplipy_engine.code_to_lambda(self.expression_code)
+        self._initialize_expression(expression, X.shape[1])
 
         def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> np.ndarray:
             if len(constants) == 0:
@@ -199,13 +244,12 @@ class Refiner:
             self._all_constants_values.append((constants, constants_cov, loss))
 
         expected_constants = len(self.constants_symbols)
-        filtered_constants: list[tuple[np.ndarray, np.ndarray, float]] = []
+        filtered_constants: list[tuple[np.ndarray, np.ndarray | None, float]] = []
         for constants, constants_cov, loss in self._all_constants_values:
             if len(constants) == expected_constants:
                 filtered_constants.append((constants, constants_cov, loss))
 
-        self._all_constants_values = sorted(filtered_constants, key=lambda x: x[-1])
-        self.valid_fit = any(np.isfinite(loss) for *_rest, loss in self._all_constants_values)
+        self._assign_fits(filtered_constants)
 
         if not self.valid_fit and converge_error == 'raise':
             raise ConvergenceError(f"The optimization did not converge after {n_restarts} restarts")

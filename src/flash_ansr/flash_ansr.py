@@ -1,7 +1,10 @@
 import os
 import copy
 import numbers
-from typing import Literal, Any, Iterable, TypedDict, Callable, Tuple, Sequence
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from types import TracebackType
+from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Tuple, Sequence, TypeVar
 import warnings
 
 import numpy as np
@@ -39,6 +42,137 @@ class Result(TypedDict):
     prompt_metadata: dict[str, list[list[str]]] | None
 
 
+_GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
+_GLOBAL_REFINEMENT_DATA: dict[str, np.ndarray | None] = {'X': None, 'y': None}
+
+
+_T = TypeVar('_T')
+
+
+def _iterate_with_progress(iterable: Iterable[_T], total: int, verbose: bool, desc: str) -> Iterator[_T]:
+    if not verbose:
+        yield from iterable
+        return
+
+    yield from tqdm(iterable, total=total, desc=desc, smoothing=0.0)
+
+
+class _RefinementContext:
+    def __init__(self, engine: SimpliPyEngine, inputs: np.ndarray, targets: np.ndarray) -> None:
+        self._engine = engine
+        self._inputs = inputs
+        self._targets = targets
+        self._previous_engine: SimpliPyEngine | None = None
+        self._previous_data: dict[str, np.ndarray | None] | None = None
+
+    def __enter__(self) -> None:
+        global _GLOBAL_SIMPLIPY_ENGINE, _GLOBAL_REFINEMENT_DATA
+        self._previous_engine = _GLOBAL_SIMPLIPY_ENGINE
+        self._previous_data = _GLOBAL_REFINEMENT_DATA.copy()
+        _GLOBAL_SIMPLIPY_ENGINE = self._engine
+        _GLOBAL_REFINEMENT_DATA = {'X': self._inputs, 'y': self._targets}
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        global _GLOBAL_SIMPLIPY_ENGINE, _GLOBAL_REFINEMENT_DATA
+        _GLOBAL_SIMPLIPY_ENGINE = self._previous_engine
+        if self._previous_data is not None:
+            _GLOBAL_REFINEMENT_DATA = self._previous_data
+        else:
+            _GLOBAL_REFINEMENT_DATA = {'X': None, 'y': None}
+
+
+def _resolve_refinement_arrays(payload: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    X = payload.get('X')
+    y = payload.get('y')
+    if X is None or y is None:
+        X = _GLOBAL_REFINEMENT_DATA.get('X')
+        y = _GLOBAL_REFINEMENT_DATA.get('y')
+    if X is None or y is None:
+        raise RuntimeError("Refinement worker is missing shared input data.")
+    return X, y
+
+
+def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    simplipy_engine = payload.get('simplipy_engine') or _GLOBAL_SIMPLIPY_ENGINE
+    if simplipy_engine is None:
+        raise RuntimeError("Refinement worker does not have access to a SimpliPyEngine instance.")
+
+    numpy_errors = payload.get('numpy_errors')
+    numpy_state = np.geterr()
+    if numpy_errors is not None:
+        np.seterr(all=numpy_errors)
+
+    seed = payload.get('seed')
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    X, y = _resolve_refinement_arrays(payload)
+
+    try:
+        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables']).fit(
+            expression=payload['expression'],
+            X=X,
+            y=y,
+            n_restarts=payload['n_restarts'],
+            method=payload['method'],
+            p0=None,
+            p0_noise=payload['p0_noise'],
+            p0_noise_kwargs=payload['p0_noise_kwargs'],
+            converge_error=payload['converge_error'],
+        )
+    except ConvergenceError:
+        if payload['converge_error'] == 'raise':
+            raise
+        warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
+        return None, warning
+    finally:
+        np.seterr(**numpy_state)
+
+    if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+        warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
+        if payload['converge_error'] == 'raise':
+            raise ConvergenceError("The optimization did not converge")
+        return None, warning
+
+    loss = float(refiner._all_constants_values[0][-1])
+    sample_count = int(y.shape[0])
+    fvu = FlashANSR._compute_fvu(loss, sample_count, payload['y_variance'])
+    score = FlashANSR._score_from_fvu(fvu, len(payload['expression']), payload['parsimony'])
+
+    serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+    for constants, constants_cov, fit_loss in refiner._all_constants_values:
+        cov_payload: np.ndarray | None
+        if constants_cov is None or getattr(constants_cov, 'size', 0) == 0:
+            cov_payload = None
+        else:
+            cov_payload = np.asarray(constants_cov)
+        serialized_fits.append((np.asarray(constants), cov_payload, float(fit_loss)))
+
+    metadata_snapshot = payload.get('metadata_snapshot')
+    result = {
+        'log_prob': payload['log_prob'],
+        'fvu': fvu,
+        'score': score,
+        'expression': payload['expression'],
+        'complexity': len(payload['expression']),
+        'requested_complexity': payload['complexity'],
+        'raw_beam': payload['raw_beam'],
+        'beam': payload['beam'],
+        'raw_beam_decoded': payload['raw_beam_decoded'],
+        'fits': serialized_fits,
+        'valid_fit': refiner.valid_fit,
+        'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
+    }
+
+    return result, None
+
+
 class FlashANSR(BaseEstimator):
     """Flash Amortized Neural Symbolic Regressor.
 
@@ -67,6 +201,11 @@ class FlashANSR(BaseEstimator):
         Desired NumPy error handling strategy applied during constant refinement.
     parsimony : float, optional
         Penalty coefficient that discourages overly complex expressions.
+    refiner_workers : int or {'auto'} or None, optional
+        Number of parallel worker processes to run during the constant
+        refinement phase. ``None`` or values less than ``2`` keep the
+        sequential behaviour. ``'auto'`` leverages available CPU cores while
+        leaving one core for the coordinator process.
     """
 
     FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
@@ -102,7 +241,8 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.05):
+            parsimony: float = 0.05,
+            refiner_workers: int | Literal['auto'] | None = None):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
         self.tokenizer = tokenizer
@@ -120,6 +260,16 @@ class FlashANSR(BaseEstimator):
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
+
+        if refiner_workers == 'auto':
+            cpu_count = os.cpu_count() or 1
+            resolved_workers = max(1, cpu_count - 1)
+        elif isinstance(refiner_workers, int):
+            resolved_workers = max(refiner_workers, 0)
+        else:
+            resolved_workers = 0
+
+        self.refiner_workers = resolved_workers
 
         self._results: list[Result] = []
         self.results: pd.DataFrame = pd.DataFrame()
@@ -140,7 +290,8 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
-            device: str = 'cpu') -> "FlashANSR":
+            device: str = 'cpu',
+            refiner_workers: int | Literal['auto'] | None = None) -> "FlashANSR":
         """Instantiate a :class:`FlashANSR` model from a configuration directory.
 
         Parameters
@@ -165,6 +316,9 @@ class FlashANSR(BaseEstimator):
             Parsimony coefficient used when compiling results.
         device : str, optional
             Torch device where the model weights will be loaded.
+        refiner_workers : int or {'auto'} or None, optional
+            Number of worker processes to dedicate to constant refinement during
+            inference. Mirrors the constructor parameter.
 
         Returns
         -------
@@ -192,7 +346,8 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
-            parsimony=parsimony)
+            parsimony=parsimony,
+            refiner_workers=refiner_workers)
 
     @property
     def n_variables(self) -> int:
@@ -381,6 +536,43 @@ class FlashANSR(BaseEstimator):
         self._prompt_prefix = prompt_prefix
         return prompt_prefix
 
+    def _create_result_entry(self, *, payload: dict[str, Any], input_dim: int) -> Result | None:
+        fits_payload = payload.get('fits')
+        if not fits_payload:
+            return None
+
+        if not payload.get('valid_fit', False):
+            return None
+
+        refiner = Refiner.from_serialized(
+            simplipy_engine=self.simplipy_engine,
+            n_variables=self.n_variables,
+            expression=payload['expression'],
+            n_inputs=input_dim,
+            fits=fits_payload,
+        )
+
+        if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+            return None
+
+        entry: Result = {
+            'log_prob': payload['log_prob'],
+            'fvu': payload['fvu'],
+            'score': payload['score'],
+            'expression': payload['expression'],
+            'complexity': payload['complexity'],
+            'requested_complexity': payload.get('requested_complexity'),
+            'raw_beam': payload['raw_beam'],
+            'beam': payload['beam'],
+            'raw_beam_decoded': payload['raw_beam_decoded'],
+            'function': refiner.expression_lambda,
+            'refiner': refiner,
+            'fits': copy.deepcopy(refiner._all_constants_values),
+            'prompt_metadata': copy.deepcopy(payload.get('prompt_metadata')) if payload.get('prompt_metadata') is not None else None,
+        }
+
+        return entry
+
     def fit(
             self,
             X: np.ndarray | torch.Tensor | pd.DataFrame,
@@ -521,59 +713,84 @@ class FlashANSR(BaseEstimator):
             raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
             beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
-            # Fit the refiner to each beam
-            for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(
-                zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs),
-                desc="Fitting Constants",
-                disable=not verbose,
-                total=len(beams),
-                smoothing=0.0,
-            ):
-                if self.simplipy_engine.is_valid(beam_decoded):
-                    try:
-                        refiner = Refiner(simplipy_engine=self.simplipy_engine, n_variables=self.n_variables).fit(
-                            expression=beam_decoded,
-                            X=X.cpu().numpy(),
-                            y=y.cpu().numpy(),
-                            n_restarts=self.n_restarts,
-                            method=self.refiner_method,
-                            p0=None,
-                            p0_noise=self.refiner_p0_noise,
-                            p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                            converge_error=converge_error,
-                        )
+            X_np = X.cpu().numpy()
+            y_np = y.cpu().numpy()
 
-                        if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
-                            if converge_error == 'print':
-                                print(f"Failed to converge for beam: {beam_decoded}")
-                            continue
+            refinement_jobs: list[dict[str, Any]] = []
+            beam_iterator = zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs)
+            for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
+                if not self.simplipy_engine.is_valid(beam_decoded):
+                    continue
 
-                        sample_count = int(y.shape[0])
-                        loss = float(refiner._all_constants_values[0][-1])
-                        fvu = self._compute_fvu(loss, sample_count, y_variance)
-                        score = self._score_from_fvu(fvu, len(beam_decoded), self.parsimony)
+                job: dict[str, Any] = {
+                    'raw_beam': raw_beam,
+                    'raw_beam_decoded': raw_beam_decoded,
+                    'beam': beam,
+                    'expression': beam_decoded,
+                    'log_prob': log_prob,
+                    'n_variables': self.n_variables,
+                    'n_restarts': self.n_restarts,
+                    'method': self.refiner_method,
+                    'p0_noise': self.refiner_p0_noise,
+                    'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                    'converge_error': converge_error,
+                    'numpy_errors': self.numpy_errors,
+                    'y_variance': y_variance,
+                    'parsimony': self.parsimony,
+                    'complexity': complexity,
+                    'metadata_snapshot': metadata_snapshot,
+                }
+                refinement_jobs.append(job)
 
-                        self._results.append({
-                            'log_prob': log_prob,
-                            'fvu': fvu,
-                            'score': score,
-                            'expression': beam_decoded,
-                            'complexity': len(beam_decoded),
-                            'requested_complexity': complexity,
-                            'raw_beam': raw_beam,
-                            'beam': beam,  # type: ignore
-                            'raw_beam_decoded': raw_beam_decoded,
-                            'function': refiner.expression_lambda,
-                            'refiner': refiner,
-                            'fits': copy.deepcopy(refiner._all_constants_values),
-                            'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
-                        })
+            if refinement_jobs:
+                available_methods = mp.get_all_start_methods()
+                max_workers = min(self.refiner_workers, len(refinement_jobs))
+                use_parallel = max_workers > 1 and 'fork' in available_methods
 
-                    except ConvergenceError:
-                        if converge_error == 'print':
-                            print(f"Failed to converge for beam: {beam_decoded}")
-                        elif converge_error == 'raise':
-                            raise
+                input_dim = X_np.shape[1]
+
+                if max_workers > 1 and not use_parallel:
+                    warnings.warn("Parallel refinement requires the 'fork' start method; falling back to serial execution.")
+
+                with _RefinementContext(self.simplipy_engine, X_np, y_np):
+                    if use_parallel:
+                        ctx = mp.get_context('fork')
+                        seed_sequence = np.random.SeedSequence()
+                        spawned = seed_sequence.spawn(len(refinement_jobs))
+                        for job, seq in zip(refinement_jobs, spawned):
+                            job['seed'] = int(seq.generate_state(1, dtype=np.uint32)[0])
+
+                        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+                            futures = [executor.submit(_refine_candidate_worker, job) for job in refinement_jobs]
+                            for future in _iterate_with_progress(
+                                as_completed(futures),
+                                total=len(futures),
+                                verbose=verbose,
+                                desc="Fitting Constants",
+                            ):
+                                result, warning_msg = future.result()
+                                if warning_msg and converge_error == 'print':
+                                    print(warning_msg)
+                                if result is not None:
+                                    entry = self._create_result_entry(payload=result, input_dim=input_dim)
+                                    if entry is not None:
+                                        self._results.append(entry)
+                    else:
+                        for job in _iterate_with_progress(
+                            refinement_jobs,
+                            total=len(refinement_jobs),
+                            verbose=verbose,
+                            desc="Fitting Constants",
+                        ):
+                            serial_payload = job.copy()
+                            serial_payload.update({'X': X_np, 'y': y_np, 'simplipy_engine': self.simplipy_engine})
+                            result, warning_msg = _refine_candidate_worker(serial_payload)
+                            if warning_msg and converge_error == 'print':
+                                print(warning_msg)
+                            if result is not None:
+                                entry = self._create_result_entry(payload=result, input_dim=input_dim)
+                                if entry is not None:
+                                    self._results.append(entry)
 
             self.compile_results(self.parsimony)
 
