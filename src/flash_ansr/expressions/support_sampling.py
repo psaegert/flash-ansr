@@ -23,8 +23,12 @@ def _to_scalar(value: Any) -> float:
 class ScaleTransform:
     """Apply a global log10 scale sampled from a prior."""
 
-    def __init__(self, scale_prior: Callable[..., np.ndarray]) -> None:
+    def __init__(self, scale_prior: Callable[..., np.ndarray], *, probability: float = 1.0) -> None:
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError("Transform probability must be within [0, 1].")
+
         self._scale_prior = scale_prior
+        self.probability = float(probability)
 
     def apply(self, support: np.ndarray) -> np.ndarray:
         scale_factor = 10.0 ** _to_scalar(self._scale_prior(size=1))
@@ -47,6 +51,7 @@ class QuantizeTransform:
         max_bins: int,
         strategy: str,
         allow_all_dimensions: bool = False,
+        probability: float = 1.0,
     ) -> None:
         self.n_variables = n_variables
         self._d_quantized_sampler = d_quantized_sampler
@@ -55,6 +60,9 @@ class QuantizeTransform:
         self.strategy = strategy
         self._is_even_strategy = strategy == "even"
         self.allow_all_dimensions = allow_all_dimensions
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError("Transform probability must be within [0, 1].")
+        self.probability = float(probability)
 
     def apply(self, support: np.ndarray) -> np.ndarray:
         n_dims = support.shape[1]
@@ -336,6 +344,11 @@ class SupportSampler:
         transforms.extend(self._post_scale_transforms)
 
         for transform in transforms:
+            probability = float(getattr(transform, "probability", 1.0))
+            if probability <= 0.0:
+                continue
+            if probability < 1.0 and np.random.random() >= probability:
+                continue
             support = transform.apply(support)
 
         self._maybe_check_unique(support, n_support)
@@ -367,6 +380,12 @@ class SupportSampler:
                 raise TypeError("Each transform configuration must be a mapping.")
 
             transform_type = str(transform_cfg.get("type", "")).strip().lower()
+            probability_raw = transform_cfg.get("probability", 1.0)
+            try:
+                probability = float(probability_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Transform probability must be a numeric value.") from exc
+
             if transform_type == "scale":
                 prior_spec = transform_cfg.get("prior")
                 if prior_spec is None:
@@ -379,9 +398,9 @@ class SupportSampler:
                 if self.scale_transform is not None:
                     raise ValueError("Multiple scale transforms are not supported.")
 
-                self.scale_transform = ScaleTransform(prior_callable)
+                self.scale_transform = ScaleTransform(prior_callable, probability=probability)
             elif transform_type == "quantize":
-                transform = self._build_quantize_transform(transform_cfg)
+                transform = self._build_quantize_transform(transform_cfg, probability=probability)
                 if self.quantize_transform is not None:
                     raise ValueError("Multiple quantize transforms are not supported.")
 
@@ -390,7 +409,7 @@ class SupportSampler:
             else:
                 raise ValueError(f"Unsupported transform type '{transform_type}'.")
 
-    def _build_quantize_transform(self, quantize_cfg: Any) -> QuantizeTransform:
+    def _build_quantize_transform(self, quantize_cfg: Any, *, probability: float) -> QuantizeTransform:
         if not isinstance(quantize_cfg, dict):
             raise TypeError("Quantize transform configuration must be a mapping.")
 
@@ -425,6 +444,7 @@ class SupportSampler:
             max_bins=max_bins,
             strategy=strategy,
             allow_all_dimensions=allow_all_dims,
+            probability=probability,
         )
 
     def _maybe_check_unique(self, support: np.ndarray, expected: int) -> None:
