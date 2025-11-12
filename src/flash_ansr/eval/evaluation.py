@@ -27,10 +27,8 @@ class Evaluation():
         Number of input points for each equation. Default is None (sampled from the dataset).
     noise_level : float, optional
         Noise level for the constant fitting in units of standard deviations of the target variable. Default is 0.0.
-    beam_width : int, optional
-        Number of beams for the beam search algorithm. Default is 1.
-    complexity : str or list of int/float, optional
-        Complexity constraint for the generated equations. Can be 'none', 'ground_truth', or a list of complexity values. Default is 'none'.
+    complexity : str, optional
+        Complexity constraint for the generated equations. Can be 'none' or 'ground_truth'. Default is 'none'.
     preprocess : bool, optional
         Whether to preprocess the data using FlashASNRPreprocessor. Default is False.
     device : str, optional
@@ -43,7 +41,6 @@ class Evaluation():
             self,
             n_support: int | None = None,
             noise_level: float = 0.0,
-            beam_width: int = 1,
             complexity: str | list[int | float] = 'none',
             preprocess: bool = False,
             device: str = 'cpu',
@@ -51,7 +48,6 @@ class Evaluation():
 
         self.n_support = n_support
         self.noise_level = noise_level
-        self.beam_width = beam_width
         self.complexity = complexity
         self.preprocess = preprocess
 
@@ -78,22 +74,9 @@ class Evaluation():
         if "evaluation" in config_.keys():
             config_ = config_["evaluation"]
 
-        beams = None
-        if 'beam_width' in config_.keys():
-            beams = config_['beam_width']
-        elif 'generation_config' in config_.keys():
-            if 'beam_width' in config_['generation_config']['kwargs'].keys():
-                beams = config_['generation_config']['kwargs']['beam_width']
-            elif 'choices' in config_['generation_config']['kwargs'].keys():
-                beams = config_['generation_config']['kwargs']['choices']
-
-        if beams is None:
-            raise ValueError('Beam width not found in the configuration.')
-
         return cls(
             n_support=config_["n_support"],
             noise_level=config_.get("noise_level", 0.0),
-            beam_width=beams,
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
             device=config_["device"],
@@ -290,8 +273,6 @@ class Evaluation():
                         model.fit(X, y)
                     elif self.complexity == 'ground_truth':
                         model.fit(X, y, complexity=batch['complexity'])
-                    elif isinstance(self.complexity, list):
-                        model.fit(X, y, complexity=self.complexity)
                     else:
                         raise NotImplementedError(f'Complexity {self.complexity} not implemented yet.')
                     fit_time = time.time() - fit_time_start

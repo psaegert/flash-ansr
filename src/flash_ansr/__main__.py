@@ -2,7 +2,6 @@ import datetime
 import argparse
 import sys
 import pickle
-from typing import Any
 from copy import deepcopy
 
 
@@ -65,6 +64,16 @@ def main(argv: str = None) -> None:
     evaluate_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
     evaluate_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output file')
     evaluate_parser.add_argument('-s', '--save-every', type=int, default=5, help='Save the evaluation results every n samples')
+
+    evaluate_fastsrb_parser = subparsers.add_parser("evaluate-fastsrb")
+    evaluate_fastsrb_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the evaluation configuration file')
+    evaluate_fastsrb_parser.add_argument('-m', '--model', type=str, required=True, help='Path to the model directory or configuration')
+    evaluate_fastsrb_parser.add_argument('-b', '--benchmark', type=str, default=None, help='Path to the FastSRB benchmark YAML file (overrides config)')
+    evaluate_fastsrb_parser.add_argument('-e', '--equations', nargs='+', default=None, help='Subset of equation identifiers to evaluate')
+    evaluate_fastsrb_parser.add_argument('-n', '--size', type=int, default=None, help='Maximum number of benchmark problems to evaluate')
+    evaluate_fastsrb_parser.add_argument('-s', '--save-every', type=int, default=5, help='Save the evaluation results every n samples')
+    evaluate_fastsrb_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output file')
+    evaluate_fastsrb_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
 
     evaluate_nesymres_parser = subparsers.add_parser("evaluate-nesymres")
     evaluate_nesymres_parser.add_argument('-ce', '--config-equation', type=str, required=True, help='Path to the configuration file for the equation setting')
@@ -285,7 +294,7 @@ def main(argv: str = None) -> None:
 
             size_todo = args.size
             resolved_output_file = substitute_root_path(args.output_file)
-            results_dict: dict[str, Any] | None = None
+            results_dict = None
 
             if os.path.exists(resolved_output_file):
                 if args.verbose:
@@ -333,6 +342,91 @@ def main(argv: str = None) -> None:
 
             if args.verbose:
                 print(f"Saved evaluation results to {args.output_file}")
+
+        case 'evaluate-fastsrb':
+            if args.verbose:
+                print(f"Evaluating FastSRB benchmark with model {args.model}")
+
+            import os
+            import pprint
+            from flash_ansr import FlashANSR
+            from flash_ansr.benchmarks import FastSRBBenchmark
+            from flash_ansr.eval import FastSRBEvaluation
+            from flash_ansr.model import FlashANSRModel
+            from flash_ansr.utils.config_io import load_config, unfold_config
+            from flash_ansr.utils.generation import create_generation_config
+            from flash_ansr.utils.paths import substitute_root_path
+
+            evaluation_config_path = substitute_root_path(args.config)
+            evaluation = FastSRBEvaluation.from_config(evaluation_config_path)
+
+            if args.verbose:
+                print(f"Loaded evaluation config from {args.config}")
+                pprint.pprint(unfold_config(load_config(evaluation_config_path)))
+
+            benchmark_path_value = args.benchmark or evaluation.benchmark_path
+            resolved_benchmark = substitute_root_path(benchmark_path_value)
+            if not os.path.isfile(resolved_benchmark):
+                raise FileNotFoundError(f"Benchmark specification not found: {resolved_benchmark}")
+            if args.verbose:
+                print(f"Using FastSRB benchmark {benchmark_path_value}")
+
+            evaluation_config = load_config(evaluation_config_path)
+            generation_config = create_generation_config(
+                method=evaluation_config['generation_config']['method'],
+                **evaluation_config['generation_config'].get('kwargs', {}),
+            )
+
+            model_path = substitute_root_path(args.model)
+            if os.path.isdir(model_path) or os.path.isfile(model_path):
+                FlashANSRModel.load(model_path)
+                if args.verbose:
+                    print(f"Model loaded from {args.model}")
+            else:
+                raise ValueError(f"Invalid model configuration: {args.model}")
+
+            benchmark = FastSRBBenchmark(resolved_benchmark, random_state=evaluation.benchmark_random_state)
+
+            resolved_output_file = substitute_root_path(args.output_file)
+            results_dict = None
+            if os.path.exists(resolved_output_file):
+                if args.verbose:
+                    print(f"Loading existing FastSRB evaluation results from {args.output_file} ...")
+                with open(resolved_output_file, 'rb') as handle:
+                    results_dict = pickle.load(handle)
+
+            results_dict = evaluation.evaluate(
+                model=FlashANSR.load(
+                    directory=model_path,
+                    generation_config=generation_config,
+                    n_restarts=evaluation_config['n_restarts'],
+                    refiner_method=evaluation_config.get('refiner_method', 'curve_fit_lm'),
+                    refiner_p0_noise=evaluation_config['refiner_p0_noise'],
+                    refiner_p0_noise_kwargs=evaluation_config.get('refiner_p0_noise_kwargs', None),
+                    parsimony=evaluation_config['parsimony'],
+                    device=evaluation_config['device'],
+                    refiner_workers=evaluation_config.get('refiner_workers', None),
+                ),
+                benchmark=benchmark,
+                eq_ids=args.equations,
+                results_dict=results_dict,
+                size=args.size,
+                save_every=args.save_every,
+                output_file=args.output_file,
+                verbose=args.verbose,
+            )
+
+            if args.verbose:
+                print(f"Saving FastSRB evaluation results to {args.output_file} ...")
+
+            output_dir = os.path.dirname(resolved_output_file)
+            os.makedirs(output_dir, exist_ok=True)
+
+            with open(resolved_output_file, 'wb') as handle:
+                pickle.dump(results_dict, handle)
+
+            if args.verbose:
+                print(f"Saved FastSRB evaluation results to {args.output_file}")
 
         case 'evaluate-nesymres':
             if args.verbose:
