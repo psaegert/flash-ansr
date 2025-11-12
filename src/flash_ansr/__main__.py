@@ -313,6 +313,7 @@ def main(argv: str = None) -> None:
                     refiner_p0_noise=evaluation_config["refiner_p0_noise"],
                     refiner_p0_noise_kwargs=evaluation_config.get("refiner_p0_noise_kwargs", None),
                     parsimony=evaluation_config['parsimony'],
+                    refiner_workers=evaluation_config.get("refiner_workers", None),
                 ),
                 dataset=dataset,
                 results_dict=results_dict,

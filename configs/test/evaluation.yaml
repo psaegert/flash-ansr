@@ -7,6 +7,7 @@ refiner_p0_noise_kwargs:
   loc: 0.0
   scale: 5
 parsimony: 0.05
+refiner_workers: null
 
 generation_config:
   method: 'softmax_sampling'

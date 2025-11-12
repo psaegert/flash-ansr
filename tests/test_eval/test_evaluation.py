@@ -1,3 +1,4 @@
+import os
 import unittest
 import shutil
 
@@ -38,6 +39,7 @@ class TestEvaluation(unittest.TestCase):
         assert evaluation is not None
         assert isinstance(evaluation, Evaluation)
         assert evaluation.n_support == 512
+        assert evaluation.refiner_workers is None
 
     def test_evaluate(self):
         install_model(MODEL)
@@ -47,6 +49,16 @@ class TestEvaluation(unittest.TestCase):
             generation_config=SoftmaxSamplingConfig(choices=5),
             n_restarts=2,
         ).to(DEVICE)
+
+        assert ansr.refiner_workers == max(1, os.cpu_count() or 1)
+
+        ansr_serial = FlashANSR.load(
+            directory=get_path('models', MODEL),
+            generation_config=SoftmaxSamplingConfig(choices=5),
+            n_restarts=2,
+            refiner_workers=0,
+        )
+        assert ansr_serial.refiner_workers == 0
 
         val_dataset = FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml'))
 

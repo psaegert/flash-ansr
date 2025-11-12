@@ -35,6 +35,9 @@ class Evaluation():
         Whether to preprocess the data using FlashASNRPreprocessor. Default is False.
     device : str, optional
         Device to run the evaluation on. Default is 'cpu'.
+    refiner_workers : int or None, optional
+        Number of worker processes to use during constant refinement. ``None``
+        relies on the model default (all available CPU cores).
     '''
     def __init__(
             self,
@@ -43,7 +46,8 @@ class Evaluation():
             beam_width: int = 1,
             complexity: str | list[int | float] = 'none',
             preprocess: bool = False,
-            device: str = 'cpu') -> None:
+            device: str = 'cpu',
+            refiner_workers: int | None = None) -> None:
 
         self.n_support = n_support
         self.noise_level = noise_level
@@ -52,6 +56,7 @@ class Evaluation():
         self.preprocess = preprocess
 
         self.device = device
+        self.refiner_workers = refiner_workers
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "Evaluation":
@@ -91,7 +96,8 @@ class Evaluation():
             beam_width=beams,
             complexity=config_.get("complexity", 'none'),
             preprocess=config_.get("preprocess", False),
-            device=config_["device"]
+            device=config_["device"],
+            refiner_workers=config_.get("refiner_workers", None)
         )
 
     def evaluate(

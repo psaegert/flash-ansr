@@ -201,11 +201,10 @@ class FlashANSR(BaseEstimator):
         Desired NumPy error handling strategy applied during constant refinement.
     parsimony : float, optional
         Penalty coefficient that discourages overly complex expressions.
-    refiner_workers : int or {'auto'} or None, optional
-        Number of parallel worker processes to run during the constant
-        refinement phase. ``None`` or values less than ``2`` keep the
-        sequential behaviour. ``'auto'`` leverages available CPU cores while
-        leaving one core for the coordinator process.
+    refiner_workers : int or None, optional
+        Number of worker processes to run during constant refinement. ``None``
+        (the default) uses all available CPU cores, while explicit integers
+        select a fixed pool size. Set ``0`` to disable multiprocessing.
     """
 
     FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
@@ -242,7 +241,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
-            refiner_workers: int | Literal['auto'] | None = None):
+            refiner_workers: int | None = None):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_transformer = flash_ansr_transformer.eval()
         self.tokenizer = tokenizer
@@ -261,13 +260,14 @@ class FlashANSR(BaseEstimator):
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
 
-        if refiner_workers == 'auto':
-            cpu_count = os.cpu_count() or 1
-            resolved_workers = max(1, cpu_count - 1)
-        elif isinstance(refiner_workers, int):
-            resolved_workers = max(refiner_workers, 0)
+        cpu_count = os.cpu_count() or 1
+
+        if refiner_workers is None:
+            resolved_workers = max(1, cpu_count)
+        elif isinstance(refiner_workers, numbers.Integral):
+            resolved_workers = max(0, int(refiner_workers))
         else:
-            resolved_workers = 0
+            raise TypeError("refiner_workers must be an integer or None.")
 
         self.refiner_workers = resolved_workers
 
@@ -291,7 +291,7 @@ class FlashANSR(BaseEstimator):
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
             device: str = 'cpu',
-            refiner_workers: int | Literal['auto'] | None = None) -> "FlashANSR":
+            refiner_workers: int | None = None) -> "FlashANSR":
         """Instantiate a :class:`FlashANSR` model from a configuration directory.
 
         Parameters
@@ -316,9 +316,10 @@ class FlashANSR(BaseEstimator):
             Parsimony coefficient used when compiling results.
         device : str, optional
             Torch device where the model weights will be loaded.
-        refiner_workers : int or {'auto'} or None, optional
-            Number of worker processes to dedicate to constant refinement during
-            inference. Mirrors the constructor parameter.
+        refiner_workers : int or None, optional
+            Desired worker-pool size for constant refinement. ``None`` uses the
+            number of available CPU cores, integers select an explicit pool size,
+            and ``0`` disables multiprocessing. Mirrors the constructor parameter.
 
         Returns
         -------
