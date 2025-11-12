@@ -1,4 +1,5 @@
 import re
+import warnings
 from typing import Iterator, Any, Literal
 
 import torch
@@ -68,6 +69,14 @@ class Tokenizer:
         list[int] | torch.Tensor
             The list of indices or tensor.
         '''
+        if add_bos or add_eos:
+            warnings.warn(
+                "The 'add_bos' and 'add_eos' parameters will be removed in a future release. "
+                "Construct sequences with explicit prefix/suffix tokens before calling encode().",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
         # TODO: Add support for input strings
         try:
             indices = [self.token2idx[token] for token in tokens]

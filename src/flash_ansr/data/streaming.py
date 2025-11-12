@@ -2,6 +2,7 @@ import multiprocessing as mp
 import os
 import random
 import signal
+import warnings
 from dataclasses import dataclass
 from multiprocessing import shared_memory
 from multiprocessing.managers import ListProxy, SyncManager
@@ -234,7 +235,22 @@ def _producer_worker(
     max_seq_len = worker_config.max_seq_len
     prompt_config = worker_config.preprocessor_prompt_config
 
+    bos_token_id = tokenizer["<bos>"]
     eos_token_id = tokenizer["<eos>"]
+    has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
+
+    if "<expression>" in tokenizer and "</expression>" not in tokenizer:
+        warnings.warn(
+            "Tokenizer defines '<expression>' but misses '</expression>'; training batches will omit expression terminators.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if "</expression>" in tokenizer and "<expression>" not in tokenizer:
+        warnings.warn(
+            "Tokenizer defines '</expression>' but misses '<expression>'; training batches will omit expression prefixes.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     preprocessor: FlashANSRPreprocessor | None = None
     if worker_preprocess and prompt_config is not None:
         preprocessor = FlashANSRPreprocessor(
@@ -297,7 +313,12 @@ def _producer_worker(
                                     if variable not in skeleton:
                                         x_support[:, var_idx] = 0
 
-                            input_ids = tokenizer.encode(skeleton, add_bos=True, add_eos=True, oov=tokenizer_oov)
+                            tokens_to_encode = list(skeleton)
+                            if has_expression_wrappers:
+                                tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
+
+                            body_ids = tokenizer.encode(tokens_to_encode, oov=tokenizer_oov)
+                            input_ids = [bos_token_id, *body_ids, eos_token_id]
                             if len(input_ids) > max_seq_len:
                                 input_ids = input_ids[:max_seq_len]
                                 input_ids[-1] = eos_token_id

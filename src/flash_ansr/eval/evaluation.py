@@ -349,8 +349,14 @@ class Evaluation():
                     results_dict[key].append(value)
 
                 if save_every is not None and resolved_output_file is not None and (batch_id + 1) % save_every == 0:
-                    with open(resolved_output_file, 'wb') as f:
-                        pickle.dump(results_dict, f)
+                    try:
+                        with open(resolved_output_file, 'wb') as f:
+                            pickle.dump(results_dict, f)
+                    except KeyboardInterrupt:
+                        warnings.warn('Evaluation interrupted during saving. Trying to save results before exiting...')
+                        with open(resolved_output_file, 'wb') as f:
+                            pickle.dump(results_dict, f)
+                        raise
 
                 collected += 1
                 if collected >= size:
@@ -365,7 +371,13 @@ class Evaluation():
         if save_every is not None and resolved_output_file is not None:
             if verbose:
                 print('Saving final evaluation results...')
-            with open(resolved_output_file, 'wb') as f:
-                pickle.dump(results_sorted, f)
+            try:
+                with open(resolved_output_file, 'wb') as f:
+                    pickle.dump(results_sorted, f)
+            except KeyboardInterrupt:
+                warnings.warn('Evaluation interrupted during saving. Trying to save results before exiting...')
+                with open(resolved_output_file, 'wb') as f:
+                    pickle.dump(results_sorted, f)
+                raise
 
         return results_sorted

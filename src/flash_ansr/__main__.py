@@ -64,6 +64,7 @@ def main(argv: str = None) -> None:
     evaluate_parser.add_argument('-n', '--size', type=int, default=None, help='Size of the dataset')
     evaluate_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
     evaluate_parser.add_argument('-o', '--output-file', type=str, required=True, help='Path to the output file')
+    evaluate_parser.add_argument('-s', '--save-every', type=int, default=5, help='Save the evaluation results every n samples')
 
     evaluate_nesymres_parser = subparsers.add_parser("evaluate-nesymres")
     evaluate_nesymres_parser.add_argument('-ce', '--config-equation', type=str, required=True, help='Path to the configuration file for the equation setting')
@@ -316,7 +317,7 @@ def main(argv: str = None) -> None:
                 dataset=dataset,
                 results_dict=results_dict,
                 size=size_todo,
-                save_every=5,
+                save_every=args.save_every,
                 output_file=args.output_file,
                 verbose=args.verbose)
 

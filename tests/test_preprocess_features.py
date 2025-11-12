@@ -257,7 +257,11 @@ def test_preprocessor_prompt_mask_disabled(
     )
 
     instance = {
-        'input_ids': tokenizer.encode(['+', 'x1', 'x2'], add_bos=True, add_eos=True),
+        'input_ids': [
+            tokenizer['<bos>'],
+            *tokenizer.encode(['+', 'x1', 'x2']),
+            tokenizer['<eos>'],
+        ],
         'skeletons': ['+', 'x1', 'x2'],
     }
 

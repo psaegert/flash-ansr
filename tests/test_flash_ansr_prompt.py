@@ -51,6 +51,20 @@ class _DummyRefiner:
     def fit(self, *args, **kwargs) -> "_DummyRefiner":
         return self
 
+    @classmethod
+    def from_serialized(
+        cls,
+        simplipy_engine: SimpliPyEngine,
+        n_variables: int,
+        expression: list[str],
+        n_inputs: int,
+        fits: list[tuple[np.ndarray, np.ndarray | None, float]],
+    ) -> "_DummyRefiner":
+        instance = cls(simplipy_engine=simplipy_engine, n_variables=n_variables)
+        instance._all_constants_values = fits or []
+        instance.valid_fit = bool(instance._all_constants_values)
+        return instance
+
     def predict(self, X: np.ndarray, nth_best_constants: int = 0) -> np.ndarray:
         return np.zeros((X.shape[0], 1), dtype=float)
 
