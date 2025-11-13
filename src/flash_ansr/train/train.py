@@ -65,6 +65,16 @@ def _enable_tf32_precision() -> None:
     if not torch.cuda.is_available():
         return
 
+    try:
+        device_capabilities = [torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())]
+    except RuntimeError:
+        # CUDA context is not ready; defer enabling.
+        return
+
+    if not any(major >= 8 for major, _ in device_capabilities):
+        # TF32 support starts with Ampere (compute capability 8.0).
+        return
+
     matmul_backend = getattr(torch.backends.cuda, 'matmul', None)
     conv_backend = getattr(torch.backends.cudnn, 'conv', None)
 
