@@ -59,16 +59,21 @@ class FastSRBBenchmark:
 
     @staticmethod
     def _resolve_variable_order(vars_info: Mapping[str, Mapping[str, Any]]) -> List[str]:
+        candidate_keys = [key for key in vars_info.keys() if key.startswith("v") and key != "v0"]
+        if not candidate_keys:
+            raise ValueError("Entry does not define any input variables")
+
+        try:
+            indices = sorted(int(key[1:]) for key in candidate_keys)
+        except ValueError as exc:
+            raise ValueError("Variable identifiers must follow the 'v<int>' pattern") from exc
+
         variable_order: List[str] = []
-        idx = 1
-        while True:
+        for idx in range(1, indices[-1] + 1):
             key = f"v{idx}"
             if key not in vars_info:
-                break
+                raise KeyError(f"Missing sampling specification for {key}")
             variable_order.append(key)
-            idx += 1
-        if not variable_order:
-            raise ValueError("Entry does not define any input variables")
         return variable_order
 
     def _compile_expression(self, eq_id: str, entry: Mapping[str, Any]) -> Dict[str, Any]:
@@ -86,36 +91,33 @@ class FastSRBBenchmark:
 
         variable_order = self._resolve_variable_order(vars_info)
 
-        prefix_expression = self._simplipy_engine.parse(prepared, mask_numbers=False)
-        prefix_expression = self._simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
+        prefix_parsed = self._simplipy_engine.parse(prepared, mask_numbers=False)
+        prefix_simplified = self._simplipy_engine.simplify(prefix_parsed, max_pattern_length=4)
 
-        used_variables = {token for token in prefix_expression if isinstance(token, str) and token.startswith("v")}
+        used_variables = {token for token in prefix_simplified if isinstance(token, str) and token.startswith("v")}
         unknown_variables = used_variables - set(variable_order) - {"v0"}
         if unknown_variables:
             unknown_str = ", ".join(sorted(unknown_variables))
             raise KeyError(f"Prepared expression for {eq_id} references undefined variables: {unknown_str}")
 
-        prefix_without_constants = self._simplipy_engine.operators_to_realizations(prefix_expression)
-        prefix_with_placeholders, constants = self._simplipy_engine.replace_numbers_with_constants(prefix_without_constants)
-        code_string = self._simplipy_engine.prefix_to_infix(prefix_with_placeholders, realization=True)
-        code = codify(code_string, variable_order + constants)
+        prefix_realized = self._simplipy_engine.operators_to_realizations(prefix_parsed)
+        code_string = self._simplipy_engine.prefix_to_infix(prefix_realized, realization=True)
+        code = codify(code_string, variable_order)
         expression_callable = self._simplipy_engine.code_to_lambda(code)
 
         cache = {
             "code": code,
             "callable": expression_callable,
             "variable_order": variable_order,
-            "prefix": tuple(prefix_expression),
-            "constants": constants,
+            "prefix": tuple(prefix_simplified),
         }
         self._compiled_cache[eq_id] = cache
         return cache
 
     def _evaluate(self, compiled: Dict[str, Any], values: Mapping[str, Any]) -> Any:
         ordered_inputs = [values[name] for name in compiled["variable_order"]]
-        constants = [values[name] for name in compiled.get("constants", [])]
         with np.errstate(all="ignore"):
-            return compiled["callable"](*ordered_inputs, *constants)
+            return compiled["callable"](*ordered_inputs)
 
     def _sample_points(
         self,
