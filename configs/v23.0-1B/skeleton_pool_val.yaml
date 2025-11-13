@@ -1,13 +1,15 @@
 simplipy_engine: 'dev_7-3'
-holdout_pools: []
+holdout_pools: [
+  "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/",]
+
 sample_strategy:
   n_operator_distribution: "length_exponential"
   min_operators: 0
-  max_operators: 25
+  max_operators: 17
   power: 0.7
   lambda: 1
-  max_length: 51
-  max_tries: 100
+  max_length: 35
+  max_tries: 4
   independent_dimensions: true
 
 allow_nan: false
@@ -42,7 +44,7 @@ support_sampler:
       min_value: 1
       max_value: 1024
 
-variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x18', 'x19', 'x20', 'x21', 'x22', 'x23', 'x24', 'x25']
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17']
 
 operator_weights:
   "+": 10

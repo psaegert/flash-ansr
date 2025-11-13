@@ -27,7 +27,7 @@ def main(argv: str = None) -> None:
     generate_skeleton_pool_parser.add_argument('--output-recursive', type=bool, default=True, help='Whether to recursively save the configuration')
 
     import_test_data_parser = subparsers.add_parser("import-data")
-    import_test_data_parser.add_argument('-i', '--input', type=str, required=True, help='Path to the csv file from Biggio et al. or other datasets')
+    import_test_data_parser.add_argument('-i', '--input', type=str, required=True, help='Path to the dataset file (CSV or YAML) from Biggio et al. or other benchmarks')
     import_test_data_parser.add_argument('-b', '--base-skeleton-pool', type=str, required=True, help='Path to the base skeleton pool')
     import_test_data_parser.add_argument('-p', '--parser', type=str, required=True, help='Name of the parser to use')
     import_test_data_parser.add_argument('-e', '--simplipy-engine', type=str, required=True, help='Path to the expression space configuration file')
@@ -164,10 +164,36 @@ def main(argv: str = None) -> None:
             from flash_ansr.utils.paths import substitute_root_path
 
             import pandas as pd
+            import yaml
+            from pathlib import Path
 
             simplipy_engine = SimpliPyEngine.load(args.simplipy_engine, install=True)
             base_skeleton_pool = SkeletonPool.from_config(args.base_skeleton_pool)
-            df = pd.read_csv(substitute_root_path(args.input))
+            input_path = substitute_root_path(args.input)
+            path_obj = Path(input_path)
+
+            if path_obj.suffix.lower() in {'.yaml', '.yml'}:
+                with open(input_path, 'r', encoding='utf-8') as handle:
+                    raw_data = yaml.safe_load(handle)
+
+                if not isinstance(raw_data, dict):
+                    raise ValueError('Expected YAML benchmark file to contain a mapping of equation identifiers to entries.')
+
+                records = []
+                for identifier, payload in raw_data.items():
+                    if not isinstance(payload, dict):
+                        continue
+
+                    record = {'id': identifier}
+                    record.update(payload)
+                    if 'prepared' in record and record['prepared'] is None:
+                        # Normalise missing prepared expressions to empty strings for downstream filtering.
+                        record['prepared'] = ''
+                    records.append(record)
+
+                df = pd.DataFrame.from_records(records)
+            else:
+                df = pd.read_csv(input_path)
 
             data_parser = ParserFactory.get_parser(args.parser)
             test_skeleton_pool: SkeletonPool = data_parser.parse_data(df, simplipy_engine, base_skeleton_pool, verbose=args.verbose)
@@ -335,7 +361,8 @@ def main(argv: str = None) -> None:
                 print(f"Saving evaluation results to {args.output_file} ...")
 
             output_dir = os.path.dirname(resolved_output_file)
-            os.makedirs(output_dir, exist_ok=True)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             with open(resolved_output_file, 'wb') as f:
                 pickle.dump(results_dict, f)
@@ -420,7 +447,8 @@ def main(argv: str = None) -> None:
                 print(f"Saving FastSRB evaluation results to {args.output_file} ...")
 
             output_dir = os.path.dirname(resolved_output_file)
-            os.makedirs(output_dir, exist_ok=True)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             with open(resolved_output_file, 'wb') as handle:
                 pickle.dump(results_dict, handle)
@@ -475,7 +503,8 @@ def main(argv: str = None) -> None:
                 print(f"Saving evaluation results to {args.output_file} ...")
 
             output_dir = os.path.dirname(substitute_root_path(args.output_file))
-            os.makedirs(output_dir, exist_ok=True)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             with open(substitute_root_path(args.output_file), 'wb') as f:
                 pickle.dump(results_dict, f)
@@ -539,7 +568,8 @@ def main(argv: str = None) -> None:
                 print(f"Saving evaluation results to {args.output_file} ...")
 
             output_dir = os.path.dirname(substitute_root_path(args.output_file))
-            os.makedirs(output_dir, exist_ok=True)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             with open(substitute_root_path(args.output_file), 'wb') as f:
                 pickle.dump(results_dict, f)
@@ -571,7 +601,8 @@ def main(argv: str = None) -> None:
                 df = pd.DataFrame.from_dict(runs, orient='index').drop(columns=['run'])
 
             save_path = substitute_root_path(args.output_file)
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            if save_path:
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
             df.to_csv(save_path)
 
         case 'benchmark':

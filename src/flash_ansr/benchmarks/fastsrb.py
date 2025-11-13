@@ -1,10 +1,8 @@
-"""Utilities for sampling the FastSRB benchmark equations in Python."""
+"""Utilities for sampling the FastSRB benchmark equations using SimpliPy."""
 
 from __future__ import annotations
 
-import ast
 import math
-import re
 import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple, Union
@@ -12,100 +10,41 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 import numpy as np
 import yaml
 
+from simplipy import SimpliPyEngine
+
+from flash_ansr.expressions.compilation import codify
+
 
 Number = Union[int, float]
-ArrayLike = Union[np.ndarray, Sequence[float]]
-
-
-def _neg(x: Any) -> Any:
-    """Mirror the Julia helper that negates the input."""
-    return -x
-
-
-class _ExpressionValidator(ast.NodeVisitor):
-    """Validate that an expression only uses the supported syntax."""
-
-    _ALLOWED_BIN_OPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow)
-    _ALLOWED_UNARY_OPS = (ast.UAdd, ast.USub)
-
-    def __init__(self, allowed_names: Iterable[str]) -> None:
-        self._allowed_names = set(allowed_names)
-
-    # Minor helpers keep the visitor readable
-    def visit_BinOp(self, node: ast.BinOp) -> Any:  # noqa: D401 - simple override
-        if not isinstance(node.op, self._ALLOWED_BIN_OPS):
-            raise ValueError(f"Unsupported operator: {ast.dump(node.op)}")
-        self.generic_visit(node)
-        return node
-
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:  # noqa: D401 - simple override
-        if not isinstance(node.op, self._ALLOWED_UNARY_OPS):
-            raise ValueError(f"Unsupported unary operator: {ast.dump(node.op)}")
-        self.generic_visit(node)
-        return node
-
-    def visit_Call(self, node: ast.Call) -> Any:  # noqa: D401 - simple override
-        if not isinstance(node.func, ast.Name):
-            raise ValueError("Only simple function calls are supported")
-        if node.func.id not in self._allowed_names:
-            raise ValueError(f"Unsupported function: {node.func.id}")
-        self.generic_visit(node)
-        return node
-
-    def visit_Name(self, node: ast.Name) -> Any:  # noqa: D401 - simple override
-        if node.id not in self._allowed_names:
-            raise ValueError(f"Name '{node.id}' is not allowed in prepared expressions")
-        return node
-
-    def generic_visit(self, node: ast.AST) -> Any:  # noqa: D401 - simple override
-        allowed_nodes = (
-            ast.Expression,
-            ast.BinOp,
-            ast.UnaryOp,
-            ast.Call,
-            ast.Load,
-            ast.Constant,
-            ast.Name,
-            ast.Add,
-            ast.Sub,
-            ast.Mult,
-            ast.Div,
-            ast.Pow,
-            ast.UAdd,
-            ast.USub,
-        )
-        if not isinstance(node, allowed_nodes):
-            raise ValueError(f"Unsupported syntax element: {ast.dump(node)}")
-        return super().generic_visit(node)
 
 
 class FastSRBBenchmark:
     """Sample datasets from the FastSRB benchmark YAML specification."""
 
-    _ALLOWED_FUNCTIONS: Mapping[str, Any] = {
-        "sin": np.sin,
-        "cos": np.cos,
-        "tanh": np.tanh,
-        "sqrt": np.sqrt,
-        "exp": np.exp,
-        "log": np.log,
-        "neg": _neg,
-    }
+    def __init__(
+        self,
+        yaml_path: Union[str, Path],
+        *,
+        simplipy_engine: SimpliPyEngine | str = "dev_7-3",
+        random_state: Optional[Union[int, np.random.Generator]] = None,
+    ) -> None:
+        """Load the YAML benchmark specification and prepare a SimpliPy engine."""
 
-    _DEFAULT_ALLOWED_ELEMENTS = (
-        {f"v{i}" for i in range(0, 101)}
-        | set(_ALLOWED_FUNCTIONS.keys())
-    )
-
-    def __init__(self, yaml_path: Union[str, Path], *, random_state: Optional[Union[int, np.random.Generator]] = None) -> None:
-        """Load the YAML benchmark specification."""
         path = Path(yaml_path)
         if not path.exists():
             raise FileNotFoundError(path)
-        with path.open("r", encoding="utf-8") as fh:
-            self._entries: Dict[str, MutableMapping[str, Any]] = yaml.safe_load(fh)
+
+        with path.open("r", encoding="utf-8") as handle:
+            entries = yaml.safe_load(handle)
+
+        if not isinstance(entries, Mapping):
+            raise ValueError("Benchmark specification must be a mapping from equation ids to entries.")
+
+        self._entries: Dict[str, MutableMapping[str, Any]] = dict(entries)
         self._yaml_path = path
         self._rng = self._resolve_rng(random_state)
+
+        self._simplipy_engine = simplipy_engine if isinstance(simplipy_engine, SimpliPyEngine) else SimpliPyEngine.load(simplipy_engine, install=True)
         self._compiled_cache: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
@@ -118,41 +57,65 @@ class FastSRBBenchmark:
         """Return the identifiers of all benchmark equations."""
         return list(self._entries.keys())
 
-    def _compile_expression(self, eq_id: str, expression: str) -> Dict[str, Any]:
+    @staticmethod
+    def _resolve_variable_order(vars_info: Mapping[str, Mapping[str, Any]]) -> List[str]:
+        variable_order: List[str] = []
+        idx = 1
+        while True:
+            key = f"v{idx}"
+            if key not in vars_info:
+                break
+            variable_order.append(key)
+            idx += 1
+        if not variable_order:
+            raise ValueError("Entry does not define any input variables")
+        return variable_order
+
+    def _compile_expression(self, eq_id: str, entry: Mapping[str, Any]) -> Dict[str, Any]:
         cache = self._compiled_cache.get(eq_id)
         if cache is not None:
             return cache
-        prepared = expression.replace("^", "**")
-        try:
-            expr_ast = ast.parse(prepared, mode="eval")
-        except SyntaxError as exc:
-            raise ValueError(f"Failed to parse prepared expression for {eq_id}") from exc
-        validator = _ExpressionValidator(self._DEFAULT_ALLOWED_ELEMENTS)
-        validator.visit(expr_ast)
-        compiled = compile(expr_ast, filename=f"<fastsrb:{eq_id}>", mode="eval")
-        var_indices = sorted(
-            {
-                int(match.group(1))
-                for match in re.finditer(r"v(\d+)", expression)
-            }
-        )
-        if not var_indices:
-            raise ValueError(f"Could not detect any variables in equation {eq_id}")
-        n_vars = max(var_indices)
+
+        prepared = entry.get("prepared")
+        if not isinstance(prepared, str) or not prepared.strip():
+            raise ValueError(f"Entry {eq_id} has no prepared expression")
+
+        vars_info = entry.get("vars")
+        if not isinstance(vars_info, Mapping):
+            raise ValueError(f"Entry {eq_id} has no variable definitions")
+
+        variable_order = self._resolve_variable_order(vars_info)
+
+        prefix_expression = self._simplipy_engine.parse(prepared, mask_numbers=False)
+        prefix_expression = self._simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
+
+        used_variables = {token for token in prefix_expression if isinstance(token, str) and token.startswith("v")}
+        unknown_variables = used_variables - set(variable_order) - {"v0"}
+        if unknown_variables:
+            unknown_str = ", ".join(sorted(unknown_variables))
+            raise KeyError(f"Prepared expression for {eq_id} references undefined variables: {unknown_str}")
+
+        prefix_without_constants = self._simplipy_engine.operators_to_realizations(prefix_expression)
+        prefix_with_placeholders, constants = self._simplipy_engine.replace_numbers_with_constants(prefix_without_constants)
+        code_string = self._simplipy_engine.prefix_to_infix(prefix_with_placeholders, realization=True)
+        code = codify(code_string, variable_order + constants)
+        expression_callable = self._simplipy_engine.code_to_lambda(code)
+
         cache = {
-            "code": compiled,
-            "safe_expression": prepared,
-            "var_indices": var_indices,
-            "n_vars": n_vars,
+            "code": code,
+            "callable": expression_callable,
+            "variable_order": variable_order,
+            "prefix": tuple(prefix_expression),
+            "constants": constants,
         }
         self._compiled_cache[eq_id] = cache
         return cache
 
     def _evaluate(self, compiled: Dict[str, Any], values: Mapping[str, Any]) -> Any:
-        env = dict(self._ALLOWED_FUNCTIONS)
-        env.update(values)
+        ordered_inputs = [values[name] for name in compiled["variable_order"]]
+        constants = [values[name] for name in compiled.get("constants", [])]
         with np.errstate(all="ignore"):
-            return eval(compiled["code"], {"__builtins__": {}}, env)
+            return compiled["callable"](*ordered_inputs, *constants)
 
     def _sample_points(
         self,
@@ -210,14 +173,13 @@ class FastSRBBenchmark:
     def _sample_matrix(
         self,
         vars_info: Mapping[str, Mapping[str, Any]],
-        n_vars: int,
+        variable_order: Sequence[str],
         n_points: int,
         method: str,
         rng: np.random.Generator,
     ) -> np.ndarray:
         columns: List[np.ndarray] = []
-        for idx in range(1, n_vars + 1):
-            key = f"v{idx}"
+        for key in variable_order:
             spec = vars_info.get(key)
             if spec is None:
                 raise KeyError(f"Missing sampling spec for {key}")
@@ -253,7 +215,7 @@ class FastSRBBenchmark:
     def _sample_single_point(
         self,
         vars_info: Mapping[str, Mapping[str, Any]],
-        n_vars: int,
+        variable_order: Sequence[str],
         method: str,
         rng: np.random.Generator,
         compiled: Dict[str, Any],
@@ -262,8 +224,7 @@ class FastSRBBenchmark:
         for _ in range(max_trials):
             values: List[float] = []
             value_map: Dict[str, float] = {}
-            for idx in range(1, n_vars + 1):
-                key = f"v{idx}"
+            for key in variable_order:
                 spec = vars_info.get(key)
                 if spec is None:
                     raise KeyError(f"Missing sampling spec for {key}")
@@ -310,26 +271,24 @@ class FastSRBBenchmark:
         incremental: bool,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        prepared = entry.get("prepared")
-        if not prepared:
-            raise ValueError(f"Entry {eq_id} has no prepared expression")
+        compiled = self._compile_expression(eq_id, entry)
         vars_info = entry.get("vars")
         if not isinstance(vars_info, Mapping):
             raise ValueError(f"Entry {eq_id} has no variable definitions")
-        compiled = self._compile_expression(eq_id, prepared)
-        n_vars = compiled["n_vars"]
+
+        variable_order = compiled["variable_order"]
         matrix: Optional[np.ndarray] = None
         for _ in range(max_trials):
             try:
                 if incremental:
                     rows = [
-                        self._sample_single_point(vars_info, n_vars, method, rng, compiled, max_trials)
+                        self._sample_single_point(vars_info, variable_order, method, rng, compiled, max_trials)
                         for _ in range(n_points)
                     ]
                     matrix = np.vstack(rows)
                 else:
-                    inputs = self._sample_matrix(vars_info, n_vars, n_points, method, rng)
-                    value_map = {f"v{i}": inputs[:, i - 1] for i in range(1, inputs.shape[1] + 1)}
+                    inputs = self._sample_matrix(vars_info, variable_order, n_points, method, rng)
+                    value_map = {var: inputs[:, idx] for idx, var in enumerate(variable_order)}
                     try:
                         target = self._evaluate(compiled, value_map)
                     except Exception:
@@ -388,9 +347,10 @@ class FastSRBBenchmark:
         inputs = matrix[:, :-1]
         target = matrix[:, -1]
         vars_info = entry.get("vars", {})
+        compiled = self._compile_expression(eq_id, entry)
+        variable_order = compiled["variable_order"]
         feature_meta: List[Dict[str, Any]] = []
-        for idx in range(inputs.shape[1]):
-            key = f"v{idx + 1}"
+        for idx, key in enumerate(variable_order):
             spec = vars_info.get(key, {})
             feature_meta.append(
                 {
@@ -410,7 +370,7 @@ class FastSRBBenchmark:
             "data": {
                 "X": inputs,
                 "y": target,
-                "columns": [f"v{i}" for i in range(1, inputs.shape[1] + 1)],
+                "columns": list(variable_order),
                 "target": target_meta.get("name", "v0"),
             },
             "variables": {

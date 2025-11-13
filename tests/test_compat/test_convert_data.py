@@ -3,7 +3,7 @@ import pandas as pd
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.compat.convert_data import SOOSEParser, FeynmanParser, NguyenParser
+from flash_ansr.compat.convert_data import SOOSEParser, FeynmanParser, NguyenParser, FastSRBParser
 from flash_ansr import SkeletonPool, get_path
 
 
@@ -49,6 +49,23 @@ class TestConvertData(unittest.TestCase):
         })
 
         parser = NguyenParser()
+
+        skeleton_pool = parser.parse_data(
+            test_set_df=df,
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+
+        self.assertIsInstance(skeleton_pool, SkeletonPool)
+
+    def test_import_test_data_fastsrb(self):
+        df = pd.DataFrame({
+            'prepared': [
+                'v1 * v2 * v3',
+                'sin(v1) / (v2 + v3)'
+            ]
+        })
+
+        parser = FastSRBParser()
 
         skeleton_pool = parser.parse_data(
             test_set_df=df,
