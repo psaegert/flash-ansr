@@ -112,6 +112,7 @@ class Trainer:
             train_dataset: FlashANSRDataset,
             val_dataset: FlashANSRDataset,
             gradient_accumulation_steps: int = 1,
+            num_workers: int | None = None,
             config: dict[str, Any] = None) -> None:
         """Create a fully configured trainer instance.
 
@@ -135,6 +136,8 @@ class Trainer:
             Dataset providing validation batches.
         gradient_accumulation_steps : int, default=1
             Number of micro-batches per optimizer step.
+        num_workers : int or None, optional
+            Number of worker processes for data generation.
         config : dict[str, Any] or None, optional
             Trainer configuration metadata (used for logging).
         """
@@ -149,6 +152,7 @@ class Trainer:
         self.val_dataset = val_dataset
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.config = config or {}
+        self.num_workers = num_workers
         self.device = torch.device("cpu")  # Updated during ``run``
         default_worker_preprocess = self.train_dataset.preprocessor is not None
         if isinstance(self.config, dict) and 'worker_preprocess' in self.config:
@@ -215,6 +219,8 @@ class Trainer:
             lr_lambda=lambda step: pw_linear_schedule(step, config_['lr_schedule'])  # Pass the step and the points that define the piecewise linear schedule
         )
 
+        num_workers = config_.get("num_workers", None)
+        print(f'Using num_workers={num_workers} for data generation')
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
 
@@ -244,7 +250,8 @@ class Trainer:
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             gradient_accumulation_steps=config_.get("gradient_accumulation_steps", 1),
-            config=config_
+            num_workers=num_workers,
+            config=config_,
         )
 
     def _setup_training_state(self, device: str, verbose: bool) -> None:
@@ -350,6 +357,7 @@ class Trainer:
                         batch_size=self.batch_size,
                         preprocess=preprocess,
                         preprocess_in_worker=worker_preprocess,
+                        num_workers=self.num_workers,
                         max_seq_len=self.decoder_max_seq_len)):
                 self._train_step(batch, step, preprocess, do_optimizer_step=True)
 
@@ -387,6 +395,7 @@ class Trainer:
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
             preprocess_in_worker: bool | None = None,
+            num_workers: int | None = None,
             verbose: bool = False) -> FlashANSRModel:
         """Train the model while managing the experiment lifecycle via W&B.
 
@@ -426,6 +435,8 @@ class Trainer:
             When ``True`` run preprocessing inside dataset workers. Defaults to
             the trainer configuration when omitted (which enables worker
             preprocessing when available).
+        num_workers : int or None, optional
+            Number of worker processes for data generation.
         verbose : bool, default=False
             When ``True`` print progress information to stdout.
 
@@ -438,8 +449,12 @@ class Trainer:
         if verbose:
             print(f"Training model ({self.model.n_params:,} parameters) for {steps:,} steps on device {device}")
 
+        if num_workers is not None:
+            print(f'Overriding trainer num_workers to {num_workers}')
+            self.num_workers = num_workers
+
         wandb_config = unfold_config(copy.deepcopy(self.config))
-        wandb_config.update({"steps": steps, "device": device, "verbose": verbose})
+        wandb_config.update({"steps": steps, "device": device, "verbose": verbose, "num_workers": num_workers})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
@@ -647,6 +662,7 @@ class Trainer:
                     batch_size=batch_size,
                     preprocess=preprocess,
                     preprocess_in_worker=worker_preprocess,
+                    num_workers=self.num_workers,
                     max_seq_len=self.decoder_max_seq_len):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
