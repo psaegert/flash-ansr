@@ -1,0 +1,26 @@
+run:
+  data_source:
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 1
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 50
+    incremental: false
+    random_state: 1337
+    noise_level: 0.0
+  model_adapter:
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v21.0-370M"
+    evaluation_config: "{{ROOT}}/configs/v21.0-370M/evaluation.yaml"
+    complexity: none
+    device: cuda
+    generation_overrides:
+      kwargs:
+        choices: 4
+  runner:
+    limit: 64
+    save_every: 16
+    resume: false
+    output: "{{ROOT}}/results/evaluation/quick/v21.0-370M/fastsrb.pkl"

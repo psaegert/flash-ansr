@@ -1,0 +1,810 @@
+"""Evaluation data source implementations."""
+from __future__ import annotations
+
+import math
+import random
+import re
+import warnings
+from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
+
+import numpy as np
+import torch
+
+from flash_ansr.benchmarks import FastSRBBenchmark
+from flash_ansr.data import FlashANSRDataset, FlashANSRPreprocessor
+from flash_ansr.eval.core import EvaluationDataSource, EvaluationSample
+from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
+from flash_ansr.expressions.token_ops import substitute_constants
+
+
+class SkeletonDatasetSource(EvaluationDataSource):
+    """Stream evaluation samples from a ``FlashANSRDataset`` skeleton pool."""
+
+    def __init__(
+        self,
+        dataset: FlashANSRDataset,
+        *,
+        target_size: int | None = None,
+        n_support: int | None = None,
+        noise_level: float = 0.0,
+        preprocess: bool = False,
+        device: str = "cpu",
+        iterator_buffer: int = 2,
+        tokenizer_oov: str = "unk",
+        datasets_per_expression: int | None = None,
+        datasets_random_seed: int | None = None,
+        skip: int = 0,
+    ) -> None:
+        self.dataset = dataset
+        self.n_support = n_support
+        self.noise_level = noise_level
+        self.preprocess = preprocess
+        self.device = device
+        self.iterator_buffer = max(1, iterator_buffer)
+        self.tokenizer_oov = tokenizer_oov
+
+        if datasets_per_expression is not None and datasets_per_expression < 1:
+            raise ValueError("datasets_per_expression must be positive when provided")
+        self.datasets_per_expression = datasets_per_expression
+        self._deterministic_mode = datasets_per_expression is not None
+        self.datasets_random_seed = datasets_random_seed
+        self._skip = max(0, skip) if self._deterministic_mode else 0
+        self._noise_rng: np.random.Generator | None = None
+
+        pool_size = len(self.dataset.skeleton_pool)
+        self._total_available: int | None = None
+        if self._deterministic_mode:
+            per_expression = datasets_per_expression
+            if per_expression is None:
+                raise ValueError("datasets_per_expression must be specified for deterministic evaluation")
+            total_available = pool_size * per_expression if pool_size > 0 else None
+            default_target = total_available if total_available is not None else 0
+            raw_target = target_size if target_size is not None else default_target
+            if total_available is None:
+                self._target_size = max(0, raw_target)
+            else:
+                self._target_size = max(0, min(raw_target, total_available))
+                self._total_available = total_available
+        else:
+            raw_target = target_size if target_size is not None else pool_size
+            self._target_size = max(0, raw_target)
+
+        self._prepared = False
+        self._max_n_support = self._resolve_max_n_support()
+        self._skeleton_sequence: list[tuple[str, ...]] | None = None
+
+    def size_hint(self) -> int:
+        return self._target_size
+
+    def prepare(self, *, adapter: Any | None = None) -> None:  # type: ignore[override]
+        if self._prepared:
+            return
+
+        simplipy_engine = None
+        if adapter is not None:
+            get_engine = getattr(adapter, "get_simplipy_engine", None)
+            if callable(get_engine):
+                simplipy_engine = get_engine()
+            elif hasattr(adapter, "simplipy_engine"):
+                simplipy_engine = getattr(adapter, "simplipy_engine")
+
+        if simplipy_engine is not None:
+            self.dataset.skeleton_pool.simplipy_engine = simplipy_engine
+            self.dataset.skeleton_pool.skeleton_codes = self.dataset.skeleton_pool.compile_codes(verbose=False)
+
+            resolved_holdouts: list[SkeletonPool] = []
+            for idx, holdout_pool in enumerate(self.dataset.skeleton_pool.holdout_pools):
+                if isinstance(holdout_pool, str):
+                    _, loaded_pool = SkeletonPool.load(holdout_pool)
+                    holdout_pool = loaded_pool
+                    self.dataset.skeleton_pool.holdout_pools[idx] = holdout_pool
+                resolved_holdouts.append(holdout_pool)
+
+            for holdout_pool in resolved_holdouts:
+                holdout_pool.simplipy_engine = simplipy_engine
+                holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=False)
+
+        self.dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+
+        if self.preprocess:
+            self.dataset.preprocessor = FlashANSRPreprocessor(
+                simplipy_engine=self.dataset.skeleton_pool.simplipy_engine,
+                tokenizer=self.dataset.tokenizer,
+            )
+
+        if self._deterministic_mode:
+            self._ensure_skeleton_sequence()
+
+        self._prepared = True
+
+    def __iter__(self) -> Iterator[EvaluationSample]:
+        if self._deterministic_mode:
+            yield from self._iter_deterministic()
+        else:
+            yield from self._iter_random()
+
+    def _iter_random(self) -> Iterator[EvaluationSample]:
+        if self._target_size <= 0:
+            return
+
+        iterator_size = max(self._target_size * self.iterator_buffer, self._target_size + 4)
+        collected = 0
+
+        with torch.no_grad():
+            iterator = self.dataset.iterate(
+                size=iterator_size,
+                max_n_support=self._max_n_support,
+                n_support=self._infer_sampling_support(),
+                preprocess=self.preprocess,
+                verbose=False,
+                batch_size=1,
+                tqdm_kwargs=None,
+                tokenizer_oov=self.tokenizer_oov,
+            )
+
+            for batch in iterator:
+                sample = self._batch_to_sample(batch)
+                if sample is None:
+                    continue
+
+                yield sample
+                collected += 1
+                if collected >= self._target_size:
+                    break
+
+        if collected < self._target_size:
+            warnings.warn(
+                f"SkeletonDatasetSource only yielded {collected} / {self._target_size} samples.",
+                RuntimeWarning,
+            )
+
+    def _iter_deterministic(self) -> Iterator[EvaluationSample]:
+        per_expression = self.datasets_per_expression
+        if per_expression is None or self._target_size <= 0:
+            return
+
+        if not self._skeleton_sequence:
+            warnings.warn("No skeletons available for deterministic evaluation.", RuntimeWarning)
+            return
+
+        if self.preprocess:
+            warnings.warn(
+                "Deterministic skeleton evaluation does not currently support preprocessing; skipping preprocess step.",
+                RuntimeWarning,
+            )
+
+        produced = 0
+        skipped = 0
+
+        for skeleton in self._skeleton_sequence:
+            for _ in range(per_expression):
+                if skipped < self._skip:
+                    skipped += 1
+                    continue
+                if produced >= self._target_size:
+                    return
+
+                sample = self._build_deterministic_sample(skeleton)
+                if sample is None:
+                    continue
+
+                yield sample
+                produced += 1
+
+        if produced < self._target_size:
+            warnings.warn(
+                f"Deterministic SkeletonDatasetSource only yielded {produced} / {self._target_size} samples.",
+                RuntimeWarning,
+            )
+
+    def _build_deterministic_sample(self, skeleton: tuple[str, ...]) -> EvaluationSample | None:
+        pool = self.dataset.skeleton_pool
+        if not pool.skeleton_codes:
+            pool.skeleton_codes = pool.compile_codes(verbose=False)
+
+        if skeleton not in pool.skeleton_codes:
+            pool.skeleton_codes = pool.compile_codes(verbose=False)
+            if skeleton not in pool.skeleton_codes:
+                warnings.warn("Skeleton missing from pool codes; skipping sample.", RuntimeWarning)
+                return None
+
+        code, constants_tokens = pool.skeleton_codes[skeleton]
+        n_constants = len(constants_tokens)
+        n_points = self.n_support * 2 if self.n_support is not None else None
+
+        for _ in range(8):
+            try:
+                x_all, y_all, literals = pool.sample_data(code, n_constants, n_support=n_points)
+            except NoValidSampleFoundError:
+                continue
+
+            if x_all.size == 0 or y_all.size == 0:
+                continue
+
+            X_support, X_val, y_support, y_val = self._split_support_and_validation(x_all, y_all)
+            if X_support.size == 0:
+                continue
+
+            y_support_noisy, y_val_noisy = self._apply_noise(y_support, y_val)
+
+            metadata = self._build_metadata_for_skeleton(
+                skeleton=skeleton,
+                literals=literals,
+                X_support=X_support,
+                y_support=y_support,
+                y_support_noisy=y_support_noisy,
+                X_val=X_val,
+                y_val=y_val,
+                y_val_noisy=y_val_noisy,
+            )
+
+            return EvaluationSample(
+                x_support=X_support,
+                y_support=y_support,
+                x_validation=X_val,
+                y_validation=y_val,
+                y_support_noisy=y_support_noisy,
+                y_validation_noisy=y_val_noisy,
+                metadata=metadata,
+            )
+
+        warnings.warn("Failed to sample deterministic skeleton after multiple attempts; skipping.", RuntimeWarning)
+        return None
+
+    def _ensure_skeleton_sequence(self) -> None:
+        if self._skeleton_sequence is not None:
+            return
+
+        per_expression = self.datasets_per_expression
+        if per_expression is None:
+            return
+
+        pool = self.dataset.skeleton_pool
+        required_samples = self._skip + self._target_size
+        required_expressions = math.ceil(required_samples / per_expression) if required_samples > 0 else 0
+
+        skeletons = list(pool.skeletons)
+        if required_expressions > len(skeletons):
+            self._populate_skeleton_pool(required_expressions - len(skeletons))
+            skeletons = list(pool.skeletons)
+
+        skeletons.sort()
+
+        self._skeleton_sequence = skeletons
+        total_available = len(skeletons) * per_expression
+        if self._total_available is None or self._total_available < total_available:
+            self._total_available = total_available
+
+    def _populate_skeleton_pool(self, needed: int) -> None:
+        if needed <= 0:
+            return
+
+        pool = self.dataset.skeleton_pool
+        np_state = None
+        random_state = None
+        if self.datasets_random_seed is not None:
+            np_state = np.random.get_state()
+            random_state = random.getstate()
+            np.random.seed(self.datasets_random_seed)
+            random.seed(self.datasets_random_seed)
+
+        try:
+            generated = 0
+            while generated < needed:
+                try:
+                    skeleton, code, constants = pool.sample_skeleton(new=True)
+                except NoValidSampleFoundError:
+                    warnings.warn(
+                        "Unable to sample additional skeletons for deterministic evaluation.",
+                        RuntimeWarning,
+                    )
+                    break
+
+                if skeleton in pool.skeletons:
+                    continue
+
+                pool.skeletons.add(skeleton)
+                pool.skeleton_codes[skeleton] = (code, constants)
+                generated += 1
+        finally:
+            if np_state is not None:
+                np.random.set_state(np_state)
+            if random_state is not None:
+                random.setstate(random_state)
+
+    def _split_support_and_validation(
+        self,
+        x_all: np.ndarray,
+        y_all: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        total_points = x_all.shape[0]
+        if total_points == 0:
+            return (
+                np.empty((0, x_all.shape[1]), dtype=np.float32),
+                np.empty((0, x_all.shape[1]), dtype=np.float32),
+                np.empty((0, y_all.shape[1]), dtype=np.float32),
+                np.empty((0, y_all.shape[1]), dtype=np.float32),
+            )
+
+        support_count = self.n_support if self.n_support is not None else total_points // 2
+        support_count = max(1, min(support_count, total_points))
+        if support_count == total_points and total_points > 1:
+            support_count = total_points // 2
+
+        X_support = x_all[:support_count].astype(np.float32, copy=True)
+        y_support = y_all[:support_count].astype(np.float32, copy=True)
+
+        if support_count < total_points:
+            X_val = x_all[support_count:].astype(np.float32, copy=True)
+            y_val = y_all[support_count:].astype(np.float32, copy=True)
+        else:
+            X_val = np.empty((0, x_all.shape[1]), dtype=np.float32)
+            y_val = np.empty((0, y_all.shape[1]), dtype=np.float32)
+
+        return X_support, X_val, y_support, y_val
+
+    def _apply_noise(
+        self,
+        y_support: np.ndarray,
+        y_val: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.noise_level <= 0.0:
+            return y_support.copy(), y_val.copy()
+
+        rng = self._noise_rng
+        if rng is None:
+            rng = np.random.default_rng(self.datasets_random_seed)
+            self._noise_rng = rng
+
+        def _inject_noise(array: np.ndarray) -> np.ndarray:
+            if array.size == 0:
+                return array.copy()
+            noisy = array.copy()
+            y_std = float(np.std(noisy))
+            if np.isfinite(y_std) and y_std > 0:
+                noise = rng.standard_normal(size=noisy.shape).astype(np.float32)
+                noisy = noisy + (self.noise_level * y_std * noise)
+            return noisy
+
+        return _inject_noise(y_support), _inject_noise(y_val)
+
+    def _build_metadata_for_skeleton(
+        self,
+        *,
+        skeleton: tuple[str, ...],
+        literals: np.ndarray,
+        X_support: np.ndarray,
+        y_support: np.ndarray,
+        y_support_noisy: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
+        y_val_noisy: np.ndarray,
+    ) -> Dict[str, Any]:
+        skeleton_list = list(skeleton)
+        expression_tokens = substitute_constants(skeleton_list, values=literals, inplace=False)
+        input_ids = self._encode_input_ids(skeleton_list)
+        tokenizer = self.dataset.tokenizer
+
+        metadata: Dict[str, Any] = {
+            "skeleton": skeleton_list,
+            "skeleton_hash": tuple(skeleton_list),
+            "expression": expression_tokens.copy(),
+            "input_ids": np.asarray(input_ids, dtype=np.int64),
+            "labels": np.asarray(input_ids[1:], dtype=np.int64),
+            "constants": self._format_constants(literals),
+            "variables": list(self.dataset.skeleton_pool.variables),
+            "variable_names": list(self.dataset.skeleton_pool.variables),
+            "x": X_support.copy(),
+            "y": y_support.copy(),
+            "y_noisy": y_support_noisy.copy(),
+            "x_val": X_val.copy(),
+            "y_val": y_val.copy(),
+            "y_noisy_val": y_val_noisy.copy(),
+            "n_support": int(X_support.shape[0]),
+            "labels_decoded": list(tokenizer.decode(input_ids, special_tokens="<constant>")),
+            "complexity": len(expression_tokens) if expression_tokens else None,
+            "noise_level": self.noise_level,
+            "parsimony": None,
+            "fit_time": None,
+            "predicted_expression": None,
+            "predicted_expression_prefix": None,
+            "predicted_skeleton_prefix": None,
+            "predicted_constants": None,
+            "predicted_score": None,
+            "predicted_log_prob": None,
+            "y_pred": None,
+            "y_pred_val": None,
+            "prediction_success": False,
+            "error": None,
+        }
+        return metadata
+
+    def _encode_input_ids(self, skeleton_tokens: list[str]) -> list[int]:
+        tokenizer = self.dataset.tokenizer
+        body_tokens = skeleton_tokens
+        if "<expression>" in tokenizer and "</expression>" in tokenizer:
+            body_tokens = ["<expression>", *skeleton_tokens, "</expression>"]
+
+        body_ids = tokenizer.encode(body_tokens, oov=self.tokenizer_oov)
+        bos = tokenizer["<bos>"]
+        eos = tokenizer["<eos>"]
+        return [int(bos), *map(int, body_ids), int(eos)]
+
+    def _format_constants(self, literals: np.ndarray) -> list[np.ndarray]:
+        if literals is None or literals.size == 0:
+            return []
+        literals_array = np.asarray(literals, dtype=np.float32)
+        return [literals_array.copy()]
+
+    # ---------------------------------------------------------------------
+    # Helper methods
+    def _resolve_max_n_support(self) -> int:
+        sampler = self.dataset.skeleton_pool.support_sampler
+        max_support = sampler.configured_max_n_support
+        if max_support is None and self.n_support is None:
+            raise ValueError(
+                "Support sampler configuration must define a maximum support size when evaluation does not "
+                "override 'n_support'."
+            )
+        if self.n_support is None:
+            return max_support * 2  # type: ignore[operator]
+        return self.n_support * 2
+
+    def _infer_sampling_support(self) -> int | None:
+        return self.n_support * 2 if self.n_support is not None else None
+
+    def _batch_to_sample(self, batch: Mapping[str, Any]) -> EvaluationSample | None:
+        collated = self.dataset.collate(batch, device=self.device)
+
+        x_tensor = collated["x_tensors"][0][: collated["n_support"][0]]
+        y_tensor = collated["y_tensors"][0][: collated["n_support"][0]]
+
+        inferred_support = self.n_support
+        if inferred_support is None:
+            inferred_support = x_tensor.shape[1] // 2
+
+        if inferred_support == 0:
+            warnings.warn("n_support evaluated to zero. Skipping batch.")
+            return None
+
+        y_noisy_tensor = y_tensor
+        if self.noise_level > 0.0:
+            y_noisy_tensor = y_tensor + (self.noise_level * y_tensor.std() * torch.randn_like(y_tensor))
+            if not torch.all(torch.isfinite(y_noisy_tensor)):
+                warnings.warn("Adding noise produced non-finite targets. Skipping sample.")
+                return None
+
+        x_numpy = x_tensor.cpu().numpy()
+        y_numpy = y_tensor.cpu().numpy()
+        y_noisy_numpy = y_noisy_tensor.cpu().numpy()
+
+        X_support = x_numpy[: inferred_support].copy()
+        y_support = y_numpy[: inferred_support].copy()
+        y_support_noisy = y_noisy_numpy[: inferred_support].copy()
+
+        X_val = x_numpy[inferred_support:].copy()
+        y_val = y_numpy[inferred_support:].copy()
+        y_val_noisy = y_noisy_numpy[inferred_support:].copy()
+
+        constants = [c.cpu().numpy().copy() for c in collated["constants"][0]]
+        labels_array = collated["labels"][0].cpu().numpy().copy()
+        decoded_labels = list(
+            self.dataset.tokenizer.decode(collated["labels"][0].cpu().tolist(), special_tokens="<constant>")
+        )
+
+        skeleton_tokens = collated["skeleton"][0]
+        if hasattr(skeleton_tokens, "cpu"):
+            skeleton_tokens = skeleton_tokens.cpu().tolist()
+        skeleton_list = list(skeleton_tokens)
+
+        skeleton_hash_value = collated["skeleton_hash"][0]
+        if hasattr(skeleton_hash_value, "cpu"):
+            skeleton_hash_value = skeleton_hash_value.cpu().tolist()
+        if isinstance(skeleton_hash_value, list):
+            skeleton_hash_value = tuple(skeleton_hash_value)
+
+        expression_tokens = collated["expression"][0]
+        if hasattr(expression_tokens, "cpu"):
+            expression_tokens = expression_tokens.cpu().tolist()
+        expression_list = list(expression_tokens)
+
+        complexity_field = collated.get("complexity")
+        complexity_value = None
+        if complexity_field is not None:
+            value = complexity_field[0]
+            if hasattr(value, "item"):
+                complexity_value = value.item()
+            else:
+                complexity_value = value
+
+        metadata: Dict[str, Any] = {
+            "skeleton": skeleton_list,
+            "skeleton_hash": skeleton_hash_value,
+            "expression": expression_list,
+            "input_ids": collated["input_ids"][0].cpu().numpy().copy(),
+            "labels": labels_array,
+            "constants": constants,
+            "variables": list(self.dataset.skeleton_pool.variables),
+            "x": X_support.copy(),
+            "y": y_support.copy(),
+            "y_noisy": y_support_noisy.copy(),
+            "x_val": X_val.copy(),
+            "y_val": y_val.copy(),
+            "y_noisy_val": y_val_noisy.copy(),
+            "n_support": int(inferred_support),
+            "labels_decoded": decoded_labels,
+            "complexity": complexity_value,
+            "noise_level": self.noise_level,
+            "parsimony": None,
+            "fit_time": None,
+            "predicted_expression": None,
+            "predicted_expression_prefix": None,
+            "predicted_skeleton_prefix": None,
+            "predicted_constants": None,
+            "predicted_score": None,
+            "predicted_log_prob": None,
+            "y_pred": None,
+            "y_pred_val": None,
+            "prediction_success": False,
+            "error": None,
+        }
+
+        skeleton_hash = metadata["skeleton_hash"]
+        if isinstance(skeleton_hash, (list, tuple)):
+            metadata["skeleton_hash"] = tuple(skeleton_hash)
+
+        return EvaluationSample(
+            x_support=X_support,
+            y_support=y_support,
+            x_validation=X_val,
+            y_validation=y_val,
+            y_support_noisy=y_support_noisy,
+            y_validation_noisy=y_val_noisy,
+            metadata=metadata,
+        )
+
+
+class FastSRBSource(EvaluationDataSource):
+    """Yield evaluation samples from the FastSRB benchmark specification."""
+
+    def __init__(
+        self,
+        benchmark: FastSRBBenchmark,
+        *,
+        target_size: int,
+        skip: int = 0,
+        eq_ids: Sequence[str] | None = None,
+        datasets_per_expression: int = 1,
+        support_points: int = 100,
+        sample_points: int | None = None,
+        n_support_override: int | None = None,
+        method: str = "random",
+        max_trials: int = 100,
+        incremental: bool = False,
+        random_state: int | None = None,
+        noise_level: float = 0.0,
+    ) -> None:
+        if support_points < 1:
+            raise ValueError("support_points must be positive")
+        if datasets_per_expression < 1:
+            raise ValueError("datasets_per_expression must be positive")
+
+        self.benchmark = benchmark
+        self.eq_ids = list(eq_ids) if eq_ids is not None else None
+        self.datasets_per_expression = int(datasets_per_expression)
+        self.support_points = int(support_points)
+        self.sample_points = int(sample_points or (self.support_points * 2))
+        self.n_support_override = n_support_override
+        self.method = method
+        self.max_trials = max_trials
+        self.incremental = incremental
+        self.random_state = random_state
+        self.noise_level = noise_level
+
+        self._target_size = max(0, int(target_size))
+        self._skip = max(0, int(skip))
+
+        base_eq_ids = self.eq_ids if self.eq_ids is not None else benchmark.equation_ids()
+        self._total_available = len(base_eq_ids) * self.datasets_per_expression
+
+        self._simplipy_engine = None
+
+    def size_hint(self) -> int:
+        available = max(0, self._total_available - self._skip)
+        return min(self._target_size, available)
+
+    def prepare(self, *, adapter: Any | None = None) -> None:  # type: ignore[override]
+        simplipy_engine = None
+        if adapter is not None:
+            get_engine = getattr(adapter, "get_simplipy_engine", None)
+            if callable(get_engine):
+                simplipy_engine = get_engine()
+            elif hasattr(adapter, "simplipy_engine"):
+                simplipy_engine = getattr(adapter, "simplipy_engine")
+        self._simplipy_engine = simplipy_engine
+
+    def __iter__(self) -> Iterator[EvaluationSample]:
+        iterator = self.benchmark.iter_samples(
+            eq_ids=self.eq_ids,
+            count=self.datasets_per_expression,
+            random_state=self.random_state,
+            n_points=self.sample_points,
+            method=self.method,
+            max_trials=self.max_trials,
+            incremental=self.incremental,
+        )
+
+        skipped = 0
+        produced = 0
+        noise_rng = None
+        if self.noise_level > 0:
+            if self.random_state is not None:
+                noise_rng = np.random.default_rng(self.random_state)
+            else:
+                noise_rng = np.random.default_rng()
+
+        for eq_id, sample_index, sample in iterator:
+            if skipped < self._skip:
+                skipped += 1
+                continue
+            if produced >= self._target_size:
+                break
+
+            evaluation_sample = self._build_sample(eq_id, sample_index, sample, noise_rng)
+            if evaluation_sample is None:
+                continue
+
+            yield evaluation_sample
+            produced += 1
+
+        if produced < self._target_size:
+            warnings.warn(
+                f"FastSRBSource only yielded {produced} / {self._target_size} samples.",
+                RuntimeWarning,
+            )
+
+    # ------------------------------------------------------------------
+    def _build_sample(
+        self,
+        eq_id: str,
+        sample_index: int,
+        sample: Mapping[str, Any],
+        noise_rng: np.random.Generator | None,
+    ) -> EvaluationSample | None:
+        metadata_block = sample.get("metadata", {})
+        data_block = sample.get("data", {})
+        inputs = np.asarray(data_block.get("X"), dtype=np.float32)
+        targets = np.asarray(data_block.get("y"), dtype=np.float32)
+
+        if inputs.ndim != 2:
+            raise ValueError("FastSRB sample inputs must be 2D")
+
+        total_points = inputs.shape[0]
+        if total_points == 0:
+            warnings.warn(f"Sample for {eq_id} has no data. Skipping.")
+            return None
+
+        desired_support = min(self.support_points, total_points)
+        if self.n_support_override is not None:
+            desired_support = min(desired_support, self.n_support_override, total_points)
+
+        n_support = max(1, desired_support)
+
+        X_support = inputs[:n_support].copy()
+        y_support = targets[:n_support].copy()
+
+        X_val = inputs[n_support:].copy()
+        y_val = targets[n_support:].copy()
+
+        if self.noise_level > 0 and noise_rng is not None:
+            y_std = float(np.std(y_support))
+            if np.isfinite(y_std) and y_std > 0:
+                noise = noise_rng.normal(size=y_support.shape)
+                y_support_noisy = y_support + self.noise_level * y_std * noise.astype(np.float32)
+            else:
+                y_support_noisy = y_support.copy()
+        else:
+            y_support_noisy = y_support.copy()
+
+        if not np.all(np.isfinite(y_support_noisy)):
+            warnings.warn("Noisy targets contain non-finite values. Skipping sample.")
+            return None
+
+        prepared_prefix = metadata_block.get("prepared_prefix")
+        if isinstance(prepared_prefix, tuple):
+            ground_truth_prefix = list(prepared_prefix)
+        elif isinstance(prepared_prefix, list):
+            ground_truth_prefix = list(prepared_prefix)
+        else:
+            prepared_expr = metadata_block.get("prepared_normalized")
+            fallback_expr = metadata_block.get("prepared") or metadata_block.get("raw")
+            ground_truth_expr_candidate = prepared_expr or fallback_expr
+            if not ground_truth_expr_candidate:
+                raise ValueError("FastSRB metadata is missing a prepared expression.")
+            ground_truth_prefix = self._parse_ground_truth(ground_truth_expr_candidate)
+        ground_truth_expr = metadata_block.get("prepared_normalized") or metadata_block.get("prepared") or metadata_block.get("raw")
+        if ground_truth_expr is None:
+            if self._simplipy_engine is None:
+                raise RuntimeError("FastSRBSource needs a SimpliPy engine to reconstruct prepared expressions.")
+            ground_truth_expr = self._simplipy_engine.prefix_to_infix(ground_truth_prefix, realization=False)
+
+        variables_block = sample.get("variables", {})
+        variable_names = self._extract_variable_names(variables_block)
+
+        metadata: Dict[str, Any] = {
+            "skeleton": None,
+            "skeleton_hash": tuple(ground_truth_prefix) if ground_truth_prefix else None,
+            "expression": ground_truth_prefix.copy() if ground_truth_prefix else None,
+            "input_ids": None,
+            "labels": None,
+            "constants": [],
+            "x": X_support.copy(),
+            "y": y_support.copy(),
+            "y_noisy": y_support_noisy.copy(),
+            "x_val": X_val.copy(),
+            "y_val": y_val.copy(),
+            "y_noisy_val": y_val.copy(),
+            "n_support": int(n_support),
+            "labels_decoded": ground_truth_prefix.copy() if ground_truth_prefix else None,
+            "complexity": len(ground_truth_prefix) if ground_truth_prefix else None,
+            "noise_level": self.noise_level,
+            "parsimony": None,
+            "fit_time": None,
+            "predicted_expression": None,
+            "predicted_expression_prefix": None,
+            "predicted_skeleton_prefix": None,
+            "predicted_constants": None,
+            "predicted_score": None,
+            "predicted_log_prob": None,
+            "y_pred": None,
+            "y_pred_val": None,
+            "prediction_success": False,
+            "error": None,
+            "benchmark_eq_id": eq_id,
+            "benchmark_sample_index": int(sample_index),
+            "benchmark_metadata": metadata_block,
+            "benchmark_n_points": int(total_points),
+            "benchmark_support_points": int(self.support_points),
+            "benchmark_method": self.method,
+            "ground_truth_infix": ground_truth_expr,
+            "ground_truth_prefix": ground_truth_prefix.copy() if ground_truth_prefix else None,
+            "variable_names": variable_names,
+        }
+
+        return EvaluationSample(
+            x_support=X_support,
+            y_support=y_support,
+            x_validation=X_val,
+            y_validation=y_val,
+            y_support_noisy=y_support_noisy,
+            y_validation_noisy=y_val.copy(),
+            metadata=metadata,
+        )
+
+    def _parse_ground_truth(self, expression: Any) -> list[str]:
+        if not isinstance(expression, str) or not expression.strip():
+            raise ValueError("FastSRB ground truth expression is missing or empty.")
+        normalized_expression = expression.replace("^", "**")
+        normalized = re.sub(r"\bv(\d+)\b", lambda match: f"x{match.group(1)}", normalized_expression)
+        if self._simplipy_engine is None:
+            raise RuntimeError("FastSRBSource requires a SimpliPy engine to parse ground truth expressions.")
+        parsed = self._simplipy_engine.parse(normalized, mask_numbers=True)
+        return list(parsed)
+
+    @staticmethod
+    def _extract_variable_names(variables_block: Mapping[str, Any] | None) -> list[str] | None:
+        if not isinstance(variables_block, Mapping):
+            return None
+        inputs_meta = variables_block.get("inputs")
+        if not isinstance(inputs_meta, Iterable):
+            return None
+        names: list[str] = []
+        for idx, meta in enumerate(inputs_meta):
+            if isinstance(meta, Mapping):
+                names.append(str(meta.get("name", f"x{idx + 1}")))
+            else:
+                names.append(f"x{idx + 1}")
+        return names or None
+
+
+__all__ = ["SkeletonDatasetSource", "FastSRBSource"]

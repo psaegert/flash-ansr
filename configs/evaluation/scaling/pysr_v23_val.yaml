@@ -1,0 +1,171 @@
+defaults:
+  data_source: &pysr_v23_source
+    type: skeleton_dataset
+    dataset: "{{ROOT}}/configs/v23.0-60M/dataset_val.yaml"
+    n_support: 512
+    noise_level: 0.0
+    preprocess: false
+    device: cpu
+    datasets_per_expression: 4
+  model_adapter: &pysr_adapter
+    type: pysr
+    timeout_in_seconds: 3600
+    niterations: 1
+    padding: true
+    use_mult_div_operators: false
+    parsimony: 0.001
+  runner: &pysr_v23_runner
+    limit: null
+    save_every: 32
+    resume: true
+
+experiments:
+  pysr_v23_iter_00001:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 1
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00001.pkl"
+
+  pysr_v23_iter_00002:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 2
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00002.pkl"
+
+  pysr_v23_iter_00004:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 4
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00004.pkl"
+
+  pysr_v23_iter_00008:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 8
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00008.pkl"
+
+  pysr_v23_iter_00016:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 16
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00016.pkl"
+
+  pysr_v23_iter_00032:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 32
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00032.pkl"
+
+  pysr_v23_iter_00064:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 64
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00064.pkl"
+
+  pysr_v23_iter_00128:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 128
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00128.pkl"
+
+  pysr_v23_iter_00256:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 256
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00256.pkl"
+
+  pysr_v23_iter_00512:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 512
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_00512.pkl"
+
+  pysr_v23_iter_01024:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 1024
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_01024.pkl"
+
+  pysr_v23_iter_02048:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 2048
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_02048.pkl"
+
+  pysr_v23_iter_04096:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 4096
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_04096.pkl"
+
+  pysr_v23_iter_08192:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 8192
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_08192.pkl"
+
+  pysr_v23_iter_16384:
+    run:
+      data_source: *pysr_v23_source
+      model_adapter:
+        <<: *pysr_adapter
+        niterations: 16384
+      runner:
+        <<: *pysr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_16384.pkl"

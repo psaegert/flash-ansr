@@ -1,97 +1,11 @@
-from pysr import PySRRegressor
-
 from typing import Any
-from collections import defaultdict
-import warnings
-import time
-import pickle
-import os
-
-import torch
-import numpy as np
 
 from flash_ansr import FlashANSRDataset
+from flash_ansr.eval.data_sources import SkeletonDatasetSource
+from flash_ansr.eval.engine import EvaluationEngine
+from flash_ansr.eval.model_adapters import PySRAdapter
+from flash_ansr.eval.result_store import ResultStore
 from flash_ansr.utils.config_io import load_config
-from flash_ansr.utils.paths import substitute_root_path
-
-import simplipy
-from simplipy.utils import numbers_to_constant
-
-
-def remove_padding(x: torch.Tensor | np.ndarray, skeleton: list[str], variables: set[str]) -> torch.Tensor | np.ndarray:
-    # Delete all columns corresponding to unused variables
-    used_vars_mask = [var in skeleton for var in variables]
-    return x[:, used_vars_mask]
-
-
-def create_model(timeout_in_seconds: int, niterations: int, use_mult_div_operators: bool) -> PySRRegressor:
-    if use_mult_div_operators:
-        additional_unary_operators = [
-            'mult2(x) = 2*x',
-            'mult3(x) = 3*x',
-            'mult4(x) = 4*x',
-            'mult5(x) = 5*x',
-            'div2(x) = x/2',
-            'div3(x) = x/3',
-            'div4(x) = x/4',
-            'div5(x) = x/5']
-        additional_extra_sympy_mappings = {
-            "mult2": simplipy.operators.mult2,
-            "mult3": simplipy.operators.mult3,
-            "mult4": simplipy.operators.mult4,
-            "mult5": simplipy.operators.mult5,
-            "div2": simplipy.operators.div2,
-            "div3": simplipy.operators.div3,
-            "div4": simplipy.operators.div4,
-            "div5": simplipy.operators.div5,
-        }
-    else:
-        additional_unary_operators = []
-        additional_extra_sympy_mappings = {}
-
-    print(f'Creating PySR model with timeout {timeout_in_seconds=}, {niterations=}, and {use_mult_div_operators=} ...')
-
-    return PySRRegressor(
-        temp_equation_file=True,
-        delete_tempfiles=True,
-        timeout_in_seconds=timeout_in_seconds,
-        niterations=niterations,
-        unary_operators=[
-            'neg',
-            'abs',
-            'inv',
-            'sin',
-            'cos',
-            'tan',
-            'asin',
-            'acos',
-            'atan',
-            'exp',
-            'log',
-            'pow2(x) = x^2',
-            'pow3(x) = x^3',
-            'pow4(x) = x^4',
-            'pow5(x) = x^5',
-            r'pow1_2(x::T) where {T} = x >= 0 ? T(x^(1/2)) : T(NaN)',
-            r'pow1_3(x::T) where {T} = x >= 0 ? T(x^(1/3)) : T(-((-x)^(1/3)))',
-            r'pow1_4(x::T) where {T} = x >= 0 ? T(x^(1/4)) : T(NaN)',
-            r'pow1_5(x::T) where {T} = x >= 0 ? T(x^(1/5)) : T(-((-x)^(1/5)))',
-        ] + additional_unary_operators,
-        binary_operators=['+', '-', '*', '/', '^'],
-        extra_sympy_mappings={
-            "pow2": simplipy.operators.pow2,
-            "pow3": simplipy.operators.pow3,
-            "pow4": simplipy.operators.pow4,
-            "pow5": simplipy.operators.pow5,
-            "pow1_2": simplipy.operators.pow1_2,
-            "pow1_3": lambda x: x**(1 / 3),  # Workaround for https://stackoverflow.com/questions/68577498/sympy-typeerror-cannot-determine-truth-value-of-relational-how-to-make-sure-x
-            "pow1_4": simplipy.operators.pow1_4,
-            "pow1_5": lambda x: x**(1 / 5),
-        } | additional_extra_sympy_mappings,
-        constraints={
-            '^': (-1, 3)
-        },
-    )
 
 
 class PySREvaluation():
@@ -137,182 +51,48 @@ class PySREvaluation():
             save_every: int | None = None,
             output_file: str | None = None,
             verbose: bool = True) -> dict[str, Any]:
+        if save_every is not None and output_file is None:
+            raise ValueError('output_file must be provided when save_every is set.')
 
-        if results_dict is None:
-            results_dict = defaultdict(list)
+        store = ResultStore(results_dict)
+        existing = store.size
 
-        if save_every is not None:
-            output_dir = os.path.dirname(substitute_root_path(output_file))
-            os.makedirs(output_dir, exist_ok=True)
+        target_total = len(dataset.skeleton_pool) if size is None else size
+        if target_total <= existing:
+            return dict(sorted(store.snapshot().items()))
 
-        if size is None:
-            size = len(dataset.skeleton_pool)
+        remaining = target_total - existing
 
-        # HACK
-        dataset.skeleton_pool.sample_strategy["max_tries"] = 100
-        base_max_n_support = dataset.skeleton_pool.support_sampler.configured_max_n_support
-        if base_max_n_support is None and self.n_support is None:
-            raise ValueError(
-                "Support sampler configuration must define a maximum support size when evaluation does not "
-                "override 'n_support'."
-            )
+        data_source = SkeletonDatasetSource(
+            dataset,
+            target_size=remaining,
+            n_support=self.n_support,
+            noise_level=self.noise_level,
+            preprocess=False,
+            device='cpu',
+        )
 
-        max_n_support = base_max_n_support * 2 if self.n_support is None else self.n_support * 2
+        adapter = PySRAdapter(
+            timeout_in_seconds=self.timeout_in_seconds,
+            niterations=self.niterations,
+            use_mult_div_operators=self.use_mult_div_operators,
+            padding=self.padding,
+            parsimony=self.parsimony,
+            simplipy_engine=dataset.simplipy_engine,
+        )
 
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        engine = EvaluationEngine(
+            data_source=data_source,
+            model_adapter=adapter,
+            result_store=store,
+        )
 
-        with torch.no_grad():
-            collected = 0
-            iterator = dataset.iterate(
-                size=size * 2,  # In case something goes wrong in a few samples, we have enough buffer to still collect 'size' samples
-                max_n_support=max_n_support,
-                n_support=self.n_support * 2 if self.n_support is not None else None,
-                verbose=verbose,
-                batch_size=1,
-                tqdm_kwargs={'desc': 'Evaluating', 'total': size, 'smoothing': 0.0},
-                tokenizer_oov='unk'  # Do not raise an error if an unknown token (operator) is encountered
-            )
+        results = engine.run(
+            limit=remaining,
+            save_every=save_every,
+            output_path=output_file,
+            verbose=verbose,
+            progress=verbose,
+        )
 
-            model = create_model(
-                timeout_in_seconds=self.timeout_in_seconds,
-                niterations=self.niterations,
-                use_mult_div_operators=self.use_mult_div_operators,
-            )
-
-            if verbose:
-                print(f'Starting evaluation on {size} problems...')
-
-            for batch_id, batch in enumerate(iterator):
-                batch = dataset.collate(batch, device='cpu')
-
-                # Remove padding (not needed for single sample batches, and will interfere with fitting)
-                batch['x_tensors'] = batch['x_tensors'][0][:batch['n_support'][0]]
-                batch['y_tensors'] = batch['y_tensors'][0][:batch['n_support'][0]]
-
-                n_support = self.n_support
-                if n_support is None:
-                    n_support = batch['x_tensors'].shape[1] // 2
-
-                if n_support == 0:
-                    warnings.warn('n_support evaluated to zero. Skipping batch.')
-                    continue
-
-                if self.noise_level > 0.0:
-                    batch['y_tensors_noisy'] = batch['y_tensors'] + (
-                        self.noise_level * batch['y_tensors'].std() * torch.randn_like(batch['y_tensors'])
-                    )
-                    if not torch.all(torch.isfinite(batch['y_tensors_noisy'])):
-                        warnings.warn('Adding noise to the target variable resulted in non-finite values. Skipping this sample.')
-                        continue
-                else:
-                    batch['y_tensors_noisy'] = batch['y_tensors']
-
-                x_numpy = batch['x_tensors'].cpu().numpy()
-                y_numpy = batch['y_tensors'].cpu().numpy()
-                y_noisy_numpy = batch['y_tensors_noisy'].cpu().numpy()
-
-                X = x_numpy[:n_support]
-                y = y_noisy_numpy[:n_support]
-
-                X_val = x_numpy[n_support:]
-                y_val = y_noisy_numpy[n_support:]
-
-                sample_results = {
-                    'skeleton': list(batch['skeleton'][0]),
-                    'skeleton_hash': tuple(batch['skeleton_hash'][0]) if isinstance(batch['skeleton_hash'][0], (list, tuple)) else batch['skeleton_hash'][0],
-                    'expression': list(batch['expression'][0]),
-                    'input_ids': batch['input_ids'][0].cpu().numpy().copy(),
-                    'labels': batch['labels'][0].cpu().numpy().copy(),
-                    'constants': [c.cpu().numpy().copy() for c in batch['constants'][0]],
-                    'x': X.copy(),
-                    'y': y_numpy[:n_support].copy(),
-                    'y_noisy': y.copy(),
-                    'x_val': X_val.copy(),
-                    'y_val': y_numpy[n_support:].copy(),
-                    'y_noisy_val': y_val.copy(),
-                    'n_support': int(n_support),
-                    'labels_decoded': list(dataset.tokenizer.decode(batch['labels'][0].cpu().tolist(), special_tokens='<constant>')),
-                    'parsimony': self.parsimony,
-                    'noise_level': self.noise_level,
-
-                    'fit_time': None,
-                    'predicted_expression': None,
-                    'predicted_expression_prefix': None,
-                    'predicted_skeleton_prefix': None,
-                    'predicted_constants': None,
-                    'predicted_score': None,
-                    'predicted_log_prob': None,
-                    'y_pred': None,
-                    'y_pred_val': None,
-                    'prediction_success': False,
-                    'error': None,
-                }
-
-                error_occured = False
-
-                print(sample_results['x'][0])
-
-                if not self.padding:
-                    used_variables = [variable for variable in dataset.skeleton_pool.variables if variable in sample_results['skeleton']]  # Keep order
-                    X = remove_padding(X, sample_results['skeleton'], dataset.skeleton_pool.variables)
-                    X_val = remove_padding(X_val, sample_results['skeleton'], dataset.skeleton_pool.variables)
-                else:
-                    used_variables = None
-
-                print(f'Used variables: {used_variables}')
-
-                print(X[0])
-
-                fit_time_before = time.time()
-                try:
-                    model.fit(X, y, variable_names=used_variables)
-                    sample_results['fit_time'] = time.time() - fit_time_before
-                    sample_results['prediction_success'] = True
-                except Exception as e:
-                    error_occured = True
-                    sample_results['error'] = str(e)
-
-                if not error_occured:
-                    y_pred = model.predict(X).reshape(-1, 1)
-                    y_pred_val = model.predict(X_val).reshape(-1, 1)
-
-                    if not y_pred.shape == y.shape:
-                        raise ValueError(f"Shape of y_pred {y_pred.shape} does not match shape of y {y.shape}.")
-                    if not y_pred_val.shape == y_val.shape:
-                        raise ValueError(f"Shape of y_pred_val {y_pred_val.shape} does not match shape of y_val {y_val.shape}.")
-
-                    sample_results['y_pred'] = y_pred.copy()
-                    sample_results['y_pred_val'] = y_pred_val.copy()
-
-                    predicted_expression = str(model.get_best()['equation'])
-                    sample_results['predicted_expression'] = predicted_expression
-                    predicted_prefix = dataset.simplipy_engine.infix_to_prefix(predicted_expression)
-                    sample_results['predicted_expression_prefix'] = predicted_prefix.copy()
-                    sample_results['predicted_skeleton_prefix'] = numbers_to_constant(predicted_prefix).copy()
-
-                    if sample_results['predicted_skeleton_prefix'] == sample_results['skeleton']:
-                        print('Perfect skeleton match!')
-                        print(sample_results['y'][:10])
-                        print(sample_results['y_pred'][:10])
-
-                for key, value in sample_results.items():
-                    results_dict[key].append(value)
-
-                if not len(set(len(v) for v in results_dict.values())) == 1:
-                    print({k: len(v) for k, v in results_dict.items()})  # Check that all lists have the same length
-                    raise ValueError("Not all lists in results_dict have the same length.")
-
-                time.sleep(0.1)  # For good measure
-
-                if save_every is not None and (batch_id + 1) % save_every == 0:
-                    with open(substitute_root_path(output_file), 'wb') as f:
-                        pickle.dump(results_dict, f)
-
-                collected += 1
-                if collected >= size:
-                    break
-
-        # Sort the scores alphabetically by key
-        results_dict = dict(sorted(dict(results_dict).items()))  # type: ignore
-
-        return results_dict
+        return dict(sorted(results.items()))

@@ -1,0 +1,479 @@
+"""Helpers for building config-driven evaluation runs."""
+from __future__ import annotations
+
+import copy
+import os
+import pickle
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Mapping, MutableMapping, Sequence
+
+from simplipy import SimpliPyEngine
+
+from flash_ansr.benchmarks import FastSRBBenchmark
+from flash_ansr.data import FlashANSRDataset
+from flash_ansr.eval.data_sources import FastSRBSource, SkeletonDatasetSource
+from flash_ansr.eval.engine import EvaluationEngine
+from flash_ansr.eval.model_adapters import FlashANSRAdapter, NeSymReSAdapter, PySRAdapter
+from flash_ansr.eval.result_store import ResultStore
+from flash_ansr.flash_ansr import FlashANSR
+from flash_ansr.utils.config_io import load_config
+from flash_ansr.utils.generation import create_generation_config
+from flash_ansr.utils.paths import substitute_root_path
+
+
+@dataclass(slots=True)
+class EvaluationRunPlan:
+    """Container describing how to execute an evaluation run."""
+
+    engine: EvaluationEngine | None
+    remaining: int | None
+    save_every: int | None
+    output_path: str | None
+    completed: bool
+    total_limit: int | None
+    existing_results: int
+
+
+def build_evaluation_run(
+    config: str | Mapping[str, Any],
+    *,
+    limit_override: int | None = None,
+    output_override: str | None = None,
+    save_every_override: int | None = None,
+    resume: bool | None = None,
+    experiment: str | None = None,
+) -> EvaluationRunPlan:
+    """Instantiate data sources, adapters, and the engine from a config file."""
+
+    raw_config = load_config(config) if isinstance(config, str) else dict(config)
+    config_dict = _select_experiment(raw_config, experiment)
+    run_cfg = _extract_run_section(config_dict)
+
+    data_cfg = run_cfg.get("data_source")
+    if not isinstance(data_cfg, Mapping):
+        raise KeyError("run.data_source section is required")
+    model_cfg = run_cfg.get("model_adapter")
+    if not isinstance(model_cfg, Mapping):
+        raise KeyError("run.model_adapter section is required")
+    runner_cfg = run_cfg.get("runner", {})
+
+    save_every = save_every_override if save_every_override is not None else runner_cfg.get("save_every")
+    save_every = _coerce_optional_int(save_every, "runner.save_every")
+
+    output_path = output_override or runner_cfg.get("output")
+    if save_every is not None and output_path is None:
+        raise ValueError("runner.output must be provided when save_every is set")
+
+    resume_flag = runner_cfg.get("resume", True)
+    if resume is not None:
+        resume_flag = resume
+
+    initial_results = None
+    if resume_flag and output_path:
+        initial_results = _load_existing_results(output_path)
+
+    store = ResultStore(initial_results)
+    existing = store.size
+
+    limit_value = limit_override if limit_override is not None else runner_cfg.get("limit")
+    limit_value = _coerce_optional_int(limit_value, "runner.limit")
+
+    if limit_value is None:
+        limit_value = _coerce_optional_int(data_cfg.get("target_size"), "data_source.target_size")
+    total_limit = limit_value
+
+    if total_limit is not None:
+        remaining = max(0, total_limit - existing)
+        if remaining == 0:
+            return EvaluationRunPlan(
+                engine=None,
+                remaining=0,
+                save_every=save_every,
+                output_path=output_path,
+                completed=True,
+                total_limit=total_limit,
+                existing_results=existing,
+            )
+    else:
+        remaining = None
+
+    target_override = remaining if remaining is not None else _coerce_optional_int(
+        data_cfg.get("target_size"), "data_source.target_size"
+    )
+
+    data_source, context = _build_data_source(
+        data_cfg,
+        target_size_override=target_override,
+        skip=existing,
+    )
+
+    adapter = _build_model_adapter(model_cfg, context=context)
+
+    engine = EvaluationEngine(
+        data_source=data_source,
+        model_adapter=adapter,
+        result_store=store,
+    )
+
+    return EvaluationRunPlan(
+        engine=engine,
+        remaining=remaining,
+        save_every=save_every,
+        output_path=output_path,
+        completed=False,
+        total_limit=total_limit,
+        existing_results=existing,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Builders
+
+def _build_data_source(
+    config: Mapping[str, Any],
+    *,
+    target_size_override: int | None,
+    skip: int,
+) -> tuple[SkeletonDatasetSource | FastSRBSource, dict[str, Any]]:
+    dtype = str(config.get("type", "skeleton_dataset")).lower()
+    if dtype == "skeleton_dataset":
+        dataset_spec = config.get("dataset")
+        if dataset_spec is None:
+            raise ValueError("data_source.dataset must be provided for skeleton_dataset sources")
+        dataset = _load_dataset(dataset_spec)
+
+        target_size = target_size_override
+        n_support = _coerce_optional_int(config.get("n_support"), "data_source.n_support")
+        noise_level = float(config.get("noise_level", 0.0))
+        preprocess = bool(config.get("preprocess", False))
+        device = str(config.get("device", "cpu"))
+        iterator_buffer = _coerce_optional_int(config.get("iterator_buffer"), "data_source.iterator_buffer")
+        tokenizer_oov = str(config.get("tokenizer_oov", "unk"))
+
+        if "evaluation_order" in config:
+            warnings.warn(
+                "data_source.evaluation_order is no longer supported; deterministic sampling always iterates sequentially.",
+                RuntimeWarning,
+            )
+
+        source = SkeletonDatasetSource(
+            dataset=dataset,
+            target_size=target_size,
+            n_support=n_support,
+            noise_level=noise_level,
+            preprocess=preprocess,
+            device=device,
+            iterator_buffer=iterator_buffer or 2,
+            tokenizer_oov=tokenizer_oov,
+            skip=skip,
+            datasets_per_expression=_coerce_optional_int(config.get("datasets_per_expression"), "data_source.datasets_per_expression"),
+            datasets_random_seed=_coerce_optional_int(config.get("datasets_random_seed"), "data_source.datasets_random_seed"),
+        )
+        return source, {"dataset": dataset}
+
+    if dtype == "fastsrb":
+        benchmark_path = config.get("benchmark_path")
+        if benchmark_path is None:
+            raise ValueError("data_source.benchmark_path must be provided for FastSRB sources")
+        benchmark = FastSRBBenchmark(
+            substitute_root_path(str(benchmark_path)),
+            random_state=_coerce_optional_int(config.get("benchmark_random_state"), "data_source.benchmark_random_state"),
+        )
+
+        eq_ids = _parse_equation_ids(config.get("eq_ids"))
+        datasets_per_expression_cfg = config.get("datasets_per_expression")
+        legacy_count_cfg = config.get("count")
+        repeats_field = "data_source.datasets_per_expression"
+        repeats_value = datasets_per_expression_cfg
+        if repeats_value is None:
+            repeats_field = "data_source.count"
+            repeats_value = legacy_count_cfg
+        if repeats_value is None:
+            repeats_field = "data_source.datasets_per_expression"
+            repeats_value = 1
+        if datasets_per_expression_cfg is not None and legacy_count_cfg is not None and datasets_per_expression_cfg != legacy_count_cfg:
+            warnings.warn(
+                "data_source.count is deprecated; using datasets_per_expression value while both were provided.",
+                RuntimeWarning,
+            )
+        datasets_per_expression = _coerce_int(repeats_value, repeats_field)
+        support_points = _coerce_int(config.get("support_points", 100), "data_source.support_points")
+        sample_points = _coerce_optional_int(config.get("sample_points"), "data_source.sample_points")
+        n_support_override = _coerce_optional_int(
+            config.get("n_support_override", config.get("n_support")),
+            "data_source.n_support_override",
+        )
+        method = str(config.get("method", "random"))
+        max_trials = _coerce_int(config.get("max_trials", 100), "data_source.max_trials")
+        incremental = bool(config.get("incremental", False))
+        random_state = _coerce_optional_int(config.get("random_state"), "data_source.random_state")
+        noise_level = float(config.get("noise_level", 0.0))
+
+        available_ids = eq_ids if eq_ids is not None else benchmark.equation_ids()
+        total_available = len(available_ids) * datasets_per_expression
+        target_size = target_size_override
+        if target_size is None:
+            target_size = max(0, total_available - skip)
+        else:
+            target_size = max(0, target_size)
+
+        source = FastSRBSource(
+            benchmark=benchmark,
+            target_size=target_size,
+            skip=skip,
+            eq_ids=eq_ids,
+            datasets_per_expression=datasets_per_expression,
+            support_points=support_points,
+            sample_points=sample_points,
+            n_support_override=n_support_override,
+            method=method,
+            max_trials=max_trials,
+            incremental=incremental,
+            random_state=random_state,
+            noise_level=noise_level,
+        )
+        return source, {"benchmark": benchmark}
+
+    raise ValueError(f"Unsupported data source type: {dtype}")
+
+
+def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter:
+    adapter_type = str(config.get("type", "flash_ansr")).lower()
+    if adapter_type == "flash_ansr":
+        return _build_flash_ansr_adapter(config)
+    if adapter_type == "pysr":
+        dataset = context.get("dataset")
+        if not isinstance(dataset, FlashANSRDataset):
+            raise ValueError("PySR adapter requires a skeleton_dataset data source")
+        return _build_pysr_adapter(config, dataset)
+    if adapter_type == "nesymres":
+        return _build_nesymres_adapter(config)
+    raise ValueError(f"Unsupported model adapter type: {adapter_type}")
+
+
+def _build_flash_ansr_adapter(config: Mapping[str, Any]) -> FlashANSRAdapter:
+    model_path = config.get("model_path")
+    eval_config_path = config.get("evaluation_config")
+    if model_path is None or eval_config_path is None:
+        raise ValueError("flash_ansr adapter requires model_path and evaluation_config")
+
+    eval_cfg = load_config(substitute_root_path(str(eval_config_path)))
+    if "evaluation" in eval_cfg:
+        eval_cfg = eval_cfg["evaluation"]
+
+    evaluation_overrides = config.get("evaluation_overrides")
+    if evaluation_overrides is not None:
+        if not isinstance(evaluation_overrides, Mapping):
+            raise ValueError("evaluation_overrides must be a mapping")
+        eval_cfg = _merge_mappings(eval_cfg, evaluation_overrides)
+
+    generation_section = eval_cfg.get("generation_config")
+    if not isinstance(generation_section, Mapping):
+        raise ValueError("evaluation.generation_config must be provided in the evaluation config")
+
+    generation_overrides = config.get("generation_overrides")
+    if generation_overrides is not None:
+        if not isinstance(generation_overrides, Mapping):
+            raise ValueError("generation_overrides must be a mapping")
+        generation_section = _merge_mappings(generation_section, generation_overrides)
+
+    generation_config = create_generation_config(
+        method=generation_section["method"],
+        **generation_section.get("kwargs", {}),
+    )
+
+    model = FlashANSR.load(
+        directory=substitute_root_path(str(model_path)),
+        generation_config=generation_config,
+        n_restarts=eval_cfg["n_restarts"],
+        refiner_method=eval_cfg.get("refiner_method", "curve_fit_lm"),
+        refiner_p0_noise=eval_cfg["refiner_p0_noise"],
+        refiner_p0_noise_kwargs=eval_cfg.get("refiner_p0_noise_kwargs"),
+        parsimony=eval_cfg["parsimony"],
+        device=eval_cfg.get("device", config.get("device", "cpu")),
+        refiner_workers=config.get("refiner_workers", eval_cfg.get("refiner_workers")),
+    )
+
+    complexity = config.get("complexity", eval_cfg.get("complexity", "none"))
+    adapter_device = config.get("device", eval_cfg.get("device", "cpu"))
+    refiner_workers = config.get("refiner_workers", eval_cfg.get("refiner_workers"))
+
+    return FlashANSRAdapter(
+        model,
+        device=adapter_device,
+        complexity=complexity,
+        refiner_workers=refiner_workers,
+    )
+
+
+def _build_pysr_adapter(config: Mapping[str, Any], dataset: FlashANSRDataset) -> PySRAdapter:
+    timeout = _coerce_int(config.get("timeout_in_seconds", 60), "model_adapter.timeout_in_seconds")
+    niterations = _coerce_int(config.get("niterations", 100), "model_adapter.niterations")
+    padding = bool(config.get("padding", True))
+    use_mult_div = bool(config.get("use_mult_div_operators", False))
+    parsimony = float(config.get("parsimony", 0.0))
+
+    simplipy_engine = dataset.simplipy_engine
+    engine_override = config.get("simplipy_engine")
+    if engine_override is not None:
+        simplipy_engine = SimpliPyEngine.load(substitute_root_path(str(engine_override)), install=True)
+
+    if simplipy_engine is None:
+        raise ValueError("PySR adapter requires a SimpliPy engine (provide one via the dataset or adapter config)")
+
+    return PySRAdapter(
+        timeout_in_seconds=timeout,
+        niterations=niterations,
+        use_mult_div_operators=use_mult_div,
+        padding=padding,
+        parsimony=parsimony,
+        simplipy_engine=simplipy_engine,
+    )
+
+
+def _build_nesymres_adapter(config: Mapping[str, Any]) -> NeSymReSAdapter:
+    from flash_ansr.compat.nesymres import load_nesymres
+
+    eq_setting_path = config.get("eq_setting_path")
+    config_path = config.get("config_path")
+    weights_path = config.get("weights_path")
+    simplipy_engine_path = config.get("simplipy_engine")
+    if not all([eq_setting_path, config_path, weights_path, simplipy_engine_path]):
+        raise ValueError("nesymres adapter requires eq_setting_path, config_path, weights_path, and simplipy_engine")
+
+    beam_width = _coerce_optional_int(config.get("beam_width"), "model_adapter.beam_width")
+    n_restarts = _coerce_optional_int(config.get("n_restarts"), "model_adapter.n_restarts")
+    device = str(config.get("device", "cpu"))
+
+    model, fitfunc = load_nesymres(
+        eq_setting_path=substitute_root_path(str(eq_setting_path)),
+        config_path=substitute_root_path(str(config_path)),
+        weights_path=substitute_root_path(str(weights_path)),
+        beam_size=beam_width,
+        n_restarts=n_restarts,
+        device=device,
+    )
+
+    simplipy_engine = SimpliPyEngine.load(substitute_root_path(str(simplipy_engine_path)), install=True)
+
+    return NeSymReSAdapter(
+        model=model,
+        fitfunc=fitfunc,
+        simplipy_engine=simplipy_engine,
+        device=device,
+        beam_width=beam_width,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+
+def _extract_run_section(config: Mapping[str, Any]) -> MutableMapping[str, Any]:
+    if "run" in config:
+        return dict(config["run"])
+    if "evaluation_run" in config:
+        return dict(config["evaluation_run"])
+    return dict(config)
+
+
+def _select_experiment(config: Mapping[str, Any], experiment: str | None) -> MutableMapping[str, Any]:
+    experiments = config.get("experiments")
+    if not experiments:
+        return dict(config)
+    if not isinstance(experiments, Mapping):
+        raise ValueError("config.experiments must be a mapping")
+
+    chosen = experiment or config.get("default_experiment")
+    if chosen is None:
+        available = ", ".join(str(key) for key in experiments.keys()) or "<none>"
+        raise ValueError(f"Config defines experiments ({available}) but no experiment name was provided")
+    if chosen not in experiments:
+        available = ", ".join(str(key) for key in experiments.keys())
+        raise KeyError(f"Experiment '{chosen}' not found. Available experiments: {available}")
+
+    selection = experiments[chosen]
+    if not isinstance(selection, Mapping):
+        raise ValueError("Each experiment entry must be a mapping containing a run section")
+    return dict(selection)
+
+
+def _merge_mappings(base: Mapping[str, Any], overrides: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = copy.deepcopy(dict(base))
+    for key, value in overrides.items():
+        current = merged.get(key)
+        if isinstance(current, Mapping) and isinstance(value, Mapping):
+            merged[key] = _merge_mappings(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _coerce_int(value: Any, field_name: str) -> int:
+    if value is None:
+        raise ValueError(f"{field_name} must be provided")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _coerce_optional_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field_name} must be an integer or null") from exc
+
+
+def _load_dataset(spec: Any) -> FlashANSRDataset:
+    if isinstance(spec, Mapping):
+        path = spec.get("path") or spec.get("config")
+        if path is None:
+            raise ValueError("dataset spec must include a path")
+        mode = str(spec.get("mode", "auto")).lower()
+    else:
+        path = spec
+        mode = "auto"
+
+    resolved_path = substitute_root_path(str(path))
+    if mode not in {"auto", "config", "compiled"}:
+        raise ValueError("dataset spec mode must be 'auto', 'config', or 'compiled'")
+
+    if mode == "config":
+        return FlashANSRDataset.from_config(resolved_path)
+    if mode == "compiled":
+        _, dataset = FlashANSRDataset.load(resolved_path)
+        return dataset
+
+    if os.path.isdir(resolved_path):
+        _, dataset = FlashANSRDataset.load(resolved_path)
+        return dataset
+    return FlashANSRDataset.from_config(resolved_path)
+
+
+def _load_existing_results(path: str) -> Mapping[str, Sequence[Any]] | None:
+    resolved = Path(substitute_root_path(path))
+    if not resolved.exists():
+        return None
+    with resolved.open("rb") as handle:
+        payload = pickle.load(handle)
+    if not isinstance(payload, Mapping):  # pragma: no cover - defensive
+        raise ValueError("Stored evaluation results must be a mapping")
+    return payload  # type: ignore[return-value]
+
+
+def _parse_equation_ids(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_tokens = [token.strip() for token in value.replace(",", " ").split()]
+        return [token for token in raw_tokens if token]
+    if isinstance(value, Sequence):
+        return [str(item) for item in value]
+    raise ValueError("fastsrb.eq_ids must be a string or a list of strings")
+
+
+__all__ = ["EvaluationRunPlan", "build_evaluation_run"]

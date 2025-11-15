@@ -76,6 +76,12 @@ class FastSRBBenchmark:
             variable_order.append(key)
         return variable_order
 
+    @staticmethod
+    def _normalize_prepared_expression(expression: str) -> str:
+        """Normalize prepared expressions so SimpliPy can parse them consistently."""
+
+        return expression.replace("^", "**")
+
     def _compile_expression(self, eq_id: str, entry: Mapping[str, Any]) -> Dict[str, Any]:
         cache = self._compiled_cache.get(eq_id)
         if cache is not None:
@@ -85,14 +91,23 @@ class FastSRBBenchmark:
         if not isinstance(prepared, str) or not prepared.strip():
             raise ValueError(f"Entry {eq_id} has no prepared expression")
 
+        prepared_text = self._normalize_prepared_expression(prepared)
+
         vars_info = entry.get("vars")
         if not isinstance(vars_info, Mapping):
             raise ValueError(f"Entry {eq_id} has no variable definitions")
 
         variable_order = self._resolve_variable_order(vars_info)
 
-        prefix_parsed = self._simplipy_engine.parse(prepared, mask_numbers=False)
-        prefix_simplified = self._simplipy_engine.simplify(prefix_parsed, max_pattern_length=4)
+        prefix_parsed = self._simplipy_engine.parse(prepared_text, mask_numbers=False)
+        try:
+            prefix_simplified = self._simplipy_engine.simplify(prefix_parsed, max_pattern_length=4)
+        except Exception as exc:  # pragma: no cover - defensive against SimpliPy regressions
+            warnings.warn(
+                f"Failed to simplify FastSRB expression {eq_id}: {exc}. Falling back to unsimplified prefix.",
+                RuntimeWarning,
+            )
+            prefix_simplified = prefix_parsed
 
         used_variables = {token for token in prefix_simplified if isinstance(token, str) and token.startswith("v")}
         unknown_variables = used_variables - set(variable_order) - {"v0"}
@@ -104,12 +119,14 @@ class FastSRBBenchmark:
         code_string = self._simplipy_engine.prefix_to_infix(prefix_realized, realization=True)
         code = codify(code_string, variable_order)
         expression_callable = self._simplipy_engine.code_to_lambda(code)
+        normalized_infix = self._simplipy_engine.prefix_to_infix(prefix_simplified, realization=False)
 
         cache = {
             "code": code,
             "callable": expression_callable,
             "variable_order": variable_order,
             "prefix": tuple(prefix_simplified),
+            "normalized_infix": normalized_infix,
         }
         self._compiled_cache[eq_id] = cache
         return cache
@@ -363,9 +380,14 @@ class FastSRBBenchmark:
                 }
             )
         target_meta = vars_info.get("v0", {})
+        metadata = {k: v for k, v in entry.items() if k != "vars"}
+        metadata["variable_order"] = list(variable_order)
+        metadata["prepared_prefix"] = list(compiled["prefix"])
+        metadata["prepared_normalized"] = compiled.get("normalized_infix")
+
         return {
             "eq_id": eq_id,
-            "metadata": {k: v for k, v in entry.items() if k != "vars"},
+            "metadata": metadata,
             "n_points": n_points,
             "method": method,
             "incremental": incremental,
@@ -483,8 +505,15 @@ class FastSRBBenchmark:
 
         for eq_id in eq_list:
             for i in range(count):
-                if rng is not None:
-                    sample = self.sample(eq_id, random_state=rng, **sample_kwargs)
-                else:
-                    sample = self.sample(eq_id, **sample_kwargs)
+                try:
+                    if rng is not None:
+                        sample = self.sample(eq_id, random_state=rng, **sample_kwargs)
+                    else:
+                        sample = self.sample(eq_id, **sample_kwargs)
+                except Exception as exc:  # pragma: no cover - defensive against SimpliPy edge cases
+                    warnings.warn(
+                        f"Failed to sample FastSRB equation {eq_id}: {exc}. Skipping remaining repeats.",
+                        RuntimeWarning,
+                    )
+                    break
                 yield eq_id, i, sample

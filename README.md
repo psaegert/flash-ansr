@@ -47,8 +47,13 @@ Symbolic Regression has been approached with many different methods and paradigm
     - [2. Generate validation data](#2-generate-validation-data)
     - [3. Train the model](#3-train-the-model)
     - [4. Evaluate the model](#4-evaluate-the-model)
-      - [4.1 Evaluate NeSymReS](#41-evaluate-nesymres)
-      - [4.2 Evaluate PySR](#42-evaluate-pysr)
+      - [4.1 Config-driven workflow](#41-config-driven-workflow)
+      - [4.2 Example run configs](#42-example-run-configs)
+        - [4.2.1 FlashANSR on curated sets](#421-flashansr-on-curated-sets)
+        - [4.2.2 FastSRB benchmark](#422-fastsrb-benchmark)
+        - [4.2.3 PySR baseline](#423-pysr-baseline)
+        - [4.2.4 NeSymReS baseline](#424-nesymres-baseline)
+      - [4.3 Legacy CLI commands](#43-legacy-cli-commands)
 - [Development](#development)
   - [Setup](#setup)
   - [Tests](#tests)
@@ -245,64 +250,107 @@ with
 
 ### 4. Evaluate the model
 
+⚡ANSR, PySR, NeSymReS, and the FastSRB benchmark now run through a shared evaluation engine. Each run is configured in a single YAML that wires a **data source**, a **model adapter**, and runtime **runner** settings. The new CLI subcommand looks like this:
 
 ```sh
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/data/ansr-data/test_set/soose_nc/dataset.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/soose_nc.pickle -v
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/data/ansr-data/test_set/feynman/dataset.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/feynman.pickle -v
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/data/ansr-data/test_set/nguyen/dataset.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/nguyen.pickle -v
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/configs/${CONFIG}/dataset_val.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/val.pickle -v
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/data/ansr-data/test_set/pool_15/dataset.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/pool_15.pickle -v
-flash_ansr evaluate -c {{ROOT}}/configs/${CONFIG}/evaluation.yaml -m "{{ROOT}}/models/ansr-models/${MODEL}" -d "{{ROOT}}/configs/${CONFIG}/dataset_train.yaml" -n 5000 -o {{ROOT}}/results/evaluation/${CONFIG}/train.pickle -v
+flash_ansr evaluate-run -c configs/evaluation/run_flash_ansr_nguyen.yaml -v
 ```
 
-with
+Use `-n/--limit`, `--save-every`, `-o/--output-file`, `--experiment <name>`, or `--no-resume` to temporarily override the config without editing the file. Multi-experiment files (see `configs/evaluation/scaling/`) require `--experiment` to pick the exact sweep entry.
 
-- `-c` the evaluation config
-- `-m` the model to evaluate
-- `-d` the dataset to evaluate on
-- `-n` the number of samples to evaluate
-- `-o` the output file for results
-- `-v` verbose output
+#### 4.1 Config-driven workflow
 
-#### 4.1 Evaluate NeSymReS
-1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) to a directory of your choice.
-2. Download the `100M` model as described [here](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)
-3. Move the `100M` model into `flash-ansr/models/nesymres/`
-4. Create a Python 3.10 (!) environment and install flash-ansr as in the previous steps.
-5. Install NeSymReS in the same environment:
+Every run config (see `configs/evaluation/*.yaml`) follows the same structure:
+
+```yaml
+run:
+  data_source:  # how to create evaluation samples
+    ...
+  model_adapter:  # which model/baseline to call
+    ...
+  runner:        # bookkeeping + persistence
+    limit: 5000
+    save_every: 250
+    output: "{{ROOT}}/results/evaluation/v22.4-60M/nguyen.pkl"
+    resume: true
+```
+
+- **`data_source`** selects where problems come from. `type: skeleton_dataset` streams from a `FlashANSRDataset`, while `type: fastsrb` reads the FastSRB YAML benchmark. Common knobs include `n_support`, `noise_level`, and target sizes. Provide `datasets_per_expression` to iterate each skeleton or FastSRB equation deterministically with a fixed number of generated datasets (handy for reproducible evaluation sweeps).
+- **`model_adapter`** declares the solver. Supported values today are `flash_ansr`, `pysr`, and `nesymres`, each with their own required fields (model paths, timeout, beam width, etc.).
+- **`runner`** controls persistence: `limit` caps the number of processed samples, `save_every` checkpoints incremental progress to `output`, and `resume` decides whether to load previous results from that file.
+
+Running `flash_ansr evaluate-run ...` loads the config, resumes any previously saved pickle, instantiates the requested data/model pair, and streams results back into the same output file.
+
+#### 4.2 Example run configs
+
+Ready-to-use configs for the most common set-ups live under `configs/evaluation/`. Adjust the dataset/model paths as needed.
+
+##### 4.2.1 FlashANSR on curated sets
+
+`configs/evaluation/run_flash_ansr_nguyen.yaml` evaluates a FlashANSR checkpoint on the Nguyen test set with `n_support=512` and writes `results/evaluation/v22.4-60M/nguyen.pkl`. Run it with:
+
 ```sh
-cd NeuralSymbolicRegressionThatScales
-pip install -e src/
-pip install lightning
+flash_ansr evaluate-run -c configs/evaluation/run_flash_ansr_nguyen.yaml -v
 ```
-6. Navigate back to this repository and run the evaluation via the CLI
-```sh
-flash_ansr evaluate-nesymres \
-  -ce "/path/to/NeuralSymbolicRegressionThatScales/configs/<eq_setting>.yaml" \
-  -cm "/path/to/NeuralSymbolicRegressionThatScales/configs/<model>.yaml" \
-  -c "{{ROOT}}/configs/${CONFIG}/evaluation.yaml" \
-  -m "{{ROOT}}/models/nesymres/100M" \
-  -d "{{ROOT}}/data/ansr-data/test_set/<test_set>/dataset.yaml" \
-  -e "dev_7-3" \
-  -n 5000 \
-  -o "{{ROOT}}/results/evaluation/${CONFIG}/nesymres_<test_set>.pickle" \
-  -v
-```
-Adjust the `-ce`, `-cm`, and `-m` arguments to point at the files produced by your NeSymReS checkout. Run `flash_ansr evaluate-nesymres -h` for the complete list of options.
 
-#### 4.2 Evaluate PySR
-1. Install [PySR](https://github.com/MilesCranmer/PySR) in the same environment as flash-ansr.
-2. Run the evaluation using the built-in CLI
+Update the dataset path or the `runner.limit` to sweep different test suites without touching the CLI.
+
+##### 4.2.2 FastSRB benchmark
+
+`configs/evaluation/run_fastsrb.yaml` feeds the FastSRB YAML benchmark through the same FlashANSR model (2 draws per equation, 512 support points). Launch it via:
+
 ```sh
-flash_ansr evaluate-pysr \
-  -c "{{ROOT}}/configs/${CONFIG}/evaluation.yaml" \
-  -d "{{ROOT}}/data/ansr-data/test_set/<test_set>/dataset.yaml" \
-  -e "dev_7-3" \
-  -n 5000 \
-  -o "{{ROOT}}/results/evaluation/${CONFIG}/pysr_<test_set>.pickle" \
-  -v
+flash_ansr evaluate-run -c configs/evaluation/run_fastsrb.yaml -v
 ```
-Use `flash_ansr evaluate-pysr -h` to discover additional flags (for example to change the sample count).
+
+Tweak `data_source.datasets_per_expression`, `eq_ids`, or `noise_level` inside the YAML to match your experiment.
+
+##### 4.2.3 PySR baseline
+
+1. Install [PySR](https://github.com/MilesCranmer/PySR) alongside flash-ansr in the active environment.
+2. Use `configs/evaluation/run_pysr_nguyen.yaml` to mirror the Nguyen evaluation protocol (timeout 60 s, 100 iterations, parsimony 1e-3).
+3. Launch the run:
+
+   ```sh
+   flash_ansr evaluate-run -c configs/evaluation/run_pysr_nguyen.yaml -v
+   ```
+
+The config automatically reuses the dataset's bundled SimpliPy engine; provide `model_adapter.simplipy_engine` in the YAML if you need an explicit override.
+
+##### 4.2.4 NeSymReS baseline
+
+1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) and download the `100M` checkpoint as described in their README.
+2. Install flash-ansr and NeSymReS (see their instructions: `pip install -e src/ && pip install lightning`).
+3. Update `configs/evaluation/run_nesymres.yaml` so `eq_setting_path`, `config_path`, and `weights_path` point to your checkout, and adjust the output location if desired.
+4. Run the evaluation:
+
+   ```sh
+   flash_ansr evaluate-run -c configs/evaluation/run_nesymres.yaml -v
+   ```
+
+The adapter handles SimpliPy compilation (`simplipy_engine: "dev_7-3"` by default) and exposes `beam_width`/`n_restarts` knobs inside the config.
+
+##### 4.2.5 Compute-scaling sweeps
+
+New multi-experiment configs under `configs/evaluation/scaling/` capture the compute-scaling curves requested for ⚡ANSR, PySR, and NeSymReS on both FastSRB and the `v23.x` validation skeleton pool. Each file defines a set of named experiments (`flash_ansr_fastsrb_choices_00032`, `pysr_v23_iter_08192`, `nesymres_fastsrb_beam_00128`, …) that vary the relevant runtime parameter:
+
+- **FlashANSR**: `generation_overrides.kwargs.choices` steps from 1 → 16,384 using SoftmaxSampling.
+- **PySR**: `niterations` mirrors the same powers-of-two sweep.
+- **NeSymReS**: `beam_width` ranges from 1 → 256.
+
+Select any entry via `--experiment` without copying the YAML. For example, to run FlashANSR on FastSRB with 1,024 choices:
+
+```sh
+flash_ansr evaluate-run \
+  -c configs/evaluation/scaling/flash_ansr_fastsrb.yaml \
+  --experiment flash_ansr_fastsrb_choices_01024 -v
+```
+
+Outputs are namespaced under `results/evaluation/scaling/<model>/<dataset>/...` so sweeps can run back-to-back.
+
+#### 4.3 Legacy CLI commands
+
+The historical subcommands (`flash_ansr evaluate`, `evaluate-fastsrb`, `evaluate-pysr`, `evaluate-nesymres`) continue to work, but they are now thin shims around the new engine and will be retired in a future release. Prefer `flash_ansr evaluate-run` plus a run config so every tool—⚡ANSR, PySR, NeSymReS, or FastSRB—shares a single, reproducible entry point.
 
 # Development
 
