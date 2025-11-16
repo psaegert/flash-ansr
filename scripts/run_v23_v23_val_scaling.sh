@@ -20,21 +20,21 @@ if [ ! -f "${CONFIG_FILE}" ]; then
 fi
 
 EXPERIMENTS=(
-  flash_ansr_v23_val_choices_00001
-  flash_ansr_v23_val_choices_00002
-  flash_ansr_v23_val_choices_00004
-  flash_ansr_v23_val_choices_00008
-  flash_ansr_v23_val_choices_00016
-  flash_ansr_v23_val_choices_00032
-  flash_ansr_v23_val_choices_00064
-  flash_ansr_v23_val_choices_00128
-  flash_ansr_v23_val_choices_00256
-  flash_ansr_v23_val_choices_00512
-  flash_ansr_v23_val_choices_01024
-  flash_ansr_v23_val_choices_02048
-  flash_ansr_v23_val_choices_04096
-  flash_ansr_v23_val_choices_08192
-  flash_ansr_v23_val_choices_16384
+  flash_ansr_v23_choices_00001
+  flash_ansr_v23_choices_00002
+  flash_ansr_v23_choices_00004
+  flash_ansr_v23_choices_00008
+  flash_ansr_v23_choices_00016
+  flash_ansr_v23_choices_00032
+  flash_ansr_v23_choices_00064
+  flash_ansr_v23_choices_00128
+  flash_ansr_v23_choices_00256
+  flash_ansr_v23_choices_00512
+  flash_ansr_v23_choices_01024
+  flash_ansr_v23_choices_02048
+  flash_ansr_v23_choices_04096
+  flash_ansr_v23_choices_08192
+  flash_ansr_v23_choices_16384
 )
 
 EXTRA_ARGS=("$@")
