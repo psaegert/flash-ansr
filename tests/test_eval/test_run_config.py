@@ -281,3 +281,86 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
     assert captured["method"] == "softmax_sampling"
     assert captured["kwargs"]["choices"] == 2
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 2
+
+
+def test_skeleton_dataset_max_trials(monkeypatch):
+    dataset = SimpleNamespace()
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(run_config, "_load_dataset", lambda spec: dataset)
+
+    class DummySource:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(run_config, "SkeletonDatasetSource", DummySource)
+
+    source, context = run_config._build_data_source(
+        {
+            "type": "skeleton_dataset",
+            "dataset": "ignored",
+            "max_trials": 250,
+        },
+        target_size_override=10,
+        skip=0,
+    )
+
+    assert isinstance(source, DummySource)
+    assert context["dataset"] is dataset
+    assert captured["max_trials"] == 250
+
+
+def test_flash_ansr_inline_evaluation_config(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_create_generation_config(method, **kwargs):
+        captured["method"] = method
+        captured["kwargs"] = kwargs
+        return {"method": method, "kwargs": kwargs}
+
+    class FakeFlashANSR:
+        @staticmethod
+        def load(*, directory, generation_config, **kwargs):
+            captured["flash_ansr_gen"] = generation_config
+            captured["flash_ansr_dir"] = directory
+            captured["flash_ansr_kwargs"] = kwargs
+            return SimpleNamespace()
+
+    class DummyAdapter:
+        def __init__(self, model, device, complexity, refiner_workers):
+            self.model = model
+            self.device = device
+            self.complexity = complexity
+            self.refiner_workers = refiner_workers
+
+    monkeypatch.setattr(run_config, "create_generation_config", fake_create_generation_config)
+    monkeypatch.setattr(run_config, "FlashANSR", FakeFlashANSR)
+    monkeypatch.setattr(run_config, "FlashANSRAdapter", DummyAdapter)
+
+    inline_cfg = {
+        "n_restarts": 2,
+        "refiner_method": "curve_fit_lm",
+        "refiner_p0_noise": "normal",
+        "refiner_p0_noise_kwargs": {"loc": 0.0, "scale": 1.0},
+        "parsimony": 0.1,
+        "device": "cuda",
+        "generation_config": {
+            "method": "softmax_sampling",
+            "kwargs": {"choices": 4, "max_len": 16},
+        },
+    }
+
+    adapter = run_config._build_flash_ansr_adapter(
+        {
+            "model_path": "./models/v23",
+            "evaluation_config": inline_cfg,
+            "complexity": "none",
+            "device": "cuda",
+        }
+    )
+
+    assert isinstance(adapter, DummyAdapter)
+    assert captured["method"] == "softmax_sampling"
+    assert captured["kwargs"]["choices"] == 4
+    assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 4
+    assert captured["flash_ansr_kwargs"]["n_restarts"] == 2

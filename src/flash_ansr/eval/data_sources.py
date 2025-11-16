@@ -33,6 +33,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
         tokenizer_oov: str = "unk",
         datasets_per_expression: int | None = None,
         datasets_random_seed: int | None = None,
+        max_trials: int | None = None,
         skip: int = 0,
     ) -> None:
         self.dataset = dataset
@@ -50,6 +51,12 @@ class SkeletonDatasetSource(EvaluationDataSource):
         self.datasets_random_seed = datasets_random_seed
         self._skip = max(0, skip) if self._deterministic_mode else 0
         self._noise_rng: np.random.Generator | None = None
+        if max_trials is None:
+            self._max_trials = 100
+        else:
+            if max_trials < 1:
+                raise ValueError("max_trials must be positive when provided")
+            self._max_trials = int(max_trials)
 
         pool_size = len(self.dataset.skeleton_pool)
         self._total_available: int | None = None
@@ -103,8 +110,13 @@ class SkeletonDatasetSource(EvaluationDataSource):
             for holdout_pool in resolved_holdouts:
                 holdout_pool.simplipy_engine = simplipy_engine
                 holdout_pool.skeleton_codes = holdout_pool.compile_codes(verbose=False)
+                self._apply_sample_strategy(holdout_pool)
 
-        self.dataset.skeleton_pool.sample_strategy["max_tries"] = 100
+        for holdout_pool in self.dataset.skeleton_pool.holdout_pools:
+            if isinstance(holdout_pool, SkeletonPool):
+                self._apply_sample_strategy(holdout_pool)
+
+        self._apply_sample_strategy(self.dataset.skeleton_pool)
 
         if self.preprocess:
             self.dataset.preprocessor = FlashANSRPreprocessor(
@@ -116,6 +128,13 @@ class SkeletonDatasetSource(EvaluationDataSource):
             self._ensure_skeleton_sequence()
 
         self._prepared = True
+
+    def _apply_sample_strategy(self, pool: SkeletonPool | None) -> None:
+        if pool is None:
+            return
+        strategy = getattr(pool, "sample_strategy", None)
+        if isinstance(strategy, dict):
+            strategy["max_tries"] = self._max_trials
 
     def __iter__(self) -> Iterator[EvaluationSample]:
         if self._deterministic_mode:

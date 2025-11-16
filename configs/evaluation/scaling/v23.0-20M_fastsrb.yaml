@@ -2,7 +2,7 @@ defaults:
   data_source: &flash_ansr_fastsrb_source
     type: fastsrb
     benchmark_path: "{{ROOT}}/data/fastsrb/expressions.yaml"
-    datasets_per_expression: 4
+    datasets_per_expression: 10
     support_points: 512
     sample_points: 1024
     method: random
@@ -12,8 +12,29 @@ defaults:
     noise_level: 0.0
   model_adapter: &flash_ansr_adapter
     type: flash_ansr
-    model_path: "{{ROOT}}/models/ansr-models/v23.0-60M"
-    evaluation_config: "{{ROOT}}/configs/v23.0-60M/evaluation.yaml"
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-20M"
+    evaluation_config:
+      n_support: 512
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: normal
+      refiner_p0_noise_kwargs:
+        loc: 0.0
+        scale: 5
+      parsimony: 0.05
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 32
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          mini_batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: true
+          unique: true
+      device: cuda
     complexity: none
     device: cuda
   runner: &flash_ansr_fastsrb_runner

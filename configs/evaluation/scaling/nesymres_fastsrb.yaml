@@ -2,7 +2,7 @@ defaults:
   data_source: &nesymres_fastsrb_source
     type: fastsrb
     benchmark_path: "{{ROOT}}/data/fastsrb/expressions.yaml"
-    datasets_per_expression: 4
+    datasets_per_expression: 10
     support_points: 512
     sample_points: 1024
     method: random

@@ -6,7 +6,8 @@ defaults:
     noise_level: 0.0
     preprocess: false
     device: cuda
-    datasets_per_expression: 4
+    datasets_per_expression: 10
+  max_trials: 100
   model_adapter: &nesymres_adapter
     type: nesymres
     eq_setting_path: "{{ROOT}}/external/nesymres/eq_setting.json"

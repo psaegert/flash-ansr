@@ -7,6 +7,7 @@ run:
     preprocess: false
     device: cuda
     datasets_per_expression: 1
+  max_trials: 100
   model_adapter:
     type: flash_ansr
     model_path: "{{ROOT}}/models/ansr-models/v21.0-370M"

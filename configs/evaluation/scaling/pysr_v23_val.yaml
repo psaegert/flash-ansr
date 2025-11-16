@@ -6,7 +6,8 @@ defaults:
     noise_level: 0.0
     preprocess: false
     device: cpu
-    datasets_per_expression: 4
+    datasets_per_expression: 10
+  max_trials: 100
   model_adapter: &pysr_adapter
     type: pysr
     timeout_in_seconds: 3600

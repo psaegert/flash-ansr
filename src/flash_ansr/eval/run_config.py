@@ -151,6 +151,7 @@ def _build_data_source(
         device = str(config.get("device", "cpu"))
         iterator_buffer = _coerce_optional_int(config.get("iterator_buffer"), "data_source.iterator_buffer")
         tokenizer_oov = str(config.get("tokenizer_oov", "unk"))
+        max_trials = _coerce_optional_int(config.get("max_trials"), "data_source.max_trials")
 
         if "evaluation_order" in config:
             warnings.warn(
@@ -170,6 +171,7 @@ def _build_data_source(
             skip=skip,
             datasets_per_expression=_coerce_optional_int(config.get("datasets_per_expression"), "data_source.datasets_per_expression"),
             datasets_random_seed=_coerce_optional_int(config.get("datasets_random_seed"), "data_source.datasets_random_seed"),
+            max_trials=max_trials,
         )
         return source, {"dataset": dataset}
 
@@ -255,11 +257,15 @@ def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any
 
 def _build_flash_ansr_adapter(config: Mapping[str, Any]) -> FlashANSRAdapter:
     model_path = config.get("model_path")
-    eval_config_path = config.get("evaluation_config")
-    if model_path is None or eval_config_path is None:
+    eval_config_payload = config.get("evaluation_config")
+    if model_path is None or eval_config_payload is None:
         raise ValueError("flash_ansr adapter requires model_path and evaluation_config")
 
-    eval_cfg = load_config(substitute_root_path(str(eval_config_path)))
+    if isinstance(eval_config_payload, Mapping):
+        eval_cfg = dict(eval_config_payload)
+    else:
+        eval_cfg = load_config(substitute_root_path(str(eval_config_payload)))
+
     if "evaluation" in eval_cfg:
         eval_cfg = eval_cfg["evaluation"]
 
