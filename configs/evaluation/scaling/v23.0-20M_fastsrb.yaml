@@ -53,7 +53,7 @@ experiments:
             choices: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00001.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00001.pkl"
 
   flash_ansr_fastsrb_choices_00002:
     run:
@@ -65,7 +65,7 @@ experiments:
             choices: 2
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00002.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00002.pkl"
 
   flash_ansr_fastsrb_choices_00004:
     run:
@@ -77,7 +77,7 @@ experiments:
             choices: 4
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00004.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00004.pkl"
 
   flash_ansr_fastsrb_choices_00008:
     run:
@@ -89,7 +89,7 @@ experiments:
             choices: 8
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00008.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00008.pkl"
 
   flash_ansr_fastsrb_choices_00016:
     run:
@@ -101,7 +101,7 @@ experiments:
             choices: 16
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00016.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00016.pkl"
 
   flash_ansr_fastsrb_choices_00032:
     run:
@@ -113,7 +113,7 @@ experiments:
             choices: 32
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00032.pkl"
 
   flash_ansr_fastsrb_choices_00064:
     run:
@@ -125,7 +125,7 @@ experiments:
             choices: 64
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00064.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00064.pkl"
 
   flash_ansr_fastsrb_choices_00128:
     run:
@@ -137,7 +137,7 @@ experiments:
             choices: 128
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00128.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00128.pkl"
 
   flash_ansr_fastsrb_choices_00256:
     run:
@@ -149,7 +149,7 @@ experiments:
             choices: 256
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00256.pkl"
 
   flash_ansr_fastsrb_choices_00512:
     run:
@@ -161,7 +161,7 @@ experiments:
             choices: 512
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_00512.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_00512.pkl"
 
   flash_ansr_fastsrb_choices_01024:
     run:
@@ -173,7 +173,7 @@ experiments:
             choices: 1024
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_01024.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_01024.pkl"
 
   flash_ansr_fastsrb_choices_02048:
     run:
@@ -185,7 +185,7 @@ experiments:
             choices: 2048
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_02048.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_02048.pkl"
 
   flash_ansr_fastsrb_choices_04096:
     run:
@@ -197,7 +197,7 @@ experiments:
             choices: 4096
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_04096.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_04096.pkl"
 
   flash_ansr_fastsrb_choices_08192:
     run:
@@ -209,7 +209,7 @@ experiments:
             choices: 8192
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_08192.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_08192.pkl"
 
   flash_ansr_fastsrb_choices_16384:
     run:
@@ -221,4 +221,4 @@ experiments:
             choices: 16384
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/flash_ansr/fastsrb/choices_16384.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/fastsrb/choices_16384.pkl"
