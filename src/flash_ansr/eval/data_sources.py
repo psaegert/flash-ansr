@@ -14,6 +14,7 @@ from simplipy.utils import numbers_to_constant
 from flash_ansr.benchmarks import FastSRBBenchmark
 from flash_ansr.data import FlashANSRDataset, FlashANSRPreprocessor
 from flash_ansr.eval.core import EvaluationDataSource, EvaluationSample
+from flash_ansr.eval.sample_metadata import build_base_metadata
 from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
 from flash_ansr.expressions.token_ops import substitute_constants
 from flash_ansr.expressions.normalization import (
@@ -413,38 +414,29 @@ class SkeletonDatasetSource(EvaluationDataSource):
         input_ids = self._encode_input_ids(skeleton_list)
         tokenizer = self.dataset.tokenizer
 
-        metadata: Dict[str, Any] = {
-            "skeleton": skeleton_list,
-            "skeleton_hash": tuple(skeleton_list),
-            "expression": normalized_expression,
-            "input_ids": np.asarray(input_ids, dtype=np.int64),
-            "labels": np.asarray(input_ids[1:], dtype=np.int64),
-            "constants": self._format_constants(literals),
-            "variables": list(self.dataset.skeleton_pool.variables),
-            "variable_names": list(self.dataset.skeleton_pool.variables),
-            "x": X_support.copy(),
-            "y": y_support.copy(),
-            "y_noisy": y_support_noisy.copy(),
-            "x_val": X_val.copy(),
-            "y_val": y_val.copy(),
-            "y_noisy_val": y_val_noisy.copy(),
-            "n_support": int(X_support.shape[0]),
-            "labels_decoded": list(tokenizer.decode(input_ids, special_tokens="<constant>")),
-            "complexity": len(expression_tokens) if expression_tokens else None,
-            "noise_level": self.noise_level,
-            "parsimony": None,
-            "fit_time": None,
-            "predicted_expression": None,
-            "predicted_expression_prefix": None,
-            "predicted_skeleton_prefix": None,
-            "predicted_constants": None,
-            "predicted_score": None,
-            "predicted_log_prob": None,
-            "y_pred": None,
-            "y_pred_val": None,
-            "prediction_success": False,
-            "error": None,
-        }
+        metadata = build_base_metadata(
+            skeleton=skeleton_list,
+            expression=normalized_expression,
+            variables=list(self.dataset.skeleton_pool.variables),
+            x_support=X_support,
+            y_support=y_support,
+            x_validation=X_val,
+            y_validation=y_val,
+            y_support_noisy=y_support_noisy,
+            y_validation_noisy=y_val_noisy,
+            noise_level=self.noise_level,
+            skeleton_hash=skeleton_list,
+            labels_decoded=tokenizer.decode(input_ids, special_tokens="<constant>"),
+            complexity=len(expression_tokens) if expression_tokens else None,
+        )
+
+        metadata.update(
+            {
+                "input_ids": np.asarray(input_ids, dtype=np.int64),
+                "labels": np.asarray(input_ids[1:], dtype=np.int64),
+                "constants": self._format_constants(literals),
+            }
+        )
         return metadata
 
     def _encode_input_ids(self, skeleton_tokens: list[str]) -> list[int]:
@@ -545,41 +537,29 @@ class SkeletonDatasetSource(EvaluationDataSource):
             else:
                 complexity_value = value
 
-        metadata: Dict[str, Any] = {
-            "skeleton": skeleton_list,
-            "skeleton_hash": tuple(skeleton_list) if skeleton_list else skeleton_hash_value,
-            "expression": expression_list,
-            "input_ids": collated["input_ids"][0].cpu().numpy().copy(),
-            "labels": labels_array,
-            "constants": constants,
-            "variables": list(self.dataset.skeleton_pool.variables),
-            "x": X_support.copy(),
-            "y": y_support.copy(),
-            "y_noisy": y_support_noisy.copy(),
-            "x_val": X_val.copy(),
-            "y_val": y_val.copy(),
-            "y_noisy_val": y_val_noisy.copy(),
-            "n_support": int(inferred_support),
-            "labels_decoded": decoded_labels,
-            "complexity": complexity_value,
-            "noise_level": self.noise_level,
-            "parsimony": None,
-            "fit_time": None,
-            "predicted_expression": None,
-            "predicted_expression_prefix": None,
-            "predicted_skeleton_prefix": None,
-            "predicted_constants": None,
-            "predicted_score": None,
-            "predicted_log_prob": None,
-            "y_pred": None,
-            "y_pred_val": None,
-            "prediction_success": False,
-            "error": None,
-        }
+        metadata = build_base_metadata(
+            skeleton=skeleton_list,
+            expression=expression_list,
+            variables=list(self.dataset.skeleton_pool.variables),
+            x_support=X_support,
+            y_support=y_support,
+            x_validation=X_val,
+            y_validation=y_val,
+            y_support_noisy=y_support_noisy,
+            y_validation_noisy=y_val_noisy,
+            noise_level=self.noise_level,
+            skeleton_hash=skeleton_hash_value,
+            labels_decoded=decoded_labels,
+            complexity=complexity_value,
+        )
 
-        skeleton_hash = metadata["skeleton_hash"]
-        if isinstance(skeleton_hash, (list, tuple)):
-            metadata["skeleton_hash"] = tuple(skeleton_hash)
+        metadata.update(
+            {
+                "input_ids": collated["input_ids"][0].cpu().numpy().copy(),
+                "labels": labels_array,
+                "constants": constants,
+            }
+        )
 
         return EvaluationSample(
             x_support=X_support,
@@ -818,50 +798,40 @@ class FastSRBSource(EvaluationDataSource):
         variables_block = sample.get("variables", {})
         variable_names = self._extract_variable_names(variables_block)
         skeleton_tokens = normalize_skeleton(self._build_skeleton_from_prefix(ground_truth_prefix))
-        skeleton_hash = tuple(skeleton_tokens) if skeleton_tokens is not None else (
-            tuple(ground_truth_prefix) if ground_truth_prefix else None
-        )
         normalized_expression = normalize_expression(ground_truth_prefix)
 
-        metadata: Dict[str, Any] = {
-            "skeleton": skeleton_tokens.copy() if skeleton_tokens else None,
-            "skeleton_hash": skeleton_hash,
-            "expression": normalized_expression,
-            "input_ids": None,
-            "labels": None,
-            "constants": [],
-            "x": X_support.copy(),
-            "y": y_support.copy(),
-            "y_noisy": y_support_noisy.copy(),
-            "x_val": X_val.copy(),
-            "y_val": y_val.copy(),
-            "y_noisy_val": y_val.copy(),
-            "n_support": int(n_support),
-            "labels_decoded": normalized_expression.copy() if normalized_expression else None,
-            "complexity": len(normalized_expression) if normalized_expression else None,
-            "noise_level": self.noise_level,
-            "parsimony": None,
-            "fit_time": None,
-            "predicted_expression": None,
-            "predicted_expression_prefix": None,
-            "predicted_skeleton_prefix": None,
-            "predicted_constants": None,
-            "predicted_score": None,
-            "predicted_log_prob": None,
-            "y_pred": None,
-            "y_pred_val": None,
-            "prediction_success": False,
-            "error": None,
-            "benchmark_eq_id": eq_id,
-            "benchmark_sample_index": int(sample_index),
-            "benchmark_metadata": metadata_block,
-            "benchmark_n_points": int(total_points),
-            "benchmark_support_points": int(self.support_points),
-            "benchmark_method": self.method,
-            "ground_truth_infix": ground_truth_expr,
-            "ground_truth_prefix": ground_truth_prefix.copy() if ground_truth_prefix else None,
-            "variable_names": variable_names,
-        }
+        fallback_variables = variable_names or [f"x{idx + 1}" for idx in range(X_support.shape[1])]
+        metadata = build_base_metadata(
+            skeleton=skeleton_tokens,
+            expression=normalized_expression,
+            variables=fallback_variables,
+            x_support=X_support,
+            y_support=y_support,
+            x_validation=X_val,
+            y_validation=y_val,
+            y_support_noisy=y_support_noisy,
+            y_validation_noisy=y_val.copy(),
+            noise_level=self.noise_level,
+            labels_decoded=normalized_expression,
+            complexity=len(normalized_expression) if normalized_expression else None,
+        )
+
+        metadata.update(
+            {
+                "input_ids": None,
+                "labels": None,
+                "constants": [],
+                "benchmark_eq_id": eq_id,
+                "benchmark_sample_index": int(sample_index),
+                "benchmark_metadata": metadata_block,
+                "benchmark_n_points": int(total_points),
+                "benchmark_support_points": int(self.support_points),
+                "benchmark_method": self.method,
+                "ground_truth_infix": ground_truth_expr,
+                "ground_truth_prefix": ground_truth_prefix.copy() if ground_truth_prefix else None,
+                "variable_names": variable_names or fallback_variables,
+            }
+        )
 
         return EvaluationSample(
             x_support=X_support,

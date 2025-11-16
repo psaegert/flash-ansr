@@ -124,3 +124,34 @@ def test_fastsrb_source_samples_all_expressions_without_invalid_power_warning():
     for eq_id, count in counts.items():
         skipped = source.skipped_expressions.get(eq_id, 0)
         assert count + skipped == repeats
+
+
+def test_fastsrb_source_metadata_includes_variables():
+    benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
+    source = FastSRBSource(
+        benchmark,
+        target_size=1,
+        support_points=8,
+        datasets_per_expression=1,
+        method="random",
+    )
+    source.prepare()
+    sample = next(iter(source))
+    metadata = sample.metadata
+    assert metadata["variables"] is not None
+    assert metadata["variable_names"] is not None
+    assert len(metadata["variables"]) == sample.x_support.shape[1]
+
+
+def test_skeleton_dataset_metadata_uses_shared_builder():
+    dataset = _make_dataset()
+    try:
+        source = SkeletonDatasetSource(dataset, n_support=8, target_size=1)
+        source.prepare()
+        sample = next(iter(source))
+        metadata = sample.metadata
+        assert metadata["variables"]
+        assert metadata["variable_names"]
+        assert metadata["skeleton"]
+    finally:
+        dataset.shutdown()

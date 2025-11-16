@@ -7,7 +7,7 @@ import pickle
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from simplipy import SimpliPyEngine
 
@@ -241,21 +241,18 @@ def _build_data_source(
     raise ValueError(f"Unsupported data source type: {dtype}")
 
 
+AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter]
+
+
 def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter:
     adapter_type = str(config.get("type", "flash_ansr")).lower()
-    if adapter_type == "flash_ansr":
-        return _build_flash_ansr_adapter(config)
-    if adapter_type == "pysr":
-        dataset = context.get("dataset")
-        if not isinstance(dataset, FlashANSRDataset):
-            raise ValueError("PySR adapter requires a skeleton_dataset data source")
-        return _build_pysr_adapter(config, dataset)
-    if adapter_type == "nesymres":
-        return _build_nesymres_adapter(config)
-    raise ValueError(f"Unsupported model adapter type: {adapter_type}")
+    builder = _ADAPTER_REGISTRY.get(adapter_type)
+    if builder is None:
+        raise ValueError(f"Unsupported model adapter type: {adapter_type}")
+    return builder(config, context)
 
 
-def _build_flash_ansr_adapter(config: Mapping[str, Any]) -> FlashANSRAdapter:
+def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> FlashANSRAdapter:  # noqa: ARG001
     model_path = config.get("model_path")
     eval_config_payload = config.get("evaluation_config")
     if model_path is None or eval_config_payload is None:
@@ -314,20 +311,24 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any]) -> FlashANSRAdapter:
     )
 
 
-def _build_pysr_adapter(config: Mapping[str, Any], dataset: FlashANSRDataset) -> PySRAdapter:
+def _build_pysr_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> PySRAdapter:
     timeout = _coerce_int(config.get("timeout_in_seconds", 60), "model_adapter.timeout_in_seconds")
     niterations = _coerce_int(config.get("niterations", 100), "model_adapter.niterations")
     padding = bool(config.get("padding", True))
     use_mult_div = bool(config.get("use_mult_div_operators", False))
     parsimony = float(config.get("parsimony", 0.0))
 
-    simplipy_engine = dataset.simplipy_engine
+    dataset = context.get("dataset")
+    simplipy_engine = dataset.simplipy_engine if isinstance(dataset, FlashANSRDataset) else None
     engine_override = config.get("simplipy_engine")
     if engine_override is not None:
         simplipy_engine = SimpliPyEngine.load(substitute_root_path(str(engine_override)), install=True)
 
     if simplipy_engine is None:
-        raise ValueError("PySR adapter requires a SimpliPy engine (provide one via the dataset or adapter config)")
+        raise ValueError(
+            "PySR adapter requires a SimpliPy engine (provide one via a skeleton_dataset data source or set "
+            "model_adapter.simplipy_engine)."
+        )
 
     return PySRAdapter(
         timeout_in_seconds=timeout,
@@ -339,7 +340,7 @@ def _build_pysr_adapter(config: Mapping[str, Any], dataset: FlashANSRDataset) ->
     )
 
 
-def _build_nesymres_adapter(config: Mapping[str, Any]) -> NeSymReSAdapter:
+def _build_nesymres_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> NeSymReSAdapter:  # noqa: ARG001
     from flash_ansr.compat.nesymres import load_nesymres
 
     eq_setting_path = config.get("eq_setting_path")
@@ -371,6 +372,13 @@ def _build_nesymres_adapter(config: Mapping[str, Any]) -> NeSymReSAdapter:
         device=device,
         beam_width=beam_width,
     )
+
+
+_ADAPTER_REGISTRY: dict[str, AdapterBuilder] = {
+    "flash_ansr": _build_flash_ansr_adapter,
+    "pysr": _build_pysr_adapter,
+    "nesymres": _build_nesymres_adapter,
+}
 
 
 # ---------------------------------------------------------------------------

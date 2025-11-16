@@ -274,7 +274,8 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
             "model_path": str(tmp_path),
             "evaluation_config": str(eval_path),
             "generation_overrides": {"kwargs": {"choices": 2}},
-        }
+        },
+        context={},
     )
 
     assert isinstance(adapter, DummyAdapter)
@@ -356,7 +357,8 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
             "evaluation_config": inline_cfg,
             "complexity": "none",
             "device": "cuda",
-        }
+        },
+        context={},
     )
 
     assert isinstance(adapter, DummyAdapter)
@@ -364,3 +366,40 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
     assert captured["kwargs"]["choices"] == 4
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 4
     assert captured["flash_ansr_kwargs"]["n_restarts"] == 2
+
+
+def test_pysr_adapter_accepts_non_dataset_with_explicit_engine(monkeypatch):
+    loaded = {}
+
+    class DummyEngineLoader:
+        @staticmethod
+        def load(path, install=True):
+            loaded["path"] = path
+            loaded["install"] = install
+            return SimpleNamespace(name="engine")
+
+    class DummyAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(run_config, "SimpliPyEngine", DummyEngineLoader)
+    monkeypatch.setattr(run_config, "PySRAdapter", DummyAdapter)
+
+    adapter = run_config._build_pysr_adapter(
+        {"niterations": 2, "simplipy_engine": "dev_7-3"},
+        context={},
+    )
+
+    assert isinstance(adapter, DummyAdapter)
+    assert loaded["path"] == "dev_7-3"
+
+
+def test_pysr_adapter_without_engine_raises(monkeypatch):
+    class DummyAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(run_config, "PySRAdapter", DummyAdapter)
+
+    with pytest.raises(ValueError):
+        run_config._build_pysr_adapter({"niterations": 1}, context={})

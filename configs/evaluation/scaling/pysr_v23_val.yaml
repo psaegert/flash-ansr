@@ -15,6 +15,7 @@ defaults:
     padding: true
     use_mult_div_operators: false
     parsimony: 0.001
+    simplipy_engine: "dev_7-3"
   runner: &pysr_v23_runner
     limit: null
     save_every: 32
