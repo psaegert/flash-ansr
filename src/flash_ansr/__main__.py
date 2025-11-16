@@ -336,8 +336,8 @@ def main(argv: str = None) -> None:
             if os.path.exists(resolved_output_file):
                 if args.verbose:
                     print(f"Loading existing evaluation results from {args.output_file} ...")
-                with open(resolved_output_file, 'rb') as f:
-                    results_dict = pickle.load(f)
+                with open(resolved_output_file, 'rb') as read_handle:
+                    results_dict = pickle.load(read_handle)
 
                 if size_todo is not None and results_dict:
                     processed = len(results_dict['expression']) if 'expression' in results_dict else len(next(iter(results_dict.values())))
@@ -375,8 +375,8 @@ def main(argv: str = None) -> None:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            with open(resolved_output_file, 'wb') as f:
-                pickle.dump(results_dict, f)
+            with open(resolved_output_file, 'wb') as write_handle:
+                pickle.dump(results_dict, write_handle)
 
             if args.verbose:
                 print(f"Saved evaluation results to {args.output_file}")
@@ -430,8 +430,8 @@ def main(argv: str = None) -> None:
             if os.path.exists(resolved_output_file):
                 if args.verbose:
                     print(f"Loading existing FastSRB evaluation results from {args.output_file} ...")
-                with open(resolved_output_file, 'rb') as handle:
-                    results_dict = pickle.load(handle)
+                with open(resolved_output_file, 'rb') as read_handle:
+                    results_dict = pickle.load(read_handle)
 
             results_dict = evaluation.evaluate(
                 model=FlashANSR.load(
@@ -461,8 +461,8 @@ def main(argv: str = None) -> None:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            with open(resolved_output_file, 'wb') as handle:
-                pickle.dump(results_dict, handle)
+            with open(resolved_output_file, 'wb') as write_handle:
+                pickle.dump(results_dict, write_handle)
 
             if args.verbose:
                 print(f"Saved FastSRB evaluation results to {args.output_file}")
@@ -517,8 +517,8 @@ def main(argv: str = None) -> None:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            with open(substitute_root_path(args.output_file), 'wb') as f:
-                pickle.dump(results_dict, f)
+            with open(substitute_root_path(args.output_file), 'wb') as write_handle:
+                pickle.dump(results_dict, write_handle)
 
             if args.verbose:
                 print(f"Saved evaluation results to {args.output_file}")
@@ -554,8 +554,8 @@ def main(argv: str = None) -> None:
                 if args.verbose:
                     print(f"Loading existing evaluation results from {args.output_file} ...")
 
-                with open(substitute_root_path(args.output_file), 'rb') as f:
-                    results_dict = pickle.load(f)
+                with open(substitute_root_path(args.output_file), 'rb') as read_handle:
+                    results_dict = pickle.load(read_handle)
 
                 if size_todo is not None:
                     size_todo -= len(results_dict['expression'])  # type: ignore
@@ -582,47 +582,72 @@ def main(argv: str = None) -> None:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            with open(substitute_root_path(args.output_file), 'wb') as f:
-                pickle.dump(results_dict, f)
+            with open(substitute_root_path(args.output_file), 'wb') as write_handle:
+                pickle.dump(results_dict, write_handle)
 
             if args.verbose:
                 print(f"Saved evaluation results to {args.output_file}")
 
         case 'evaluate-run':
-            from flash_ansr.eval.run_config import build_evaluation_run
+            from flash_ansr.eval.run_config import build_evaluation_run, EvaluationRunPlan
+            from flash_ansr.utils.config_io import load_config
             from flash_ansr.utils.paths import substitute_root_path
 
             config_path = substitute_root_path(args.config)
             if args.verbose:
                 print(f"Running evaluation plan from {config_path}")
 
-            plan = build_evaluation_run(
-                config=config_path,
-                limit_override=args.limit,
-                output_override=args.output_file,
-                save_every_override=args.save_every,
-                resume=None if not args.no_resume else False,
-                experiment=args.experiment,
-            )
+            raw_config = load_config(config_path)
+            experiment_map = raw_config.get("experiments") if isinstance(raw_config, dict) else None
 
-            if plan.completed or plan.engine is None:
+            def _execute_plan(plan: EvaluationRunPlan, experiment_name: str | None = None) -> None:
+                label = f"[{experiment_name}] " if experiment_name else ""
+                if plan.completed or plan.engine is None:
+                    if args.verbose:
+                        target = plan.total_limit or 'configured'
+                        print(f"{label}Evaluation already completed ({plan.existing_results}/{target}). Nothing to do.")
+                    return
+
+                plan.engine.run(
+                    limit=plan.remaining,
+                    save_every=plan.save_every,
+                    output_path=plan.output_path,
+                    verbose=args.verbose,
+                    progress=args.verbose,
+                )
+
                 if args.verbose:
-                    target = plan.total_limit or 'configured'
-                    print(f"Evaluation already completed ({plan.existing_results}/{target}). Nothing to do.")
-                sys.exit(0)
+                    total = plan.engine.result_store.size
+                    destination = plan.output_path or 'memory'
+                    print(f"{label}Evaluation finished with {total} samples (saved to {destination}).")
 
-            plan.engine.run(
-                limit=plan.remaining,
-                save_every=plan.save_every,
-                output_path=plan.output_path,
-                verbose=args.verbose,
-                progress=args.verbose,
-            )
-
-            if args.verbose:
-                total = plan.engine.result_store.size
-                destination = plan.output_path or 'memory'
-                print(f"Evaluation finished with {total} samples (saved to {destination}).")
+            if experiment_map and args.experiment is None:
+                experiment_names = list(experiment_map.keys())
+                if args.verbose:
+                    count = len(experiment_names)
+                    print(f"No --experiment provided; running all {count} experiments defined in config.")
+                for experiment_name in experiment_names:
+                    if args.verbose:
+                        print(f"--> {experiment_name}")
+                    plan = build_evaluation_run(
+                        config=config_path,
+                        limit_override=args.limit,
+                        output_override=args.output_file,
+                        save_every_override=args.save_every,
+                        resume=None if not args.no_resume else False,
+                        experiment=experiment_name,
+                    )
+                    _execute_plan(plan, experiment_name)
+            else:
+                plan = build_evaluation_run(
+                    config=config_path,
+                    limit_override=args.limit,
+                    output_override=args.output_file,
+                    save_every_override=args.save_every,
+                    resume=None if not args.no_resume else False,
+                    experiment=args.experiment,
+                )
+                _execute_plan(plan, args.experiment)
 
         case 'wandb-stats':
             print(f'Fetching stats from wandb project {args.project} and entity {args.entity}')

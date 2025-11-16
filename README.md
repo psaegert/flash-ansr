@@ -256,7 +256,7 @@ with
 flash_ansr evaluate-run -c configs/evaluation/run_flash_ansr_nguyen.yaml -v
 ```
 
-Use `-n/--limit`, `--save-every`, `-o/--output-file`, `--experiment <name>`, or `--no-resume` to temporarily override the config without editing the file. Multi-experiment files (see `configs/evaluation/scaling/`) require `--experiment` to pick the exact sweep entry.
+Use `-n/--limit`, `--save-every`, `-o/--output-file`, `--experiment <name>`, or `--no-resume` to temporarily override the config without editing the file. When a config defines multiple experiments (see `configs/evaluation/scaling/`), omitting `--experiment` now runs **all** of them sequentially; pass an explicit name if you only want a single sweep entry.
 
 #### 4.1 Config-driven workflow
 
@@ -338,7 +338,7 @@ New multi-experiment configs under `configs/evaluation/scaling/` capture the com
 - **PySR**: `niterations` mirrors the same powers-of-two sweep.
 - **NeSymReS**: `beam_width` ranges from 1 → 256.
 
-Select any entry via `--experiment` without copying the YAML. For example, to run FlashANSR on FastSRB with 1,024 choices:
+Run the entire sweep with a single command (`flash_ansr evaluate-run -c <config>`). To focus on one entry, keep using `--experiment`. For example, to run FlashANSR on FastSRB with 1,024 choices:
 
 ```sh
 flash_ansr evaluate-run \

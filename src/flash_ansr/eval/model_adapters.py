@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable, Optional, TYPE_CHECKING
 
 import numpy as np
 import simplipy
-from simplipy.utils import numbers_to_constant
+from flash_ansr.expressions.normalization import normalize_skeleton, normalize_expression
 from sympy import lambdify
 
 try:  # pragma: no cover - optional dependency
@@ -117,8 +117,9 @@ class FlashANSRAdapter(EvaluationModelAdapter):
         )
 
         record["predicted_expression"] = predicted_expression
-        record["predicted_expression_prefix"] = predicted_prefix.copy()
-        record["predicted_skeleton_prefix"] = numbers_to_constant(predicted_prefix).copy()
+        # normalize prefix for expression (keep numeric literals) and skeleton (constants -> <constant>)
+        record["predicted_expression_prefix"] = normalize_expression(predicted_prefix).copy()
+        record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix).copy()
         record["predicted_constants"] = (
             best_result["fits"][0][0].tolist() if best_result.get("fits") else None
         )
@@ -221,8 +222,8 @@ class PySRAdapter(EvaluationModelAdapter):
             predicted_expression = str(best["equation"])
             record["predicted_expression"] = predicted_expression
             predicted_prefix = self.simplipy_engine.infix_to_prefix(predicted_expression)
-            record["predicted_expression_prefix"] = predicted_prefix.copy()
-            record["predicted_skeleton_prefix"] = numbers_to_constant(predicted_prefix).copy()
+            record["predicted_expression_prefix"] = normalize_expression(predicted_prefix).copy()
+            record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix).copy()
         except Exception as exc:  # pragma: no cover - defensive
             record["error"] = f"Failed to parse PySR expression: {exc}"
             record["prediction_success"] = False
@@ -287,8 +288,8 @@ class NeSymReSAdapter(EvaluationModelAdapter):
             predicted_expression = str(predicted_expr)
             record["predicted_expression"] = predicted_expression
             predicted_prefix = self.simplipy_engine.infix_to_prefix(predicted_expression)
-            record["predicted_expression_prefix"] = predicted_prefix
-            record["predicted_skeleton_prefix"] = numbers_to_constant(predicted_prefix)
+            record["predicted_expression_prefix"] = normalize_expression(predicted_prefix)
+            record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix)
         except Exception as exc:  # pragma: no cover - parse errors
             record["error"] = f"Failed to parse NeSymReS expression: {exc}"
             record["prediction_success"] = False

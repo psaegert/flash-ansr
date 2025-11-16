@@ -9,12 +9,17 @@ from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import torch
+from simplipy.utils import numbers_to_constant
 
 from flash_ansr.benchmarks import FastSRBBenchmark
 from flash_ansr.data import FlashANSRDataset, FlashANSRPreprocessor
 from flash_ansr.eval.core import EvaluationDataSource, EvaluationSample
 from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
 from flash_ansr.expressions.token_ops import substitute_constants
+from flash_ansr.expressions.normalization import (
+    normalize_expression,
+    normalize_skeleton,
+)
 
 
 class SkeletonDatasetSource(EvaluationDataSource):
@@ -197,14 +202,15 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
         for skeleton in self._skeleton_sequence:
             for _ in range(per_expression):
-                if skipped < self._skip:
-                    skipped += 1
-                    continue
                 if produced >= self._target_size:
                     return
 
                 sample = self._build_deterministic_sample(skeleton)
                 if sample is None:
+                    continue
+
+                if skipped < self._skip:
+                    skipped += 1
                     continue
 
                 yield sample
@@ -399,15 +405,18 @@ class SkeletonDatasetSource(EvaluationDataSource):
         y_val: np.ndarray,
         y_val_noisy: np.ndarray,
     ) -> Dict[str, Any]:
-        skeleton_list = list(skeleton)
-        expression_tokens = substitute_constants(skeleton_list, values=literals, inplace=False)
+        skeleton_list = normalize_skeleton(skeleton)
+        if skeleton_list is None:
+            raise ValueError("Skeleton tokens must be provided for metadata building")
+        expression_tokens = substitute_constants(list(skeleton_list), values=literals, inplace=False)
+        normalized_expression = normalize_expression(expression_tokens)
         input_ids = self._encode_input_ids(skeleton_list)
         tokenizer = self.dataset.tokenizer
 
         metadata: Dict[str, Any] = {
             "skeleton": skeleton_list,
             "skeleton_hash": tuple(skeleton_list),
-            "expression": expression_tokens.copy(),
+            "expression": normalized_expression,
             "input_ids": np.asarray(input_ids, dtype=np.int64),
             "labels": np.asarray(input_ids[1:], dtype=np.int64),
             "constants": self._format_constants(literals),
@@ -514,7 +523,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
         skeleton_tokens = collated["skeleton"][0]
         if hasattr(skeleton_tokens, "cpu"):
             skeleton_tokens = skeleton_tokens.cpu().tolist()
-        skeleton_list = list(skeleton_tokens)
+        skeleton_list = normalize_skeleton(skeleton_tokens)
 
         skeleton_hash_value = collated["skeleton_hash"][0]
         if hasattr(skeleton_hash_value, "cpu"):
@@ -525,7 +534,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
         expression_tokens = collated["expression"][0]
         if hasattr(expression_tokens, "cpu"):
             expression_tokens = expression_tokens.cpu().tolist()
-        expression_list = list(expression_tokens)
+        expression_list = normalize_expression(expression_tokens)
 
         complexity_field = collated.get("complexity")
         complexity_value = None
@@ -538,7 +547,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
         metadata: Dict[str, Any] = {
             "skeleton": skeleton_list,
-            "skeleton_hash": skeleton_hash_value,
+            "skeleton_hash": tuple(skeleton_list) if skeleton_list else skeleton_hash_value,
             "expression": expression_list,
             "input_ids": collated["input_ids"][0].cpu().numpy().copy(),
             "labels": labels_array,
@@ -619,6 +628,9 @@ class FastSRBSource(EvaluationDataSource):
         self.incremental = incremental
         self.random_state = random_state
         self.noise_level = noise_level
+        self._resample_rng: np.random.Generator | None = None
+        self._resample_attempts = max(1, min(64, self.max_trials))
+        self.skipped_expressions: dict[str, int] = {}
 
         self._target_size = max(0, int(target_size))
         self._skip = max(0, int(skip))
@@ -643,15 +655,21 @@ class FastSRBSource(EvaluationDataSource):
         self._simplipy_engine = simplipy_engine
 
     def __iter__(self) -> Iterator[EvaluationSample]:
+        iterate_rng = None
+        if self.random_state is not None:
+            iterate_rng = np.random.default_rng(self.random_state)
+
         iterator = self.benchmark.iter_samples(
             eq_ids=self.eq_ids,
             count=self.datasets_per_expression,
-            random_state=self.random_state,
+            random_state=iterate_rng if iterate_rng is not None else self.random_state,
             n_points=self.sample_points,
             method=self.method,
             max_trials=self.max_trials,
             incremental=self.incremental,
         )
+
+        self._resample_rng = iterate_rng
 
         skipped = 0
         produced = 0
@@ -671,7 +689,9 @@ class FastSRBSource(EvaluationDataSource):
 
             evaluation_sample = self._build_sample(eq_id, sample_index, sample, noise_rng)
             if evaluation_sample is None:
-                continue
+                evaluation_sample = self._resample_sample(eq_id, sample_index, noise_rng)
+                if evaluation_sample is None:
+                    continue
 
             yield evaluation_sample
             produced += 1
@@ -683,6 +703,44 @@ class FastSRBSource(EvaluationDataSource):
             )
 
     # ------------------------------------------------------------------
+    def _resample_sample(
+        self,
+        eq_id: str,
+        sample_index: int,
+        noise_rng: np.random.Generator | None,
+    ) -> EvaluationSample | None:
+        attempts = 0
+        rng = self._resample_rng if self._resample_rng is not None else self.random_state
+        while attempts < self._resample_attempts:
+            try:
+                replacement = self.benchmark.sample(
+                    eq_id,
+                    n_points=self.sample_points,
+                    method=self.method,
+                    max_trials=self.max_trials,
+                    incremental=self.incremental,
+                    random_state=rng,
+                )
+            except Exception as exc:  # pragma: no cover - defensive against benchmark issues
+                warnings.warn(
+                    f"FastSRBSource failed to resample {eq_id}: {exc}. Skipping remaining attempts.",
+                    RuntimeWarning,
+                )
+                break
+
+            evaluation_sample = self._build_sample(eq_id, sample_index, replacement, noise_rng)
+            if evaluation_sample is not None:
+                return evaluation_sample
+            attempts += 1
+
+        total_attempts = attempts or self._resample_attempts
+        warnings.warn(
+            f"Skipping FastSRB equation {eq_id} after {total_attempts} invalid datasets.",
+            RuntimeWarning,
+        )
+        self.skipped_expressions[eq_id] = self.skipped_expressions.get(eq_id, 0) + 1
+        return None
+
     def _build_sample(
         self,
         eq_id: str,
@@ -692,8 +750,18 @@ class FastSRBSource(EvaluationDataSource):
     ) -> EvaluationSample | None:
         metadata_block = sample.get("metadata", {})
         data_block = sample.get("data", {})
-        inputs = np.asarray(data_block.get("X"), dtype=np.float32)
-        targets = np.asarray(data_block.get("y"), dtype=np.float32)
+        inputs = np.asarray(data_block.get("X"), dtype=np.float64)
+        targets = np.asarray(data_block.get("y"), dtype=np.float64)
+
+        if not self._is_valid_numeric_array(inputs) or not self._is_valid_numeric_array(targets):
+            warnings.warn(
+                f"FastSRB sample {eq_id} contains non-finite or out-of-range values. Resampling dataset.",
+                RuntimeWarning,
+            )
+            return None
+
+        inputs = inputs.astype(np.float32, copy=False)
+        targets = targets.astype(np.float32, copy=False)
 
         if inputs.ndim != 2:
             raise ValueError("FastSRB sample inputs must be 2D")
@@ -749,11 +817,16 @@ class FastSRBSource(EvaluationDataSource):
 
         variables_block = sample.get("variables", {})
         variable_names = self._extract_variable_names(variables_block)
+        skeleton_tokens = normalize_skeleton(self._build_skeleton_from_prefix(ground_truth_prefix))
+        skeleton_hash = tuple(skeleton_tokens) if skeleton_tokens is not None else (
+            tuple(ground_truth_prefix) if ground_truth_prefix else None
+        )
+        normalized_expression = normalize_expression(ground_truth_prefix)
 
         metadata: Dict[str, Any] = {
-            "skeleton": None,
-            "skeleton_hash": tuple(ground_truth_prefix) if ground_truth_prefix else None,
-            "expression": ground_truth_prefix.copy() if ground_truth_prefix else None,
+            "skeleton": skeleton_tokens.copy() if skeleton_tokens else None,
+            "skeleton_hash": skeleton_hash,
+            "expression": normalized_expression,
             "input_ids": None,
             "labels": None,
             "constants": [],
@@ -764,8 +837,8 @@ class FastSRBSource(EvaluationDataSource):
             "y_val": y_val.copy(),
             "y_noisy_val": y_val.copy(),
             "n_support": int(n_support),
-            "labels_decoded": ground_truth_prefix.copy() if ground_truth_prefix else None,
-            "complexity": len(ground_truth_prefix) if ground_truth_prefix else None,
+            "labels_decoded": normalized_expression.copy() if normalized_expression else None,
+            "complexity": len(normalized_expression) if normalized_expression else None,
             "noise_level": self.noise_level,
             "parsimony": None,
             "fit_time": None,
@@ -800,6 +873,22 @@ class FastSRBSource(EvaluationDataSource):
             metadata=metadata,
         )
 
+    @staticmethod
+    def _build_skeleton_from_prefix(prefix: Sequence[str] | None) -> list[str] | None:
+        if prefix is None:
+            return None
+        prefix_list = list(prefix)
+        if not prefix_list:
+            return None
+        try:
+            normalized = numbers_to_constant(prefix_list)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            warnings.warn(
+                f"Failed to convert FastSRB prefix to skeleton via numbers_to_constant: {exc}. Falling back to prefix tokens."
+            )
+            return prefix_list
+        return list(normalized)
+
     def _parse_ground_truth(self, expression: Any) -> list[str]:
         if not isinstance(expression, str) or not expression.strip():
             raise ValueError("FastSRB ground truth expression is missing or empty.")
@@ -824,6 +913,17 @@ class FastSRBSource(EvaluationDataSource):
             else:
                 names.append(f"x{idx + 1}")
         return names or None
+
+    @staticmethod
+    def _is_valid_numeric_array(array: np.ndarray) -> bool:
+        if array.size == 0:
+            return True
+        if not np.all(np.isfinite(array)):
+            return False
+        min_val = float(np.min(array))
+        max_val = float(np.max(array))
+        float32_info = np.finfo(np.float32)
+        return bool((min_val >= float32_info.min) and (max_val <= float32_info.max))
 
 
 __all__ = ["SkeletonDatasetSource", "FastSRBSource"]
