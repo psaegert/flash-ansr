@@ -14,7 +14,6 @@ class PySREvaluation():
             n_support: int | None = None,
             noise_level: float = 0.0,
             timeout_in_seconds: int = 60,
-            parsimony: float = 0.0,
             niterations: int = 100,
             padding: bool = True,
             use_mult_div_operators: bool = False) -> None:
@@ -23,7 +22,6 @@ class PySREvaluation():
         self.noise_level = noise_level
         self.timeout_in_seconds = timeout_in_seconds
         self.niterations = niterations
-        self.parsimony = parsimony
         self.padding = padding
         self.use_mult_div_operators = use_mult_div_operators
 
@@ -77,7 +75,6 @@ class PySREvaluation():
             niterations=self.niterations,
             use_mult_div_operators=self.use_mult_div_operators,
             padding=self.padding,
-            parsimony=self.parsimony,
             simplipy_engine=dataset.simplipy_engine,
         )
 

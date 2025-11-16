@@ -14,9 +14,8 @@ defaults:
     type: pysr
     timeout_in_seconds: 3600
     niterations: 1
-    padding: true
+    padding: false
     use_mult_div_operators: false
-    parsimony: 0.001
     simplipy_engine: "dev_7-3"
   runner: &pysr_fastsrb_runner
     limit: null

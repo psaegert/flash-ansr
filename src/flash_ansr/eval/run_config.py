@@ -316,7 +316,6 @@ def _build_pysr_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -
     niterations = _coerce_int(config.get("niterations", 100), "model_adapter.niterations")
     padding = bool(config.get("padding", True))
     use_mult_div = bool(config.get("use_mult_div_operators", False))
-    parsimony = float(config.get("parsimony", 0.0))
 
     dataset = context.get("dataset")
     simplipy_engine = dataset.simplipy_engine if isinstance(dataset, FlashANSRDataset) else None
@@ -335,7 +334,6 @@ def _build_pysr_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -
         niterations=niterations,
         use_mult_div_operators=use_mult_div,
         padding=padding,
-        parsimony=parsimony,
         simplipy_engine=simplipy_engine,
     )
 

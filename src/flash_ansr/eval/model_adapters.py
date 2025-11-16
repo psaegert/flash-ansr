@@ -155,7 +155,6 @@ class PySRAdapter(EvaluationModelAdapter):
         niterations: int,
         use_mult_div_operators: bool,
         padding: bool,
-        parsimony: float,
         simplipy_engine: Any,
     ) -> None:
         if not _HAVE_PYSR:  # pragma: no cover - import guard
@@ -165,7 +164,6 @@ class PySRAdapter(EvaluationModelAdapter):
         self.niterations = niterations
         self.use_mult_div_operators = use_mult_div_operators
         self.padding = padding
-        self.parsimony = parsimony
         self.simplipy_engine = simplipy_engine
 
         self._model: Optional[Any] = None
@@ -182,7 +180,6 @@ class PySRAdapter(EvaluationModelAdapter):
             raise RuntimeError("PySRAdapter.prepare must be called before evaluation")
 
         record = sample.clone_metadata()
-        record["parsimony"] = self.parsimony
 
         X_support = sample.x_support.copy()
         X_val = sample.x_validation.copy()

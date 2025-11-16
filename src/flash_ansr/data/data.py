@@ -2,6 +2,7 @@ import copy
 import os
 import time
 import warnings
+import types
 from typing import Any, Generator, Literal
 
 import numpy as np
@@ -49,9 +50,15 @@ class FlashANSRDataset:
         if self._stream.is_initialized:
             warnings.warn(
                 "FlashANSRDataset was not explicitly shut down. "
-                "Call `dataset.shutdown()` for cleaner resource management." "Shutting down in destructor.",
+                "Call `dataset.shutdown()` for cleaner resource management. Shutting down in destructor.",
             )
             self.shutdown()
+
+    def __enter__(self) -> "FlashANSRDataset":
+        return self
+
+    def __exit__(self, exc_type: type | None, exc: BaseException | None, exc_tb: types.TracebackType | None) -> None:  # pragma: no cover - convenience helper
+        self.shutdown()
 
     @property
     def simplipy_engine(self) -> SimpliPyEngine:
@@ -344,6 +351,7 @@ class FlashANSRDataset:
                     self._stream.submit_job(slot_to_refill, n_support)
         finally:
             pbar.close()
+            self.shutdown()
 
     def _benchmark(self, n_samples: int, batch_size: int, verbose: bool = False) -> dict[str, Any]:
         iteration_times = []
