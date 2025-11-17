@@ -5,6 +5,7 @@ import shutil
 import torch
 
 from flash_ansr.eval.evaluation import Evaluation
+from flash_ansr.eval.result_store import ResultStore
 from flash_ansr import (
     get_path,
     FlashANSR,
@@ -73,3 +74,11 @@ class TestEvaluation(unittest.TestCase):
             assert 'y_pred' in results
             assert 'predicted_expression' in results
             assert len(results['y_pred']) == 2
+
+    def test_result_store_backfills_placeholder_defaults(self):
+        store = ResultStore({"foo": [1, 2]})
+        store.append({"foo": 3, "placeholder": True, "placeholder_reason": "failed"})
+        snapshot = store.snapshot()
+        self.assertEqual(snapshot["foo"], [1, 2, 3])
+        self.assertEqual(snapshot["placeholder"], [False, False, True])
+        self.assertEqual(snapshot["placeholder_reason"], [None, None, "failed"])

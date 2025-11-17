@@ -9,11 +9,18 @@ from typing import Any, DefaultDict, Dict, Iterable, Mapping
 from flash_ansr.utils.paths import substitute_root_path
 
 
+_REQUIRED_RESULT_FIELDS: dict[str, Any] = {
+    "placeholder": False,
+    "placeholder_reason": None,
+}
+
+
 class ResultStore:
     """Dictionary-of-lists accumulator with persistence helpers."""
 
     def __init__(self, initial: Mapping[str, Iterable[Any]] | None = None) -> None:
         self._store: DefaultDict[str, list[Any]] = defaultdict(list)
+        self._required_fields: Mapping[str, Any] = dict(_REQUIRED_RESULT_FIELDS)
         if initial is not None:
             self.extend(initial)
 
@@ -31,11 +38,14 @@ class ResultStore:
         lengths = {len(values) for values in snapshots.values()}
         if lengths and len(lengths) != 1:
             raise ValueError("Existing results have inconsistent lengths")
+        target_len = lengths.pop() if lengths else 0
+        snapshots = self._ensure_snapshot_defaults(snapshots, target_len)
         for key, values in snapshots.items():
             self._store[key].extend(values)
 
     def append(self, record: Mapping[str, Any]) -> None:
-        for key, value in record.items():
+        normalized = self._ensure_record_defaults(dict(record))
+        for key, value in normalized.items():
             self._store[key].append(value)
         self._validate_lengths()
 
@@ -52,6 +62,23 @@ class ResultStore:
         lengths = [len(values) for values in self._store.values()]
         if lengths and len(set(lengths)) != 1:
             raise ValueError("ResultStore lists must maintain identical lengths")
+
+    def _ensure_snapshot_defaults(
+        self,
+        snapshots: Dict[str, list[Any]],
+        target_len: int,
+    ) -> Dict[str, list[Any]]:
+        if target_len <= 0:
+            return snapshots
+        for field, default in self._required_fields.items():
+            if field not in snapshots:
+                snapshots[field] = [default for _ in range(target_len)]
+        return snapshots
+
+    def _ensure_record_defaults(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        for field, default in self._required_fields.items():
+            record.setdefault(field, default)
+        return record
 
 
 __all__ = ["ResultStore"]

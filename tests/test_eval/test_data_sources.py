@@ -3,12 +3,14 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from flash_ansr import get_path
 from flash_ansr.benchmarks import FastSRBBenchmark
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.eval.data_sources import FastSRBSource, SkeletonDatasetSource
 from flash_ansr.expressions.normalization import normalize_expression, normalize_skeleton
+from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError
 
 
 DATASET_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "test" / "dataset_val.yaml"
@@ -71,6 +73,49 @@ def test_deterministic_source_respects_skip():
         dataset.shutdown()
 
 
+def test_skeleton_source_resume_state_advances_progress():
+    dataset = _make_dataset()
+    try:
+        if len(dataset.skeleton_pool) < 3:
+            pytest.skip("test dataset does not include enough skeletons")
+        source = SkeletonDatasetSource(
+            dataset,
+            n_support=8,
+            datasets_per_expression=1,
+            target_size=3,
+            device="cpu",
+        )
+        source.prepare()
+        iterator = iter(source)
+        first = next(iterator)
+        second = next(iterator)
+        state_payload = source.state_dict()["state"]
+        expected_third = next(iterator)
+
+        resume_source = SkeletonDatasetSource(
+            dataset,
+            n_support=8,
+            datasets_per_expression=1,
+            target_size=1,
+            device="cpu",
+            resume_state=state_payload,
+        )
+        resume_source.prepare()
+        resumed_sample = next(iter(resume_source))
+
+        hashes = (
+            first.metadata["skeleton_hash"],
+            second.metadata["skeleton_hash"],
+            expected_third.metadata["skeleton_hash"],
+        )
+        resumed_hash = resumed_sample.metadata["skeleton_hash"]
+
+        assert resumed_hash not in hashes[:2]
+        assert resumed_hash == hashes[2]
+    finally:
+        dataset.shutdown()
+
+
 def test_fastsrb_source_builds_skeleton_from_prefix():
     prefix = ["+", "3.0", "x1"]
     skeleton = FastSRBSource._build_skeleton_from_prefix(prefix)
@@ -108,6 +153,7 @@ def test_fastsrb_source_samples_all_expressions_without_invalid_power_warning():
     source.prepare()
 
     counts = {eq_id: 0 for eq_id in eq_ids}
+    placeholder_total = 0
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -117,10 +163,14 @@ def test_fastsrb_source_samples_all_expressions_without_invalid_power_warning():
         )
         for sample in source:
             eq_id = sample.metadata["benchmark_eq_id"]
-            counts[eq_id] += 1
+            if sample.metadata.get("placeholder"):
+                placeholder_total += 1
+            else:
+                counts[eq_id] += 1
 
     skipped_total = sum(source.skipped_expressions.values())
-    assert sum(counts.values()) + skipped_total == target_size
+    assert sum(counts.values()) + placeholder_total == target_size
+    assert placeholder_total == skipped_total
     for eq_id, count in counts.items():
         skipped = source.skipped_expressions.get(eq_id, 0)
         assert count + skipped == repeats
@@ -155,3 +205,50 @@ def test_skeleton_dataset_metadata_uses_shared_builder():
         assert metadata["skeleton"]
     finally:
         dataset.shutdown()
+
+
+def test_skeleton_source_emits_placeholder_on_sampling_failure(monkeypatch):
+    dataset = _make_dataset()
+    try:
+        source = SkeletonDatasetSource(
+            dataset,
+            n_support=8,
+            target_size=1,
+            device="cpu",
+            datasets_per_expression=1,
+        )
+        source.prepare()
+
+        def _always_fail(*args, **kwargs):  # noqa: ARG001
+            raise NoValidSampleFoundError("forced failure")
+
+        monkeypatch.setattr(dataset.skeleton_pool, "sample_data", _always_fail)
+
+        sample = next(iter(source))
+        assert sample.is_placeholder is True
+        assert sample.metadata["placeholder"] is True
+        assert sample.metadata["prediction_success"] is False
+        assert sample.metadata["placeholder_reason"] in {"max_trials_exhausted", "skeleton_missing"}
+    finally:
+        dataset.shutdown()
+
+
+def test_fastsrb_source_emits_placeholder_when_resampling_exhausted(monkeypatch):
+    benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
+    source = FastSRBSource(
+        benchmark,
+        target_size=1,
+        datasets_per_expression=1,
+        support_points=4,
+        sample_points=4,
+        method="random",
+        max_trials=1,
+    )
+    source.prepare()
+
+    monkeypatch.setattr(source, "_build_sample", lambda *args, **kwargs: None)
+
+    placeholder = next(iter(source))
+    assert placeholder.is_placeholder is True
+    assert placeholder.metadata["placeholder"] is True
+    assert placeholder.metadata["benchmark_eq_id"] is not None

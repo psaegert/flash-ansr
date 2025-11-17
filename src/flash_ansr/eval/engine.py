@@ -65,7 +65,10 @@ class EvaluationEngine:
                 if limit is not None and processed >= limit:
                     break
 
-                result = self._evaluate_sample(sample)
+                if getattr(sample, "is_placeholder", False):
+                    result = self._build_placeholder_record(sample)
+                else:
+                    result = self._evaluate_sample(sample)
                 self.result_store.append(result)
                 processed += 1
 
@@ -91,6 +94,17 @@ class EvaluationEngine:
         if not isinstance(mapping, dict):
             raise TypeError("Model adapters must return dict-like results")
         return mapping
+
+    def _build_placeholder_record(self, sample: EvaluationSample) -> dict[str, Any]:
+        record = sample.clone_metadata()
+        record["placeholder"] = True
+        if sample.placeholder_reason is not None:
+            record["placeholder_reason"] = sample.placeholder_reason
+            record.setdefault("error", sample.placeholder_reason)
+        else:
+            record.setdefault("placeholder_reason", None)
+        record.setdefault("prediction_success", False)
+        return record
 
 
 __all__ = ["EvaluationEngine"]

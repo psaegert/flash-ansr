@@ -27,6 +27,10 @@ class EvaluationSample:
         Validation targets shaped ``(n_val, 1)`` or ``(n_val,)``.
     metadata: Mapping[str, Any]
         Arbitrary metadata (ground-truth expressions, skeleton hashes, etc.).
+    is_placeholder: bool
+        Flag indicating that no dataset could be generated and the entry is a placeholder.
+    placeholder_reason: str | None
+        Optional human-readable reason describing why the placeholder was emitted.
     """
 
     x_support: np.ndarray
@@ -36,6 +40,8 @@ class EvaluationSample:
     y_support_noisy: np.ndarray | None = None
     y_validation_noisy: np.ndarray | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    is_placeholder: bool = False
+    placeholder_reason: str | None = None
 
     def clone_metadata(self) -> Dict[str, Any]:
         """Return a mutable copy of the metadata dictionary."""

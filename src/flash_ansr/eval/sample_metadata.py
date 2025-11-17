@@ -19,6 +19,8 @@ COMMON_PREDICTION_FIELDS: Mapping[str, Any] = {
     "y_pred_val": None,
     "prediction_success": False,
     "error": None,
+    "placeholder": False,
+    "placeholder_reason": None,
 }
 
 

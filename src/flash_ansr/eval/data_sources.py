@@ -8,7 +8,6 @@ import warnings
 from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
-import torch
 from simplipy.utils import numbers_to_constant
 
 from flash_ansr.benchmarks import FastSRBBenchmark
@@ -41,6 +40,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
         datasets_random_seed: int | None = None,
         max_trials: int | None = None,
         skip: int = 0,
+        resume_state: Mapping[str, Any] | None = None,
     ) -> None:
         self.dataset = dataset
         self.n_support = n_support
@@ -52,10 +52,9 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
         if datasets_per_expression is not None and datasets_per_expression < 1:
             raise ValueError("datasets_per_expression must be positive when provided")
-        self.datasets_per_expression = datasets_per_expression
-        self._deterministic_mode = datasets_per_expression is not None
+        self.datasets_per_expression = datasets_per_expression or 1
         self.datasets_random_seed = datasets_random_seed
-        self._skip = max(0, skip) if self._deterministic_mode else 0
+        self._skip_successes = max(0, skip)
         self._noise_rng: np.random.Generator | None = None
         if max_trials is None:
             self._max_trials = 100
@@ -65,26 +64,25 @@ class SkeletonDatasetSource(EvaluationDataSource):
             self._max_trials = int(max_trials)
 
         pool_size = len(self.dataset.skeleton_pool)
-        self._total_available: int | None = None
-        if self._deterministic_mode:
-            per_expression = datasets_per_expression
-            if per_expression is None:
-                raise ValueError("datasets_per_expression must be specified for deterministic evaluation")
-            total_available = pool_size * per_expression if pool_size > 0 else None
-            default_target = total_available if total_available is not None else 0
-            raw_target = target_size if target_size is not None else default_target
-            if total_available is None:
-                self._target_size = max(0, raw_target)
-            else:
-                self._target_size = max(0, min(raw_target, total_available))
-                self._total_available = total_available
-        else:
-            raw_target = target_size if target_size is not None else pool_size
+        per_expression = self.datasets_per_expression
+        total_available = pool_size * per_expression if pool_size > 0 else None
+        default_target = total_available if total_available is not None else 0
+        raw_target = target_size if target_size is not None else default_target
+        if total_available is None:
             self._target_size = max(0, raw_target)
+        else:
+            self._target_size = max(0, min(raw_target, total_available))
+        self._total_available: int | None = total_available
 
         self._prepared = False
         self._max_n_support = self._resolve_max_n_support()
         self._skeleton_sequence: list[tuple[str, ...]] | None = None
+        self._resume_expression_index = 0
+        self._resume_dataset_offset = 0
+        if resume_state is not None:
+            self.load_state_dict(resume_state)
+        elif self._skip_successes:
+            self._apply_skip_offset(self._skip_successes)
 
     def size_hint(self) -> int:
         return self._target_size
@@ -130,8 +128,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
                 tokenizer=self.dataset.tokenizer,
             )
 
-        if self._deterministic_mode:
-            self._ensure_skeleton_sequence()
+        self._ensure_skeleton_sequence()
 
         self._prepared = True
 
@@ -143,49 +140,11 @@ class SkeletonDatasetSource(EvaluationDataSource):
             strategy["max_tries"] = self._max_trials
 
     def __iter__(self) -> Iterator[EvaluationSample]:
-        if self._deterministic_mode:
-            yield from self._iter_deterministic()
-        else:
-            yield from self._iter_random()
+        yield from self._iter_sequential()
 
-    def _iter_random(self) -> Iterator[EvaluationSample]:
-        if self._target_size <= 0:
-            return
-
-        iterator_size = max(self._target_size * self.iterator_buffer, self._target_size + 4)
-        collected = 0
-
-        with torch.no_grad():
-            iterator = self.dataset.iterate(
-                size=iterator_size,
-                max_n_support=self._max_n_support,
-                n_support=self._infer_sampling_support(),
-                preprocess=self.preprocess,
-                verbose=False,
-                batch_size=1,
-                tqdm_kwargs=None,
-                tokenizer_oov=self.tokenizer_oov,
-            )
-
-            for batch in iterator:
-                sample = self._batch_to_sample(batch)
-                if sample is None:
-                    continue
-
-                yield sample
-                collected += 1
-                if collected >= self._target_size:
-                    break
-
-        if collected < self._target_size:
-            warnings.warn(
-                f"SkeletonDatasetSource only yielded {collected} / {self._target_size} samples.",
-                RuntimeWarning,
-            )
-
-    def _iter_deterministic(self) -> Iterator[EvaluationSample]:
+    def _iter_sequential(self) -> Iterator[EvaluationSample]:
         per_expression = self.datasets_per_expression
-        if per_expression is None or self._target_size <= 0:
+        if self._target_size <= 0:
             return
 
         if not self._skeleton_sequence:
@@ -199,31 +158,71 @@ class SkeletonDatasetSource(EvaluationDataSource):
             )
 
         produced = 0
-        skipped = 0
+        start_expression = self._resume_expression_index
+        start_rep = self._resume_dataset_offset
 
-        for skeleton in self._skeleton_sequence:
-            for _ in range(per_expression):
+        expression_index = start_expression
+        while produced < self._target_size and self._skeleton_sequence is not None:
+            if expression_index >= len(self._skeleton_sequence):
+                warnings.warn(
+                    "Deterministic SkeletonDatasetSource exhausted available skeletons before reaching the target size.",
+                    RuntimeWarning,
+                )
+                break
+
+            skeleton = self._skeleton_sequence[expression_index]
+            rep_begin = start_rep if expression_index == start_expression else 0
+            for rep_index in range(rep_begin, per_expression):
                 if produced >= self._target_size:
-                    return
+                    break
 
                 sample = self._build_deterministic_sample(skeleton)
                 if sample is None:
                     continue
 
-                if skipped < self._skip:
-                    skipped += 1
-                    continue
-
                 yield sample
                 produced += 1
+                self._advance_resume_cursor(expression_index, rep_index)
 
+            expression_index += 1
         if produced < self._target_size:
             warnings.warn(
                 f"Deterministic SkeletonDatasetSource only yielded {produced} / {self._target_size} samples.",
                 RuntimeWarning,
             )
 
-    def _build_deterministic_sample(self, skeleton: tuple[str, ...]) -> EvaluationSample | None:
+    def state_dict(self) -> Mapping[str, Any]:
+        return {
+            "type": "skeleton_dataset",
+            "state": {
+                "expression_index": self._resume_expression_index,
+                "dataset_offset": self._resume_dataset_offset,
+            },
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        expression_index = int(state.get("expression_index", 0))
+        dataset_offset = int(state.get("dataset_offset", 0))
+        if dataset_offset < 0 or dataset_offset >= self.datasets_per_expression:
+            dataset_offset = 0
+        self._resume_expression_index = max(0, expression_index)
+        self._resume_dataset_offset = max(0, dataset_offset)
+
+    def _apply_skip_offset(self, skip: int) -> None:
+        per_expression = self.datasets_per_expression
+        self._resume_expression_index = skip // per_expression
+        self._resume_dataset_offset = skip % per_expression
+
+    def _advance_resume_cursor(self, expression_index: int, rep_index: int) -> None:
+        next_rep = rep_index + 1
+        if next_rep >= self.datasets_per_expression:
+            self._resume_expression_index = expression_index + 1
+            self._resume_dataset_offset = 0
+        else:
+            self._resume_expression_index = expression_index
+            self._resume_dataset_offset = next_rep
+
+    def _build_deterministic_sample(self, skeleton: tuple[str, ...]) -> EvaluationSample:
         pool = self.dataset.skeleton_pool
         if not pool.skeleton_codes:
             pool.skeleton_codes = pool.compile_codes(verbose=False)
@@ -232,7 +231,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
             pool.skeleton_codes = pool.compile_codes(verbose=False)
             if skeleton not in pool.skeleton_codes:
                 warnings.warn("Skeleton missing from pool codes; skipping sample.", RuntimeWarning)
-                return None
+                return self._build_placeholder_sample(skeleton, reason="skeleton_missing")
 
         code, constants_tokens = pool.skeleton_codes[skeleton]
         n_constants = len(constants_tokens)
@@ -275,18 +274,16 @@ class SkeletonDatasetSource(EvaluationDataSource):
             )
 
         warnings.warn("Failed to sample deterministic skeleton after multiple attempts; skipping.", RuntimeWarning)
-        return None
+        return self._build_placeholder_sample(skeleton, reason="max_trials_exhausted")
 
     def _ensure_skeleton_sequence(self) -> None:
         if self._skeleton_sequence is not None:
             return
 
         per_expression = self.datasets_per_expression
-        if per_expression is None:
-            return
-
         pool = self.dataset.skeleton_pool
-        required_samples = self._skip + self._target_size
+        processed_samples = (self._resume_expression_index * per_expression) + self._resume_dataset_offset
+        required_samples = processed_samples + self._target_size
         required_expressions = math.ceil(required_samples / per_expression) if required_samples > 0 else 0
 
         skeletons = list(pool.skeletons)
@@ -439,6 +436,60 @@ class SkeletonDatasetSource(EvaluationDataSource):
         )
         return metadata
 
+    def _build_placeholder_sample(self, skeleton: tuple[str, ...], reason: str) -> EvaluationSample:
+        variables = list(self.dataset.skeleton_pool.variables)
+        feature_dim = max(1, len(variables) if variables else 1)
+        X_empty = np.empty((0, feature_dim), dtype=np.float32)
+        y_empty = np.empty((0, 1), dtype=np.float32)
+        skeleton_list = normalize_skeleton(skeleton) or list(skeleton) or None
+        expression_tokens = list(skeleton_list) if skeleton_list is not None else None
+
+        metadata = build_base_metadata(
+            skeleton=skeleton_list,
+            expression=expression_tokens,
+            variables=variables or None,
+            x_support=X_empty,
+            y_support=y_empty,
+            x_validation=X_empty.copy(),
+            y_validation=y_empty.copy(),
+            y_support_noisy=y_empty.copy(),
+            y_validation_noisy=y_empty.copy(),
+            noise_level=self.noise_level,
+            skeleton_hash=skeleton_list,
+            labels_decoded=None,
+            complexity=None,
+        )
+
+        input_ids = None
+        if skeleton_list:
+            try:
+                input_ids = self._encode_input_ids(list(skeleton_list))
+            except Exception:
+                input_ids = None
+
+        metadata.update(
+            {
+                "input_ids": np.asarray(input_ids, dtype=np.int64) if input_ids is not None else None,
+                "labels": np.asarray(input_ids[1:], dtype=np.int64) if input_ids is not None else None,
+                "placeholder": True,
+                "placeholder_reason": reason,
+                "error": reason,
+                "prediction_success": False,
+            }
+        )
+
+        return EvaluationSample(
+            x_support=X_empty,
+            y_support=y_empty,
+            x_validation=X_empty.copy(),
+            y_validation=y_empty.copy(),
+            y_support_noisy=y_empty.copy(),
+            y_validation_noisy=y_empty.copy(),
+            metadata=metadata,
+            is_placeholder=True,
+            placeholder_reason=reason,
+        )
+
     def _encode_input_ids(self, skeleton_tokens: list[str]) -> list[int]:
         tokenizer = self.dataset.tokenizer
         body_tokens = skeleton_tokens
@@ -472,104 +523,6 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
     def _infer_sampling_support(self) -> int | None:
         return self.n_support * 2 if self.n_support is not None else None
-
-    def _batch_to_sample(self, batch: Mapping[str, Any]) -> EvaluationSample | None:
-        collated = self.dataset.collate(batch, device=self.device)
-
-        x_tensor = collated["x_tensors"][0][: collated["n_support"][0]]
-        y_tensor = collated["y_tensors"][0][: collated["n_support"][0]]
-
-        inferred_support = self.n_support
-        if inferred_support is None:
-            inferred_support = x_tensor.shape[1] // 2
-
-        if inferred_support == 0:
-            warnings.warn("n_support evaluated to zero. Skipping batch.")
-            return None
-
-        y_noisy_tensor = y_tensor
-        if self.noise_level > 0.0:
-            y_noisy_tensor = y_tensor + (self.noise_level * y_tensor.std() * torch.randn_like(y_tensor))
-            if not torch.all(torch.isfinite(y_noisy_tensor)):
-                warnings.warn("Adding noise produced non-finite targets. Skipping sample.")
-                return None
-
-        x_numpy = x_tensor.cpu().numpy()
-        y_numpy = y_tensor.cpu().numpy()
-        y_noisy_numpy = y_noisy_tensor.cpu().numpy()
-
-        X_support = x_numpy[: inferred_support].copy()
-        y_support = y_numpy[: inferred_support].copy()
-        y_support_noisy = y_noisy_numpy[: inferred_support].copy()
-
-        X_val = x_numpy[inferred_support:].copy()
-        y_val = y_numpy[inferred_support:].copy()
-        y_val_noisy = y_noisy_numpy[inferred_support:].copy()
-
-        constants = [c.cpu().numpy().copy() for c in collated["constants"][0]]
-        labels_array = collated["labels"][0].cpu().numpy().copy()
-        decoded_labels = list(
-            self.dataset.tokenizer.decode(collated["labels"][0].cpu().tolist(), special_tokens="<constant>")
-        )
-
-        skeleton_tokens = collated["skeleton"][0]
-        if hasattr(skeleton_tokens, "cpu"):
-            skeleton_tokens = skeleton_tokens.cpu().tolist()
-        skeleton_list = normalize_skeleton(skeleton_tokens)
-
-        skeleton_hash_value = collated["skeleton_hash"][0]
-        if hasattr(skeleton_hash_value, "cpu"):
-            skeleton_hash_value = skeleton_hash_value.cpu().tolist()
-        if isinstance(skeleton_hash_value, list):
-            skeleton_hash_value = tuple(skeleton_hash_value)
-
-        expression_tokens = collated["expression"][0]
-        if hasattr(expression_tokens, "cpu"):
-            expression_tokens = expression_tokens.cpu().tolist()
-        expression_list = normalize_expression(expression_tokens)
-
-        complexity_field = collated.get("complexity")
-        complexity_value = None
-        if complexity_field is not None:
-            value = complexity_field[0]
-            if hasattr(value, "item"):
-                complexity_value = value.item()
-            else:
-                complexity_value = value
-
-        metadata = build_base_metadata(
-            skeleton=skeleton_list,
-            expression=expression_list,
-            variables=list(self.dataset.skeleton_pool.variables),
-            x_support=X_support,
-            y_support=y_support,
-            x_validation=X_val,
-            y_validation=y_val,
-            y_support_noisy=y_support_noisy,
-            y_validation_noisy=y_val_noisy,
-            noise_level=self.noise_level,
-            skeleton_hash=skeleton_hash_value,
-            labels_decoded=decoded_labels,
-            complexity=complexity_value,
-        )
-
-        metadata.update(
-            {
-                "input_ids": collated["input_ids"][0].cpu().numpy().copy(),
-                "labels": labels_array,
-                "constants": constants,
-            }
-        )
-
-        return EvaluationSample(
-            x_support=X_support,
-            y_support=y_support,
-            x_validation=X_val,
-            y_validation=y_val,
-            y_support_noisy=y_support_noisy,
-            y_validation_noisy=y_val_noisy,
-            metadata=metadata,
-        )
 
 
 class FastSRBSource(EvaluationDataSource):
@@ -719,7 +672,7 @@ class FastSRBSource(EvaluationDataSource):
             RuntimeWarning,
         )
         self.skipped_expressions[eq_id] = self.skipped_expressions.get(eq_id, 0) + 1
-        return None
+        return self._build_placeholder_sample(eq_id, sample_index, reason="max_trials_exhausted")
 
     def _build_sample(
         self,
@@ -841,6 +794,59 @@ class FastSRBSource(EvaluationDataSource):
             y_support_noisy=y_support_noisy,
             y_validation_noisy=y_val.copy(),
             metadata=metadata,
+        )
+
+    def _build_placeholder_sample(self, eq_id: str, sample_index: int, reason: str) -> EvaluationSample:
+        feature_dim = 1
+        X_empty = np.empty((0, feature_dim), dtype=np.float32)
+        y_empty = np.empty((0, 1), dtype=np.float32)
+        metadata = build_base_metadata(
+            skeleton=None,
+            expression=None,
+            variables=None,
+            x_support=X_empty,
+            y_support=y_empty,
+            x_validation=X_empty.copy(),
+            y_validation=y_empty.copy(),
+            y_support_noisy=y_empty.copy(),
+            y_validation_noisy=y_empty.copy(),
+            noise_level=self.noise_level,
+            skeleton_hash=None,
+            labels_decoded=None,
+            complexity=None,
+        )
+
+        metadata.update(
+            {
+                "input_ids": None,
+                "labels": None,
+                "constants": [],
+                "benchmark_eq_id": eq_id,
+                "benchmark_sample_index": int(sample_index),
+                "benchmark_metadata": None,
+                "benchmark_n_points": 0,
+                "benchmark_support_points": int(self.support_points),
+                "benchmark_method": self.method,
+                "ground_truth_infix": None,
+                "ground_truth_prefix": None,
+                "variable_names": None,
+                "placeholder": True,
+                "placeholder_reason": reason,
+                "error": reason,
+                "prediction_success": False,
+            }
+        )
+
+        return EvaluationSample(
+            x_support=X_empty,
+            y_support=y_empty,
+            x_validation=X_empty.copy(),
+            y_validation=y_empty.copy(),
+            y_support_noisy=y_empty.copy(),
+            y_validation_noisy=y_empty.copy(),
+            metadata=metadata,
+            is_placeholder=True,
+            placeholder_reason=reason,
         )
 
     @staticmethod

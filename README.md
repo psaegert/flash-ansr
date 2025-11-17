@@ -279,6 +279,8 @@ run:
 - **`model_adapter`** declares the solver. Supported values today are `flash_ansr`, `pysr`, and `nesymres`, each with their own required fields (model paths, timeout, beam width, etc.).
 - **`runner`** controls persistence: `limit` caps the number of processed samples, `save_every` checkpoints incremental progress to `output`, and `resume` decides whether to load previous results from that file.
 
+When `resume` is enabled the engine simply reloads the existing pickle, skips that many deterministic samples, and keeps writing to the same file. If a dataset cannot be generated within `max_trials`, the runner now appends a placeholder entry (`placeholder=True`, `placeholder_reason=...`) so the results length still reflects every attempted expression/dataset pair. Downstream analysis can filter those placeholders, but their presence keeps pause/resume logic trivial and avoids juggling extra state files. Skeleton dataset evaluations remain sequential—`datasets_per_expression` (default `1`) controls how many deterministic datasets are emitted per skeleton, and the previous random sampling mode has been removed.
+
 Running `flash_ansr evaluate-run ...` loads the config, resumes any previously saved pickle, instantiates the requested data/model pair, and streams results back into the same output file.
 
 #### 4.2 Example run configs
