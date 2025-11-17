@@ -25,6 +25,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
+      # Download FastSRB benchmark assets required by evaluation tests
+      - name: Fetch FastSRB benchmark
+        run: |
+          mkdir -p data/ansr-data/test_set/fastsrb
+          curl -L "https://raw.githubusercontent.com/viktmar/FastSRB/main/src/expressions.yaml" \
+            -o data/ansr-data/test_set/fastsrb/expressions.yaml
+
       # Run the tests
       - name: Run tests
         run: |
