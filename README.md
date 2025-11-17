@@ -319,6 +319,16 @@ Tweak `data_source.datasets_per_expression`, `eq_ids`, or `noise_level` inside t
 
 The config automatically reuses the dataset's bundled SimpliPy engine; provide `model_adapter.simplipy_engine` in the YAML if you need an explicit override.
 
+PySR occasionally stalls on long sweeps, so `scripts/evaluate_PySR.py` now wraps `flash_ansr evaluate-run` with a watchdog that restarts the command whenever CPU usage idles out. It accepts the same core flags (`-c/--config`, `--experiment`, `-n/--limit`, `-o/--output-file`, `--save-every`, `--no-resume`) and forwards anything after `--` directly to `flash_ansr evaluate-run`. Example:
+
+```sh
+python scripts/evaluate_PySR.py \
+  -c configs/evaluation/scaling/pysr_v23_val.yaml \
+  --experiment pysr_v23_iter_00256 -v
+```
+
+Set `--eval-python` if your PySR installation lives in a separate conda env, and use `--log-file` to collect watchdog diagnostics under a dedicated path.
+
 ##### 4.2.4 NeSymReS baseline
 
 1. Clone [NeuralSymbolicRegressionThatScales](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales) and download the `100M` checkpoint as described in their README.
