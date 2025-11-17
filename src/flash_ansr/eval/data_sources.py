@@ -5,6 +5,7 @@ import math
 import random
 import re
 import warnings
+from itertools import cycle
 from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
@@ -149,6 +150,10 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
         if not self._skeleton_sequence:
             warnings.warn("No skeletons available for deterministic evaluation.", RuntimeWarning)
+            placeholder_count = self._target_size
+            placeholder_skeleton: tuple[str, ...] = tuple()
+            for _ in range(placeholder_count):
+                yield self._build_placeholder_sample(placeholder_skeleton, reason="source_exhausted")
             return
 
         if self.preprocess:
@@ -185,11 +190,23 @@ class SkeletonDatasetSource(EvaluationDataSource):
                 self._advance_resume_cursor(expression_index, rep_index)
 
             expression_index += 1
-        if produced < self._target_size:
+        shortfall = self._target_size - produced
+        if shortfall > 0:
             warnings.warn(
                 f"Deterministic SkeletonDatasetSource only yielded {produced} / {self._target_size} samples.",
                 RuntimeWarning,
             )
+
+            if self._skeleton_sequence:
+                last_index = min(len(self._skeleton_sequence) - 1, max(0, expression_index - 1))
+                placeholder_skeleton = self._skeleton_sequence[last_index]
+            else:
+                placeholder_skeleton = tuple()
+
+            for _ in range(shortfall):
+                yield self._build_placeholder_sample(placeholder_skeleton, reason="source_exhausted")
+            self._resume_expression_index = len(self._skeleton_sequence) if self._skeleton_sequence else 0
+            self._resume_dataset_offset = 0
 
     def state_dict(self) -> Mapping[str, Any]:
         return {
@@ -629,11 +646,23 @@ class FastSRBSource(EvaluationDataSource):
             yield evaluation_sample
             produced += 1
 
-        if produced < self._target_size:
+        shortfall = self._target_size - produced
+        if shortfall > 0:
             warnings.warn(
                 f"FastSRBSource only yielded {produced} / {self._target_size} samples.",
                 RuntimeWarning,
             )
+
+            filler_ids = list(self.eq_ids or self.benchmark.equation_ids())
+            if not filler_ids:
+                filler_ids = ["__placeholder__"]
+            filler_cycle = cycle(filler_ids)
+
+            for _ in range(shortfall):
+                eq_id = next(filler_cycle)
+                placeholder = self._build_placeholder_sample(eq_id, sample_index=-1, reason="source_exhausted")
+                yield placeholder
+                produced += 1
 
     # ------------------------------------------------------------------
     def _resample_sample(

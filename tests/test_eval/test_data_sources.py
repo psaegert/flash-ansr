@@ -1,4 +1,5 @@
 import itertools
+from collections import Counter
 import warnings
 from pathlib import Path
 
@@ -154,6 +155,7 @@ def test_fastsrb_source_samples_all_expressions_without_invalid_power_warning():
 
     counts = {eq_id: 0 for eq_id in eq_ids}
     placeholder_total = 0
+    placeholder_reasons: Counter[str] = Counter()
 
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -165,12 +167,14 @@ def test_fastsrb_source_samples_all_expressions_without_invalid_power_warning():
             eq_id = sample.metadata["benchmark_eq_id"]
             if sample.metadata.get("placeholder"):
                 placeholder_total += 1
+                placeholder_reasons[sample.metadata.get("placeholder_reason")] += 1
             else:
                 counts[eq_id] += 1
 
     skipped_total = sum(source.skipped_expressions.values())
     assert sum(counts.values()) + placeholder_total == target_size
-    assert placeholder_total == skipped_total
+    assert placeholder_reasons.get("max_trials_exhausted", 0) == skipped_total
+    assert placeholder_reasons.get("source_exhausted", 0) == 0
     for eq_id, count in counts.items():
         skipped = source.skipped_expressions.get(eq_id, 0)
         assert count + skipped == repeats
@@ -252,3 +256,30 @@ def test_fastsrb_source_emits_placeholder_when_resampling_exhausted(monkeypatch)
     assert placeholder.is_placeholder is True
     assert placeholder.metadata["placeholder"] is True
     assert placeholder.metadata["benchmark_eq_id"] is not None
+
+
+def test_fastsrb_source_fills_shortfall_with_placeholders():
+    benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
+    eq_ids = benchmark.equation_ids()[:2]
+    target_size = len(eq_ids) + 3
+
+    source = FastSRBSource(
+        benchmark,
+        target_size=target_size,
+        eq_ids=eq_ids,
+        datasets_per_expression=1,
+        support_points=4,
+        sample_points=4,
+        method="random",
+        incremental=True,
+        max_trials=1024,
+    )
+    source.prepare()
+
+    samples = list(source)
+    placeholders = [s for s in samples if s.metadata.get("placeholder")]
+    reasons = {p.metadata.get("placeholder_reason") for p in placeholders}
+
+    assert len(samples) == target_size
+    assert len(placeholders) >= target_size - len(eq_ids)
+    assert reasons == {"source_exhausted"}
