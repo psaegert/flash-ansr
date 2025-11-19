@@ -19,7 +19,7 @@ defaults:
     simplipy_engine: "dev_7-3"
   runner: &pysr_fastsrb_runner
     limit: null
-    save_every: 32
+    save_every: 4
     resume: true
 
 experiments:
