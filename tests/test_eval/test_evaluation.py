@@ -1,6 +1,7 @@
 import os
-import unittest
 import shutil
+import unittest
+import warnings
 
 import torch
 
@@ -62,10 +63,17 @@ class TestEvaluation(unittest.TestCase):
         assert ansr_serial.refiner_workers == 0
 
         with FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml')) as val_dataset:
-            results = evaluation.evaluate(
-                model=ansr,
-                dataset=val_dataset,
-                size=2)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="invalid value encountered in power",
+                    category=RuntimeWarning,
+                )
+                results = evaluation.evaluate(
+                    model=ansr,
+                    dataset=val_dataset,
+                    size=2,
+                )
 
             for k, v in results.items():
                 print(f"{k}: {len(v)}")

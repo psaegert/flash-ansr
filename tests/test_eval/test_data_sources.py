@@ -18,6 +18,25 @@ DATASET_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "test" / "dat
 FASTSRB_BENCHMARK_PATH = get_path("data", "ansr-data", "test_set", "fastsrb", "expressions.yaml")
 
 
+pytestmark = [
+    pytest.mark.filterwarnings(
+        r"ignore:Failed to sample deterministic skeleton after multiple attempts; skipping\.:RuntimeWarning"
+    ),
+    pytest.mark.filterwarnings(
+        r"ignore:FastSRB sample .* contains non-finite or out-of-range values\\. Resampling dataset\.:RuntimeWarning"
+    ),
+    pytest.mark.filterwarnings(
+        r"ignore:Skipping FastSRB equation .* after .* invalid datasets\.:RuntimeWarning"
+    ),
+    pytest.mark.filterwarnings(
+        r"ignore:FastSRBSource only yielded .* samples\.:RuntimeWarning"
+    ),
+    pytest.mark.filterwarnings(
+        r"ignore:overflow encountered in cast:RuntimeWarning"
+    ),
+]
+
+
 def _make_dataset():
     return FlashANSRDataset.from_config(str(DATASET_CONFIG))
 

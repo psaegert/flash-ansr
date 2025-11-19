@@ -1,5 +1,6 @@
 import os
 import unittest
+import warnings
 
 import numpy as np
 import torch
@@ -60,7 +61,13 @@ class TestInference(unittest.TestCase):
             n_restarts=n_restarts,
         ).to(self.device)
 
-        nsr.fit(self.x_tensor, self.y_tensor)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="invalid value encountered in power",
+                category=RuntimeWarning,
+            )
+            nsr.fit(self.x_tensor, self.y_tensor)
         return nsr
 
     def _assert_valid_results(self, nsr: FlashANSR) -> None:

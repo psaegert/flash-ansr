@@ -53,6 +53,7 @@ Symbolic Regression has been approached with many different methods and paradigm
         - [4.2.2 FastSRB benchmark](#422-fastsrb-benchmark)
         - [4.2.3 PySR baseline](#423-pysr-baseline)
         - [4.2.4 NeSymReS baseline](#424-nesymres-baseline)
+        - [4.2.5 Compute-scaling sweeps](#425-compute-scaling-sweeps)
       - [4.3 Legacy CLI commands](#43-legacy-cli-commands)
 - [Development](#development)
   - [Setup](#setup)

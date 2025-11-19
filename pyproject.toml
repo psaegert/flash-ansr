@@ -74,3 +74,8 @@ disallow_incomplete_defs = true
 explicit_package_bases = true
 exclude = "(.venv|tests/|experimental/|src/flash_ansr/compat/nesymres.py)"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:This process .*use of fork.*deadlocks in the child.:DeprecationWarning",
+]
