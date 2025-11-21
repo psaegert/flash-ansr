@@ -17,7 +17,7 @@ defaults:
     n_restarts: 4
     device: cuda
   runner: &nesymres_v23_runner
-    limit: 100
+    limit: 1000
     save_every: 32
     resume: true
 

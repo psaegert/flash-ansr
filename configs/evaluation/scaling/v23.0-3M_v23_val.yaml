@@ -36,7 +36,7 @@ defaults:
     complexity: none
     device: cuda
   runner: &flash_ansr_v23_runner
-    limit: 100
+    limit: 1000
     save_every: 64
     resume: true
 
