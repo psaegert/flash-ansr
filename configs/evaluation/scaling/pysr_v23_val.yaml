@@ -1,7 +1,7 @@
 defaults:
   data_source: &pysr_v23_source
     type: skeleton_dataset
-    dataset: "{{ROOT}}/configs/v23.0-60M/dataset_val.yaml"
+    dataset: "{{ROOT}}/configs/v23.0-3M/dataset_val.yaml"
     n_support: 512
     noise_level: 0.0
     preprocess: false
@@ -130,43 +130,3 @@ experiments:
       runner:
         <<: *pysr_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_01024.pkl"
-
-  pysr_v23_iter_02048:
-    run:
-      data_source: *pysr_v23_source
-      model_adapter:
-        <<: *pysr_adapter
-        niterations: 2048
-      runner:
-        <<: *pysr_v23_runner
-        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_02048.pkl"
-
-  pysr_v23_iter_04096:
-    run:
-      data_source: *pysr_v23_source
-      model_adapter:
-        <<: *pysr_adapter
-        niterations: 4096
-      runner:
-        <<: *pysr_v23_runner
-        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_04096.pkl"
-
-  pysr_v23_iter_08192:
-    run:
-      data_source: *pysr_v23_source
-      model_adapter:
-        <<: *pysr_adapter
-        niterations: 8192
-      runner:
-        <<: *pysr_v23_runner
-        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_08192.pkl"
-
-  pysr_v23_iter_16384:
-    run:
-      data_source: *pysr_v23_source
-      model_adapter:
-        <<: *pysr_adapter
-        niterations: 16384
-      runner:
-        <<: *pysr_v23_runner
-        output: "{{ROOT}}/results/evaluation/scaling/pysr/v23_val/niter_16384.pkl"
