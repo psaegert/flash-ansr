@@ -2,7 +2,7 @@ defaults:
   data_source: &pysr_fastsrb_source
     type: fastsrb
     benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
-    datasets_per_expression: 10
+    datasets_per_expression: 5
     support_points: 512
     sample_points: 1024
     method: random
