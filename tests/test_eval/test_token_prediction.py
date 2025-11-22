@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from flash_ansr.eval.token_prediction import (
+from flash_ansr.eval.metrics.token_prediction import (
     correct_token_predictions_at_k,
     reciprocal_rank, recall, precision,
     f1_score, accuracy, perplexity)

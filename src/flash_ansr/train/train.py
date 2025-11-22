@@ -21,7 +21,7 @@ from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils.config_io import load_config, save_config, unfold_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.eval.token_prediction import correct_token_predictions_at_k, reciprocal_rank
+from flash_ansr.eval.metrics.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.optimizers import get_optimizer
 from flash_ansr.train.schedules import pw_linear_schedule
 
@@ -35,17 +35,17 @@ from flash_ansr.train.schedules import pw_linear_schedule
 # warnings globally.
 try:  # pragma: no cover - defensive import guard
     import pydantic
-    from pydantic import Field as _original_pydantic_field
+    from pydantic import Field as _ORIGINAL_PYDANTIC_FIELD
     from pydantic import fields as _pydantic_fields
 except Exception:  # noqa: BLE001 - best-effort shim; fall back silently
-    _original_pydantic_field = None  # type: ignore[assignment]
+    _ORIGINAL_PYDANTIC_FIELD = None  # type: ignore[assignment]
 else:
-    assert _original_pydantic_field is not None
+    assert _ORIGINAL_PYDANTIC_FIELD is not None
 
     def _field_without_unused_attrs(*args: Any, **kwargs: Any) -> Any:
         kwargs.pop('repr', None)
         kwargs.pop('frozen', None)
-        return _original_pydantic_field(*args, **kwargs)
+        return _ORIGINAL_PYDANTIC_FIELD(*args, **kwargs)
 
     pydantic.Field = _field_without_unused_attrs  # type: ignore[attr-defined]
 
@@ -211,7 +211,7 @@ class Trainer:
         )
 
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        scaler = torch.amp.GradScaler(enabled=(amp_dtype == torch.float16))
+        scaler = torch.amp.GradScaler(enabled=amp_dtype == torch.float16)
 
         print(f'Loading lr_scheduler with config {config_["lr_schedule"]}')
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(

@@ -41,7 +41,7 @@ def normalize_skeleton(tokens: Sequence[str | Any] | None) -> list[str] | None:
         if is_var:
             normalized.append(normalized_token)
             continue
-        if token_str == "<constant>" or token_str == "<c>":
+        if token_str in {"<constant>", "<c>"}:
             normalized.append("<constant>")
             continue
         # numeric literal -> constant placeholder
