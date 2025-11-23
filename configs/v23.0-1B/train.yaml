@@ -4,14 +4,14 @@ optimizer:
   name: AdamW
   kwargs:
     lr: 1  # Will be multiplied by scheduler
-    weight_decay: 0.01
-    betas: [0.9, 0.95]
+    weight_decay: 0.025  # Optimized based on scaling laws
+    betas: [0.9, 0.99995]  # β1=0.9, β2=0.99995 based on token half life
 
 lr_schedule:
   - [0, 0.0]
-  - [500_000, 1e-4]  # 10% of steps warmup
-  - [4_000_000, 1e-4]
-  - [5_000_000, 0.0]  # 20% of steps cooldown
+  - [750_000, 3e-5]    # Extended warmup (15%)
+  - [4_000_000, 3e-5]  # Stable phase
+  - [5_000_000, 0.0]   # Cooldown
 
 batch_size: 128
 
