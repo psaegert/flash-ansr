@@ -247,22 +247,33 @@ class NeSymReSAdapter(EvaluationModelAdapter):
         self.simplipy_engine = simplipy_engine
         self.device = device
         self.beam_width = beam_width
+        self._fit_cfg_params: Any | None = None
+        self._max_variables: int | None = None
+        self._warned_feature_mismatch = False
 
     def get_simplipy_engine(self) -> Any:  # pragma: no cover - trivial accessor
         return self.simplipy_engine
 
     def prepare(self, *, data_source: Any | None = None) -> None:  # type: ignore[override]
         self.model.to(self.device).eval()
-        if self.beam_width is not None:
-            cfg_params = _extract_cfg_params(self.fitfunc)
-            if cfg_params is not None and hasattr(cfg_params, "beam_size"):
+        cfg_params = _extract_cfg_params(self.fitfunc)
+        self._fit_cfg_params = cfg_params
+        if cfg_params is not None:
+            total_vars = getattr(cfg_params, "total_variables", None)
+            if isinstance(total_vars, Iterable):
+                try:
+                    self._max_variables = len(list(total_vars))
+                except TypeError:  # pragma: no cover - defensive
+                    self._max_variables = None
+            if self.beam_width is not None and hasattr(cfg_params, "beam_size"):
                 cfg_params.beam_size = self.beam_width
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
         record["parsimony"] = getattr(self.model, "parsimony", None)
 
-        X_support = sample.x_support
+        X_support = self._prepare_inputs(sample.x_support)
+        X_validation = self._prepare_inputs(sample.x_validation)
         y_fit = (sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support).reshape(-1)
 
         fit_time_start = time.time()
@@ -299,8 +310,8 @@ class NeSymReSAdapter(EvaluationModelAdapter):
         try:
             y_pred, y_pred_val = _evaluate_symbolic_expression(
                 predicted_expr,
-                sample.x_support,
-                sample.x_validation,
+                X_support,
+                X_validation,
             )
             record["y_pred"] = y_pred
             record["y_pred_val"] = y_pred_val
@@ -309,6 +320,28 @@ class NeSymReSAdapter(EvaluationModelAdapter):
             record["prediction_success"] = False
 
         return EvaluationResult(record)
+
+    def _prepare_inputs(self, array: np.ndarray) -> np.ndarray:
+        if not isinstance(array, np.ndarray) or self._max_variables is None:
+            return array
+        n_features = array.shape[1]
+        if n_features == self._max_variables:
+            return array
+        if n_features > self._max_variables:
+            if not self._warned_feature_mismatch:
+                warnings.warn(
+                    (
+                        "NeSymReS checkpoint supports only %d variables; "
+                        "truncating FastSRB inputs from %d features."
+                    )
+                    % (self._max_variables, n_features),
+                    RuntimeWarning,
+                )
+                self._warned_feature_mismatch = True
+            return array[:, : self._max_variables].copy()
+        pad_width = self._max_variables - n_features
+        pad = np.zeros((array.shape[0], pad_width), dtype=array.dtype)
+        return np.concatenate([array, pad], axis=1)
 
 
 # ---------------------------------------------------------------------------

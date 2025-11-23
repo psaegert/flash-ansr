@@ -22,7 +22,7 @@ defaults:
     resume: true
 
 experiments:
-  nesymres_v23_beam_00001:
+  nesymres_v23_beam_width_00001:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -32,7 +32,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00001.pkl"
 
-  nesymres_v23_beam_00002:
+  nesymres_v23_beam_width_00002:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -42,7 +42,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00002.pkl"
 
-  nesymres_v23_beam_00004:
+  nesymres_v23_beam_width_00004:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -52,7 +52,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00004.pkl"
 
-  nesymres_v23_beam_00008:
+  nesymres_v23_beam_width_00008:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -62,7 +62,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00008.pkl"
 
-  nesymres_v23_beam_00016:
+  nesymres_v23_beam_width_00016:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -72,7 +72,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00016.pkl"
 
-  nesymres_v23_beam_00032:
+  nesymres_v23_beam_width_00032:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -82,7 +82,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00032.pkl"
 
-  nesymres_v23_beam_00064:
+  nesymres_v23_beam_width_00064:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -92,7 +92,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00064.pkl"
 
-  nesymres_v23_beam_00128:
+  nesymres_v23_beam_width_00128:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
@@ -102,7 +102,7 @@ experiments:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_00128.pkl"
 
-  nesymres_v23_beam_00256:
+  nesymres_v23_beam_width_00256:
     run:
       data_source: *nesymres_v23_source
       model_adapter:
