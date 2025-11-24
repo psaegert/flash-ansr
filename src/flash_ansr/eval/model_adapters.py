@@ -11,12 +11,12 @@ import simplipy
 from flash_ansr.expressions.normalization import normalize_skeleton, normalize_expression
 from sympy import lambdify
 
-try:  # pragma: no cover - optional dependency
-    from pysr import PySRRegressor  # type: ignore
-    _HAVE_PYSR = True
-except Exception:  # pragma: no cover - optional dependency
-    PySRRegressor = Any  # type: ignore
-    _HAVE_PYSR = False
+from flash_ansr.eval.core import EvaluationModelAdapter, EvaluationResult, EvaluationSample
+from flash_ansr.flash_ansr import FlashANSR
+from flash_ansr.refine import ConvergenceError
+
+PySRRegressor: type[Any] | None  # pragma: no cover - assigned lazily
+PySRRegressor = None
 
 try:  # pragma: no cover - optional dependency
     from nesymres.architectures.model import Model as _RuntimeNeSymResModel  # type: ignore
@@ -29,10 +29,6 @@ if TYPE_CHECKING:  # pragma: no cover - type checking only
     from nesymres.architectures.model import Model as NesymresModel  # type: ignore
 else:
     NesymresModel = Any
-
-from flash_ansr.eval.core import EvaluationModelAdapter, EvaluationResult, EvaluationSample
-from flash_ansr.flash_ansr import FlashANSR
-from flash_ansr.refine import ConvergenceError
 
 
 class FlashANSRAdapter(EvaluationModelAdapter):
@@ -157,8 +153,7 @@ class PySRAdapter(EvaluationModelAdapter):
         padding: bool,
         simplipy_engine: Any,
     ) -> None:
-        if not _HAVE_PYSR:  # pragma: no cover - import guard
-            raise ImportError("PySR is not installed; please install pysr to use PySRAdapter")
+        _require_pysr()  # import lazily to avoid initializing Julia unless needed
 
         self.timeout_in_seconds = timeout_in_seconds
         self.niterations = niterations
@@ -315,6 +310,20 @@ class NeSymReSAdapter(EvaluationModelAdapter):
             )
             record["y_pred"] = y_pred
             record["y_pred_val"] = y_pred_val
+
+            support_targets = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
+            support_fvu = _compute_fvu_from_predictions(support_targets, y_pred)
+            record["support_fvu"] = support_fvu
+
+            validation_targets = (
+                sample.y_validation_noisy if sample.y_validation_noisy is not None else sample.y_validation
+            )
+            validation_fvu: float | None = None
+            if validation_targets.size and y_pred_val.size:
+                validation_fvu = _compute_fvu_from_predictions(validation_targets, y_pred_val)
+                record["validation_fvu"] = validation_fvu
+
+            _print_fvu_summary(support_fvu, validation_fvu)
         except Exception as exc:  # pragma: no cover - evaluation errors
             record["error"] = f"Failed to evaluate NeSymReS expression: {exc}"
             record["prediction_success"] = False
@@ -380,7 +389,9 @@ def _create_pysr_model(
         additional_unary_operators = []
         additional_extra_sympy_mappings = {}
 
-    return PySRRegressor(
+    PySR = _require_pysr()
+
+    return PySR(
         temp_equation_file=True,
         delete_tempfiles=True,
         timeout_in_seconds=timeout_in_seconds,
@@ -476,3 +487,43 @@ def _evaluate_symbolic_expression(predicted_expr: Any, X_support: np.ndarray, X_
     else:
         y_pred_val = np.empty((0, 1), dtype=float)
     return y_pred, y_pred_val
+
+
+def _require_pysr() -> type[Any]:
+    global PySRRegressor
+    if PySRRegressor is not None:
+        return PySRRegressor
+    try:  # pragma: no cover - optional dependency
+        from pysr import PySRRegressor as _PySRRegressor  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        raise ImportError("PySR is not installed; please install pysr to use PySRAdapter") from exc
+    PySRRegressor = _PySRRegressor
+    return PySRRegressor
+
+
+def _compute_fvu_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true_arr = np.asarray(y_true, dtype=float).reshape(-1)
+    y_pred_arr = np.asarray(y_pred, dtype=float).reshape(-1)
+    if y_true_arr.size == 0 or y_pred_arr.size == 0:
+        return float("nan")
+    loss = float(np.mean((y_true_arr - y_pred_arr) ** 2))
+    variance = float(np.var(y_true_arr))
+    return FlashANSR._compute_fvu(loss, y_true_arr.size, variance)
+
+
+def _print_fvu_summary(support_fvu: float, validation_fvu: float | None) -> None:
+    support_str = _format_fvu_value(support_fvu)
+    message = f"[NeSymReSAdapter] support FVU={support_str}"
+    if validation_fvu is not None:
+        message = f"{message} | validation FVU={_format_fvu_value(validation_fvu)}"
+    print(message, flush=True)
+
+
+def _format_fvu_value(value: float) -> str:
+    if np.isnan(value):
+        return "nan"
+    if np.isposinf(value):  # pragma: no cover - defensive
+        return "+inf"
+    if np.isneginf(value):  # pragma: no cover - defensive
+        return "-inf"
+    return f"{value:.6g}"
