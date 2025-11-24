@@ -39,6 +39,7 @@ Symbolic Regression has been approached with many different methods and paradigm
   - [1. Clone the repository](#1-clone-the-repository)
   - [2. Install the package](#2-install-the-package)
 - [Usage](#usage)
+- [Evaluation Quickstart](#evaluation-quickstart)
 - [Training](#training)
   - [Express](#express)
   - [Manual](#manual)
@@ -80,6 +81,23 @@ Symbolic Regression has been approached with many different methods and paradigm
 git clone https://github.com/psaegert/flash-ansr
 cd flash-ansr
 ```
+
+# Evaluation Quickstart
+
+All evaluations run through the shared CLI entry point `flash_ansr evaluate-run`. Each YAML config wires a data source (FlashANSR datasets or FastSRB), a model adapter (FlashANSR, PySR, NeSymReS), and runner settings (limits, resume, output path). For the full walkthrough—including environment setup, checkpoint locations, and troubleshooting—see [`src/flash_ansr/eval/README.md`](src/flash_ansr/eval/README.md). The table below summarizes the three evaluation families used in the paper.
+
+| Evaluation | Dependencies | Required assets | Example command |
+| --- | --- | --- | --- |
+| ⚡ANSR main evaluation | `pip install -e .` (plus CUDA toolkit), Hugging Face checkpoint via `flash_ansr install_model` | `models/psaegert/flash-ansr-v23.0-120M/*`, dataset configs under `configs/evaluation/` | `flash_ansr evaluate-run -c configs/evaluation/scaling/flash_ansr_fastsrb.yaml --experiment flash_ansr_fastsrb_choices_01024 -v` |
+| PySR baseline | + `pip install pysr` (Julia + PyCall dependencies). Optional watchdog `python scripts/evaluate_PySR.py ...` | Dataset YAML + SimpliPy engine (bundled), no model files | `flash_ansr evaluate-run -c configs/evaluation/run_pysr_nguyen.yaml -v` |
+| NeSymReS baseline | Python 3.13 env, `pip install -e .`, NeSymReS submodule via `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`, Lightning 2.5.x, patched Hydra/OmegaConf | `models/nesymres/{100M.ckpt,config.yaml,eq_setting.json}` | `flash_ansr evaluate-run -c configs/evaluation/scaling/nesymres_fastsrb.yaml --experiment nesymres_fastsrb_beam_00032 -v` |
+
+Tips:
+
+- `--limit N` runs a quick smoke-test before committing to full sweeps.
+- `--save-every 50` checkpoints progress in `results/.../*.pkl` so long evaluations can resume automatically.
+- When PySR lives in a separate environment, point the watchdog at it via `python scripts/evaluate_PySR.py --eval-python /path/to/python ...`.
+
 
 ## 2. Install the package
 

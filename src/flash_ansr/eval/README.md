@@ -1,8 +1,67 @@
-# Notes on evaluating NeSymReS models
+# Evaluation Playbook
 
-The goal of this note is to make reproducing the NeSymReS FastSRB evaluation as
-frictionless as possible for reviewers. Follow the checklist below starting from a
-fresh Python 3.13 environment with `flash-ansr` cloned locally.
+This document is the companion to the main README’s [Evaluation Quickstart](../../README.md#evaluation-quickstart). It enumerates the exact setup and commands for every evaluation path used in the paper:
+
+- ⚡ANSR (main model) on curated sets, FastSRB, and compute-scaling sweeps
+- PySR baseline
+- NeSymReS FastSRB baseline
+
+Each section is a checklist: install dependencies, download/patch model assets, run the config, interpret warnings.
+
+## 0. Shared prerequisites
+
+Start from a fresh Python 3.13 environment and a clean checkout of `flash-ansr`.
+
+```bash
+git clone https://github.com/psaegert/flash-ansr
+cd flash-ansr
+python -m venv .venv && source .venv/bin/activate  # or use conda
+pip install -e .
+```
+
+All commands below assume you stay in the repo root and that datasets live under `data/ansr-data/**` per the main README.
+
+## 1. FlashANSR evaluations
+
+1. **Install the desired checkpoint.** Example: `flash_ansr install-model psaegert/flash-ansr-v23.0-120M` (stores under `models/psaegert/flash-ansr-v23.0-120M/`).
+2. **Pick a config under `configs/evaluation/`.**
+	- Curated Nguyen/Feynman/Soose sets: `run_flash_ansr_<dataset>.yaml`
+	- FastSRB benchmark: `run_fastsrb.yaml`
+	- Compute scaling: `scaling/flash_ansr_*.yaml`
+3. **Run the CLI.**
+
+	```bash
+	flash_ansr evaluate-run \
+	  -c configs/evaluation/run_flash_ansr_nguyen.yaml \
+	  --limit 1000 --save-every 100 -v
+	```
+
+4. **Outputs** land under `results/evaluation/.../*.pkl`. Re-run without `--limit` for the full experiment. Use `--experiment <name>` when a config defines multiple sweeps.
+
+## 2. PySR baseline
+
+1. **Install PySR and Julia dependencies** inside the same environment (PySR pulls JuliaCall automatically).
+
+	```bash
+	pip install pysr
+	python -c "from pysr import PySRRegressor"
+	```
+
+	The import triggers Julia’s precompilation. If Julia isn’t available system-wide, follow the [PySR docs](https://astroautomata.com/PySR/install/) first.
+
+2. **Select a config** (e.g., `configs/evaluation/run_pysr_nguyen.yaml` or the scaling sweep under `scaling/pysr_*.yaml`).
+3. **Optional watchdog.** For multi-hour sweeps, `python scripts/evaluate_PySR.py -c <config> --experiment <name> -v` restarts the run if PySR stalls.
+4. **Run directly or via watchdog.**
+
+	```bash
+	flash_ansr evaluate-run -c configs/evaluation/run_pysr_nguyen.yaml -v
+	```
+
+5. **Artifacts** mirror the FlashANSR layout inside `results/evaluation/.../pysr_*.pkl`.
+
+## 3. NeSymReS FastSRB baseline
+
+The goal of this note is to make reproducing the NeSymReS FastSRB evaluation as frictionless as possible for reviewers. Follow the checklist below starting from a fresh Python 3.13 environment with `flash-ansr` cloned locally.
 
 ## 1. Environment & installs
 
@@ -90,4 +149,8 @@ repo is enough.
 
 - `torch was imported before juliacall`: emitted because the environment also has PySR
 	(which depends on JuliaCall). It’s harmless for NeSymReS runs.
-- Lightning checkpoint migration: see §1 if you want to upgrade the checkpoint in place.
+	- Lightning checkpoint migration: see §1 if you want to upgrade the checkpoint in place.
+
+---
+
+Need another evaluation scenario? Mirror one of the configs in `configs/evaluation/`, adjust the `model_adapter` block, and keep the workflow above. Contributions that add new baselines should update this playbook so every reviewer can reproduce them without guesswork.

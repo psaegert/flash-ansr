@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import warnings
 import functools
-from typing import Any, Callable, Iterable, Optional, TYPE_CHECKING
+from typing import Any, Callable, Iterable, Mapping, Optional, TYPE_CHECKING
 
 import numpy as np
 import simplipy
@@ -281,7 +281,11 @@ class NeSymReSAdapter(EvaluationModelAdapter):
             record["prediction_success"] = False
             return EvaluationResult(record)
 
-        predicted_expr = nesymres_output.get("best_bfgs_preds", [None])[0]
+        predicted_expr = _extract_first_prediction(
+            nesymres_output,
+            preferred_key="best_bfgs_preds",
+            fallback_key="best_preds",
+        )
         if predicted_expr is None:
             record["error"] = "NeSymReS returned no expression"
             record["prediction_success"] = False
@@ -298,7 +302,11 @@ class NeSymReSAdapter(EvaluationModelAdapter):
             record["prediction_success"] = False
             return EvaluationResult(record)
 
-        predicted_constants = nesymres_output.get("best_bfgs_consts")
+        predicted_constants = _extract_first_prediction(
+            nesymres_output,
+            preferred_key="best_bfgs_consts",
+            fallback_key="best_consts",
+        )
         if predicted_constants is not None:
             record["predicted_constants"] = _convert_constants(predicted_constants)
 
@@ -487,6 +495,33 @@ def _evaluate_symbolic_expression(predicted_expr: Any, X_support: np.ndarray, X_
     else:
         y_pred_val = np.empty((0, 1), dtype=float)
     return y_pred, y_pred_val
+
+
+def _extract_first_prediction(
+    output: Mapping[str, Any] | None,
+    *,
+    preferred_key: str,
+    fallback_key: str | None = None,
+) -> Any:
+    if not isinstance(output, Mapping):
+        return None
+    candidate = _first_non_none(output.get(preferred_key))
+    if candidate is not None:
+        return candidate
+    if fallback_key is not None:
+        return _first_non_none(output.get(fallback_key))
+    return None
+
+
+def _first_non_none(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if item is not None:
+                return item
+        return None
+    return value
 
 
 def _require_pysr() -> type[Any]:
