@@ -39,12 +39,25 @@ class ResultStore:
         if lengths and len(lengths) != 1:
             raise ValueError("Existing results have inconsistent lengths")
         target_len = lengths.pop() if lengths else 0
+        current_size = self.size
         snapshots = self._ensure_snapshot_defaults(snapshots, target_len)
+        for existing_key in self._store.keys():
+            snapshots.setdefault(existing_key, [None for _ in range(target_len)])
+        for key, values in snapshots.items():
+            if key not in self._store:
+                self._store[key] = [None for _ in range(current_size)]
         for key, values in snapshots.items():
             self._store[key].extend(values)
+        self._validate_lengths()
 
     def append(self, record: Mapping[str, Any]) -> None:
         normalized = self._ensure_record_defaults(dict(record))
+        current_size = self.size
+        for existing_key in self._store.keys():
+            normalized.setdefault(existing_key, None)
+        for key in normalized.keys():
+            if key not in self._store:
+                self._store[key] = [None for _ in range(current_size)]
         for key, value in normalized.items():
             self._store[key].append(value)
         self._validate_lengths()
