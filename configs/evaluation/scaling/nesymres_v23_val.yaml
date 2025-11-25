@@ -1,7 +1,7 @@
 defaults:
   data_source: &nesymres_v23_source
     type: skeleton_dataset
-    dataset: "{{ROOT}}/configs/v23.0-60M/dataset_val.yaml"
+    dataset: "{{ROOT}}/configs/v23.0-3M/dataset_val.yaml"
     n_support: 512
     noise_level: 0.0
     preprocess: false
