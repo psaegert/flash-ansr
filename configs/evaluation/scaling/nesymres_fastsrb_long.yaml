@@ -1,0 +1,45 @@
+defaults:
+  data_source: &nesymres_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 5
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &nesymres_adapter
+    type: nesymres
+    eq_setting_path: "{{ROOT}}/models/nesymres/eq_setting.json"
+    config_path: "{{ROOT}}/models/nesymres/config.yaml"
+    weights_path: "{{ROOT}}/models/nesymres/100M.ckpt"
+    simplipy_engine: "dev_7-3"
+    n_restarts: 4
+    device: cuda
+  runner: &nesymres_fastsrb_runner
+    limit: null
+    save_every: 32
+    resume: true
+
+experiments:
+  nesymres_fastsrb_beam_width_00128:
+    run:
+      data_source: *nesymres_fastsrb_source
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 128
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00128.pkl"
+
+  nesymres_fastsrb_beam_width_00256:
+    run:
+      data_source: *nesymres_fastsrb_source
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 512
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00256.pkl"
