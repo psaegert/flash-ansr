@@ -10,9 +10,9 @@ defaults:
   max_trials: 100
   model_adapter: &nesymres_adapter
     type: nesymres
-    eq_setting_path: "{{ROOT}}/external/nesymres/eq_setting.json"
-    config_path: "{{ROOT}}/external/nesymres/config.yaml"
-    weights_path: "{{ROOT}}/external/nesymres/model.ckpt"
+    eq_setting_path: "{{ROOT}}/models/nesymres/eq_setting.json"
+    config_path: "{{ROOT}}/models/nesymres/config.yaml"
+    weights_path: "{{ROOT}}/models/nesymres/100M.ckpt"
     simplipy_engine: "dev_7-3"
     n_restarts: 4
     device: cuda
