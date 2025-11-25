@@ -351,6 +351,7 @@ def _build_nesymres_adapter(config: Mapping[str, Any], context: Mapping[str, Any
     beam_width = _coerce_optional_int(config.get("beam_width"), "model_adapter.beam_width")
     n_restarts = _coerce_optional_int(config.get("n_restarts"), "model_adapter.n_restarts")
     device = str(config.get("device", "cpu"))
+    remove_padding = bool(config.get("remove_padding", True))
 
     model, fitfunc = load_nesymres(
         eq_setting_path=substitute_root_path(str(eq_setting_path)),
@@ -369,6 +370,7 @@ def _build_nesymres_adapter(config: Mapping[str, Any], context: Mapping[str, Any
         simplipy_engine=simplipy_engine,
         device=device,
         beam_width=beam_width,
+        remove_padding=remove_padding,
     )
 
 

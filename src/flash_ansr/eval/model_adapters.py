@@ -234,6 +234,7 @@ class NeSymReSAdapter(EvaluationModelAdapter):
         *,
         device: str = "cpu",
         beam_width: int | None = None,
+        remove_padding: bool = True,
     ) -> None:
         if not _HAVE_NESYMRES:  # pragma: no cover - defensive guard
             raise ImportError("The 'nesymres' package is required for NeSymReSAdapter")
@@ -242,6 +243,7 @@ class NeSymReSAdapter(EvaluationModelAdapter):
         self.simplipy_engine = simplipy_engine
         self.device = device
         self.beam_width = beam_width
+        self.remove_padding = remove_padding
         self._fit_cfg_params: Any | None = None
         self._max_variables: int | None = None
         self._warned_feature_mismatch = False
@@ -267,8 +269,20 @@ class NeSymReSAdapter(EvaluationModelAdapter):
         record = sample.clone_metadata()
         record["parsimony"] = getattr(self.model, "parsimony", None)
 
-        X_support = self._prepare_inputs(sample.x_support)
-        X_validation = self._prepare_inputs(sample.x_validation)
+        X_support = sample.x_support.copy()
+        X_validation = sample.x_validation.copy()
+
+        if self.remove_padding:
+            variables = record.get("variables") or record.get("variable_names")
+            mask, used_variables = _compute_variable_mask(variables, record.get("skeleton"))
+            if mask is not None:
+                X_support = X_support[:, mask]
+                X_validation = X_validation[:, mask]
+                if used_variables:
+                    record["variable_names"] = used_variables
+
+        X_support = self._prepare_inputs(X_support)
+        X_validation = self._prepare_inputs(X_validation)
         y_fit = (sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support).reshape(-1)
 
         fit_time_start = time.time()

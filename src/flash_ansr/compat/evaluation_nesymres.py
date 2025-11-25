@@ -18,11 +18,13 @@ class NeSymReSEvaluation():
             n_support: int | None = None,
             noise_level: float = 0.0,
             beam_width: int | None = None,
-            device: str = 'cpu') -> None:
+            device: str = 'cpu',
+            remove_padding: bool = True) -> None:
 
         self.n_support = n_support
         self.noise_level = noise_level
         self.beam_width = beam_width
+        self.remove_padding = remove_padding
 
         self.device = device
 
@@ -37,7 +39,8 @@ class NeSymReSEvaluation():
             n_support=config_["n_support"],
             noise_level=config_.get("noise_level", 0.0),
             beam_width=config_.get("beam_width"),
-            device=config_["device"]
+            device=config_["device"],
+            remove_padding=config_.get("remove_padding", True),
         )
 
     def evaluate(
@@ -68,6 +71,7 @@ class NeSymReSEvaluation():
             simplipy_engine=simplipy_engine,
             device=self.device,
             beam_width=self.beam_width,
+            remove_padding=self.remove_padding,
         )
 
         engine = EvaluationEngine(

@@ -16,6 +16,7 @@ defaults:
     simplipy_engine: "dev_7-3"
     n_restarts: 4
     device: cuda
+    remove_padding: true
   runner: &nesymres_v23_runner
     limit: 1000
     save_every: 32
