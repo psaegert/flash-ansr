@@ -21,6 +21,7 @@ from flash_ansr.expressions.normalization import (
     normalize_expression,
     normalize_skeleton,
 )
+from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
 class SkeletonDatasetSource(EvaluationDataSource):
@@ -268,6 +269,13 @@ class SkeletonDatasetSource(EvaluationDataSource):
                 continue
 
             y_support_noisy, y_val_noisy = self._apply_noise(y_support, y_val)
+
+            mask_unused_variable_columns(
+                arrays=(X_support, X_val),
+                variables=self.dataset.skeleton_pool.variables,
+                skeleton_tokens=skeleton,
+                padding=getattr(self.dataset, "padding", None),
+            )
 
             metadata = self._build_metadata_for_skeleton(
                 skeleton=skeleton,

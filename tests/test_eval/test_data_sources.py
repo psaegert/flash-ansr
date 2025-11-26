@@ -230,6 +230,29 @@ def test_skeleton_dataset_metadata_uses_shared_builder():
         dataset.shutdown()
 
 
+def test_skeleton_source_masks_unused_variables_when_zero_padding():
+    dataset = _make_dataset()
+    try:
+        assert dataset.padding == "zero"
+        source = SkeletonDatasetSource(dataset, n_support=8, target_size=1)
+        source.prepare()
+        sample = next(iter(source))
+
+        skeleton = sample.metadata["skeleton"] or []
+        pool_variables = list(dataset.skeleton_pool.variables)
+        skeleton_vars = {token for token in skeleton if token in pool_variables}
+        unused_variables = [var for var in pool_variables if var not in skeleton_vars]
+        if not unused_variables:
+            pytest.skip("Sample used all available variables; masking cannot be asserted")
+
+        column_idx = pool_variables.index(unused_variables[0])
+        assert np.all(sample.x_support[:, column_idx] == 0)
+        if sample.x_validation.size:
+            assert np.all(sample.x_validation[:, column_idx] == 0)
+    finally:
+        dataset.shutdown()
+
+
 def test_skeleton_source_emits_placeholder_on_sampling_failure(monkeypatch):
     dataset = _make_dataset()
     try:

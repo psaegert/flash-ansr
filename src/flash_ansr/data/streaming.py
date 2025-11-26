@@ -14,6 +14,7 @@ from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.expressions.token_ops import substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
+from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
 @dataclass
@@ -308,10 +309,12 @@ def _producer_worker(
                                 skeleton_code, len(skeleton_constants), n_support=n_support
                             )
 
-                            if padding == "zero":
-                                for var_idx, variable in enumerate(skeleton_pool.variables):
-                                    if variable not in skeleton:
-                                        x_support[:, var_idx] = 0
+                            mask_unused_variable_columns(
+                                arrays=(x_support,),
+                                variables=skeleton_pool.variables,
+                                skeleton_tokens=skeleton,
+                                padding=padding,
+                            )
 
                             tokens_to_encode = list(skeleton)
                             if has_expression_wrappers:
