@@ -1,5 +1,5 @@
-flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-3M_fastsrb.yaml -v
-flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-20M_fastsrb.yaml -v
+flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-3M_v23_val.yaml -v
+flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-20M_v23_val.yaml -v
 flash_ansr evaluate-run -c configs/evaluation/scaling/nesymres_v23_val.yaml -v
 
 flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-3M_fastsrb_long.yaml -v
