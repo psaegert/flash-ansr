@@ -650,7 +650,7 @@ class FastSRBSource(EvaluationDataSource):
             if eq_id is not None:
                 per_eq_counts[eq_id] += 1
 
-        pending_slots = schedule[skip:]
+        pending_slots = schedule[skip: skip + self._target_size]
         produced = 0
         noise_rng = None
         if self.noise_level > 0:
@@ -685,7 +685,7 @@ class FastSRBSource(EvaluationDataSource):
                 produced += 1
 
     def _build_schedule(self) -> list[str | None]:
-        slots_needed = max(0, self._target_size)
+        slots_needed = max(0, self._target_size + self._skip)
         if slots_needed == 0:
             return []
         eq_order = list(self._eq_order) or list(self.benchmark.equation_ids())

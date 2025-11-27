@@ -409,3 +409,45 @@ def test_fastsrb_shortfall_does_not_exceed_per_expression(monkeypatch):
     assert len(samples) == target_size
     assert all(count <= repeats for count in counts.values())
     assert counts[eq_ids[2]] == repeats
+
+
+def test_fastsrb_resume_respects_skip_offset(monkeypatch):
+    benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
+    eq_ids = benchmark.equation_ids()[:3]
+    repeats = 2
+    skip = 4
+    target_size = len(eq_ids) * repeats - skip
+
+    source = FastSRBSource(
+        benchmark,
+        target_size=target_size,
+        skip=skip,
+        eq_ids=eq_ids,
+        datasets_per_expression=repeats,
+        support_points=4,
+        sample_points=4,
+        method="random",
+        incremental=True,
+        max_trials=256,
+    )
+    source.prepare()
+
+    produced: list[tuple[str, int]] = []
+
+    def fake_generate(eq_id, sample_index, noise_rng):  # noqa: ARG001
+        produced.append((eq_id, sample_index))
+        record = source._build_placeholder_sample(eq_id, sample_index, reason="synthetic")
+        record.metadata["placeholder"] = False
+        record.metadata.pop("placeholder_reason", None)
+        record.metadata["prediction_success"] = True
+        record.is_placeholder = False
+        record.placeholder_reason = None
+        return record
+
+    monkeypatch.setattr(source, "_generate_sample", fake_generate)
+
+    samples = list(source)
+
+    assert len(samples) == target_size
+    assert all(sample.is_placeholder is False for sample in samples)
+    assert produced == [(eq_ids[2], 0), (eq_ids[2], 1)]
