@@ -674,7 +674,14 @@ class FlashANSR(BaseEstimator):
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
-            y_variance = y.var(dim=0).item()
+            sample_count = y.shape[0]
+            if sample_count <= 1:
+                # Torch warns when computing an unbiased variance with a single sample.
+                # Skip the reduction entirely so downstream scoring quietly falls back
+                # to the residual loss via ``_compute_fvu``.
+                y_variance = float('nan')
+            else:
+                y_variance = y.var(dim=0).item()
 
             X = pad_input_set(X, self.n_variables)
 

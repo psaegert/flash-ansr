@@ -1,0 +1,156 @@
+defaults:
+  data_source: &pysr_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 10
+    support_points: 2048
+    sample_points: 2048
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &pysr_adapter
+    type: pysr
+    timeout_in_seconds: 3600
+    niterations: 128
+    padding: false
+    use_mult_div_operators: false
+    simplipy_engine: "dev_7-3"
+  runner: &pysr_fastsrb_runner
+    limit: null
+    save_every: 4
+    resume: true
+
+experiments:
+  pysr_fastsrb_support_00001:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 1
+        sample_points: 1
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00001.pkl"
+
+  pysr_fastsrb_support_00002:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 2
+        sample_points: 2
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00002.pkl"
+
+  pysr_fastsrb_support_00004:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 4
+        sample_points: 4
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00004.pkl"
+
+  pysr_fastsrb_support_00008:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 8
+        sample_points: 8
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00008.pkl"
+
+  pysr_fastsrb_support_00016:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 16
+        sample_points: 16
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00016.pkl"
+
+  pysr_fastsrb_support_00032:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 32
+        sample_points: 32
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00032.pkl"
+
+  pysr_fastsrb_support_00064:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 64
+        sample_points: 64
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00064.pkl"
+
+  pysr_fastsrb_support_00128:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 128
+        sample_points: 128
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00128.pkl"
+
+  pysr_fastsrb_support_00256:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 256
+        sample_points: 256
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00256.pkl"
+
+  pysr_fastsrb_support_00512:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 512
+        sample_points: 512
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_00512.pkl"
+
+  pysr_fastsrb_support_01024:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 1024
+        sample_points: 1024
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_01024.pkl"
+
+  pysr_fastsrb_support_02048:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        support_points: 2048
+        sample_points: 2048
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/fastsrb/support_02048.pkl"

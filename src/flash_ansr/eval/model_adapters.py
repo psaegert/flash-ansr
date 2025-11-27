@@ -458,9 +458,6 @@ def _create_pysr_model(
             "pow1_5": lambda x: x ** (1 / 5),
         }
         | additional_extra_sympy_mappings,
-        constraints={
-            "^": (-1, 3),
-        },
     )
 
 
