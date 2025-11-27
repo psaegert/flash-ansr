@@ -5,8 +5,8 @@ import math
 import random
 import re
 import warnings
-from itertools import cycle
-from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
+from collections import defaultdict
+from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence, TypeVar
 
 import numpy as np
 from simplipy.utils import numbers_to_constant
@@ -22,6 +22,40 @@ from flash_ansr.expressions.normalization import (
     normalize_skeleton,
 )
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
+
+
+T = TypeVar("T")
+
+
+def _repeat_items_with_placeholders(
+    items: Sequence[T],
+    repeats: int,
+    slots: int,
+    *,
+    start_offset: int = 0,
+) -> list[T | None]:
+    if repeats < 1:
+        raise ValueError("repeats must be positive")
+    if slots <= 0:
+        return []
+
+    required = slots + max(0, start_offset)
+    schedule: list[T | None] = []
+
+    if items:
+        for item in items:
+            schedule.extend([item] * repeats)
+            if len(schedule) >= required:
+                break
+
+    if len(schedule) < required:
+        schedule.extend([None] * (required - len(schedule)))
+
+    start = min(start_offset, len(schedule))
+    trimmed = schedule[start:]
+    if len(trimmed) > slots:
+        trimmed = trimmed[:slots]
+    return trimmed
 
 
 class SkeletonDatasetSource(EvaluationDataSource):
@@ -149,12 +183,15 @@ class SkeletonDatasetSource(EvaluationDataSource):
         if self._target_size <= 0:
             return
 
+        self._ensure_skeleton_sequence()
         if not self._skeleton_sequence:
             warnings.warn("No skeletons available for deterministic evaluation.", RuntimeWarning)
             placeholder_count = self._target_size
             placeholder_skeleton: tuple[str, ...] = tuple()
             for _ in range(placeholder_count):
                 yield self._build_placeholder_sample(placeholder_skeleton, reason="source_exhausted")
+            self._resume_expression_index = 0
+            self._resume_dataset_offset = 0
             return
 
         if self.preprocess:
@@ -163,51 +200,44 @@ class SkeletonDatasetSource(EvaluationDataSource):
                 RuntimeWarning,
             )
 
-        produced = 0
         start_expression = self._resume_expression_index
         start_rep = self._resume_dataset_offset
+        start_offset = (start_expression * per_expression) + start_rep
 
-        expression_index = start_expression
-        while produced < self._target_size and self._skeleton_sequence is not None:
-            if expression_index >= len(self._skeleton_sequence):
-                warnings.warn(
-                    "Deterministic SkeletonDatasetSource exhausted available skeletons before reaching the target size.",
-                    RuntimeWarning,
-                )
-                break
+        schedule = _repeat_items_with_placeholders(
+            self._skeleton_sequence,
+            per_expression,
+            self._target_size,
+            start_offset=start_offset,
+        )
 
-            skeleton = self._skeleton_sequence[expression_index]
-            rep_begin = start_rep if expression_index == start_expression else 0
-            for rep_index in range(rep_begin, per_expression):
-                if produced >= self._target_size:
-                    break
+        schedule_placeholders = 0
+        last_skeleton: tuple[str, ...] | None = None
+        if start_expression < len(self._skeleton_sequence):
+            last_skeleton = self._skeleton_sequence[start_expression]
 
-                sample = self._build_deterministic_sample(skeleton)
-                if sample is None:
-                    continue
+        for skeleton in schedule:
+            if skeleton is None:
+                schedule_placeholders += 1
+                placeholder_basis = last_skeleton or (self._skeleton_sequence[-1] if self._skeleton_sequence else tuple())
+                yield self._build_placeholder_sample(placeholder_basis, reason="source_exhausted")
+                continue
 
-                yield sample
-                produced += 1
-                self._advance_resume_cursor(expression_index, rep_index)
+            last_skeleton = skeleton
+            yield self._build_deterministic_sample(skeleton)
 
-            expression_index += 1
-        shortfall = self._target_size - produced
-        if shortfall > 0:
+        if schedule_placeholders > 0:
+            produced = self._target_size - schedule_placeholders
             warnings.warn(
                 f"Deterministic SkeletonDatasetSource only yielded {produced} / {self._target_size} samples.",
                 RuntimeWarning,
             )
-
-            if self._skeleton_sequence:
-                last_index = min(len(self._skeleton_sequence) - 1, max(0, expression_index - 1))
-                placeholder_skeleton = self._skeleton_sequence[last_index]
-            else:
-                placeholder_skeleton = tuple()
-
-            for _ in range(shortfall):
-                yield self._build_placeholder_sample(placeholder_skeleton, reason="source_exhausted")
-            self._resume_expression_index = len(self._skeleton_sequence) if self._skeleton_sequence else 0
+            self._resume_expression_index = len(self._skeleton_sequence)
             self._resume_dataset_offset = 0
+        else:
+            total_processed = start_offset + self._target_size
+            self._resume_expression_index = total_processed // per_expression
+            self._resume_dataset_offset = total_processed % per_expression
 
     def state_dict(self) -> Mapping[str, Any]:
         return {
@@ -230,15 +260,6 @@ class SkeletonDatasetSource(EvaluationDataSource):
         per_expression = self.datasets_per_expression
         self._resume_expression_index = skip // per_expression
         self._resume_dataset_offset = skip % per_expression
-
-    def _advance_resume_cursor(self, expression_index: int, rep_index: int) -> None:
-        next_rep = rep_index + 1
-        if next_rep >= self.datasets_per_expression:
-            self._resume_expression_index = expression_index + 1
-            self._resume_dataset_offset = 0
-        else:
-            self._resume_expression_index = expression_index
-            self._resume_dataset_offset = next_rep
 
     def _build_deterministic_sample(self, skeleton: tuple[str, ...]) -> EvaluationSample:
         pool = self.dataset.skeleton_pool
@@ -574,7 +595,6 @@ class FastSRBSource(EvaluationDataSource):
             raise ValueError("support_points must be positive")
         if datasets_per_expression < 1:
             raise ValueError("datasets_per_expression must be positive")
-
         self.benchmark = benchmark
         self.eq_ids = list(eq_ids) if eq_ids is not None else None
         self.datasets_per_expression = int(datasets_per_expression)
@@ -594,7 +614,8 @@ class FastSRBSource(EvaluationDataSource):
         self._skip = max(0, int(skip))
 
         base_eq_ids = self.eq_ids if self.eq_ids is not None else benchmark.equation_ids()
-        self._total_available = len(base_eq_ids) * self.datasets_per_expression
+        self._eq_order = list(base_eq_ids)
+        self._total_available = len(self._eq_order) * self.datasets_per_expression
 
         self._simplipy_engine = None
 
@@ -617,19 +638,19 @@ class FastSRBSource(EvaluationDataSource):
         if self.random_state is not None:
             iterate_rng = np.random.default_rng(self.random_state)
 
-        iterator = self.benchmark.iter_samples(
-            eq_ids=self.eq_ids,
-            count=self.datasets_per_expression,
-            random_state=iterate_rng if iterate_rng is not None else self.random_state,
-            n_points=self.sample_points,
-            method=self.method,
-            max_trials=self.max_trials,
-            incremental=self.incremental,
-        )
-
         self._resample_rng = iterate_rng
 
-        skipped = 0
+        schedule = self._build_schedule()
+        if not schedule:
+            return
+
+        per_eq_counts: dict[str, int] = defaultdict(int)
+        skip = min(self._skip, len(schedule))
+        for eq_id in schedule[:skip]:
+            if eq_id is not None:
+                per_eq_counts[eq_id] += 1
+
+        pending_slots = schedule[skip:]
         produced = 0
         noise_rng = None
         if self.noise_level > 0:
@@ -638,52 +659,53 @@ class FastSRBSource(EvaluationDataSource):
             else:
                 noise_rng = np.random.default_rng()
 
-        for eq_id, sample_index, sample in iterator:
-            if skipped < self._skip:
-                skipped += 1
-                continue
+        for eq_id in pending_slots:
             if produced >= self._target_size:
                 break
 
-            evaluation_sample = self._build_sample(eq_id, sample_index, sample, noise_rng)
-            if evaluation_sample is None:
-                evaluation_sample = self._resample_sample(eq_id, sample_index, noise_rng)
-                if evaluation_sample is None:
-                    continue
+            if eq_id is None:
+                yield self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
+                produced += 1
+                continue
 
-            yield evaluation_sample
+            sample_index = per_eq_counts[eq_id]
+            per_eq_counts[eq_id] = sample_index + 1
+
+            record = self._generate_sample(eq_id, sample_index, noise_rng)
+            yield record
             produced += 1
 
-        shortfall = self._target_size - produced
-        if shortfall > 0:
+        if produced < self._target_size:
             warnings.warn(
                 f"FastSRBSource only yielded {produced} / {self._target_size} samples.",
                 RuntimeWarning,
             )
-
-            filler_ids = list(self.eq_ids or self.benchmark.equation_ids())
-            if not filler_ids:
-                filler_ids = ["__placeholder__"]
-            filler_cycle = cycle(filler_ids)
-
-            for _ in range(shortfall):
-                eq_id = next(filler_cycle)
-                placeholder = self._build_placeholder_sample(eq_id, sample_index=-1, reason="source_exhausted")
-                yield placeholder
+            while produced < self._target_size:
+                yield self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
                 produced += 1
 
-    # ------------------------------------------------------------------
-    def _resample_sample(
+    def _build_schedule(self) -> list[str | None]:
+        slots_needed = max(0, self._target_size)
+        if slots_needed == 0:
+            return []
+        eq_order = list(self._eq_order) or list(self.benchmark.equation_ids())
+        return _repeat_items_with_placeholders(
+            eq_order,
+            self.datasets_per_expression,
+            slots_needed,
+        )
+
+    def _generate_sample(
         self,
         eq_id: str,
         sample_index: int,
         noise_rng: np.random.Generator | None,
-    ) -> EvaluationSample | None:
+    ) -> EvaluationSample:
         attempts = 0
         rng = self._resample_rng if self._resample_rng is not None else self.random_state
         while attempts < self._resample_attempts:
             try:
-                replacement = self.benchmark.sample(
+                candidate = self.benchmark.sample(
                     eq_id,
                     n_points=self.sample_points,
                     method=self.method,
@@ -693,14 +715,13 @@ class FastSRBSource(EvaluationDataSource):
                 )
             except Exception as exc:  # pragma: no cover - defensive against benchmark issues
                 warnings.warn(
-                    f"FastSRBSource failed to resample {eq_id}: {exc}. Skipping remaining attempts.",
-                    RuntimeWarning,
+                    f"FastSRBSource failed to sample {eq_id}: {exc}.", RuntimeWarning
                 )
                 break
 
-            evaluation_sample = self._build_sample(eq_id, sample_index, replacement, noise_rng)
-            if evaluation_sample is not None:
-                return evaluation_sample
+            result = self._build_sample(eq_id, sample_index, candidate, noise_rng)
+            if result is not None:
+                return result
             attempts += 1
 
         total_attempts = attempts or self._resample_attempts

@@ -279,6 +279,40 @@ def test_skeleton_source_emits_placeholder_on_sampling_failure(monkeypatch):
         dataset.shutdown()
 
 
+def test_skeleton_source_shortfall_inserts_source_exhausted_placeholders(monkeypatch):
+    dataset = _make_dataset()
+    try:
+        pool = dataset.skeleton_pool
+        skeletons = sorted(list(pool.skeletons))
+        if not skeletons:
+            pytest.skip("test dataset does not include skeletons")
+
+        limited = skeletons[:1]
+        pool.skeletons = set(limited)
+        pool.skeleton_codes = {s: pool.skeleton_codes[s] for s in limited}
+
+        monkeypatch.setattr(SkeletonDatasetSource, "_populate_skeleton_pool", lambda self, needed: None)
+
+        target_size = len(limited) + 2
+        source = SkeletonDatasetSource(
+            dataset,
+            n_support=8,
+            target_size=target_size,
+            device="cpu",
+            datasets_per_expression=1,
+        )
+        source.prepare()
+
+        samples = list(source)
+        placeholders = [sample for sample in samples if sample.metadata.get("placeholder")]
+
+        assert len(samples) == target_size
+        assert len(placeholders) == target_size - len(limited)
+        assert {p.metadata.get("placeholder_reason") for p in placeholders} == {"source_exhausted"}
+    finally:
+        dataset.shutdown()
+
+
 def test_fastsrb_source_emits_placeholder_when_resampling_exhausted(monkeypatch):
     benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
     source = FastSRBSource(
@@ -325,3 +359,53 @@ def test_fastsrb_source_fills_shortfall_with_placeholders():
     assert len(samples) == target_size
     assert len(placeholders) >= target_size - len(eq_ids)
     assert reasons == {"source_exhausted"}
+
+
+def test_fastsrb_shortfall_does_not_exceed_per_expression(monkeypatch):
+    benchmark = FastSRBBenchmark(FASTSRB_BENCHMARK_PATH, random_state=0)
+    eq_ids = benchmark.equation_ids()[:3]
+    repeats = 2
+    target_size = len(eq_ids) * repeats
+
+    source = FastSRBSource(
+        benchmark,
+        target_size=target_size,
+        eq_ids=eq_ids,
+        datasets_per_expression=repeats,
+        support_points=4,
+        sample_points=4,
+        method="random",
+        incremental=True,
+        max_trials=256,
+    )
+    source.prepare()
+
+    provided = [
+        (eq_ids[0], 0, {}),
+        (eq_ids[0], 1, {}),
+        (eq_ids[1], 0, {}),
+        (eq_ids[1], 1, {}),
+        (eq_ids[2], 0, {}),
+    ]
+
+    def fake_iter_samples(**kwargs):  # noqa: ARG001
+        yield from provided
+
+    def fake_build_sample(eq_id, sample_index, sample, noise_rng):  # noqa: ARG001
+        record = source._build_placeholder_sample(eq_id, sample_index, reason="synthetic")
+        record.metadata["placeholder"] = False
+        record.metadata.pop("placeholder_reason", None)
+        record.metadata["prediction_success"] = True
+        record.is_placeholder = False
+        record.placeholder_reason = None
+        return record
+
+    monkeypatch.setattr(source.benchmark, "iter_samples", fake_iter_samples)
+    monkeypatch.setattr(source, "_build_sample", fake_build_sample)
+
+    samples = list(source)
+    counts = Counter(sample.metadata["benchmark_eq_id"] for sample in samples)
+
+    assert len(samples) == target_size
+    assert all(count <= repeats for count in counts.values())
+    assert counts[eq_ids[2]] == repeats

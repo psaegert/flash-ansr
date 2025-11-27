@@ -73,7 +73,6 @@ class FlashANSRAdapter(EvaluationModelAdapter):
             record["fit_time"] = fit_time
             record["prediction_success"] = True
         except (ConvergenceError, OverflowError, TypeError, ValueError) as exc:
-            warnings.warn(f"Error while fitting model: {exc}. Filling nan.")
             record["error"] = str(exc)
             record["prediction_success"] = False
             return EvaluationResult(record)
