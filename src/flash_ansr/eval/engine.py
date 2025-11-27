@@ -60,20 +60,24 @@ class EvaluationEngine:
         if callable(prepare_source):
             prepare_source(adapter=self.model_adapter)
 
-        total_target = limit if limit is not None else getattr(self.data_source, "size_hint", lambda: None)()
+        existing_results = self.result_store.size
+        pending_target = limit if limit is not None else getattr(self.data_source, "size_hint", lambda: None)()
+        if pending_target is not None:
+            pending_target = max(0, int(pending_target))
+        overall_target = None if pending_target is None else existing_results + pending_target
 
         iterator: Iterable[EvaluationSample] = self.data_source
         processed = 0
 
         progress_bar = None
         if progress and verbose:
-            progress_bar = tqdm(total=total_target, desc="Evaluating", smoothing=0.0)
+            progress_bar = tqdm(total=pending_target, desc="Evaluating", smoothing=0.0)
 
         tracker: _EvaluationProgressTracker | None = None
         if log_placeholders or (summary_interval is not None and summary_interval > 0):
             tracker = _EvaluationProgressTracker(
                 result_store=self.result_store,
-                total_target=total_target,
+                total_target=overall_target,
                 logger=lambda message: self._log_message(message, progress_bar),
                 log_placeholders=log_placeholders,
             )

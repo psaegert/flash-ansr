@@ -32,6 +32,13 @@ class _FlakyAdapter:
         return EvaluationResult(record)
 
 
+class _PassthroughAdapter:
+    def evaluate_sample(self, sample):
+        record = sample.clone_metadata()
+        record["prediction_success"] = True
+        return EvaluationResult(record)
+
+
 def _dummy_sample(idx: int) -> EvaluationSample:
     data = np.zeros((2, 1), dtype=np.float32)
     metadata = {"sample_id": idx}
@@ -115,3 +122,24 @@ def test_engine_can_resume_from_saved_results(tmp_path):
     assert final_snapshot["placeholder"] == [True, False, False]
     assert final_snapshot["prediction_success"] == [False, True, True]
     assert final_snapshot["placeholder_reason"][0] == "adapter_exception"
+
+
+def test_progress_tracker_reports_remaining_on_resume(capsys):
+    existing_records = {
+        "sample_id": [0, 1, 2],
+        "placeholder": [False, False, False],
+        "placeholder_reason": [None, None, None],
+        "prediction_success": [True, True, True],
+    }
+    store = ResultStore(existing_records)
+
+    samples = [_dummy_sample(idx) for idx in range(3, 5)]
+    source = _ListDataSource(samples)
+    adapter = _PassthroughAdapter()
+
+    engine = EvaluationEngine(data_source=source, model_adapter=adapter, result_store=store)
+    engine.run(limit=2, progress=False, verbose=False, summary_interval=1)
+
+    output = capsys.readouterr().out
+    assert "[Evaluation] Starting state: total=3; valid=3; placeholders=0; remaining=2" in output
+    assert "Final evaluation summary" in output
