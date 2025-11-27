@@ -59,6 +59,8 @@ def build_evaluation_run(
         raise KeyError("run.model_adapter section is required")
     runner_cfg = run_cfg.get("runner", {})
 
+    data_target_limit = _coerce_optional_int(data_cfg.get("target_size"), "data_source.target_size")
+
     save_every = save_every_override if save_every_override is not None else runner_cfg.get("save_every")
     save_every = _coerce_optional_int(save_every, "runner.save_every")
 
@@ -80,8 +82,15 @@ def build_evaluation_run(
     limit_value = limit_override if limit_override is not None else runner_cfg.get("limit")
     limit_value = _coerce_optional_int(limit_value, "runner.limit")
 
+    preloaded_assets: dict[str, Any] = {}
+
     if limit_value is None:
-        limit_value = _coerce_optional_int(data_cfg.get("target_size"), "data_source.target_size")
+        limit_value = data_target_limit
+    if limit_value is None:
+        inferred_limit, assets = _infer_total_limit_from_data_source(data_cfg)
+        limit_value = inferred_limit
+        preloaded_assets.update(assets)
+
     total_limit = limit_value
 
     if total_limit is not None:
@@ -99,15 +108,27 @@ def build_evaluation_run(
     else:
         remaining = None
 
-    target_override = remaining if remaining is not None else _coerce_optional_int(
-        data_cfg.get("target_size"), "data_source.target_size"
-    )
+    target_override = remaining if remaining is not None else data_target_limit
 
     data_source, context = _build_data_source(
         data_cfg,
         target_size_override=target_override,
         skip=existing,
+        preloaded_assets=preloaded_assets,
     )
+
+    size_hint = getattr(data_source, "size_hint", None)
+    pending = size_hint() if callable(size_hint) else None
+    if pending is not None and pending <= 0:
+        return EvaluationRunPlan(
+            engine=None,
+            remaining=0,
+            save_every=save_every,
+            output_path=output_path,
+            completed=True,
+            total_limit=total_limit if total_limit is not None else existing,
+            existing_results=existing,
+        )
 
     adapter = _build_model_adapter(model_cfg, context=context)
 
@@ -136,13 +157,17 @@ def _build_data_source(
     *,
     target_size_override: int | None,
     skip: int,
+    preloaded_assets: Mapping[str, Any] | None = None,
 ) -> tuple[SkeletonDatasetSource | FastSRBSource, dict[str, Any]]:
+    preloaded_assets = dict(preloaded_assets or {})
     dtype = str(config.get("type", "skeleton_dataset")).lower()
     if dtype == "skeleton_dataset":
-        dataset_spec = config.get("dataset")
-        if dataset_spec is None:
-            raise ValueError("data_source.dataset must be provided for skeleton_dataset sources")
-        dataset = _load_dataset(dataset_spec)
+        dataset = preloaded_assets.get("dataset")
+        if dataset is None:
+            dataset_spec = config.get("dataset")
+            if dataset_spec is None:
+                raise ValueError("data_source.dataset must be provided for skeleton_dataset sources")
+            dataset = _load_dataset(dataset_spec)
 
         target_size = target_size_override
         n_support = _coerce_optional_int(config.get("n_support"), "data_source.n_support")
@@ -176,13 +201,15 @@ def _build_data_source(
         return source, {"dataset": dataset}
 
     if dtype == "fastsrb":
-        benchmark_path = config.get("benchmark_path")
-        if benchmark_path is None:
-            raise ValueError("data_source.benchmark_path must be provided for FastSRB sources")
-        benchmark = FastSRBBenchmark(
-            substitute_root_path(str(benchmark_path)),
-            random_state=_coerce_optional_int(config.get("benchmark_random_state"), "data_source.benchmark_random_state"),
-        )
+        benchmark = preloaded_assets.get("benchmark")
+        if benchmark is None:
+            benchmark_path = config.get("benchmark_path")
+            if benchmark_path is None:
+                raise ValueError("data_source.benchmark_path must be provided for FastSRB sources")
+            benchmark = FastSRBBenchmark(
+                substitute_root_path(str(benchmark_path)),
+                random_state=_coerce_optional_int(config.get("benchmark_random_state"), "data_source.benchmark_random_state"),
+            )
 
         eq_ids = _parse_equation_ids(config.get("eq_ids"))
         datasets_per_expression_cfg = config.get("datasets_per_expression")
@@ -239,6 +266,54 @@ def _build_data_source(
         return source, {"benchmark": benchmark}
 
     raise ValueError(f"Unsupported data source type: {dtype}")
+
+
+def _infer_total_limit_from_data_source(config: Mapping[str, Any]) -> tuple[int | None, dict[str, Any]]:
+    target_size = _coerce_optional_int(config.get("target_size"), "data_source.target_size")
+    if target_size is not None:
+        return target_size, {}
+
+    dtype = str(config.get("type", "skeleton_dataset")).lower()
+    if dtype == "skeleton_dataset":
+        dataset_spec = config.get("dataset")
+        if dataset_spec is None:
+            raise ValueError("data_source.dataset must be provided for skeleton_dataset sources")
+        dataset = _load_dataset(dataset_spec)
+        repeats = _coerce_optional_int(
+            config.get("datasets_per_expression"),
+            "data_source.datasets_per_expression",
+        )
+        per_expression = repeats if repeats is not None and repeats > 0 else 1
+        pool_size = len(getattr(dataset, "skeleton_pool"))
+        return pool_size * per_expression, {"dataset": dataset}
+
+    if dtype != "fastsrb":
+        return None, {}
+
+    benchmark_path = config.get("benchmark_path")
+    if benchmark_path is None:
+        raise ValueError("data_source.benchmark_path must be provided for FastSRB sources")
+
+    benchmark = FastSRBBenchmark(
+        substitute_root_path(str(benchmark_path)),
+        random_state=_coerce_optional_int(config.get("benchmark_random_state"), "data_source.benchmark_random_state"),
+    )
+
+    eq_ids = _parse_equation_ids(config.get("eq_ids"))
+    datasets_per_expression_cfg = config.get("datasets_per_expression")
+    legacy_count_cfg = config.get("count")
+    repeats_field = "data_source.datasets_per_expression"
+    repeats_value = datasets_per_expression_cfg
+    if repeats_value is None:
+        repeats_field = "data_source.count"
+        repeats_value = legacy_count_cfg
+    if repeats_value is None:
+        repeats_field = "data_source.datasets_per_expression"
+        repeats_value = 1
+    datasets_per_expression = _coerce_int(repeats_value, repeats_field)
+
+    available_ids = eq_ids if eq_ids is not None else benchmark.equation_ids()
+    return len(available_ids) * datasets_per_expression, {"benchmark": benchmark}
 
 
 AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter]
