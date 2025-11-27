@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pickle
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping
 
@@ -70,6 +70,26 @@ class ResultStore:
         resolved.parent.mkdir(parents=True, exist_ok=True)
         with resolved.open("wb") as handle:
             pickle.dump(self.snapshot(), handle)
+
+    def statistics(self) -> Dict[str, Any]:
+        """Return aggregate counts for valid results and placeholders."""
+
+        total = self.size
+        placeholder_flags = self._store.get("placeholder", [])
+        placeholder_count = sum(1 for flag in placeholder_flags if flag)
+        placeholder_reasons: Counter[str] = Counter()
+        if placeholder_count:
+            reason_values = self._store.get("placeholder_reason", [])
+            for flag, reason in zip(placeholder_flags, reason_values):
+                if flag:
+                    placeholder_reasons[str(reason or "unspecified")] += 1
+
+        return {
+            "total": total,
+            "valid": total - placeholder_count,
+            "placeholders": placeholder_count,
+            "placeholder_reasons": dict(placeholder_reasons),
+        }
 
     def _validate_lengths(self) -> None:
         lengths = [len(values) for values in self._store.values()]
