@@ -37,9 +37,10 @@ Symbolic Regression has been approached with many different methods and paradigm
   - [Software](#software)
 - [Getting Started](#getting-started)
   - [1. Clone the repository](#1-clone-the-repository)
+- [Evaluation Quickstart](#evaluation-quickstart)
   - [2. Install the package](#2-install-the-package)
 - [Usage](#usage)
-- [Evaluation Quickstart](#evaluation-quickstart)
+    - [Prior-only baseline sampling](#prior-only-baseline-sampling)
 - [Training](#training)
   - [Express](#express)
   - [Manual](#manual)
@@ -123,7 +124,13 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Import flash_ansr
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
+from flash_ansr import (
+  FlashANSR,
+  SoftmaxSamplingConfig,
+  PriorSamplingConfig,
+  install_model,
+  get_path,
+)
 
 # Specify the model
 # Here: https://huggingface.co/psaegert/flash-ansr-v21.0-60M
@@ -135,9 +142,9 @@ install_model(MODEL)
 
 # Load the model
 ansr = FlashANSR.load(
-    directory=get_path('models', MODEL),
-    generation_config=SoftmaxSamplingConfig(choices=32),  # optional
-    n_restarts=8,  # optional
+  directory=get_path('models', MODEL),
+  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
+  n_restarts=8,
 ).to(device)
 
 # Define data
@@ -153,6 +160,30 @@ print(ansr.get_expression())
 # Predict with the best expression
 y_pred = ansr.predict(X)
 ```
+
+### Prior-only baseline sampling
+
+To compare posterior sampling against the unconditional Lample–Charton prior, FlashANSR now exposes a `PriorSamplingConfig`. It skips the transformer entirely and samples skeletons directly from the training skeleton pool (after removing holdout pools when `ignore_holdouts=True`). The sampled beams are refined and scored with the same pipeline as beam search or softmax sampling, which makes it a handy baseline.
+
+```python
+from flash_ansr import PriorSamplingConfig
+
+prior_config = PriorSamplingConfig(
+  samples=64,
+  unique=True,
+  skeleton_pool="{{ROOT}}/configs/test_set/skeleton_pool.yaml",  # or inline dict
+  ignore_holdouts=True,
+)
+
+ansr = FlashANSR.load(
+  directory=get_path('models', MODEL),
+  generation_config=prior_config,
+  n_restarts=4,
+)
+ansr.fit(X, y)
+```
+
+> **Note**: You must provide a skeleton-pool path or config for prior sampling so FlashANSR can draw from the training prior.
 
 
 # Training

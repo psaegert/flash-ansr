@@ -6,7 +6,7 @@ class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
     __slots__ = ('method',)
-    method: Literal['beam_search', 'softmax_sampling', 'mcts']
+    method: Literal['beam_search', 'softmax_sampling', 'mcts', 'prior_sampling']
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments appropriate for the configured method."""
@@ -232,7 +232,51 @@ class MCTSGenerationConfig(GenerationConfigBase):
         }
 
 
-GenerationConfig = BeamSearchConfig | SoftmaxSamplingConfig | MCTSGenerationConfig
+class PriorSamplingConfig(GenerationConfigBase):
+    """Configuration for prior-based skeleton sampling."""
+
+    __slots__ = (
+        'samples',
+        'unique',
+        'ignore_holdouts',
+        'skeleton_pool',
+        'seed',
+    )
+
+    method: Literal['prior_sampling']
+    samples: int
+    unique: bool
+    ignore_holdouts: bool
+    skeleton_pool: str | dict[str, Any] | None
+    seed: int | None
+
+    def __init__(
+        self,
+        *,
+        samples: int = 32,
+        unique: bool = True,
+        ignore_holdouts: bool = True,
+        skeleton_pool: str | dict[str, Any] | None = None,
+        seed: int | None = None,
+    ) -> None:
+        self.method = 'prior_sampling'
+        self.samples = samples
+        self.unique = unique
+        self.ignore_holdouts = ignore_holdouts
+        self.skeleton_pool = skeleton_pool
+        self.seed = seed
+
+    def to_kwargs(self) -> dict[str, Any]:
+        return {
+            'samples': self.samples,
+            'unique': self.unique,
+            'ignore_holdouts': self.ignore_holdouts,
+            'skeleton_pool': self.skeleton_pool,
+            'seed': self.seed,
+        }
+
+
+GenerationConfig = BeamSearchConfig | SoftmaxSamplingConfig | MCTSGenerationConfig | PriorSamplingConfig
 
 
 @overload
@@ -250,7 +294,12 @@ def create_generation_config(*, method: Literal['mcts'], **kwargs: Any) -> MCTSG
     ...
 
 
-def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling', 'mcts'] = 'beam_search', **kwargs: Any) -> GenerationConfig:
+@overload
+def create_generation_config(*, method: Literal['prior_sampling'], **kwargs: Any) -> PriorSamplingConfig:
+    ...
+
+
+def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling', 'mcts', 'prior_sampling'] = 'beam_search', **kwargs: Any) -> GenerationConfig:
     """Factory that builds the method-specific generation configuration."""
     method_normalized = method.lower()
     if method_normalized == 'beam_search':
@@ -259,4 +308,6 @@ def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling
         return SoftmaxSamplingConfig(**kwargs)
     if method_normalized == 'mcts':
         return MCTSGenerationConfig(**kwargs)
+    if method_normalized == 'prior_sampling':
+        return PriorSamplingConfig(**kwargs)
     raise ValueError(f"Invalid generation method: {method}")

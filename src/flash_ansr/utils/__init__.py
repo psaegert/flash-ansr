@@ -12,6 +12,7 @@ from flash_ansr.utils.generation import (
     BeamSearchConfig,
     SoftmaxSamplingConfig,
     MCTSGenerationConfig,
+    PriorSamplingConfig,
     create_generation_config,
 )
 from flash_ansr.utils.paths import (

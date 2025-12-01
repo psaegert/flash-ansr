@@ -437,6 +437,11 @@ class SkeletonPool:
                     n_variables=holdout_pool_obj.n_variables,
                 )
 
+    def clear_holdouts(self) -> None:
+        """Remove all registered holdout pools and associated constraints."""
+        self.holdout_pools = []
+        self.holdout_manager = HoldoutManager(n_variables=self.n_variables, allow_nan=self.allow_nan)
+
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
         '''
         Save the skeleton pool to a directory.
