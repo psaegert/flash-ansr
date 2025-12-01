@@ -3,7 +3,7 @@ defaults:
     type: fastsrb
     benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
     datasets_per_expression: 10
-    support_points: 2048
+    support_points: 1024
     sample_points: 2048
     method: random
     max_trials: 100
@@ -31,7 +31,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 1
-        sample_points: 1
+        sample_points: 2  # fit and validation splits
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -42,7 +42,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 2
-        sample_points: 2
+        sample_points: 4
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -53,7 +53,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 4
-        sample_points: 4
+        sample_points: 8
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -64,7 +64,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 8
-        sample_points: 8
+        sample_points: 16
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -75,7 +75,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 16
-        sample_points: 16
+        sample_points: 32
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -86,7 +86,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 32
-        sample_points: 32
+        sample_points: 64
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -97,7 +97,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 64
-        sample_points: 64
+        sample_points: 128
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -108,7 +108,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 128
-        sample_points: 128
+        sample_points: 256
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -119,7 +119,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 256
-        sample_points: 256
+        sample_points: 512
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -130,7 +130,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 512
-        sample_points: 512
+        sample_points: 1024
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -141,7 +141,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 1024
-        sample_points: 1024
+        sample_points: 2048
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner
@@ -152,7 +152,7 @@ experiments:
       data_source:
         <<: *nesymres_fastsrb_source
         support_points: 2048
-        sample_points: 2048
+        sample_points: 4096
       model_adapter: *nesymres_adapter
       runner:
         <<: *nesymres_fastsrb_runner

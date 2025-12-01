@@ -12,7 +12,7 @@ defaults:
     noise_level: 0.0
   model_adapter: &flash_ansr_adapter
     type: flash_ansr
-    model_path: "{{ROOT}}/models/ansr-models/v23.0-20M"
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-3M"
     evaluation_config: &flash_ansr_eval_config
       n_support: 2048
       n_restarts: 8
@@ -56,7 +56,7 @@ experiments:
           n_support: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00001.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00001.pkl"
 
   flash_ansr_fastsrb_support_00002:
     run:
@@ -71,7 +71,7 @@ experiments:
           n_support: 2
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00002.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00002.pkl"
 
   flash_ansr_fastsrb_support_00004:
     run:
@@ -86,7 +86,7 @@ experiments:
           n_support: 4
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00004.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00004.pkl"
 
   flash_ansr_fastsrb_support_00008:
     run:
@@ -101,7 +101,7 @@ experiments:
           n_support: 8
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00008.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00008.pkl"
 
   flash_ansr_fastsrb_support_00016:
     run:
@@ -116,7 +116,7 @@ experiments:
           n_support: 16
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00016.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00016.pkl"
 
   flash_ansr_fastsrb_support_00032:
     run:
@@ -131,7 +131,7 @@ experiments:
           n_support: 32
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00032.pkl"
 
   flash_ansr_fastsrb_support_00064:
     run:
@@ -146,7 +146,7 @@ experiments:
           n_support: 64
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00064.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00064.pkl"
 
   flash_ansr_fastsrb_support_00128:
     run:
@@ -161,7 +161,7 @@ experiments:
           n_support: 128
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00128.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00128.pkl"
 
   flash_ansr_fastsrb_support_00256:
     run:
@@ -176,7 +176,7 @@ experiments:
           n_support: 256
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00256.pkl"
 
   flash_ansr_fastsrb_support_00512:
     run:
@@ -191,7 +191,7 @@ experiments:
           n_support: 512
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_00512.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_00512.pkl"
 
   flash_ansr_fastsrb_support_01024:
     run:
@@ -206,7 +206,7 @@ experiments:
           n_support: 1024
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_01024.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_01024.pkl"
 
   flash_ansr_fastsrb_support_02048:
     run:
@@ -221,4 +221,4 @@ experiments:
           n_support: 2048
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-20M/fastsrb/support_02048.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-3M/fastsrb/support_02048.pkl"
