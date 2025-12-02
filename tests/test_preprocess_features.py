@@ -8,8 +8,7 @@ import pytest
 from simplipy import SimpliPyEngine
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocess import FlashANSRPreprocessor
-from flash_ansr.preprocess_features import (
+from flash_ansr.preprocessing.feature_extractor import (
     AllowedTermsConfig,
     DistributionSpec,
     ExcludeTermsConfig,
@@ -17,6 +16,7 @@ from flash_ansr.preprocess_features import (
     PromptFeatureExtractor,
     PromptFeatureExtractorConfig,
 )
+from flash_ansr.preprocessing.pipeline import FlashANSRPreprocessor
 from flash_ansr.expressions.skeleton_pool import SkeletonPool
 
 

@@ -6,8 +6,8 @@ from pathlib import Path
 from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSR, BeamSearchConfig
-from flash_ansr.preprocess import FlashANSRPreprocessor
 from flash_ansr.preprocessing import PromptPrefix
+from flash_ansr.preprocessing.pipeline import FlashANSRPreprocessor
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.expressions.skeleton_pool import SkeletonPool
 
