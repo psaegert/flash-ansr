@@ -28,6 +28,11 @@ def zss_tree_edit_distance(
     operators: dict[str, int],
 ) -> float:
     """Compute the Zhang-Shasha tree edit distance between two prefix expressions."""
+    if len(expression1) == 0:
+        expression1 = ["<EMPTY>"]
+    if len(expression2) == 0:
+        expression2 = ["<EMPTY>"]
+
     tree1 = build_tree(expression1, operators)
     tree2 = build_tree(expression2, operators)
 

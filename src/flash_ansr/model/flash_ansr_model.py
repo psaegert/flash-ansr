@@ -292,6 +292,8 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
+        device = data.device
+
         base_tokens, base_input_num = self._resolve_generation_prefix(
             prompt_prefix=prompt_prefix,
             initial_tokens=initial_tokens,
@@ -301,19 +303,43 @@ class FlashANSRModel(nn.Module):
         if isinstance(base_input_num, torch.Tensor):
             base_input_num = base_input_num.tolist()
 
-        # Step 1: Initialize the beam with the initial input sequence
-        beams = [(base_tokens, 0.0)]  # each beam is a tuple: (sequence, score)
-        completed_sequences_heap: list[tuple[float, tuple[int, ...]]] = []
-        completed_sequences_scores: dict[tuple[int, ...], float] = {}
-        simplify_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
-        n_pruned = 0
+        prefix_length = len(base_tokens)
+        if prefix_length >= max_len:
+            raise ValueError(f"Initial token prefix length ({prefix_length}) exceeds max_len ({max_len}).")
 
         memory = self._create_memory(data)
 
         eos_token_id = self.tokenizer['<eos>']
         pad_token_id = self.tokenizer['<pad>']
 
-        pbar = tqdm(total=max_len, disable=not verbose, desc=f"Generating beams (max length: {max_len})", smoothing=0.0)
+        pbar = tqdm(total=max_len - prefix_length, disable=not verbose, desc=f"Generating beams (max length: {max_len})", smoothing=0.0)
+
+        completed_sequences_heap: list[tuple[float, tuple[int, ...]]] = []
+        completed_sequences_scores: dict[tuple[int, ...], float] = {}
+        simplify_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
+        n_pruned = 0
+
+        numeric_template: torch.Tensor | None = None
+        if base_input_num is not None:
+            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
+            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+
+        def build_input_num_tensor(current_length: int, batch_size: int) -> torch.Tensor | None:
+            if numeric_template is None:
+                return None
+            return numeric_template[:current_length].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1)
+
+        sequences = torch.full((beam_width, max_len), pad_token_id, device=device, dtype=torch.long)
+        if prefix_length:
+            sequences[:, :prefix_length] = torch.tensor(base_tokens, device=device, dtype=torch.long)
+
+        lengths = torch.full((beam_width,), prefix_length, device=device, dtype=torch.long)
+        scores = torch.full((beam_width,), float('-inf'), device=device, dtype=torch.float)
+        scores[0] = 0.0
+        finished = torch.zeros(beam_width, dtype=torch.bool, device=device)
+
+        if prefix_length and base_tokens[-1] == eos_token_id:
+            finished[0] = True
 
         def register_completed_sequence(seq_tuple: tuple[int, ...], score: float) -> None:
             nonlocal n_pruned
@@ -338,133 +364,136 @@ class FlashANSRModel(nn.Module):
                 break
 
         with torch.no_grad():
-            for _ in range(max_len):
-                active_sequences: list[list[int]] = []
-                active_scores: list[float] = []
+            for current_length in range(prefix_length, max_len):
+                active_mask = (~finished) & torch.isfinite(scores)
+                if not torch.any(active_mask):
+                    break
 
-                for seq, score in beams:
-                    if seq[-1] == eos_token_id:
-                        register_completed_sequence(tuple(seq), score)
-                        continue  # Don't expand this sequence further
-                    active_sequences.append(seq)
-                    active_scores.append(score)
+                active_indices = active_mask.nonzero(as_tuple=True)[0]
+                current_sequences = {int(idx): sequences[idx, :current_length].tolist() for idx in active_indices.tolist()}
 
-                if len(active_sequences) == 0:
-                    break  # All sequences completed
+                candidate_scores_list: list[torch.Tensor] = []
+                candidate_parents: list[torch.Tensor] = []
+                candidate_tokens: list[torch.Tensor] = []
 
-                max_seq_len = max(len(seq) for seq in active_sequences)
-                input_ids_padded = [seq + [pad_token_id] * (max_seq_len - len(seq)) for seq in active_sequences]
+                for start_idx in range(0, active_indices.numel(), mini_batch_size):
+                    batch_indices = active_indices[start_idx:start_idx + mini_batch_size]
 
-                if base_input_num is not None:
-                    input_num_padded = base_input_num + [torch.nan] * (max_seq_len - len(base_input_num))
-                    base_input_num_tensor = torch.tensor(input_num_padded, device=data.device, dtype=torch.float32).unsqueeze(0)
-                    input_num_tensor = base_input_num_tensor.repeat(len(active_sequences), 1).unsqueeze(-1)
-                else:
-                    input_num_tensor = None
+                    input_ids_tensor = sequences[batch_indices, :current_length]
+                    input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
 
-                input_ids_tensor = torch.tensor(input_ids_padded, device=data.device, dtype=torch.long)
+                    logits = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
+                    next_token_log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
 
-                all_next_token_logits: list[torch.Tensor] = []
-                for start_idx in range(0, len(active_sequences), mini_batch_size):
-                    end_idx = min(start_idx + mini_batch_size, len(active_sequences))
-                    mini_batch = input_ids_tensor[start_idx:end_idx]
+                    vocab_size = next_token_log_probs.size(-1)
+                    if limit_expansions:
+                        expansion_factor = 2 if equivalence_pruning else 1
+                        expansion_per_beam = max(1, min(vocab_size, beam_width * expansion_factor))
+                        top_log_probs, top_token_ids = torch.topk(next_token_log_probs, k=expansion_per_beam, dim=-1)
+                    else:
+                        expansion_per_beam = vocab_size
+                        top_log_probs = next_token_log_probs
+                        top_token_ids = torch.arange(vocab_size, device=next_token_log_probs.device, dtype=torch.long).unsqueeze(0).expand(next_token_log_probs.size(0), -1)
 
-                    logits = self.forward(mini_batch, None, input_num=input_num_tensor[start_idx:end_idx] if input_num_tensor is not None else None, memory=memory)
+                    candidate_scores_list.append(scores[batch_indices].unsqueeze(1) + top_log_probs)
+                    candidate_parents.append(batch_indices.repeat_interleave(expansion_per_beam))
+                    candidate_tokens.append(top_token_ids.reshape(-1))
 
-                    all_next_token_logits.append(logits[:, -1, :])  # Shape: (mini_batch_size, vocab_size)
-
-                next_token_logits = torch.cat(all_next_token_logits, dim=0)
-                next_token_log_probs = torch.log_softmax(next_token_logits, dim=-1)
-
-                vocab_size = next_token_log_probs.size(-1)
-
-                if limit_expansions:
-                    expansion_factor = 2 if equivalence_pruning else 1
-                    expansion_per_beam = max(1, min(vocab_size, beam_width * expansion_factor))
-                    top_log_probs, top_token_ids = torch.topk(next_token_log_probs, k=expansion_per_beam, dim=-1)
-                else:
-                    expansion_per_beam = vocab_size
-                    top_log_probs = next_token_log_probs
-                    top_token_ids = torch.arange(vocab_size, device=next_token_log_probs.device, dtype=torch.long).unsqueeze(0).expand(next_token_log_probs.size(0), -1)
-
-                active_scores_tensor = torch.tensor(active_scores, device=data.device)
-                candidate_scores = active_scores_tensor.unsqueeze(-1) + top_log_probs
-
-                flat_scores = candidate_scores.reshape(-1)
-                flat_parent_indices = torch.arange(len(active_sequences), device=data.device).repeat_interleave(expansion_per_beam)
-                flat_token_indices = top_token_ids.reshape(-1)
+                flat_scores = torch.cat(candidate_scores_list).reshape(-1)
+                flat_parents = torch.cat(candidate_parents)
+                flat_tokens = torch.cat(candidate_tokens)
 
                 sorted_scores, sorted_indices = torch.sort(flat_scores, descending=True)
 
-                next_beams: list[tuple[list[int], float]] = []
+                next_sequences = torch.full_like(sequences, pad_token_id)
+                next_lengths = torch.zeros_like(lengths)
+                next_scores = torch.full_like(scores, float('-inf'))
+                next_finished = torch.zeros_like(finished)
+
                 next_beam_set: set[tuple[int, ...]] = set()
+                next_count = 0
 
                 for rank_idx in range(sorted_indices.numel()):
-                    parent_idx = int(flat_parent_indices[sorted_indices[rank_idx]])
-                    token_id = int(flat_token_indices[sorted_indices[rank_idx]])
-                    base_seq = active_sequences[parent_idx]
+                    parent_idx = int(flat_parents[sorted_indices[rank_idx]])
+                    token_id = int(flat_tokens[sorted_indices[rank_idx]])
+                    base_seq = current_sequences[parent_idx]
                     new_seq = base_seq + [token_id]
                     new_score = float(sorted_scores[rank_idx].item())
 
                     if token_id == eos_token_id:
                         if equivalence_pruning:
-                            candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
-                            expr_key = tuple(candidate_expression)
+                            try:
+                                candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
+                            except ValueError:
+                                simplified_tuple = tuple(new_seq)
+                            else:
+                                expr_key = tuple(candidate_expression)
 
-                            simplified_tuple = simplify_cache.get(expr_key)
-                            if simplified_tuple is None:
-                                candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
+                                tentative_simplified_tuple = simplify_cache.get(expr_key)
+                                if tentative_simplified_tuple is None:
+                                    candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
 
-                                if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
-                                    n_pruned += 1
-                                    continue
+                                    if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
+                                        n_pruned += 1
+                                        continue
 
-                                simplified_tokens = self.tokenizer.encode(
-                                    self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=4)
-                                )
-                                simplified_tuple = tuple(before + simplified_tokens + after)
-                                simplify_cache[expr_key] = simplified_tuple
+                                    simplified_tokens = self.tokenizer.encode(
+                                        self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=4)
+                                    )
+                                    simplified_tuple = tuple(before + simplified_tokens + after)
+                                    simplify_cache[expr_key] = simplified_tuple
                         else:
                             simplified_tuple = tuple(new_seq)
 
                         register_completed_sequence(simplified_tuple, new_score)
                         continue
-                    else:
-                        seq_tuple = tuple(new_seq)
-                        if equivalence_pruning:
-                            if seq_tuple in next_beam_set:
-                                n_pruned += 1
-                                continue
-                            next_beam_set.add(seq_tuple)
 
-                        next_beams.append((new_seq, new_score))
+                    seq_tuple = tuple(new_seq)
+                    if equivalence_pruning and seq_tuple in next_beam_set:
+                        n_pruned += 1
+                        continue
 
-                    if len(next_beams) >= beam_width:
+                    next_beam_set.add(seq_tuple)
+
+                    seq_len = len(new_seq)
+                    next_sequences[next_count, :seq_len] = torch.tensor(new_seq, device=device)
+                    next_lengths[next_count] = seq_len
+                    next_scores[next_count] = new_score
+                    next_finished[next_count] = False
+                    next_count += 1
+
+                    if next_count >= beam_width:
                         break
 
-                beams = next_beams[:beam_width]
-
-                if not beams:
+                if next_count == 0 and completed_sequences_scores:
                     break
+
+                sequences = next_sequences
+                lengths = next_lengths
+                scores = next_scores
+                finished = next_finished
 
                 pbar.set_postfix({'completed': len(completed_sequences_scores), 'pruned': n_pruned})
                 pbar.update(1)
 
-        # Step 7: Combine completed sequences with current beams (in case they are incomplete)
         combined_sequences: list[tuple[list[int], float]] = [
             (list(seq_tuple), score) for seq_tuple, score in completed_sequences_scores.items()
         ]
-        combined_sequences.extend(beams)
 
-        # Step 7.4: Constantify the expressions in completed sequences
+        for beam_idx in range(beam_width):
+            if torch.isfinite(scores[beam_idx]):
+                seq_len = int(lengths[beam_idx].item())
+                if seq_len == 0:
+                    continue
+                seq = sequences[beam_idx, :seq_len].tolist()
+                combined_sequences.append((seq, float(scores[beam_idx].item())))
+
         for i, (seq, score) in enumerate(combined_sequences):
             constantified_seq = self.tokenizer.constantify_expression(seq)
             combined_sequences[i] = (constantified_seq, score)
 
-        # Step 8: Sort all sequences by score (highest scores first)
         combined_sequences = sorted(combined_sequences, key=lambda x: x[1], reverse=True)
 
-        # Step 9: Return the top 'beam_size' sequences
         return [seq for seq, _ in combined_sequences[:beam_width]], [score for _, score in combined_sequences[:beam_width]], [True] * len(combined_sequences[:beam_width])
 
     def mcts_decode(

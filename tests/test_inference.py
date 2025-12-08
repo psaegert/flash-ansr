@@ -17,7 +17,7 @@ from flash_ansr import (
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL = "psaegert/flash-ansr-v21.0-60M"
+MODEL = "psaegert/flash-ansr-v23.0-3M"
 
 
 class TestInference(unittest.TestCase):

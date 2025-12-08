@@ -10,37 +10,32 @@
 
 <!-- TODO: Visual Abstract -->
 
-<img src="./assets/images/nsr-training.drawio.svg" width="100%">
+<img src="./assets/images/nsr-training.drawio.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
 
 > **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
 
 # Introduction
 
 ### Abstract
-Symbolic Regression has been approached with many different methods and paradigms. The overwhelming success of transformer-based language models in recent years has since motivated researchers to solve Symbolic Regression with large-scale pre-training of data-conditioned "equation generators" at competitive levels. However, as most traditional methods, the majority of these Amortized Neural Symbolic Regression methods rely on SymPy to simplify and compile randomly generated training equations, a choice that inevitably brings tradeoffs and requires workarounds to efficiently work at scale. I show that replacing SymPy with a novel token-based simplification algorithm with hand-crafted transformation rules enables training on _fully-procedurally_ generated and _higher-quality_ synthetic data, and thus develop ⚡ANSR. On various test sets, my method perfectly recovers $+80$% more equations numerically than the NeSymReS baseline while being 84 times faster natively, and yields comparable recovery rates to PySR in a quarter of its time. I provide an in-depth performance analysis of my method on stricter and more meaningful metrics than previous work. ⚡ANSR is open-source and available on GitHub and Huggingface, and allows for straight-forward replicability on consumer-grade hardware.
+
+
+### Architecture
+
+<img src="./assets/images/flash-ansr.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
 
 ### Main Results
-<img src="./assets/images/results.png" width="100%">
+<img src="./assets/images/test_time_compute_fastsrb.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
 
-> **Model Comparison.** Up to 3 variables. Default Model Configurations (32 threads / beams).\
-> Bootstrapped Median, 5p, 95p and AR-p ([Noreen 1989](https://scholar.google.com/scholar?hl=en&q=Computer-intensive+methods+for+testing+hypotheses)) values (n=1000).\
-> N = 5000 ([⚡ v7.0](#usage)), 1000 ([PySR](https://github.com/MilesCranmer/PySR), [NeSymReS 100M](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales?tab=readme-ov-file#pretrained-models)).\
+> **Model Comparison.** FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
 > AMD 9950X (16C32T), RTX 4090.
 
 # Table of Contents
 - [Introduction](#introduction)
     - [Abstract](#abstract)
+    - [Architecture](#architecture)
     - [Main Results](#main-results)
 - [Table of Contents](#table-of-contents)
-- [Requirements](#requirements)
-  - [Hardware](#hardware)
-  - [Software](#software)
-- [Getting Started](#getting-started)
-  - [1. Clone the repository](#1-clone-the-repository)
-- [Evaluation Quickstart](#evaluation-quickstart)
-  - [2. Install the package](#2-install-the-package)
 - [Usage](#usage)
-    - [Prior-only baseline sampling](#prior-only-baseline-sampling)
 - [Training](#training)
   - [Express](#express)
   - [Manual](#manual)
@@ -62,62 +57,12 @@ Symbolic Regression has been approached with many different methods and paradigm
   - [Tests](#tests)
 - [Citation](#citation)
 
-# Requirements
-
-## Hardware
-- `32` GB Memory
-- CUDA-enabled GPU
-- `12` GB VRAM
-- `64` GB Storage (subject to change)
-
-## Software
-- Python $\geq$ 3.10
-- `pip` $\geq$ 21.3 with PEP 660 (see https://pip.pypa.io/en/stable/news/#v21-3)
-- (Ubuntu 22.04.3 LTS)
-
-# Getting Started
-## 1. Clone the repository
-
-```sh
-git clone https://github.com/psaegert/flash-ansr
-cd flash-ansr
-```
-
-# Evaluation Quickstart
-
-All evaluations run through the shared CLI entry point `flash_ansr evaluate-run`. Each YAML config wires a data source (FlashANSR datasets or FastSRB), a model adapter (FlashANSR, PySR, NeSymReS), and runner settings (limits, resume, output path). For the full walkthrough—including environment setup, checkpoint locations, and troubleshooting—see [`src/flash_ansr/eval/README.md`](src/flash_ansr/eval/README.md). The table below summarizes the three evaluation families used in the paper.
-
-| Evaluation | Dependencies | Required assets | Example command |
-| --- | --- | --- | --- |
-| ⚡ANSR main evaluation | `pip install -e .` (plus CUDA toolkit), Hugging Face checkpoint via `flash_ansr install_model` | `models/psaegert/flash-ansr-v23.0-120M/*`, dataset configs under `configs/evaluation/` | `flash_ansr evaluate-run -c configs/evaluation/scaling/flash_ansr_fastsrb.yaml --experiment flash_ansr_fastsrb_choices_01024 -v` |
-| PySR baseline | + `pip install pysr` (Julia + PyCall dependencies). Optional watchdog `python scripts/evaluate_PySR.py ...` | Dataset YAML + SimpliPy engine (bundled), no model files | `flash_ansr evaluate-run -c configs/evaluation/run_pysr_nguyen.yaml -v` |
-| NeSymReS baseline | Python 3.13 env, `pip install -e .`, NeSymReS submodule via `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`, Lightning 2.5.x, patched Hydra/OmegaConf | `models/nesymres/{100M.ckpt,config.yaml,eq_setting.json}` | `flash_ansr evaluate-run -c configs/evaluation/scaling/nesymres_fastsrb.yaml --experiment nesymres_fastsrb_beam_00032 -v` |
-
-Tips:
-
-- `--limit N` runs a quick smoke-test before committing to full sweeps.
-- `--save-every 50` checkpoints progress in `results/.../*.pkl` so long evaluations can resume automatically.
-- When PySR lives in a separate environment, point the watchdog at it via `python scripts/evaluate_PySR.py --eval-python /path/to/python ...`.
-
-
-## 2. Install the package
-
-Create a virtual environment (optional):
-
-**conda:**
-
-```sh
-conda create -n flash_ansr python=3.13 ipykernel ipywidgets
-conda activate flash_ansr
-```
-
-Then, install the package with
-
-```sh
-pip install -e .
-```
-
 # Usage
+
+```sh
+pip install flash-ansr
+```
+
 
 ```python
 import torch
@@ -127,14 +72,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import (
   FlashANSR,
   SoftmaxSamplingConfig,
-  PriorSamplingConfig,
   install_model,
   get_path,
 )
 
 # Specify the model
-# Here: https://huggingface.co/psaegert/flash-ansr-v21.0-60M
-MODEL = "psaegert/flash-ansr-v21.0-60M"
+# Here: https://huggingface.co/psaegert/flash-ansr-v23.0-120M
+MODEL = "psaegert/flash-ansr-v23.0-120M"
 
 # Download the latest snapshot of the model
 # By default, the model is downloaded to the directory `./models/` in the package root
@@ -160,31 +104,6 @@ print(ansr.get_expression())
 # Predict with the best expression
 y_pred = ansr.predict(X)
 ```
-
-### Prior-only baseline sampling
-
-To compare posterior sampling against the unconditional Lample–Charton prior, FlashANSR now exposes a `PriorSamplingConfig`. It skips the transformer entirely and samples skeletons directly from the training skeleton pool (after removing holdout pools when `ignore_holdouts=True`). The sampled beams are refined and scored with the same pipeline as beam search or softmax sampling, which makes it a handy baseline.
-
-```python
-from flash_ansr import PriorSamplingConfig
-
-prior_config = PriorSamplingConfig(
-  samples=64,
-  unique=True,
-  skeleton_pool="{{ROOT}}/configs/test_set/skeleton_pool.yaml",  # or inline dict
-  ignore_holdouts=True,
-)
-
-ansr = FlashANSR.load(
-  directory=get_path('models', MODEL),
-  generation_config=prior_config,
-  n_restarts=4,
-)
-ansr.fit(X, y)
-```
-
-> **Note**: You must provide a skeleton-pool path or config for prior sampling so FlashANSR can draw from the training prior.
-
 
 # Training
 
@@ -222,12 +141,8 @@ Test data structured as follows:
 
 ```sh
 ./data/ansr-data/test_set
-├── feynman
-│   └── FeynmanEquations.csv
-├── nguyen
-│   └── nguyen.csv
-└── soose_nc
-    └── nc.csv
+├── fastsrb
+│   └── expressions.yaml
 ```
 
 The test data can be cloned from the Hugging Face data repository:
