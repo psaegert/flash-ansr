@@ -460,6 +460,7 @@ class FlashANSR(BaseEstimator):
         *,
         config: PriorSamplingConfig,
         prompt_prefix: PromptPrefix | None,
+        verbose: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         pool = self._ensure_prior_pool(
             skeleton_pool_ref=config.skeleton_pool,
@@ -479,27 +480,25 @@ class FlashANSR(BaseEstimator):
         if dynamic_sampling:
             selected: list[tuple[str, ...]] = []
             seen: set[tuple[str, ...]] = set()
-            max_attempts = max(config.samples * 10, 100)
-            attempts = 0
-            while len(selected) < config.samples and attempts < max_attempts:
-                attempts += 1
+
+            pbar = tqdm(total=config.samples, desc="Sampling from prior", smoothing=0.0, disable=not verbose)
+
+            while len(selected) < config.samples:
                 try:
                     skeleton, _code, _constants = pool.sample_skeleton(new=True, decontaminate=not config.ignore_holdouts)
                 except NoValidSampleFoundError as exc:
                     if not selected:
                         raise RuntimeError("Unable to sample skeletons from the prior configuration.") from exc
-                    warnings.warn(
-                        "Ran out of valid prior samples before reaching the requested count; returning partial results.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    break
+                    continue
 
                 skeleton_tuple = tuple(skeleton)
                 if config.unique and skeleton_tuple in seen:
                     continue
                 seen.add(skeleton_tuple)
                 selected.append(skeleton_tuple)
+                pbar.update(1)
+
+            pbar.close()
 
             if not selected:
                 return [], [], [], []
@@ -685,6 +684,7 @@ class FlashANSR(BaseEstimator):
                 beams, log_probs, completed, rewards = self._generate_from_prior(
                     config=self.generation_config,
                     prompt_prefix=effective_prompt,
+                    verbose=verbose
                 )
                 return beams, log_probs, completed, rewards
             case _:
