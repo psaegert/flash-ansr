@@ -38,3 +38,40 @@ def test_fit_discards_mismatched_constants(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert refiner._all_constants_values == []
     assert refiner.valid_fit is False
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        'curve_fit_lm',
+        'minimize_bfgs',
+        'minimize_lbfgsb',
+        'minimize_neldermead',
+        'minimize_powell',
+        'least_squares_trf',
+        'least_squares_dogbox',
+    ],
+)
+def test_fit_supports_multiple_optimizers(method: str) -> None:
+    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    refiner = Refiner(simplipy_engine=engine, n_variables=1)
+
+    expression = ['+', 'x1', '<constant>']
+    X = np.linspace(0, 2, 5, dtype=np.float64).reshape(-1, 1)
+    y = (X[:, 0] + 3.0).reshape(-1, 1)
+
+    optimizer_kwargs: dict[str, object] = {}
+    if method == 'curve_fit_lm':
+        optimizer_kwargs = {'maxfev': 200}
+    elif method.startswith('minimize_'):
+        optimizer_kwargs = {'options': {'maxiter': 200}}
+    elif method.startswith('least_squares_'):
+        optimizer_kwargs = {'max_nfev': 200}
+
+    refiner.fit(expression=expression, X=X, y=y, method=method, optimizer_kwargs=optimizer_kwargs)
+
+    preds = refiner.predict(X)
+    assert refiner.valid_fit is True
+    assert np.isfinite(preds).all()
+    mse = float(np.mean((preds.flatten() - y.flatten()) ** 2))
+    assert mse < 1e-3

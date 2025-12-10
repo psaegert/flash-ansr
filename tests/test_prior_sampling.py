@@ -58,7 +58,7 @@ class TestPriorSampling(unittest.TestCase):
         config = PriorSamplingConfig(samples=2, unique=True, seed=0, skeleton_pool='dummy-path')
         nsr = FlashANSR(
             simplipy_engine=self.engine,
-            flash_ansr_transformer=self.transformer,
+            flash_ansr_model=self.transformer,
             tokenizer=self.tokenizer,
             generation_config=config,
         )
@@ -84,7 +84,7 @@ class TestPriorSampling(unittest.TestCase):
         config = PriorSamplingConfig(samples=2, unique=True, seed=None, skeleton_pool='dummy-path')
         nsr = FlashANSR(
             simplipy_engine=self.engine,
-            flash_ansr_transformer=self.transformer,
+            flash_ansr_model=self.transformer,
             tokenizer=self.tokenizer,
             generation_config=config,
         )

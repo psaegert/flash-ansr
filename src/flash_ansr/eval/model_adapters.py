@@ -32,7 +32,7 @@ else:
 
 
 class FlashANSRAdapter(EvaluationModelAdapter):
-    """Wrap the :class:`FlashANSR` model with the evaluation adapter protocol."""
+    """Wrap the `FlashANSR` model with the evaluation adapter protocol."""
 
     def __init__(
         self,

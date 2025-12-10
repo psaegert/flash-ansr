@@ -124,7 +124,7 @@ def test_flash_ansr_fit_uses_prompt_prefix(
 
     ansr = FlashANSR(
         simplipy_engine=simplipy_engine,
-        flash_ansr_transformer=model,
+        flash_ansr_model=model,
         tokenizer=tokenizer,
         generation_config=BeamSearchConfig(beam_width=1, max_len=8),
         n_restarts=1,

@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 import torch
-from scipy.optimize import curve_fit, minimize, OptimizeWarning
+from scipy.optimize import curve_fit, minimize, OptimizeWarning, least_squares
 
 from simplipy import SimpliPyEngine
 
@@ -126,7 +126,15 @@ class Refiner:
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             n_restarts: int = 1,
-            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None,
             converge_error: Literal['raise', 'ignore'] = 'ignore') -> 'Refiner':
@@ -155,6 +163,11 @@ class Refiner:
             The optimization method to use. One of
             - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
             - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
+            - 'minimize_lbfgsb': Use the minimize method with the L-BFGS-B algorithm
+            - 'minimize_neldermead': Use the minimize method with the Nelder-Mead algorithm
+            - 'minimize_powell': Use the minimize method with the Powell algorithm
+            - 'least_squares_trf': Use the least_squares solver with the trust region reflective algorithm
+            - 'least_squares_dogbox': Use the least_squares solver with the dogbox algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -264,7 +277,15 @@ class Refiner:
             p0: np.ndarray | None = None,
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
-            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         '''
@@ -290,6 +311,11 @@ class Refiner:
             The optimization method to use. One of
             - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
             - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
+            - 'minimize_lbfgsb': Use the minimize method with the L-BFGS-B algorithm
+            - 'minimize_neldermead': Use the minimize method with the Nelder-Mead algorithm
+            - 'minimize_powell': Use the minimize method with the Powell algorithm
+            - 'least_squares_trf': Use the least_squares solver with the trust region reflective algorithm
+            - 'least_squares_dogbox': Use the least_squares solver with the dogbox algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -341,18 +367,54 @@ class Refiner:
 
             # Ignore OptimizeWarning warnings
             warnings.filterwarnings("ignore", category=OptimizeWarning)
+
+            def objective(p: np.ndarray) -> float:
+                return np.mean((pred_function(X_valid, *p) - y_valid.flatten()) ** 2)
+
+            def residuals(p: np.ndarray) -> np.ndarray:
+                return pred_function(X_valid, *p) - y_valid.flatten()
+
+            def _safe_matrix(mat: Any) -> np.ndarray:
+                if mat is None:
+                    return np.asarray([])
+                if hasattr(mat, 'todense'):
+                    return np.asarray(mat.todense())
+                try:
+                    return np.asarray(mat)
+                except Exception:
+                    return np.asarray([])
+
             match method:
                 case 'curve_fit_lm':
                     popt, pcov = curve_fit(pred_function, X_valid, y_valid.flatten(), p0, **optimizer_kwargs)
                 case 'minimize_bfgs':
-                    def objective(p: np.ndarray) -> float:
-                        return np.mean((pred_function(X_valid, *p) - y_valid.flatten()) ** 2)
-
                     res = minimize(objective, p0, method='BFGS', **optimizer_kwargs)
                     popt = res.x
-                    pcov = res.hess_inv  # TODO: Check if this is correct
+                    pcov = _safe_matrix(getattr(res, 'hess_inv', None))
+                case 'minimize_lbfgsb':
+                    res = minimize(objective, p0, method='L-BFGS-B', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'hess_inv', None))
+                case 'minimize_neldermead':
+                    res = minimize(objective, p0, method='Nelder-Mead', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = np.asarray([])
+                case 'minimize_powell':
+                    res = minimize(objective, p0, method='Powell', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = np.asarray([])
+                case 'least_squares_trf':
+                    res = least_squares(residuals, p0, method='trf', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'jac', None))
+                case 'least_squares_dogbox':
+                    res = least_squares(residuals, p0, method='dogbox', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'jac', None))
+                case _:
+                    raise ValueError(f"Unknown optimization method: {method}")
 
-        except (RuntimeError, TypeError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             raise ConvergenceError("The optimization did not converge") from exc
 
         return popt, pcov

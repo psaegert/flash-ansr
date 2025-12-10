@@ -41,7 +41,7 @@ class BeamSearchConfig(GenerationConfigBase):
     __slots__ = (
         'beam_width',
         'max_len',
-        'mini_batch_size',
+        'batch_size',
         'equivalence_pruning',
         'limit_expansions',
     )
@@ -49,7 +49,7 @@ class BeamSearchConfig(GenerationConfigBase):
     method: Literal['beam_search']
     beam_width: int
     max_len: int
-    mini_batch_size: int
+    batch_size: int
     equivalence_pruning: bool
     limit_expansions: bool
 
@@ -58,14 +58,14 @@ class BeamSearchConfig(GenerationConfigBase):
         *,
         beam_width: int = 32,
         max_len: int = 32,
-        mini_batch_size: int = 128,
+        batch_size: int = 128,
         equivalence_pruning: bool = True,
         limit_expansions: bool = True,
     ) -> None:
         self.method = 'beam_search'
         self.beam_width = beam_width
         self.max_len = max_len
-        self.mini_batch_size = mini_batch_size
+        self.batch_size = batch_size
         self.equivalence_pruning = equivalence_pruning
         self.limit_expansions = limit_expansions
 
@@ -73,7 +73,7 @@ class BeamSearchConfig(GenerationConfigBase):
         return {
             'beam_width': self.beam_width,
             'max_len': self.max_len,
-            'mini_batch_size': self.mini_batch_size,
+            'batch_size': self.batch_size,
             'equivalence_pruning': self.equivalence_pruning,
             'limit_expansions': self.limit_expansions,
         }
@@ -87,7 +87,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         'top_k',
         'top_p',
         'max_len',
-        'mini_batch_size',
+        'batch_size',
         'temperature',
         'valid_only',
         'simplify',
@@ -99,7 +99,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     top_k: int
     top_p: float
     max_len: int
-    mini_batch_size: int
+    batch_size: int
     temperature: float
     valid_only: bool
     simplify: bool
@@ -111,8 +111,8 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         choices: int = 32,
         top_k: int = 0,
         top_p: float = 1.0,
-        max_len: int = 32,
-        mini_batch_size: int = 128,
+        max_len: int = 64,
+        batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
         simplify: bool = True,
@@ -123,7 +123,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.top_k = top_k
         self.top_p = top_p
         self.max_len = max_len
-        self.mini_batch_size = mini_batch_size
+        self.batch_size = batch_size
         self.temperature = temperature
         self.valid_only = valid_only
         self.simplify = simplify
@@ -135,7 +135,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
             'top_k': self.top_k,
             'top_p': self.top_p,
             'max_len': self.max_len,
-            'mini_batch_size': self.mini_batch_size,
+            'batch_size': self.batch_size,
             'temperature': self.temperature,
             'valid_only': self.valid_only,
             'simplify': self.simplify,

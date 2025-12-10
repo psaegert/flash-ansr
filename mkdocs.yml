@@ -44,9 +44,11 @@ markdown_extensions:
       generic: true
 
 nav:
+  - Home: index.md
   - API-Reference: api.md
   - Training: training.md
   - Evaluation: evaluation.md
+  - Contributing: contributing.md
 
 # Plugin configurations
 plugins:

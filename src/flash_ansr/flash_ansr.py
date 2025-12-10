@@ -133,7 +133,6 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         if payload['converge_error'] == 'raise':
             raise
         warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
-        return None, warning
     finally:
         np.seterr(**numpy_state)
 
@@ -183,16 +182,16 @@ class FlashANSR(BaseEstimator):
     ----------
     simplipy_engine : SimpliPyEngine
         Engine responsible for manipulating and evaluating symbolic expressions.
-    flash_ansr_transformer : FlashANSRModel
+    flash_ansr_model : FlashANSRModel
         Trained transformer backbone that proposes expression programs.
     tokenizer : Tokenizer
         Tokenizer mapping model outputs to expression tokens.
     generation_config : GenerationConfig, optional
         Configuration that controls candidate generation. If ``None`` a default
-        :class:`SoftmaxSamplingConfig` is created.
+        ``SoftmaxSamplingConfig`` is created.
     n_restarts : int, optional
         Number of optimizer restarts used by the refiner when fitting constants.
-    refiner_method : {'curve_fit_lm', 'minimize_bfgs'}
+    refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
         Optimization routine employed by the refiner.
     refiner_p0_noise : {'uniform', 'normal'}, optional
         Distribution applied to perturb initial constant guesses. ``None`` disables
@@ -235,18 +234,26 @@ class FlashANSR(BaseEstimator):
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
-            flash_ansr_transformer: FlashANSRModel,
+            flash_ansr_model: FlashANSRModel,
             tokenizer: Tokenizer,
             generation_config: GenerationConfig | None = None,
             n_restarts: int = 8,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            refiner_method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
             refiner_workers: int | None = None):
         self.simplipy_engine = simplipy_engine
-        self.flash_ansr_transformer = flash_ansr_transformer.eval()
+        self.flash_ansr_model = flash_ansr_model.eval()
         self.tokenizer = tokenizer
 
         if refiner_p0_noise_kwargs == 'default':
@@ -291,14 +298,22 @@ class FlashANSR(BaseEstimator):
             directory: str,
             generation_config: GenerationConfig | None = None,
             n_restarts: int = 1,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            refiner_method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
             device: str = 'cpu',
             refiner_workers: int | None = None) -> "FlashANSR":
-        """Instantiate a :class:`FlashANSR` model from a configuration directory.
+        """Instantiate a `FlashANSR` model from a configuration directory.
 
         Parameters
         ----------
@@ -309,7 +324,7 @@ class FlashANSR(BaseEstimator):
             Generation parameters to override defaults during candidate search.
         n_restarts : int, optional
             Number of restarts passed to the refiner.
-        refiner_method : {'curve_fit_lm', 'minimize_bfgs'}
+        refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
             Optimization routine for constant fitting.
         refiner_p0_noise : {'uniform', 'normal'}, optional
             Distribution used to perturb initial constant guesses.
@@ -334,10 +349,10 @@ class FlashANSR(BaseEstimator):
         """
         directory = substitute_root_path(directory)
 
-        flash_ansr_transformer_path = os.path.join(directory, 'model.yaml')
+        flash_ansr_model_path = os.path.join(directory, 'model.yaml')
         tokenizer_path = os.path.join(directory, 'tokenizer.yaml')
 
-        model = FlashANSRModel.from_config(flash_ansr_transformer_path)
+        model = FlashANSRModel.from_config(flash_ansr_model_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
         model.eval().to(device)
 
@@ -345,7 +360,7 @@ class FlashANSR(BaseEstimator):
 
         return cls(
             simplipy_engine=model.simplipy_engine,
-            flash_ansr_transformer=model,
+            flash_ansr_model=model,
             tokenizer=tokenizer,
             generation_config=generation_config,
             n_restarts=n_restarts,
@@ -359,7 +374,7 @@ class FlashANSR(BaseEstimator):
     @property
     def n_variables(self) -> int:
         """Number of variables the model was trained on."""
-        return self.flash_ansr_transformer.encoder_max_n_variables - 1
+        return self.flash_ansr_model.encoder_max_n_variables - 1
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         """Limit input features to the number of variables seen during training.
@@ -594,7 +609,7 @@ class FlashANSR(BaseEstimator):
         complexity : int or float or None, optional
             Numeric prompt hint that is only used when ``prompt_prefix`` is not
             supplied. Callers should prefer constructing a full
-            :class:`PromptPrefix` via the preprocessing pipeline.
+            `PromptPrefix` via the preprocessing pipeline.
         verbose : bool, optional
             If ``True``, progress output is emitted where supported.
 
@@ -622,7 +637,7 @@ class FlashANSR(BaseEstimator):
 
         effective_prompt = prompt_prefix
         if effective_prompt is None and complexity is not None:
-            preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+            preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
             effective_prompt = prepare_prompt_prefix(
                 preprocessor,
                 complexity=complexity,
@@ -634,7 +649,7 @@ class FlashANSR(BaseEstimator):
         match self.generation_config.method:
             case 'beam_search':
                 beams, log_probs, completed, rewards = run_beam_search(
-                    self.flash_ansr_transformer,
+                    self.flash_ansr_model,
                     data=data,
                     verbose=verbose,
                     prompt_prefix=effective_prompt,
@@ -643,7 +658,7 @@ class FlashANSR(BaseEstimator):
                 return beams, log_probs, completed, rewards
             case 'softmax_sampling':
                 beams, log_probs, completed, rewards = run_softmax_sampling(
-                    self.flash_ansr_transformer,
+                    self.flash_ansr_model,
                     data=data,
                     verbose=verbose,
                     prompt_prefix=effective_prompt,
@@ -656,7 +671,7 @@ class FlashANSR(BaseEstimator):
                 beam_width = generation_kwargs.get('beam_width', 16)
 
                 beams, log_probs, completed, rewards, refiner_cache = run_mcts_generation(
-                    transformer=self.flash_ansr_transformer,
+                    transformer=self.flash_ansr_model,
                     tokenizer=self.tokenizer,
                     simplipy_engine=self.simplipy_engine,
                     data=data,
@@ -697,7 +712,7 @@ class FlashANSR(BaseEstimator):
             allowed_terms: Iterable[Sequence[Any]] | None,
             include_terms: Iterable[Sequence[Any]] | None,
             exclude_terms: Iterable[Sequence[Any]] | None) -> PromptPrefix | None:
-        preprocessor = getattr(self.flash_ansr_transformer, 'preprocessor', None)
+        preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
         prompt_prefix = prepare_prompt_prefix(
             preprocessor,
             complexity=complexity,
@@ -772,8 +787,8 @@ class FlashANSR(BaseEstimator):
             Handling strategy when the refiner fails to converge.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
-        complexity : int or float or None, optional
-            Keyword-only control that injects a target complexity into the prompt
+          refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
+          Optimization routine for constant fitting.
             prefix.
         allowed_terms : Iterable[Sequence[str]] or None, optional
             Keyword-only list of term token sequences that may appear in the
@@ -829,19 +844,19 @@ class FlashANSR(BaseEstimator):
             # Convert the input data to a tensor
             if not isinstance(X, torch.Tensor):
                 if isinstance(X, pd.DataFrame):
-                    X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_model.device)
                 else:
-                    X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_model.device)
             else:
-                X = X.to(self.flash_ansr_transformer.device)
+                X = X.to(self.flash_ansr_model.device)
 
             if not isinstance(y, torch.Tensor):
                 if isinstance(y, (pd.DataFrame, pd.Series)):
-                    y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_model.device)
                 else:
-                    y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_model.device)
             else:
-                y = y.to(self.flash_ansr_transformer.device)
+                y = y.to(self.flash_ansr_model.device)
 
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
@@ -888,7 +903,7 @@ class FlashANSR(BaseEstimator):
                 verbose=verbose,
             )
 
-            beams = [self.flash_ansr_transformer.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
+            beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
             raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
             beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
@@ -977,7 +992,7 @@ class FlashANSR(BaseEstimator):
             np.seterr(**numpy_errors_before)
 
     def compile_results(self, parsimony: float) -> None:
-        """Aggregate refiner outputs into a tidy :class:`pandas.DataFrame`.
+        """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
 
         Parameters
         ----------
@@ -1105,7 +1120,7 @@ class FlashANSR(BaseEstimator):
         model : FlashANSR
             Self, enabling fluent chaining.
         """
-        self.flash_ansr_transformer.to(device)
+        self.flash_ansr_model.to(device)
         return self
 
     def eval(self) -> "FlashANSR":
@@ -1116,5 +1131,5 @@ class FlashANSR(BaseEstimator):
         model : FlashANSR
             Self, enabling fluent chaining.
         """
-        self.flash_ansr_transformer.eval()
+        self.flash_ansr_model.eval()
         return self

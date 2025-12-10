@@ -283,7 +283,7 @@ class FlashANSRModel(nn.Module):
         data: torch.Tensor,
         beam_width: int = 4,
         max_len: int = 100,
-        mini_batch_size: int = 128,
+        batch_size: int = 128,
         equivalence_pruning: bool = True,
         verbose: bool = False,
         limit_expansions: bool = True,
@@ -376,8 +376,8 @@ class FlashANSRModel(nn.Module):
                 candidate_parents: list[torch.Tensor] = []
                 candidate_tokens: list[torch.Tensor] = []
 
-                for start_idx in range(0, active_indices.numel(), mini_batch_size):
-                    batch_indices = active_indices[start_idx:start_idx + mini_batch_size]
+                for start_idx in range(0, active_indices.numel(), batch_size):
+                    batch_indices = active_indices[start_idx:start_idx + batch_size]
 
                     input_ids_tensor = sequences[batch_indices, :current_length]
                     input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
@@ -647,7 +647,7 @@ class FlashANSRModel(nn.Module):
         top_k: int = 0,
         top_p: float = 1,
         max_len: int = 100,
-        mini_batch_size: int = 128,
+        batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
         simplify: bool = True,
@@ -711,8 +711,8 @@ class FlashANSRModel(nn.Module):
                 if active_indices.numel() == 0:
                     break
 
-                for start_idx in range(0, len(active_indices), mini_batch_size):
-                    batch_indices = active_indices[start_idx: start_idx + mini_batch_size]
+                for start_idx in range(0, len(active_indices), batch_size):
+                    batch_indices = active_indices[start_idx: start_idx + batch_size]
 
                     input_ids_tensor = sequences[batch_indices, :current_length]
                     input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))

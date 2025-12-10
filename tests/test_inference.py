@@ -129,7 +129,7 @@ class TestInference(unittest.TestCase):
         generation_config = BeamSearchConfig(
             beam_width=8,
             max_len=24,
-            mini_batch_size=32,
+            batch_size=32,
             equivalence_pruning=True,
         )
 
@@ -144,7 +144,7 @@ class TestInference(unittest.TestCase):
             top_k=8,
             top_p=0.95,
             max_len=24,
-            mini_batch_size=32,
+            batch_size=32,
             temperature=0.8,
             simplify=True,
             unique=True,

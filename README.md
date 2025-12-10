@@ -48,7 +48,7 @@ MODEL = "psaegert/flash-ansr-v23.0-120M"
 install_model(MODEL)
 
 # Load the model
-ansr = FlashANSR.load(
+model = FlashANSR.load(
   directory=get_path('models', MODEL),
   generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
   n_restarts=8,
@@ -59,13 +59,13 @@ X = ...
 y = ...
 
 # Fit the model to the data
-ansr.fit(X, y, verbose=True)
+model.fit(X, y, verbose=True)
 
 # Show the best expression
-print(ansr.get_expression())
+print(model.get_expression())
 
 # Predict with the best expression
-y_pred = ansr.predict(X)
+y_pred = model.predict(X)
 ```
 
 # Overview
@@ -97,7 +97,7 @@ y_pred = ansr.predict(X)
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.4.0},
+    version = {0.4.1},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```

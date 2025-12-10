@@ -1,6 +1,19 @@
+# Evaluation
 
+## General workflow
 
-# Training
+- Use `flash_ansr evaluate-run -c <config>` as the single entrypoint; configs live under `configs/evaluation/` (and `configs/evaluation/scaling/` for sweeps).
+- Each config wires a `data_source`, a `model_adapter`, and a `runner` (persistence/resume). The same structure covers FlashANSR, PySR, NeSymReS, and baselines.
+- `runner.resume` allows checkpointed pickles to continue; placeholders are inserted when sample generation fails so counts stay consistent.
+- `datasets_per_expression` controls how many deterministic datasets per skeleton/equation are generated; sampling mode is removed.
+
+## Models and baselines
+
+- **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. See the example configs under `configs/evaluation/run_flash_ansr_*.yaml` and scaling sweeps.
+- **PySR**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony). Watchdog helper: `scripts/evaluate_PySR.py`.
+- **NeSymReS**: Adapter expects external checkout + checkpoint paths; exposes beam width/restarts. See `run_nesymres.yaml` and scaling configs.
+- **SkeletonPoolModel (baseline)**: Transformer-free baseline that samples skeletons from a provided pool and only refines constants. Configure via `model_adapter.type: skeleton_pool` (or add a dedicated config entry) with pool path/config, `samples`, `unique`, `ignore_holdouts`, and `seed`. Useful for ablations and replication.
+- **BruteForceModel (planned)**: Placeholder for exhaustive search baseline; document here once added.
 
 ## Express
 
