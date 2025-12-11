@@ -25,6 +25,6 @@ from .utils import (
 from .eval import Evaluation
 from .refine import Refiner, ConvergenceError
 from .flash_ansr import FlashANSR
-from .baselines.skeleton_pool_model import SkeletonPoolModel
+from .baselines import SkeletonPoolModel, BruteForceModel
 from .data.data import FlashANSRDataset
 from .preprocessing import FlashANSRPreprocessor

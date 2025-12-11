@@ -3,7 +3,7 @@ import pytest
 from simplipy import SimpliPyEngine
 
 from flash_ansr import SkeletonPool
-from flash_ansr.baselines.skeleton_pool_model import SkeletonPoolModel
+from flash_ansr.baselines import BruteForceModel
 
 
 @pytest.fixture(scope="module")
@@ -12,7 +12,6 @@ def simplipy_engine() -> SimpliPyEngine:
 
 
 def _build_toy_pool(engine: SimpliPyEngine) -> SkeletonPool:
-    # Deterministic pool with a single variable skeleton to keep the test fast and stable.
     sample_strategy = {
         "n_operator_distribution": "equiprobable_lengths",
         "min_operators": 0,
@@ -43,20 +42,19 @@ def _build_toy_pool(engine: SimpliPyEngine) -> SkeletonPool:
         support_sampler_config=support_sampler_config,
     )
 
-    # Pre-populate the cached skeletons so sampling is deterministic.
     pool.skeletons = {("x1",)}
     return pool
 
 
 def test_fit_and_predict_identity(simplipy_engine: SimpliPyEngine) -> None:
     pool = _build_toy_pool(simplipy_engine)
-    model = SkeletonPoolModel(
+    model = BruteForceModel(
         simplipy_engine=simplipy_engine,
         skeleton_pool=pool,
-        samples=1,
-        unique=True,
+        max_expressions=10,
+        max_length=2,
+        include_constant_token=False,
         ignore_holdouts=True,
-        seed=0,
         n_restarts=1,
         refiner_p0_noise=None,
     )
@@ -66,29 +64,50 @@ def test_fit_and_predict_identity(simplipy_engine: SimpliPyEngine) -> None:
 
     model.fit(X, y)
 
-    assert len(model._results) == 1
+    assert len(model._results) >= 1
     preds = model.predict(X)
     np.testing.assert_allclose(preds.squeeze(), y.squeeze(), atol=1e-3)
-    # Ensure we can recover the expression string for user display.
     expr = model.get_expression()
     assert expr in (["x1"], "x1")
 
 
-def test_truncates_extra_columns(simplipy_engine: SimpliPyEngine) -> None:
+def test_respects_limits(simplipy_engine: SimpliPyEngine) -> None:
     pool = _build_toy_pool(simplipy_engine)
-    model = SkeletonPoolModel(
+    model = BruteForceModel(
         simplipy_engine=simplipy_engine,
         skeleton_pool=pool,
-        samples=1,
-        unique=True,
+        max_expressions=3,
+        max_length=1,
+        include_constant_token=False,
         ignore_holdouts=True,
-        seed=1,
+        n_restarts=1,
+        refiner_p0_noise=None,
+    )
+
+    X = np.linspace(-1.0, 1.0, 4).reshape(-1, 1)
+    y = X.copy()
+
+    model.fit(X, y)
+
+    assert len(model._results) <= 3
+    assert all(len(result["expression"]) <= 1 for result in model._results)
+
+
+def test_truncates_extra_columns(simplipy_engine: SimpliPyEngine) -> None:
+    pool = _build_toy_pool(simplipy_engine)
+    model = BruteForceModel(
+        simplipy_engine=simplipy_engine,
+        skeleton_pool=pool,
+        max_expressions=8,
+        max_length=2,
+        include_constant_token=False,
+        ignore_holdouts=True,
         n_restarts=1,
         refiner_p0_noise=None,
     )
 
     x_primary = np.linspace(-1.0, 1.0, 6)
-    noise = np.random.RandomState(1).normal(scale=0.25, size=x_primary.shape)
+    noise = np.random.RandomState(0).normal(scale=0.5, size=x_primary.shape)
     X = np.stack([x_primary, noise], axis=1)
     y = x_primary.reshape(-1, 1)
 
@@ -98,50 +117,47 @@ def test_truncates_extra_columns(simplipy_engine: SimpliPyEngine) -> None:
     np.testing.assert_allclose(preds.squeeze(), y.squeeze(), atol=1e-3)
 
 
-def test_zero_samples_returns_empty(simplipy_engine: SimpliPyEngine) -> None:
+def test_constant_expression_prediction(simplipy_engine: SimpliPyEngine) -> None:
     pool = _build_toy_pool(simplipy_engine)
-    model = SkeletonPoolModel(
+    model = BruteForceModel(
         simplipy_engine=simplipy_engine,
         skeleton_pool=pool,
-        samples=0,
-        unique=True,
+        max_expressions=5,
+        max_length=1,
+        include_constant_token=True,
         ignore_holdouts=True,
-        seed=0,
+        n_restarts=2,
+        refiner_p0_noise=None,
+    )
+
+    X = np.linspace(-2.0, 2.0, 5).reshape(-1, 1)
+    y = np.full_like(X, fill_value=2.0)
+
+    model.fit(X, y)
+
+    preds = model.predict(X)
+    np.testing.assert_allclose(preds.squeeze(), y.squeeze(), atol=1e-2)
+    _ = model.get_expression()
+
+
+def test_predict_requires_fit(simplipy_engine: SimpliPyEngine) -> None:
+    pool = _build_toy_pool(simplipy_engine)
+    model = BruteForceModel(
+        simplipy_engine=simplipy_engine,
+        skeleton_pool=pool,
+        max_expressions=2,
+        max_length=1,
+        include_constant_token=False,
+        ignore_holdouts=True,
         n_restarts=1,
         refiner_p0_noise=None,
     )
 
     X = np.zeros((3, 1))
-    y = np.zeros((3, 1))
 
-    model.fit(X, y)
-
-    assert model._results == []
     with pytest.raises(ValueError):
         model.predict(X)
 
-
-def test_unique_sampling_uses_cached_pool(simplipy_engine: SimpliPyEngine) -> None:
-    pool = _build_toy_pool(simplipy_engine)
-    pool.skeletons = {("x1",), ("<constant>",)}
-
-    model = SkeletonPoolModel(
-        simplipy_engine=simplipy_engine,
-        skeleton_pool=pool,
-        samples=2,
-        unique=True,
-        ignore_holdouts=True,
-        seed=42,
-        n_restarts=1,
-        refiner_p0_noise=None,
-    )
-
-    X = np.linspace(-1.0, 1.0, 5).reshape(-1, 1)
-    y = X.copy()
-
-    model.fit(X, y)
-
-    used = {tuple(result["expression"]) for result in model._results}
-    assert used == {("x1",), ("<constant>",)}
+    model.fit(X, X)
     with pytest.raises(IndexError):
-        model.predict(X, nth_best=5)
+        model.predict(X, nth_best=10)
