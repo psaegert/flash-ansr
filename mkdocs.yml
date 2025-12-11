@@ -42,13 +42,22 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.arithmatex:
       generic: true
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascript/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
 
 nav:
   - Home: index.md
-  - API-Reference: api.md
+  - Getting Started: getting_started.md
+  - Concepts & Architecture: concepts.md
   - Training: training.md
   - Evaluation: evaluation.md
+  - API Reference: api.md
   - Contributing: contributing.md
+  - FAQ & Troubleshooting: faq.md
 
 # Plugin configurations
 plugins:

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from simplipy import SimpliPyEngine
 
-from flash_ansr import FlashANSR, FlashANSRModel, get_path
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
 from flash_ansr.expressions import SkeletonPool
 from flash_ansr.baselines.skeleton_pool_model import SkeletonPoolModel
 from flash_ansr.results import (
@@ -12,7 +12,6 @@ from flash_ansr.results import (
     save_results_payload,
     serialize_results_payload,
 )
-from flash_ansr.utils.generation import PriorSamplingConfig
 
 
 @pytest.fixture(scope="module")
@@ -157,64 +156,24 @@ def test_skeleton_pool_model_save_load_roundtrip(tmp_path, simplipy_engine: Simp
     np.testing.assert_allclose(preds_before, preds_after, rtol=1e-6, atol=1e-8)
 
 
-def test_flash_ansr_save_load_roundtrip_prior_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
-    # Deterministic single-skeleton pool: a*x + b
-    skeletons = {('+', '*', '<constant>', 'x1', '<constant>')}
-    sample_strategy = {
-        "n_operator_distribution": "length_proportional",
-        "min_operators": 0,
-        "max_operators": 2,
-        "power": 1,
-        "max_length": 6,
-        "max_tries": 1,
-        "independent_dimensions": True,
-    }
-    literal_prior = {"name": "normal", "kwargs": {"loc": 0, "scale": 1}}
-    variables = ["x1"]
-    support_sampler_config = {
-        "support_prior": {"name": "uniform", "kwargs": {"min_value": -2, "max_value": 2}},
-        "n_support_prior": {"name": "uniform", "kwargs": {"low": 4, "high": 4, "min_value": 4, "max_value": 4}},
-    }
+def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
+    model_repo = "psaegert/flash-ansr-v23.0-3M"
+    install_model(model_repo)
+    model_dir = get_path("models", model_repo)
 
-    pool = SkeletonPool.from_dict(
-        skeletons=skeletons,
-        simplipy_engine=simplipy_engine,
-        sample_strategy=sample_strategy,
-        literal_prior=literal_prior,
-        variables=variables,
-        support_sampler_config=support_sampler_config,
-        operator_weights={"+": 1.0, "*": 1.0},
-    )
-
-    pool_config = {
-        "simplipy_engine": "dev_7-3",
-        "sample_strategy": sample_strategy,
-        "literal_prior": literal_prior,
-        "variables": variables,
-        "support_sampler": support_sampler_config,
-        "operator_weights": {"+": 1.0, "*": 1.0},
-        "holdout_pools": [],
-        "allow_nan": False,
-        "simplify": True,
-    }
-
-    pool_dir = tmp_path / "pool"
-    pool.save(str(pool_dir), config=pool_config)
-
-    generation_config = PriorSamplingConfig(
-        samples=1,
+    generation_config = SoftmaxSamplingConfig(
+        choices=16,
+        top_k=8,
+        top_p=0.95,
+        max_len=24,
+        batch_size=32,
+        temperature=0.8,
+        simplify=True,
         unique=True,
-        ignore_holdouts=True,
-        skeleton_pool=str(pool_dir),
-        seed=0,
     )
 
-    flash_model = FlashANSRModel.from_config(get_path("configs", "test", "model.yaml"))
-
-    regressor = FlashANSR(
-        simplipy_engine=simplipy_engine,
-        flash_ansr_model=flash_model,
-        tokenizer=flash_model.tokenizer,
+    regressor = FlashANSR.load(
+        directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
         parsimony=0.0,
@@ -231,10 +190,8 @@ def test_flash_ansr_save_load_roundtrip_prior_sampling(tmp_path, simplipy_engine
     save_path = tmp_path / "flash_roundtrip.pkl"
     regressor.save_results(save_path)
 
-    reloaded = FlashANSR(
-        simplipy_engine=simplipy_engine,
-        flash_ansr_model=flash_model,
-        tokenizer=flash_model.tokenizer,
+    reloaded = FlashANSR.load(
+        directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
         parsimony=0.0,

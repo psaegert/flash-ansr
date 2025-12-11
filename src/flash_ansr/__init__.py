@@ -15,7 +15,6 @@ from .utils import (
     BeamSearchConfig,
     SoftmaxSamplingConfig,
     MCTSGenerationConfig,
-    PriorSamplingConfig,
     create_generation_config,
     get_path,
     load_config,

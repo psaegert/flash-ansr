@@ -42,7 +42,7 @@ class BeamSearchConfig(GenerationConfigBase):
         'beam_width',
         'max_len',
         'batch_size',
-        'equivalence_pruning',
+        'unique',
         'limit_expansions',
     )
 
@@ -50,7 +50,7 @@ class BeamSearchConfig(GenerationConfigBase):
     beam_width: int
     max_len: int
     batch_size: int
-    equivalence_pruning: bool
+    unique: bool
     limit_expansions: bool
 
     def __init__(
@@ -59,14 +59,14 @@ class BeamSearchConfig(GenerationConfigBase):
         beam_width: int = 32,
         max_len: int = 32,
         batch_size: int = 128,
-        equivalence_pruning: bool = True,
+        unique: bool = True,
         limit_expansions: bool = True,
     ) -> None:
         self.method = 'beam_search'
         self.beam_width = beam_width
         self.max_len = max_len
         self.batch_size = batch_size
-        self.equivalence_pruning = equivalence_pruning
+        self.unique = unique
         self.limit_expansions = limit_expansions
 
     def to_kwargs(self) -> dict[str, Any]:
@@ -74,7 +74,7 @@ class BeamSearchConfig(GenerationConfigBase):
             'beam_width': self.beam_width,
             'max_len': self.max_len,
             'batch_size': self.batch_size,
-            'equivalence_pruning': self.equivalence_pruning,
+            'unique': self.unique,
             'limit_expansions': self.limit_expansions,
         }
 
@@ -232,51 +232,7 @@ class MCTSGenerationConfig(GenerationConfigBase):
         }
 
 
-class PriorSamplingConfig(GenerationConfigBase):
-    """Configuration for prior-based skeleton sampling."""
-
-    __slots__ = (
-        'samples',
-        'unique',
-        'ignore_holdouts',
-        'skeleton_pool',
-        'seed',
-    )
-
-    method: Literal['prior_sampling']
-    samples: int
-    unique: bool
-    ignore_holdouts: bool
-    skeleton_pool: str | dict[str, Any] | None
-    seed: int | None
-
-    def __init__(
-        self,
-        *,
-        samples: int = 32,
-        unique: bool = True,
-        ignore_holdouts: bool = True,
-        skeleton_pool: str | dict[str, Any] | None = None,
-        seed: int | None = None,
-    ) -> None:
-        self.method = 'prior_sampling'
-        self.samples = samples
-        self.unique = unique
-        self.ignore_holdouts = ignore_holdouts
-        self.skeleton_pool = skeleton_pool
-        self.seed = seed
-
-    def to_kwargs(self) -> dict[str, Any]:
-        return {
-            'samples': self.samples,
-            'unique': self.unique,
-            'ignore_holdouts': self.ignore_holdouts,
-            'skeleton_pool': self.skeleton_pool,
-            'seed': self.seed,
-        }
-
-
-GenerationConfig = BeamSearchConfig | SoftmaxSamplingConfig | MCTSGenerationConfig | PriorSamplingConfig
+GenerationConfig = BeamSearchConfig | SoftmaxSamplingConfig | MCTSGenerationConfig
 
 
 @overload
@@ -294,12 +250,7 @@ def create_generation_config(*, method: Literal['mcts'], **kwargs: Any) -> MCTSG
     ...
 
 
-@overload
-def create_generation_config(*, method: Literal['prior_sampling'], **kwargs: Any) -> PriorSamplingConfig:
-    ...
-
-
-def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling', 'mcts', 'prior_sampling'] = 'beam_search', **kwargs: Any) -> GenerationConfig:
+def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling', 'mcts'] = 'beam_search', **kwargs: Any) -> GenerationConfig:
     """Factory that builds the method-specific generation configuration."""
     method_normalized = method.lower()
     if method_normalized == 'beam_search':
@@ -308,6 +259,4 @@ def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling
         return SoftmaxSamplingConfig(**kwargs)
     if method_normalized == 'mcts':
         return MCTSGenerationConfig(**kwargs)
-    if method_normalized == 'prior_sampling':
-        return PriorSamplingConfig(**kwargs)
     raise ValueError(f"Invalid generation method: {method}")

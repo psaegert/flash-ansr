@@ -284,7 +284,7 @@ class FlashANSRModel(nn.Module):
         beam_width: int = 4,
         max_len: int = 100,
         batch_size: int = 128,
-        equivalence_pruning: bool = True,
+        unique: bool = True,
         verbose: bool = False,
         limit_expansions: bool = True,
         *,
@@ -387,7 +387,7 @@ class FlashANSRModel(nn.Module):
 
                     vocab_size = next_token_log_probs.size(-1)
                     if limit_expansions:
-                        expansion_factor = 2 if equivalence_pruning else 1
+                        expansion_factor = 2 if unique else 1
                         expansion_per_beam = max(1, min(vocab_size, beam_width * expansion_factor))
                         top_log_probs, top_token_ids = torch.topk(next_token_log_probs, k=expansion_per_beam, dim=-1)
                     else:
@@ -421,7 +421,7 @@ class FlashANSRModel(nn.Module):
                     new_score = float(sorted_scores[rank_idx].item())
 
                     if token_id == eos_token_id:
-                        if equivalence_pruning:
+                        if unique:
                             try:
                                 candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
                             except ValueError:
@@ -449,7 +449,7 @@ class FlashANSRModel(nn.Module):
                         continue
 
                     seq_tuple = tuple(new_seq)
-                    if equivalence_pruning and seq_tuple in next_beam_set:
+                    if unique and seq_tuple in next_beam_set:
                         n_pruned += 1
                         continue
 

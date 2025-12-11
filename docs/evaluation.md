@@ -1,5 +1,10 @@
 # Evaluation
 
+## Read this first
+- Quick run: `flash_ansr evaluate-run -c configs/evaluation/run_flash_ansr_nguyen.yaml -v`.
+- Outputs: pickles with entries containing `expression`, `log_prob`, `fits` (per-dataset metrics), and optional `placeholder` entries when data generation fails but counts must stay aligned.
+- Scope: shared engine covers FlashANSR, PySR, NeSymReS, and skeleton-pool baselines via a single YAML config.
+
 ## General workflow
 
 - Use `flash_ansr evaluate-run -c <config>` as the single entrypoint; configs live under `configs/evaluation/` (and `configs/evaluation/scaling/` for sweeps).

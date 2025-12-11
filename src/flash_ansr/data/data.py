@@ -21,7 +21,25 @@ from flash_ansr.utils.paths import substitute_root_path
 
 
 class FlashANSRDataset:
-    """Dataset wrapper for amortized neural symbolic regression training."""
+    """Dataset wrapper for amortized neural symbolic regression training.
+
+    Manages skeleton sampling, support point generation, optional prompt
+    preprocessing, and collation into model-ready batches. Can also compile
+    streaming output into an on-disk `datasets.Dataset` for deterministic
+    iteration.
+
+    Parameters
+    ----------
+    skeleton_pool : SkeletonPool
+        Source of operator-only expression templates and sampling logic.
+    tokenizer : Tokenizer
+        Tokenizer used for expression serialization and padding.
+    padding : {"random", "zero"}
+        Strategy for padding numeric support points.
+    preprocessor : FlashANSRPreprocessor, optional
+        Prompt-aware preprocessor; when provided, prompt metadata can be
+        injected during sampling or in worker processes.
+    """
 
     def __init__(
         self,
@@ -66,6 +84,22 @@ class FlashANSRDataset:
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
+        """Instantiate from a YAML/dict config.
+
+        Paths are normalized via `load_config` and `substitute_root_path`. The
+        config may embed a skeleton pool definition or point to a directory
+        containing one.
+
+        Parameters
+        ----------
+        config : dict or str
+            Dataset config or path to a YAML file.
+
+        Returns
+        -------
+        FlashANSRDataset
+            Dataset wrapper with tokenizer and optional preprocessor wired.
+        """
         config_ = load_config(config)
 
         if "dataset" in config_.keys():
@@ -111,6 +145,22 @@ class FlashANSRDataset:
         recursive: bool = True,
         **kwargs: Any,
     ) -> None:
+        """Persist the compiled dataset and its config.
+
+        Parameters
+        ----------
+        directory : str
+            Target directory for `dataset/` artifacts and `dataset.yaml`.
+        config : dict or str, optional
+            Config to save alongside the dataset. When omitted a warning is
+            raised and only the data is stored.
+        reference : str, default "relative"
+            How to normalize paths when writing the config.
+        recursive : bool, default True
+            Whether to recursively resolve nested configs.
+        *args, **kwargs : Any
+            Passed to `datasets.Dataset.save_to_disk`.
+        """
         if self.data is None:
             raise ValueError("No dataset to save. Please generate or load a dataset first.")
 
@@ -136,6 +186,18 @@ class FlashANSRDataset:
 
     @classmethod
     def load(cls, directory: str) -> tuple[dict[str, Any], "FlashANSRDataset"]:
+        """Load a saved dataset and its config from disk.
+
+        Parameters
+        ----------
+        directory : str
+            Directory containing `dataset.yaml` and `dataset/`.
+
+        Returns
+        -------
+        tuple
+            `(resolved_config, dataset)` with the dataset ready for iteration.
+        """
         config_path = os.path.join(directory, "dataset.yaml")
         resolved_directory = substitute_root_path(directory)
 
@@ -145,6 +207,20 @@ class FlashANSRDataset:
         return load_config(config_path), dataset
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = "cpu") -> dict[str, Any]:
+        """Format a raw batch into tensors expected by the model.
+
+        Parameters
+        ----------
+        batch : dict
+            Raw batch containing support points, targets, and metadata.
+        device : str or torch.device or int, default "cpu"
+            Device to place returned tensors on.
+
+        Returns
+        -------
+        dict
+            Collated batch with padded tensors and ensured numeric channel.
+        """
         return self._collator.collate(batch, device=device)
 
     def compile(
@@ -155,6 +231,21 @@ class FlashANSRDataset:
         n_support: int | None = None,
         verbose: bool = False,
     ) -> None:
+        """Materialize a streaming iterator into an on-disk dataset.
+
+        Parameters
+        ----------
+        size : int, optional
+            Total number of samples to generate (used if `steps` is None).
+        steps : int, optional
+            Number of iteration steps (overrides `size` when provided).
+        batch_size : int, optional
+            Per-step generation batch size; defaults to 1.
+        n_support : int, optional
+            Number of support points per equation; falls back to pool defaults.
+        verbose : bool, default False
+            Enable progress reporting.
+        """
         disable_progress_bars()
         if size is None and steps is None:
             size = len(self.skeleton_pool)
@@ -203,6 +294,7 @@ class FlashANSRDataset:
         )
 
     def shutdown(self) -> None:
+        """Release multiprocessing workers and shared buffers."""
         self._stream.shutdown()
 
     def iterate(
@@ -223,6 +315,46 @@ class FlashANSRDataset:
         tqdm_kwargs: dict[str, Any] | None = None,
         verbose: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
+        """Stream batches of synthetic data.
+
+        Parameters
+        ----------
+        size : int, optional
+            Total number of samples to generate (used if `steps` is None).
+        steps : int, optional
+            Number of generation steps; overrides `size` when set.
+        batch_size : int, optional
+            Samples per step; defaults to 1.
+        n_support : int, optional
+            Support points per equation; pool default when None.
+        max_seq_len : int, default 512
+            Maximum prefix length for generated expressions.
+        max_n_support : int, optional
+            Upper bound for support points; used for padding.
+        n_per_equation : int, default 1
+            Number of datasets to draw per skeleton before moving on.
+        preprocess : bool, default False
+            Whether to run the preprocessor on generated batches.
+        preprocess_in_worker : bool, optional
+            Force preprocessing inside workers (True), main process (False), or auto-select (None).
+        tokenizer_oov : {"unk", "raise"}, default "raise"
+            How to handle tokens missing from the tokenizer.
+        num_workers : int, optional
+            Worker count for multiprocessing; defaults to CPU count when None.
+        prefetch_factor : int, default 2
+            Jobs per worker to pre-schedule.
+        persistent : bool, default False
+            Clone tensors to detach from shared memory buffers.
+        tqdm_kwargs : dict, optional
+            Additional arguments forwarded to tqdm progress bars.
+        verbose : bool, default False
+            Enable progress reporting.
+
+        Yields
+        ------
+        dict
+            Model-ready batch with tensors and optional prompt metadata.
+        """
         if batch_size is None:
             batch_size = 1
 

@@ -1,8 +1,6 @@
 import os
 import copy
-import math
 import numbers
-import random
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from types import TracebackType
@@ -19,12 +17,11 @@ from sklearn.base import BaseEstimator
 from simplipy import SimpliPyEngine
 
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
-from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
 from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, PriorSamplingConfig
+from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.results import (
@@ -297,9 +294,6 @@ class FlashANSR(BaseEstimator):
         self.variable_mapping: dict[str, str] = {}
         self._prompt_prefix: PromptPrefix | None = None
         self._prompt_metadata: dict[str, list[list[str]]] | None = None
-        self._prior_pool: SkeletonPool | None = None
-        self._prior_pool_config: dict[str, Any] | str | None = None
-        self._prior_pool_ignore_holdouts: bool = True
 
     @classmethod
     def load(
@@ -440,163 +434,6 @@ class FlashANSR(BaseEstimator):
             reward_transform=reward_transform,
         )
 
-    def _ensure_prior_pool(
-        self,
-        *,
-        skeleton_pool_ref: str | dict[str, Any] | None,
-        ignore_holdouts: bool,
-    ) -> SkeletonPool:
-        if skeleton_pool_ref is None:
-            raise ValueError(
-                "Prior sampling requires `skeleton_pool` to be provided in the generation config."
-            )
-
-        if (
-            self._prior_pool is not None
-            and self._prior_pool_config == skeleton_pool_ref
-            and self._prior_pool_ignore_holdouts == ignore_holdouts
-        ):
-            return self._prior_pool
-
-        if isinstance(skeleton_pool_ref, str):
-            resolved = substitute_root_path(skeleton_pool_ref)
-            if os.path.isdir(resolved):
-                _, pool = SkeletonPool.load(resolved)
-            else:
-                pool = SkeletonPool.from_config(resolved)
-            cache_key: dict[str, Any] | str = resolved
-        elif isinstance(skeleton_pool_ref, dict):
-            pool = SkeletonPool.from_config(copy.deepcopy(skeleton_pool_ref))
-            cache_key = copy.deepcopy(skeleton_pool_ref)
-        else:
-            raise TypeError("`skeleton_pool` must be a path string or configuration dictionary.")
-
-        if ignore_holdouts:
-            pool.clear_holdouts()
-
-        self._prior_pool = pool
-        self._prior_pool_config = cache_key
-        self._prior_pool_ignore_holdouts = ignore_holdouts
-        return pool
-
-    def _generate_from_prior(
-        self,
-        *,
-        config: PriorSamplingConfig,
-        prompt_prefix: PromptPrefix | None,
-        verbose: bool = False,
-    ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
-        pool = self._ensure_prior_pool(
-            skeleton_pool_ref=config.skeleton_pool,
-            ignore_holdouts=config.ignore_holdouts,
-        )
-
-        cached_skeletons = list(pool.skeletons)
-        if config.samples <= 0:
-            return [], [], [], []
-
-        rng = random.Random()
-        if config.seed is not None:
-            rng.seed(int(config.seed))
-
-        dynamic_sampling = len(cached_skeletons) == 0
-
-        if dynamic_sampling:
-            selected: list[tuple[str, ...]] = []
-            seen: set[tuple[str, ...]] = set()
-
-            pbar = tqdm(total=config.samples, desc="Sampling from prior", smoothing=0.0, disable=not verbose)
-
-            while len(selected) < config.samples:
-                try:
-                    skeleton, _code, _constants = pool.sample_skeleton(new=True, decontaminate=not config.ignore_holdouts)
-                except NoValidSampleFoundError as exc:
-                    if not selected:
-                        raise RuntimeError("Unable to sample skeletons from the prior configuration.") from exc
-                    continue
-
-                skeleton_tuple = tuple(skeleton)
-                if config.unique and skeleton_tuple in seen:
-                    continue
-                seen.add(skeleton_tuple)
-                selected.append(skeleton_tuple)
-                pbar.update(1)
-
-            pbar.close()
-
-            if not selected:
-                return [], [], [], []
-            pool_support = max(len(selected), 1)
-        else:
-            unique_sampling = config.unique and config.samples <= len(cached_skeletons)
-            if config.unique and not unique_sampling:
-                warnings.warn(
-                    "Requested unique prior samples exceeds pool size; sampling with replacement instead.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-
-            if unique_sampling:
-                selected = rng.sample(cached_skeletons, k=config.samples)
-            else:
-                selected = [rng.choice(cached_skeletons) for _ in range(config.samples)]
-
-            if not selected:
-                return [], [], [], []
-            pool_support = max(len(cached_skeletons), 1)
-
-        bos_id = self.tokenizer.token2idx.get('<bos>') if hasattr(self.tokenizer, 'token2idx') else None
-        expr_start_id = self.tokenizer.token2idx.get('<expression>') if hasattr(self.tokenizer, 'token2idx') else None
-        expr_end_id = self.tokenizer.token2idx.get('</expression>') if hasattr(self.tokenizer, 'token2idx') else None
-        eos_id = self.tokenizer.token2idx.get('<eos>') if hasattr(self.tokenizer, 'token2idx') else None
-
-        beams: list[list[int]] = []
-        log_probs: list[float] = []
-        completed: list[bool] = []
-        rewards: list[float] = []
-
-        uniform_log_prob = -math.log(pool_support)
-
-        base_prefix = list(prompt_prefix.tokens) if prompt_prefix is not None else None
-        prefix_contains_expr = (
-            base_prefix is not None
-            and expr_start_id is not None
-            and expr_start_id in base_prefix
-        )
-
-        for skeleton in selected:
-            expression_tokens = list(skeleton)
-            try:
-                encoded_expression = self.tokenizer.encode(expression_tokens, return_tensors=False, oov='raise')
-            except KeyError:
-                encoded_expression = self.tokenizer.encode(expression_tokens, return_tensors=False, oov='unk')
-
-            beam_tokens: list[int] = []
-            if base_prefix is not None:
-                beam_tokens.extend(base_prefix)
-            else:
-                if bos_id is not None:
-                    beam_tokens.append(bos_id)
-                if expr_start_id is not None:
-                    beam_tokens.append(expr_start_id)
-
-            if (not prefix_contains_expr) and expr_start_id is not None and beam_tokens and beam_tokens[-1] != expr_start_id:
-                beam_tokens.append(expr_start_id)
-
-            beam_tokens.extend(encoded_expression)
-
-            if expr_end_id is not None:
-                beam_tokens.append(expr_end_id)
-            if eos_id is not None:
-                beam_tokens.append(eos_id)
-
-            beams.append(beam_tokens)
-            log_probs.append(uniform_log_prob)
-            completed.append(True)
-            rewards.append(float('nan'))
-
-        return beams, log_probs, completed, rewards
-
     def generate(
         self,
         data: torch.Tensor,
@@ -702,15 +539,6 @@ class FlashANSR(BaseEstimator):
 
                 self._mcts_cache = refiner_cache
                 return beams, log_probs, completed, rewards
-            case 'prior_sampling':
-                if not isinstance(self.generation_config, PriorSamplingConfig):
-                    raise TypeError("Prior sampling requires a PriorSamplingConfig instance.")
-                beams, log_probs, completed, rewards = self._generate_from_prior(
-                    config=self.generation_config,
-                    prompt_prefix=effective_prompt,
-                    verbose=verbose
-                )
-                return beams, log_probs, completed, rewards
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 
@@ -796,9 +624,6 @@ class FlashANSR(BaseEstimator):
             Handling strategy when the refiner fails to converge.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
-          refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
-          Optimization routine for constant fitting.
-            prefix.
         allowed_terms : Iterable[Sequence[str]] or None, optional
             Keyword-only list of term token sequences that may appear in the
             generated expression.
