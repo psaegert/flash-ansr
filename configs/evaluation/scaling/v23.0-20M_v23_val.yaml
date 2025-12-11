@@ -27,7 +27,7 @@ defaults:
           top_k: 0
           top_p: 1
           max_len: 64
-          mini_batch_size: 128
+          batch_size: 128
           temperature: 1
           valid_only: true
           simplify: true

@@ -27,6 +27,13 @@ from flash_ansr.refine import Refiner, ConvergenceError
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, PriorSamplingConfig
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.tensor_ops import pad_input_set
+from flash_ansr.results import (
+    RESULTS_FORMAT_VERSION,
+    deserialize_results_payload,
+    load_results_payload,
+    save_results_payload,
+    serialize_results_payload,
+)
 
 
 class Result(TypedDict):
@@ -284,6 +291,8 @@ class FlashANSR(BaseEstimator):
         self._results: list[Result] = []
         self.results: pd.DataFrame = pd.DataFrame()
         self._mcts_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
+
+        self._input_dim: int | None = None
 
         self.variable_mapping: dict[str, str] = {}
         self._prompt_prefix: PromptPrefix | None = None
@@ -943,6 +952,7 @@ class FlashANSR(BaseEstimator):
                 use_parallel = max_workers > 1 and 'fork' in available_methods
 
                 input_dim = X_np.shape[1]
+                self._input_dim = input_dim
 
                 if max_workers > 1 and not use_parallel:
                     warnings.warn("Parallel refinement requires the 'fork' start method; falling back to serial execution.")
@@ -1106,6 +1116,54 @@ class FlashANSR(BaseEstimator):
             precision=precision,
             variable_mapping=self.variable_mapping if map_variables else None,
             **kwargs)
+
+    def save_results(self, path: str) -> None:
+        """Persist fitted results (minus lambdas) for later reuse."""
+
+        if not self._results:
+            raise ValueError("No results available to save. Run `fit` first.")
+
+        input_dim = self._input_dim if self._input_dim is not None else self.n_variables
+        metadata = {
+            "format_version": RESULTS_FORMAT_VERSION,
+            "parsimony": self.parsimony,
+            "n_variables": self.n_variables,
+            "input_dim": input_dim,
+            "variable_mapping": copy.deepcopy(self.variable_mapping),
+        }
+
+        payload = serialize_results_payload(self._results, metadata=metadata)
+        save_results_payload(payload, path)
+
+    def load_results(self, path: str, *, rebuild_refiners: bool = True) -> None:
+        """Load previously saved results and rebuild refiners if requested."""
+
+        payload = load_results_payload(path)
+        metadata = payload.get("metadata", {})
+
+        version = int(payload.get("version", 0))
+        if version != RESULTS_FORMAT_VERSION:
+            warnings.warn(
+                f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
+            )
+
+        parsimony = float(metadata.get("parsimony", self.parsimony))
+        n_variables = int(metadata.get("n_variables", self.n_variables))
+        input_dim = int(metadata.get("input_dim", n_variables))
+
+        self._input_dim = input_dim
+        self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
+
+        restored = deserialize_results_payload(
+            payload,
+            simplipy_engine=self.simplipy_engine,
+            n_variables=n_variables,
+            input_dim=input_dim,
+            rebuild_refiners=rebuild_refiners,
+        )
+
+        self._results = restored
+        self.compile_results(parsimony)
 
     def to(self, device: str) -> "FlashANSR":
         """Move the transformer weights to ``device``.

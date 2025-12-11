@@ -13,6 +13,13 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
 from flash_ansr.refine import Refiner, ConvergenceError
+from flash_ansr.results import (
+    RESULTS_FORMAT_VERSION,
+    deserialize_results_payload,
+    load_results_payload,
+    save_results_payload,
+    serialize_results_payload,
+)
 from flash_ansr.utils.paths import substitute_root_path
 
 
@@ -68,6 +75,7 @@ class SkeletonPoolModel(BaseEstimator):
         self._pool = self._ensure_pool(skeleton_pool)
         self._results: list[dict[str, Any]] = []
         self.results: pd.DataFrame = pd.DataFrame()
+        self._input_dim: int | None = None
 
     @property
     def n_variables(self) -> int:
@@ -184,6 +192,7 @@ class SkeletonPoolModel(BaseEstimator):
             raise ValueError("The target data must have a single output dimension.")
 
         X_np = self._truncate_input(np.asarray(X_np))
+        self._input_dim = X_np.shape[1]
 
         sample_count = y_np.shape[0]
         if sample_count <= 1:
@@ -290,3 +299,54 @@ class SkeletonPoolModel(BaseEstimator):
             return_prefix=return_prefix,
             precision=precision,
         )
+
+    def save_results(self, path: str) -> None:
+        """Persist fitted results (without lambdas) for reuse."""
+
+        if not self._results:
+            raise ValueError("No results available to save. Run `fit` first.")
+
+        input_dim = self._input_dim if self._input_dim is not None else self.n_variables
+        metadata = {
+            "format_version": RESULTS_FORMAT_VERSION,
+            "parsimony": self.parsimony,
+            "n_variables": self.n_variables,
+            "input_dim": input_dim,
+            "variable_mapping": None,
+        }
+
+        payload = serialize_results_payload(self._results, metadata=metadata)
+        save_results_payload(payload, path)
+
+    def load_results(self, path: str, *, rebuild_refiners: bool = True) -> None:
+        """Load previously saved results and rebuild refiners if requested."""
+
+        payload = load_results_payload(path)
+        metadata = payload.get("metadata", {})
+
+        version = int(payload.get("version", 0))
+        if version != RESULTS_FORMAT_VERSION:
+            warnings.warn(
+                f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
+            )
+
+        parsimony = float(metadata.get("parsimony", self.parsimony))
+        self.parsimony = parsimony
+        n_variables = int(metadata.get("n_variables", self.n_variables))
+        input_dim = int(metadata.get("input_dim", n_variables))
+
+        self._input_dim = input_dim
+
+        restored = deserialize_results_payload(
+            payload,
+            simplipy_engine=self.simplipy_engine,
+            n_variables=n_variables,
+            input_dim=input_dim,
+            rebuild_refiners=rebuild_refiners,
+        )
+
+        self._results = sorted(
+            restored,
+            key=lambda item: item.get("score", float("inf")) if not math.isnan(item.get("score", float("nan"))) else float("inf"),
+        )
+        self.results = pd.DataFrame(self._results)
