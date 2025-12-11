@@ -130,7 +130,7 @@ class TestInference(unittest.TestCase):
             beam_width=8,
             max_len=24,
             batch_size=32,
-            unique_completions=True,
+            unique=True,
         )
 
         nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
