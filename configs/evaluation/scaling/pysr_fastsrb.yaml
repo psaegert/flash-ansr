@@ -132,3 +132,31 @@ experiments:
       runner:
         <<: *pysr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/pysr/fastsrb/niter_01024.pkl"
+
+  pysr_fastsrb_iter_04096:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *pysr_adapter
+        timeout_in_seconds: 10000
+        niterations: 4096
+      runner:
+        <<: *pysr_fastsrb_runner
+        save_every: 1
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/fastsrb/niter_04096.pkl"
+
+  pysr_fastsrb_iter_16384:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *pysr_adapter
+        timeout_in_seconds: 10000
+        niterations: 16384
+      runner:
+        <<: *pysr_fastsrb_runner
+        save_every: 1
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/fastsrb/niter_16384.pkl"

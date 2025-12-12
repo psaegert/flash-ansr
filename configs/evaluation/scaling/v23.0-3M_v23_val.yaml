@@ -220,3 +220,45 @@ experiments:
       runner:
         <<: *flash_ansr_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-3M/v23_val/choices_16384.pkl"
+
+  flash_ansr_v23_choices_65536:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 65536
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-3M/v23_val/choices_65536.pkl"
+
+  flash_ansr_v23_choices_262144:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 262144
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-3M/v23_val/choices_262144.pkl"
+
+  flash_ansr_v23_choices_1048576:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1048576
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-3M/v23_val/choices_1048576.pkl"

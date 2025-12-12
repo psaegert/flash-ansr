@@ -222,3 +222,31 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_16384.pkl"
+
+  flash_ansr_fastsrb_choices_65536:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 65536
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_65536.pkl"
+
+  flash_ansr_fastsrb_choices_262144:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 262144
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_262144.pkl"

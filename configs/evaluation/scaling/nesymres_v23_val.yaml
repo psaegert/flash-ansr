@@ -82,3 +82,39 @@ experiments:
       runner:
         <<: *nesymres_v23_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_width_00032.pkl"
+
+  nesymres_v23_beam_width_00128:
+    run:
+      data_source:
+        <<: *nesymres_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 128
+      runner:
+        <<: *nesymres_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_width_00128.pkl"
+
+  nesymres_v23_beam_width_00256:
+    run:
+      data_source:
+        <<: *nesymres_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 512
+      runner:
+        <<: *nesymres_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_width_00256.pkl"
+
+  nesymres_v23_beam_width_02048:
+    run:
+      data_source:
+        <<: *nesymres_v23_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 2048
+      runner:
+        <<: *nesymres_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/v23_val/beam_width_02048.pkl"
