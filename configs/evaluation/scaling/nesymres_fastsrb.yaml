@@ -108,3 +108,15 @@ experiments:
       runner:
         <<: *nesymres_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00256.pkl"
+
+  nesymres_fastsrb_beam_width_02048:
+    run:
+      data_source:
+        <<: *nesymres_fastsrb_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *nesymres_adapter
+        beam_width: 2048
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_02048.pkl"

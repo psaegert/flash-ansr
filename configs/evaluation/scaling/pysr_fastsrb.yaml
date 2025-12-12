@@ -160,3 +160,17 @@ experiments:
         <<: *pysr_fastsrb_runner
         save_every: 1
         output: "{{ROOT}}/results/evaluation/scaling/pysr/fastsrb/niter_16384.pkl"
+
+  pysr_fastsrb_iter_65536:
+    run:
+      data_source:
+        <<: *pysr_fastsrb_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *pysr_adapter
+        timeout_in_seconds: 20000
+        niterations: 65536
+      runner:
+        <<: *pysr_fastsrb_runner
+        save_every: 1
+        output: "{{ROOT}}/results/evaluation/scaling/pysr/fastsrb/niter_65536.pkl"
