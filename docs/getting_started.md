@@ -11,7 +11,7 @@ flash_ansr install psaegert/flash-ansr-v23.0-120M
 By default models are cached under `./models/` relative to the package root and can be uninstalled with `flash_ansr remove <repo>`.
 Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`.
 
-See [all available models on Hugging Face](https://huggingface.co/search/full-text?q=pasegert%2Fflash-ansr-v23.0):
+See [all available models on Hugging Face](https://huggingface.co/search/full-text?q=psaegert%2Fflash-ansr-v23.0):
 
 ## Minimal inference Example
 ```python

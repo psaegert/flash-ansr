@@ -48,6 +48,41 @@ def _build_toy_pool(engine: SimpliPyEngine) -> SkeletonPool:
     return pool
 
 
+def _build_multivar_pool(engine: SimpliPyEngine) -> SkeletonPool:
+    sample_strategy = {
+        "n_operator_distribution": "equiprobable_lengths",
+        "min_operators": 0,
+        "max_operators": 0,
+        "power": 1,
+        "max_length": 4,
+        "max_tries": 1,
+        "independent_dimensions": True,
+    }
+
+    support_sampler_config = {
+        "support_prior": {
+            "name": "uniform",
+            "kwargs": {"low": -1, "high": 1, "min_value": -1, "max_value": 1},
+        },
+        "n_support_prior": {
+            "name": "uniform",
+            "kwargs": {"low": 4, "high": 4, "min_value": 4, "max_value": 4},
+        },
+    }
+
+    pool = SkeletonPool.from_dict(
+        skeletons={("x1",)},
+        simplipy_engine=engine,
+        sample_strategy=sample_strategy,
+        literal_prior={"name": "normal", "kwargs": {"loc": 0, "scale": 1}},
+        variables=["x1", "x2", "x3"],
+        support_sampler_config=support_sampler_config,
+    )
+
+    pool.skeletons = {("x1",)}
+    return pool
+
+
 def test_fit_and_predict_identity(simplipy_engine: SimpliPyEngine) -> None:
     pool = _build_toy_pool(simplipy_engine)
     model = SkeletonPoolModel(
@@ -91,6 +126,28 @@ def test_truncates_extra_columns(simplipy_engine: SimpliPyEngine) -> None:
     noise = np.random.RandomState(1).normal(scale=0.25, size=x_primary.shape)
     X = np.stack([x_primary, noise], axis=1)
     y = x_primary.reshape(-1, 1)
+
+    model.fit(X, y)
+
+    preds = model.predict(X)
+    np.testing.assert_allclose(preds.squeeze(), y.squeeze(), atol=1e-3)
+
+
+def test_pads_missing_columns(simplipy_engine: SimpliPyEngine) -> None:
+    pool = _build_multivar_pool(simplipy_engine)
+    model = SkeletonPoolModel(
+        simplipy_engine=simplipy_engine,
+        skeleton_pool=pool,
+        samples=1,
+        unique=True,
+        ignore_holdouts=True,
+        seed=2,
+        n_restarts=1,
+        refiner_p0_noise=None,
+    )
+
+    X = np.linspace(-1.0, 1.0, 6).reshape(-1, 1)
+    y = X.copy()
 
     model.fit(X, y)
 

@@ -94,12 +94,15 @@ class BruteForceModel(BaseEstimator):
         return pool
 
     def _truncate_input(self, X: np.ndarray) -> np.ndarray:
-        if X.shape[-1] == self.n_variables:
+        n_features = X.shape[-1]
+        if n_features == self.n_variables:
             return X
-        if X.shape[-1] < self.n_variables:
-            raise ValueError(f"Expected at least {self.n_variables} variables, got {X.shape[-1]}.")
+        if n_features < self.n_variables:
+            pad_width = self.n_variables - n_features
+            pad = np.zeros((*X.shape[:-1], pad_width), dtype=X.dtype)
+            return np.concatenate([X, pad], axis=-1)
 
-        return X[..., :self.n_variables]
+        return X[..., : self.n_variables]
 
     @staticmethod
     def _normalize_variance(variance: float) -> float:
@@ -232,7 +235,13 @@ class BruteForceModel(BaseEstimator):
                 continue
 
             loss = float(refiner._all_constants_values[0][-1])
+            if not np.isfinite(loss):
+                continue
+
             fvu = self._compute_fvu(loss, sample_count, y_variance)
+            if not np.isfinite(fvu):
+                continue
+
             score = self._score_from_fvu(fvu, len(expression_tokens), self.parsimony)
 
             results.append({

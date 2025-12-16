@@ -8,6 +8,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, TYPE_CHECKING
 
 import numpy as np
 import simplipy
+from flash_ansr.baselines import BruteForceModel, SkeletonPoolModel
 from flash_ansr.expressions.normalization import normalize_skeleton, normalize_expression
 from sympy import lambdify
 
@@ -137,7 +138,103 @@ class FlashANSRAdapter(EvaluationModelAdapter):
         raise NotImplementedError(f"Unsupported complexity configuration: {mode}")
 
 
-__all__ = ["FlashANSRAdapter", "PySRAdapter", "NeSymReSAdapter"]
+def _evaluate_refiner_baseline(model: Any, sample: EvaluationSample) -> EvaluationResult:
+    """Shared evaluation logic for refiner-backed baseline models."""
+
+    record = sample.clone_metadata()
+    record["parsimony"] = getattr(model, "parsimony", None)
+
+    y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
+
+    fit_time_start = time.time()
+    try:
+        model.fit(sample.x_support, y_fit)
+        record["fit_time"] = time.time() - fit_time_start
+        record["prediction_success"] = True
+    except Exception as exc:  # pragma: no cover - baseline errors vary
+        record["error"] = str(exc)
+        record["prediction_success"] = False
+        return EvaluationResult(record)
+
+    if not getattr(model, "_results", None):
+        record["error"] = "Model produced no results."
+        record["prediction_success"] = False
+        return EvaluationResult(record)
+
+    try:
+        y_pred = model.predict(sample.x_support, nth_best=0)
+        if sample.x_validation.size:
+            y_pred_val = model.predict(sample.x_validation, nth_best=0)
+        else:
+            y_pred_val = np.empty_like(sample.y_validation)
+        record["y_pred"] = np.asarray(y_pred).copy()
+        record["y_pred_val"] = np.asarray(y_pred_val).copy()
+    except Exception as exc:  # pragma: no cover - baseline errors vary
+        record["error"] = str(exc)
+        record["prediction_success"] = False
+        return EvaluationResult(record)
+
+    try:
+        predicted_expression = model.get_expression(nth_best=0, return_prefix=False)
+        predicted_prefix = model.get_expression(nth_best=0, return_prefix=True)
+        record["predicted_expression"] = predicted_expression
+        record["predicted_expression_prefix"] = normalize_expression(predicted_prefix).copy()
+        record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix).copy()
+    except Exception as exc:  # pragma: no cover - parse errors vary
+        record["error"] = f"Failed to extract expression: {exc}"
+        record["prediction_success"] = False
+        return EvaluationResult(record)
+
+    best_result = model._results[0]
+    fits = best_result.get("fits")
+    if fits:
+        constants = np.asarray(fits[0][0]).tolist() if len(fits[0]) > 0 else None
+        record["predicted_constants"] = constants
+    record["predicted_score"] = best_result.get("score")
+    record["predicted_log_prob"] = best_result.get("log_prob")
+
+    return EvaluationResult(record)
+
+
+class SkeletonPoolAdapter(EvaluationModelAdapter):
+    """Adapter for the sampling-only `SkeletonPoolModel` baseline."""
+
+    def __init__(self, model: SkeletonPoolModel) -> None:
+        self.model = model
+
+    def get_simplipy_engine(self) -> Any:  # pragma: no cover - trivial accessor
+        return self.model.simplipy_engine
+
+    def prepare(self, *, data_source: Any | None = None) -> None:  # noqa: ARG002
+        return None
+
+    def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
+        return _evaluate_refiner_baseline(self.model, sample)
+
+
+class BruteForceAdapter(EvaluationModelAdapter):
+    """Adapter for the exhaustive `BruteForceModel` baseline."""
+
+    def __init__(self, model: BruteForceModel) -> None:
+        self.model = model
+
+    def get_simplipy_engine(self) -> Any:  # pragma: no cover - trivial accessor
+        return self.model.simplipy_engine
+
+    def prepare(self, *, data_source: Any | None = None) -> None:  # noqa: ARG002
+        return None
+
+    def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
+        return _evaluate_refiner_baseline(self.model, sample)
+
+
+__all__ = [
+    "FlashANSRAdapter",
+    "PySRAdapter",
+    "NeSymReSAdapter",
+    "SkeletonPoolAdapter",
+    "BruteForceAdapter",
+]
 
 
 class PySRAdapter(EvaluationModelAdapter):

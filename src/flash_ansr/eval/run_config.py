@@ -9,13 +9,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
+from flash_ansr.baselines import BruteForceModel, SkeletonPoolModel
 from simplipy import SimpliPyEngine
 
 from flash_ansr.benchmarks import FastSRBBenchmark
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.eval.data_sources import FastSRBSource, SkeletonDatasetSource
 from flash_ansr.eval.engine import EvaluationEngine
-from flash_ansr.eval.model_adapters import FlashANSRAdapter, NeSymReSAdapter, PySRAdapter
+from flash_ansr.eval.model_adapters import (
+    BruteForceAdapter,
+    FlashANSRAdapter,
+    NeSymReSAdapter,
+    PySRAdapter,
+    SkeletonPoolAdapter,
+)
 from flash_ansr.eval.result_store import ResultStore
 from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.utils.config_io import load_config
@@ -316,10 +323,10 @@ def _infer_total_limit_from_data_source(config: Mapping[str, Any]) -> tuple[int 
     return len(available_ids) * datasets_per_expression, {"benchmark": benchmark}
 
 
-AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter]
+AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter]
 
 
-def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter:
+def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter:
     adapter_type = str(config.get("type", "flash_ansr")).lower()
     builder = _ADAPTER_REGISTRY.get(adapter_type)
     if builder is None:
@@ -449,10 +456,82 @@ def _build_nesymres_adapter(config: Mapping[str, Any], context: Mapping[str, Any
     )
 
 
+def _resolve_simplipy_engine(config: Mapping[str, Any], context: Mapping[str, Any], *, adapter_name: str) -> SimpliPyEngine:
+    dataset = context.get("dataset")
+    simplipy_engine = dataset.simplipy_engine if isinstance(dataset, FlashANSRDataset) else None
+
+    engine_override = config.get("simplipy_engine")
+    if engine_override is not None:
+        simplipy_engine = SimpliPyEngine.load(substitute_root_path(str(engine_override)), install=True)
+
+    if simplipy_engine is None:
+        raise ValueError(
+            f"{adapter_name} adapter requires a SimpliPy engine (provide one via a skeleton_dataset data source or set model_adapter.simplipy_engine)."
+        )
+
+    return simplipy_engine
+
+
+def _build_skeleton_pool_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> SkeletonPoolAdapter:
+    simplipy_engine = _resolve_simplipy_engine(config, context, adapter_name="skeleton_pool")
+
+    skeleton_pool = config.get("skeleton_pool")
+    if skeleton_pool is None:
+        raise ValueError("skeleton_pool adapter requires skeleton_pool")
+    if isinstance(skeleton_pool, str):
+        skeleton_pool = substitute_root_path(skeleton_pool)
+
+    model = SkeletonPoolModel(
+        simplipy_engine=simplipy_engine,
+        skeleton_pool=skeleton_pool,
+        samples=_coerce_int(config.get("samples", 32), "model_adapter.samples"),
+        unique=bool(config.get("unique", True)),
+        ignore_holdouts=bool(config.get("ignore_holdouts", True)),
+        seed=_coerce_optional_int(config.get("seed"), "model_adapter.seed"),
+        n_restarts=_coerce_int(config.get("n_restarts", 8), "model_adapter.n_restarts"),
+        refiner_method=str(config.get("refiner_method", "curve_fit_lm")),
+        refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
+        refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
+        numpy_errors=config.get("numpy_errors", "ignore"),
+        parsimony=float(config.get("parsimony", 0.05)),
+    )
+
+    return SkeletonPoolAdapter(model)
+
+
+def _build_brute_force_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> BruteForceAdapter:
+    simplipy_engine = _resolve_simplipy_engine(config, context, adapter_name="brute_force")
+
+    skeleton_pool = config.get("skeleton_pool")
+    if skeleton_pool is None:
+        raise ValueError("brute_force adapter requires skeleton_pool")
+    if isinstance(skeleton_pool, str):
+        skeleton_pool = substitute_root_path(skeleton_pool)
+
+    model = BruteForceModel(
+        simplipy_engine=simplipy_engine,
+        skeleton_pool=skeleton_pool,
+        max_expressions=_coerce_int(config.get("max_expressions", 10000), "model_adapter.max_expressions"),
+        max_length=_coerce_optional_int(config.get("max_length"), "model_adapter.max_length"),
+        include_constant_token=bool(config.get("include_constant_token", True)),
+        ignore_holdouts=bool(config.get("ignore_holdouts", True)),
+        n_restarts=_coerce_int(config.get("n_restarts", 8), "model_adapter.n_restarts"),
+        refiner_method=str(config.get("refiner_method", "curve_fit_lm")),
+        refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
+        refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
+        numpy_errors=config.get("numpy_errors", "ignore"),
+        parsimony=float(config.get("parsimony", 0.05)),
+    )
+
+    return BruteForceAdapter(model)
+
+
 _ADAPTER_REGISTRY: dict[str, AdapterBuilder] = {
     "flash_ansr": _build_flash_ansr_adapter,
     "pysr": _build_pysr_adapter,
     "nesymres": _build_nesymres_adapter,
+    "skeleton_pool": _build_skeleton_pool_adapter,
+    "brute_force": _build_brute_force_adapter,
 }
 
 
