@@ -56,6 +56,8 @@ def main(argv: str = None) -> None:
     train_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
     train_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
     train_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
+    train_parser.add_argument('--resume-from', type=str, default=None, help='Path to a checkpoint directory to resume from')
+    train_parser.add_argument('--resume-step', type=int, default=None, help='Override the inferred resume step when resuming')
 
     evaluate_parser = subparsers.add_parser("evaluate")
     evaluate_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the configuration file')
@@ -264,6 +266,8 @@ def main(argv: str = None) -> None:
                     wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
                     wandb_mode=args.mode,
                     num_workers=args.num_workers,
+                    resume_from=args.resume_from,
+                    resume_step=args.resume_step,
                     verbose=args.verbose,
                 )
             except KeyboardInterrupt:

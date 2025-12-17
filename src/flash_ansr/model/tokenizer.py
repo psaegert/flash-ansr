@@ -237,29 +237,41 @@ class Tokenizer:
 
         return beam[expr_start + 1:expr_end], before, after
 
-    def constantify_expression(self, expression: list[int] | list[str]) -> list[int] | list[str]:
+    def constantify_expression(self, expression: list[int] | list[str], exact: bool = False) -> list[int] | list[str]:
         # Replace mult4, div3 etc by multiplication with <constant>
 
         # Find out if the expression is encoded or not
-        if isinstance(expression, list) and all(isinstance(token, int) for token in expression):
+        if isinstance(expression, (list, tuple)) and all(isinstance(token, int) for token in expression):
             # If it's encoded, we need to convert it to the tokenizer's string representation
             constantified_expression = []
             for token in expression:
                 if re.match(r"^mult\d+$", self.idx2token[token]) or re.match(r"^div\d+$", self.idx2token[token]):  # type: ignore
                     # Replace with '*', '<constant>
                     constantified_expression.append(self['*'])
-                    constantified_expression.append(self['<constant>'])
+                    if exact:
+                        raise NotImplementedError("Exact constantification not implemented for encoded expressions.")
+                    else:
+                        constantified_expression.append(self['<constant>'])
                 else:
                     constantified_expression.append(token)
 
-        elif isinstance(expression, list) and all(isinstance(token, str) for token in expression):
+        elif isinstance(expression, (list, tuple)) and all(isinstance(token, str) for token in expression):
             # If it's already a string representation, we can directly replace the patterns
             constantified_expression = []
             for token in expression:
                 if re.match(r"^mult\d+$", token) or re.match(r"^div\d+$", token):  # type: ignore
                     # Replace with '*', '<constant>'
                     constantified_expression.append('*')
-                    constantified_expression.append('<constant>')
+                    if exact:
+                        # Find the factor or divisor from the token
+                        match = re.match(r"^(mult|div)(\d+)$", token)  # type: ignore
+                        if match:
+                            factor = match.group(2)
+                            constantified_expression.append(factor)
+                        else:
+                            raise ValueError(f"Could not parse token {token} for exact constantification.")
+                    else:
+                        constantified_expression.append('<constant>')
                 else:
                     constantified_expression.append(token)
         else:

@@ -212,6 +212,7 @@ class Trainer:
 
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         scaler = torch.amp.GradScaler(enabled=amp_dtype == torch.float16)
+        print(f'Using amp_dtype={amp_dtype}, GradScaler enabled={scaler.is_enabled()}')
 
         print(f'Loading lr_scheduler with config {config_["lr_schedule"]}')
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -303,6 +304,8 @@ class Trainer:
             validate_size: int | None = None,
             validate_batch_size: int = 128,
             preprocess_in_worker: bool | None = None,
+            resume_from: str | None = None,
+            resume_step: int | None = None,
             verbose: bool = False) -> FlashANSRModel:
         """Execute the core training loop.
 
@@ -331,6 +334,11 @@ class Trainer:
             instead of the main process. Defaults to the trainer configuration
             when ``None`` (which enables worker preprocessing whenever the
             dataset has a preprocessor).
+        resume_from : str or None, optional
+            Path to a checkpoint directory from which to resume.
+        resume_step : int or None, optional
+            Explicitly set the global step to resume from. Overrides any step
+            inferred from the checkpoint.
         verbose : bool, default=False
             If ``True`` display progress bars and additional logs.
 
@@ -350,24 +358,43 @@ class Trainer:
 
             self._setup_training_state(device, verbose=verbose)
 
-            pbar = tqdm(range(steps), disable=not verbose, smoothing=0, desc="Training")
-            for step, batch in enumerate(
+            step_offset = 0
+            if resume_from is not None:
+                step_offset = self._load_checkpoint(resume_from, device=device)
+
+            if resume_step is not None:
+                step_offset = int(resume_step)
+
+            if step_offset < 0:
+                raise ValueError("resume_step must be non-negative")
+
+            remaining_steps = max(0, steps - step_offset)
+            if verbose:
+                print(f"Resuming from step {step_offset} with {remaining_steps} steps remaining (target={steps})")
+
+            if remaining_steps == 0:
+                return self.model
+
+            pbar = tqdm(range(remaining_steps), disable=not verbose, smoothing=0, desc="Training")
+            for local_step, batch in enumerate(
                     self.train_dataset.iterate(
-                        steps=steps,
+                        steps=remaining_steps,
                         batch_size=self.batch_size,
                         preprocess=preprocess,
                         preprocess_in_worker=worker_preprocess,
                         num_workers=self.num_workers,
                         max_seq_len=self.decoder_max_seq_len)):
-                self._train_step(batch, step, preprocess, do_optimizer_step=True)
+                global_step = step_offset + local_step
+                self._train_step(batch, global_step, preprocess, do_optimizer_step=True)
 
                 pbar.update(1)
 
-                if validate_interval is not None and ((step + 1) % validate_interval == 0 or step == steps - 1):
-                    self._validate_step(step + 1, validate_size, validate_batch_size, preprocess, worker_preprocess, verbose)
+                human_step = global_step + 1
+                if validate_interval is not None and ((human_step % validate_interval == 0) or (human_step == steps)):
+                    self._validate_step(human_step, validate_size, validate_batch_size, preprocess, worker_preprocess, verbose)
 
-                if checkpoint_interval is not None and checkpoint_directory is not None and (step + 1) % checkpoint_interval == 0:
-                    self._save_checkpoint(step + 1, checkpoint_directory)
+                if checkpoint_interval is not None and checkpoint_directory is not None and (human_step % checkpoint_interval == 0):
+                    self._save_checkpoint(human_step, checkpoint_directory)
 
             pbar.close()
             return self.model
@@ -396,6 +423,8 @@ class Trainer:
             wandb_watch_log_freq: int = 1000,
             preprocess_in_worker: bool | None = None,
             num_workers: int | None = None,
+            resume_from: str | None = None,
+            resume_step: int | None = None,
             verbose: bool = False) -> FlashANSRModel:
         """Train the model while managing the experiment lifecycle via W&B.
 
@@ -437,6 +466,10 @@ class Trainer:
             preprocessing when available).
         num_workers : int or None, optional
             Number of worker processes for data generation.
+        resume_from : str or None, optional
+            Path to a checkpoint directory from which to resume training.
+        resume_step : int or None, optional
+            Override the inferred global step when resuming from ``resume_from``.
         verbose : bool, default=False
             When ``True`` print progress information to stdout.
 
@@ -473,6 +506,8 @@ class Trainer:
                 validate_size=validate_size,
                 validate_batch_size=validate_batch_size,
                 preprocess_in_worker=preprocess_in_worker,
+                resume_from=resume_from,
+                resume_step=resume_step,
                 verbose=verbose
             )
 
@@ -709,6 +744,11 @@ class Trainer:
         save_directory = os.path.join(checkpoint_directory, f"checkpoint_{step}")
         self.model.save(directory=save_directory, errors='ignore')
         torch.save(self.optimizer.state_dict(), os.path.join(save_directory, "optimizer.pt"))
+        if self.lr_scheduler is not None:
+            torch.save(self.lr_scheduler.state_dict(), os.path.join(save_directory, "lr_scheduler.pt"))
+        if self.scaler is not None:
+            torch.save(self.scaler.state_dict(), os.path.join(save_directory, "scaler.pt"))
+        torch.save({"step": step, "total_pflops": self.total_pflops}, os.path.join(save_directory, "training_state.pt"))
         save_config(
             load_config(self.config, resolve_paths=True),
             directory=save_directory,
@@ -717,6 +757,72 @@ class Trainer:
             recursive=True,
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
+
+    def _infer_resume_step(self, checkpoint_directory: str) -> int | None:
+        """Infer the resume step from the checkpoint directory name."""
+        base = os.path.basename(os.path.normpath(checkpoint_directory))
+        prefix = "checkpoint_"
+        if base.startswith(prefix):
+            suffix = base[len(prefix):]
+            if suffix.isdigit():
+                return int(suffix)
+        return None
+
+    def _load_checkpoint(self, checkpoint_directory: str, device: str) -> int:
+        """Load training state from ``checkpoint_directory`` and return the step."""
+
+        checkpoint_directory = substitute_root_path(checkpoint_directory)
+        if not os.path.isdir(checkpoint_directory):
+            raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_directory}")
+
+        model_state_path = os.path.join(checkpoint_directory, "state_dict.pt")
+        optimizer_state_path = os.path.join(checkpoint_directory, "optimizer.pt")
+        scheduler_state_path = os.path.join(checkpoint_directory, "lr_scheduler.pt")
+        scaler_state_path = os.path.join(checkpoint_directory, "scaler.pt")
+        training_state_path = os.path.join(checkpoint_directory, "training_state.pt")
+
+        map_location = torch.device(device)
+
+        self.model.load_state_dict(torch.load(model_state_path, map_location=map_location))
+        self.optimizer.load_state_dict(torch.load(optimizer_state_path, map_location=map_location))
+
+        resume_step: int | None = None
+        if os.path.isfile(training_state_path):
+            training_state = torch.load(training_state_path, map_location=map_location)
+            if isinstance(training_state, dict):
+                step_value = training_state.get("step")
+                if step_value is not None:
+                    try:
+                        resume_step = int(step_value)
+                    except (TypeError, ValueError):
+                        resume_step = None
+
+                self.total_pflops = float(training_state.get("total_pflops", self.total_pflops))
+
+        if resume_step is None:
+            resume_step = self._infer_resume_step(checkpoint_directory)
+
+        if self.lr_scheduler is not None:
+            if os.path.isfile(scheduler_state_path):
+                self.lr_scheduler.load_state_dict(torch.load(scheduler_state_path, map_location=map_location))
+            else:
+                if resume_step is None:
+                    print("Warning: lr_scheduler state missing and resume step unknown; set resume_step explicitly to align LR schedule.")
+                else:
+                    self.lr_scheduler.last_epoch = resume_step - 1
+                    print(f"Warning: lr_scheduler state missing; reconstructing schedule at step {resume_step}.")
+
+        if self.scaler is not None:
+            if os.path.isfile(scaler_state_path):
+                self.scaler.load_state_dict(torch.load(scaler_state_path, map_location=map_location))
+            else:
+                print("Warning: scaler state missing; starting with a fresh GradScaler.")
+
+        if resume_step is None:
+            raise ValueError(
+                "Unable to infer resume step; provide resume_step explicitly or name the checkpoint directory checkpoint_<step>.")
+
+        return resume_step
 
     def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
         """Submit training metrics for the current batch to Weights & Biases.
