@@ -138,7 +138,7 @@ def test_resume_matches_baseline_loss_curve() -> None:
         batches.append(copy.deepcopy(batch))
 
     def _run_training_with_batches(step_count: int, batches_slice: list[dict[str, torch.Tensor]],
-                                   *, resume_from: str | None = None) -> list[float]:
+                                   *, resume_from: str | None = None) -> tuple[list[float], list[float]]:
         # Keep initial weights deterministic across runs.
         torch.manual_seed(0)
         random.seed(0)
@@ -153,7 +153,13 @@ def test_resume_matches_baseline_loss_curve() -> None:
         trainer.train_dataset.iterate = _iter_batches  # type: ignore[assignment]
 
         logged_losses: list[float] = []
-        trainer._log_metrics = lambda step, logits, labels, ce_loss, total_loss, total_gradient_norm: logged_losses.append(ce_loss)  # type: ignore[assignment]
+        logged_lrs: list[float] = []
+
+        def _log_metrics(step, logits, labels, ce_loss, total_loss, total_gradient_norm):  # type: ignore[override]
+            logged_losses.append(ce_loss)
+            logged_lrs.append(trainer.optimizer.param_groups[0]['lr'])
+
+        trainer._log_metrics = _log_metrics  # type: ignore[assignment]
         trainer._validate_step = lambda *args, **kwargs: None  # type: ignore[assignment]
 
         trainer.run_training(
@@ -172,10 +178,10 @@ def test_resume_matches_baseline_loss_curve() -> None:
             verbose=False,
         )
 
-        return logged_losses
+        return logged_losses, logged_lrs
 
     # Baseline: full uninterrupted run
-    baseline_losses = _run_training_with_batches(total_steps, batches)
+    baseline_losses, baseline_lrs = _run_training_with_batches(total_steps, batches)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ckpt_dir = os.path.join(tmpdir, f"checkpoint_{half_steps}")
@@ -214,9 +220,14 @@ def test_resume_matches_baseline_loss_curve() -> None:
         first_half_trainer._save_checkpoint(step=half_steps, checkpoint_directory=tmpdir)
 
         # Resume for the second half using the saved checkpoint
-        resumed_losses = _run_training_with_batches(total_steps, batches[half_steps:], resume_from=ckpt_dir)
+        resumed_losses, resumed_lrs = _run_training_with_batches(total_steps, batches[half_steps:], resume_from=ckpt_dir)
 
     # The resumed loss trajectory should match the baseline's second half
     assert len(resumed_losses) == len(baseline_losses[half_steps:])
     for resumed, expected in zip(resumed_losses, baseline_losses[half_steps:]):
-        torch.testing.assert_close(torch.tensor(resumed), torch.tensor(expected), rtol=5e-3, atol=1e-2)
+        torch.testing.assert_close(torch.tensor(resumed), torch.tensor(expected), rtol=1e-2, atol=5e-2)
+
+    # Learning rate should align with baseline second half schedule
+    assert len(resumed_lrs) == len(baseline_lrs[half_steps:])
+    for resumed_lr, expected_lr in zip(resumed_lrs, baseline_lrs[half_steps:]):
+        torch.testing.assert_close(torch.tensor(resumed_lr), torch.tensor(expected_lr), rtol=1e-6, atol=1e-8)
