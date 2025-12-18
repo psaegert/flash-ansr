@@ -197,7 +197,14 @@ class Trainer:
             config_ = config_["trainer"]
 
         # Handle relative model paths
-        if isinstance(config, str) and isinstance(config_["model"], str) and config_["model"].startswith('.'):
+        if (
+            isinstance(config, str)
+            and isinstance(config_["model"], str)
+            and config_["model"].startswith('.')
+            and not os.path.isabs(config_["model"])
+            and not os.path.normpath(config_["model"]).startswith(os.path.normpath(os.path.dirname(config)))
+        ):
+            # Only rewrite relative model paths that have not already been expanded
             config_["model"] = os.path.join(os.path.dirname(config), config_["model"])
 
         print(f'Creating model from {config_["model"]}')
@@ -353,14 +360,14 @@ class Trainer:
             worker_preprocess = False
 
         try:
-            if compile_mode is not None:
-                self.model = torch.compile(self.model, mode=compile_mode)
-
             self._setup_training_state(device, verbose=verbose)
 
             step_offset = 0
             if resume_from is not None:
                 step_offset = self._load_checkpoint(resume_from, device=device)
+
+            if compile_mode is not None:
+                self.model = torch.compile(self.model, mode=compile_mode)
 
             if resume_step is not None:
                 step_offset = int(resume_step)
