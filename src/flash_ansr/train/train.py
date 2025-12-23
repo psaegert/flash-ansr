@@ -633,7 +633,11 @@ class Trainer:
                 logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device))
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
-                ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                valid_labels = flat_labels != self.metrics_ignore_index
+                if not valid_labels.any():
+                    ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
+                else:
+                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
                 # Force every parameter to contribute to the loss so that gradient
                 # tracking tools (e.g. wandb.watch) do not encounter ``None`` gradients
@@ -714,7 +718,11 @@ class Trainer:
                     logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device))
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
-                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                    valid_labels = flat_labels != self.metrics_ignore_index
+                    if not valid_labels.any():
+                        ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
+                    else:
+                        ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
 
                     # Accumulate metrics for each batch
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
