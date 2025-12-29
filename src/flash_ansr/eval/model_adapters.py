@@ -359,7 +359,27 @@ class E2EAdapter(EvaluationModelAdapter):
         torch_mod = _require_torch()
         Estimator = _require_e2e_regressor()
 
-        model = torch_mod.load(self.model_path, map_location=torch_mod.device(self.device))
+        # Allowlist E2E classes for safe deserialization on torch>=2.6.
+        add_safe_globals = getattr(torch_mod.serialization, "add_safe_globals", None)
+        if add_safe_globals is not None:
+            try:  # pragma: no cover - depends on optional dependency
+                from symbolicregression.model.model_wrapper import ModelWrapper  # type: ignore
+                from symbolicregression.model.embedders import LinearPointEmbedder  # type: ignore
+
+                add_safe_globals([ModelWrapper, LinearPointEmbedder])
+            except Exception:
+                pass
+
+        try:
+            model = torch_mod.load(self.model_path, map_location=torch_mod.device(self.device))
+        except Exception as exc:  # pragma: no cover - defensive retry
+            if "Weights only load failed" not in str(exc):
+                raise
+            model = torch_mod.load(
+                self.model_path,
+                map_location=torch_mod.device(self.device),
+                weights_only=False,
+            )
         try:
             model.to(self.device)
         except Exception:  # pragma: no cover - defensive guard

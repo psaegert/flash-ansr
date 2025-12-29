@@ -6,6 +6,7 @@ data
 /results
 /nesymres
 /e2e
+/maintenance
 
 .vscode/
 get_results.sh

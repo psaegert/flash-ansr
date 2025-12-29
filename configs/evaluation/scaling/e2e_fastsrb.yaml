@@ -12,7 +12,7 @@ defaults:
     noise_level: 0.0
   model_adapter: &e2e_adapter
     type: e2e
-    model_path: "{{ROOT}}/e2e/model1.pt"
+    model_path: "{{ROOT}}/models/e2e/model1.pt"
     simplipy_engine: "dev_7-3"
     device: cuda
     candidates_per_bag: 1
