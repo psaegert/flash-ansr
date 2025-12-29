@@ -34,7 +34,7 @@ experiments:
         candidates_per_bag: 1
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00001.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00001.pkl"
 
   e2e_fastsrb_candidates_00002:
     run:
@@ -44,7 +44,7 @@ experiments:
         candidates_per_bag: 2
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00002.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00002.pkl"
 
   e2e_fastsrb_candidates_00004:
     run:
@@ -54,7 +54,7 @@ experiments:
         candidates_per_bag: 4
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00004.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00004.pkl"
 
   e2e_fastsrb_candidates_00008:
     run:
@@ -64,7 +64,7 @@ experiments:
         candidates_per_bag: 8
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00008.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00008.pkl"
 
   e2e_fastsrb_candidates_00016:
     run:
@@ -74,7 +74,7 @@ experiments:
         candidates_per_bag: 16
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00016.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00016.pkl"
 
   e2e_fastsrb_candidates_00032:
     run:
@@ -84,7 +84,7 @@ experiments:
         candidates_per_bag: 32
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00032.pkl"
 
   e2e_fastsrb_candidates_00064:
     run:
@@ -96,7 +96,7 @@ experiments:
         candidates_per_bag: 64
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00064.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00064.pkl"
 
   e2e_fastsrb_candidates_00128:
     run:
@@ -108,7 +108,7 @@ experiments:
         candidates_per_bag: 128
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00128.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00128.pkl"
 
   e2e_fastsrb_candidates_00256:
     run:
@@ -120,4 +120,4 @@ experiments:
         candidates_per_bag: 256
       runner:
         <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00256.pkl"

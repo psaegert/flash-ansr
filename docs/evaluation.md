@@ -36,7 +36,7 @@
 
 **E2E (End-to-end symbolic regression)**
 1) From `e2e/symbolicregression`, install dependencies (`pip install -r requirements.txt` or use the authors' `environment.yml`).
-2) Patch for modern numpy + scaler guard (idempotent): `python scripts/patch_symbolicregression.py e2e/symbolicregression`.
+2) Patch for modern numpy + scaler guard + `tree_idx` compatibility (idempotent): `python scripts/patch_symbolicregression.py e2e/symbolicregression`.
 3) Install the method with `pip install -e .`.
 4) Install the required sympytorch fork: `pip install git+https://github.com/pakamienny/sympytorch.git`.
 5) Download the pretrained checkpoint to `e2e/model1.pt` (mirror of https://dl.fbaipublicfiles.com/symbolicregression/model1.pt). Keep the filename as-is; the scaling config points there.
