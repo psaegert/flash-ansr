@@ -19,6 +19,12 @@ from flash_ansr.refine import ConvergenceError
 PySRRegressor: type[Any] | None  # pragma: no cover - assigned lazily
 PySRRegressor = None
 
+E2ERegressor: type[Any] | None  # pragma: no cover - assigned lazily
+E2ERegressor = None
+
+_torch_module: Any | None  # pragma: no cover - assigned lazily
+_torch_module = None
+
 try:  # pragma: no cover - optional dependency
     from nesymres.architectures.model import Model as _RuntimeNeSymResModel  # type: ignore
     _HAVE_NESYMRES = True
@@ -230,6 +236,7 @@ class BruteForceAdapter(EvaluationModelAdapter):
 
 __all__ = [
     "FlashANSRAdapter",
+    "E2EAdapter",
     "PySRAdapter",
     "NeSymReSAdapter",
     "SkeletonPoolAdapter",
@@ -315,6 +322,128 @@ class PySRAdapter(EvaluationModelAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             record["error"] = f"Failed to parse PySR expression: {exc}"
             record["prediction_success"] = False
+
+        return EvaluationResult(record)
+
+
+class E2EAdapter(EvaluationModelAdapter):
+    """Adapter for the End-to-end symbolic regression (E2E) baseline."""
+
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        simplipy_engine: Any,
+        device: str = "cpu",
+        candidates_per_bag: int = 1,
+        max_input_points: int = 200,
+        max_number_bags: int = 10,
+        n_trees_to_refine: int = 10,
+        rescale: bool = True,
+    ) -> None:
+        self.model_path = model_path
+        self.simplipy_engine = simplipy_engine
+        self.device = device
+        self.candidates_per_bag = candidates_per_bag
+        self.max_input_points = max_input_points
+        self.max_number_bags = max_number_bags
+        self.n_trees_to_refine = n_trees_to_refine
+        self.rescale = rescale
+
+        self._estimator: Any | None = None
+
+    def get_simplipy_engine(self) -> Any:  # pragma: no cover - trivial accessor
+        return self.simplipy_engine
+
+    def prepare(self, *, data_source: Any | None = None) -> None:  # type: ignore[override]
+        torch_mod = _require_torch()
+        Estimator = _require_e2e_regressor()
+
+        model = torch_mod.load(self.model_path, map_location=torch_mod.device(self.device))
+        try:
+            model.to(self.device)
+        except Exception:  # pragma: no cover - defensive guard
+            pass
+
+        if hasattr(model, "beam_size"):
+            model.beam_size = self.candidates_per_bag
+        elif hasattr(model, "module") and hasattr(model.module, "beam_size"):
+            model.module.beam_size = self.candidates_per_bag
+
+        self._estimator = Estimator(
+            model=model,
+            max_input_points=self.max_input_points,
+            max_number_bags=self.max_number_bags,
+            n_trees_to_refine=self.n_trees_to_refine,
+            rescale=self.rescale,
+        )
+
+    def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
+        if self._estimator is None:
+            raise RuntimeError("E2EAdapter.prepare must be called before evaluation")
+
+        record = sample.clone_metadata()
+        record["parsimony"] = None
+
+        X_support = sample.x_support.copy()
+        X_val = sample.x_validation.copy()
+        y_support = (sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support).copy()
+
+        mask, used_variables = _compute_variable_mask(record.get("variables"), record.get("skeleton"))
+        if mask is not None:
+            X_support = X_support[:, mask]
+            X_val = X_val[:, mask] if X_val.size else X_val
+            if used_variables:
+                record["variable_names"] = used_variables
+
+        fit_time_start = time.time()
+        try:
+            self._estimator.fit(X_support, y_support, verbose=False)
+            record["fit_time"] = time.time() - fit_time_start
+            record["prediction_success"] = True
+        except Exception as exc:  # pragma: no cover - upstream exceptions vary
+            record["error"] = str(exc)
+            record["prediction_success"] = False
+            return EvaluationResult(record)
+
+        try:
+            y_pred = self._estimator.predict(X_support)
+            y_pred_val = self._estimator.predict(X_val) if X_val.size else np.empty_like(sample.y_validation)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            record["error"] = str(exc)
+            record["prediction_success"] = False
+            return EvaluationResult(record)
+
+        if y_pred is None:
+            record["error"] = "E2E returned no predictions"
+            record["prediction_success"] = False
+            return EvaluationResult(record)
+
+        if y_pred_val is None:
+            y_pred_val = np.empty_like(sample.y_validation)
+
+        record["y_pred"] = np.asarray(y_pred).reshape(-1, 1)
+        record["y_pred_val"] = np.asarray(y_pred_val).reshape(-1, 1)
+
+        try:
+            tree_info = self._estimator.retrieve_tree(with_infos=True)
+            if isinstance(tree_info, list):
+                tree_info = tree_info[0] if tree_info else None
+            predicted_tree = None
+            if isinstance(tree_info, Mapping):
+                predicted_tree = tree_info.get("relabed_predicted_tree") or tree_info.get("predicted_tree")
+            if predicted_tree is None:
+                raise ValueError("E2E returned no tree")
+
+            predicted_expression = str(predicted_tree.infix())
+            record["predicted_expression"] = predicted_expression
+            predicted_prefix = self.simplipy_engine.infix_to_prefix(predicted_expression)
+            record["predicted_expression_prefix"] = normalize_expression(predicted_prefix).copy()
+            record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix).copy()
+        except Exception as exc:  # pragma: no cover - parse errors vary
+            record["error"] = f"Failed to parse E2E expression: {exc}"
+            record["prediction_success"] = False
+            return EvaluationResult(record)
 
         return EvaluationResult(record)
 
@@ -641,6 +770,32 @@ def _require_pysr() -> type[Any]:
         raise ImportError("PySR is not installed; please install pysr to use PySRAdapter") from exc
     PySRRegressor = _PySRRegressor
     return PySRRegressor
+
+
+def _require_torch() -> Any:
+    global _torch_module
+    if _torch_module is not None:
+        return _torch_module
+    try:  # pragma: no cover - optional dependency
+        import torch as _torch  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        raise ImportError("PyTorch is required for the E2E adapter") from exc
+    _torch_module = _torch
+    return _torch_module
+
+
+def _require_e2e_regressor() -> type[Any]:
+    global E2ERegressor
+    if E2ERegressor is not None:
+        return E2ERegressor
+    try:  # pragma: no cover - optional dependency
+        from symbolicregression.model.sklearn_wrapper import SymbolicTransformerRegressor as _E2ERegressor  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        raise ImportError(
+            "symbolicregression is not installed; install the E2E dependencies to use the E2E adapter",
+        ) from exc
+    E2ERegressor = _E2ERegressor
+    return E2ERegressor
 
 
 def _compute_fvu_from_predictions(y_true: np.ndarray, y_pred: np.ndarray) -> float:

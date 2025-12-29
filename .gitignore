@@ -5,6 +5,7 @@ data
 !/src/flash_ansr/data/**/*.py
 /results
 /nesymres
+/e2e
 
 .vscode/
 get_results.sh

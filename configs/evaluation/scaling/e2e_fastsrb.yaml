@@ -1,0 +1,123 @@
+defaults:
+  data_source: &e2e_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 10
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &e2e_adapter
+    type: e2e
+    model_path: "{{ROOT}}/e2e/model1.pt"
+    simplipy_engine: "dev_7-3"
+    device: cuda
+    candidates_per_bag: 1
+    max_input_points: 200
+    max_number_bags: 10
+    n_trees_to_refine: 10
+    rescale: true
+  runner: &e2e_fastsrb_runner
+    limit: null
+    save_every: 16
+    resume: true
+
+experiments:
+  e2e_fastsrb_candidates_00001:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 1
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00001.pkl"
+
+  e2e_fastsrb_candidates_00002:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 2
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00002.pkl"
+
+  e2e_fastsrb_candidates_00004:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 4
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00004.pkl"
+
+  e2e_fastsrb_candidates_00008:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 8
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00008.pkl"
+
+  e2e_fastsrb_candidates_00016:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 16
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00016.pkl"
+
+  e2e_fastsrb_candidates_00032:
+    run:
+      data_source: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 32
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00032.pkl"
+
+  e2e_fastsrb_candidates_00064:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 64
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00064.pkl"
+
+  e2e_fastsrb_candidates_00128:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 128
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00128.pkl"
+
+  e2e_fastsrb_candidates_00256:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 256
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_00256.pkl"

@@ -18,6 +18,7 @@ from flash_ansr.eval.data_sources import FastSRBSource, SkeletonDatasetSource
 from flash_ansr.eval.engine import EvaluationEngine
 from flash_ansr.eval.model_adapters import (
     BruteForceAdapter,
+    E2EAdapter,
     FlashANSRAdapter,
     NeSymReSAdapter,
     PySRAdapter,
@@ -323,10 +324,10 @@ def _infer_total_limit_from_data_source(config: Mapping[str, Any]) -> tuple[int 
     return len(available_ids) * datasets_per_expression, {"benchmark": benchmark}
 
 
-AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter]
+AdapterBuilder = Callable[[Mapping[str, Any], Mapping[str, Any]], FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter | E2EAdapter]
 
 
-def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter:
+def _build_model_adapter(config: Mapping[str, Any], *, context: Mapping[str, Any]) -> FlashANSRAdapter | PySRAdapter | NeSymReSAdapter | SkeletonPoolAdapter | BruteForceAdapter | E2EAdapter:
     adapter_type = str(config.get("type", "flash_ansr")).lower()
     builder = _ADAPTER_REGISTRY.get(adapter_type)
     if builder is None:
@@ -456,6 +457,36 @@ def _build_nesymres_adapter(config: Mapping[str, Any], context: Mapping[str, Any
     )
 
 
+def _build_e2e_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) -> E2EAdapter:
+    simplipy_engine = _resolve_simplipy_engine(config, context, adapter_name="e2e")
+
+    model_path = config.get("model_path")
+    if model_path is None:
+        raise ValueError("e2e adapter requires model_path")
+
+    candidates_per_bag = _coerce_int(config.get("candidates_per_bag", 1), "model_adapter.candidates_per_bag")
+    max_input_points = _coerce_int(config.get("max_input_points", 200), "model_adapter.max_input_points")
+
+    max_number_bags_cfg = config.get("max_number_bags")
+    max_number_bags = _coerce_optional_int(max_number_bags_cfg, "model_adapter.max_number_bags")
+    if max_number_bags is None:
+        max_number_bags = 10
+
+    n_trees_to_refine = _coerce_int(config.get("n_trees_to_refine", 10), "model_adapter.n_trees_to_refine")
+    rescale = bool(config.get("rescale", True))
+
+    return E2EAdapter(
+        model_path=substitute_root_path(str(model_path)),
+        simplipy_engine=simplipy_engine,
+        device=str(config.get("device", "cpu")),
+        candidates_per_bag=candidates_per_bag,
+        max_input_points=max_input_points,
+        max_number_bags=max_number_bags,
+        n_trees_to_refine=n_trees_to_refine,
+        rescale=rescale,
+    )
+
+
 def _resolve_simplipy_engine(config: Mapping[str, Any], context: Mapping[str, Any], *, adapter_name: str) -> SimpliPyEngine:
     dataset = context.get("dataset")
     simplipy_engine = dataset.simplipy_engine if isinstance(dataset, FlashANSRDataset) else None
@@ -532,6 +563,7 @@ _ADAPTER_REGISTRY: dict[str, AdapterBuilder] = {
     "nesymres": _build_nesymres_adapter,
     "skeleton_pool": _build_skeleton_pool_adapter,
     "brute_force": _build_brute_force_adapter,
+    "e2e": _build_e2e_adapter,
 }
 
 
