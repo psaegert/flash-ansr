@@ -4,10 +4,12 @@ from __future__ import annotations
 import time
 import warnings
 import functools
+import re
 from typing import Any, Callable, Iterable, Mapping, Optional, TYPE_CHECKING
 
 import numpy as np
 import simplipy
+import sympy as sp
 from flash_ansr.baselines import BruteForceModel, SkeletonPoolModel
 from flash_ansr.expressions.normalization import normalize_skeleton, normalize_expression
 from sympy import lambdify
@@ -340,6 +342,7 @@ class E2EAdapter(EvaluationModelAdapter):
         max_number_bags: int = 10,
         n_trees_to_refine: int = 10,
         rescale: bool = True,
+        debug: bool = False,
     ) -> None:
         self.model_path = model_path
         self.simplipy_engine = simplipy_engine
@@ -349,6 +352,7 @@ class E2EAdapter(EvaluationModelAdapter):
         self.max_number_bags = max_number_bags
         self.n_trees_to_refine = n_trees_to_refine
         self.rescale = rescale
+        self.debug = debug
 
         self._estimator: Any | None = None
 
@@ -455,11 +459,30 @@ class E2EAdapter(EvaluationModelAdapter):
             if predicted_tree is None:
                 raise ValueError("E2E returned no tree")
 
-            predicted_expression = str(predicted_tree.infix())
+            predicted_expression_raw = str(predicted_tree.infix())
+            canonical_infix = _canonicalize_e2e_infix(predicted_expression_raw)
+            try:
+                sympy_expr = sp.parse_expr(canonical_infix)
+                predicted_expression = str(sympy_expr)
+            except Exception:
+                predicted_expression = canonical_infix
+
+            # Normalize function casing for simplipy compatibility.
+            predicted_expression = re.sub(r"\bAbs\b", "abs", predicted_expression)
+
+            if self.debug:
+                print("[E2EAdapter][debug] raw infix:", predicted_expression_raw, flush=True)
+                print("[E2EAdapter][debug] canonical infix:", canonical_infix, flush=True)
+                print("[E2EAdapter][debug] sympy infix:", predicted_expression, flush=True)
+
             record["predicted_expression"] = predicted_expression
             predicted_prefix = self.simplipy_engine.infix_to_prefix(predicted_expression)
             record["predicted_expression_prefix"] = normalize_expression(predicted_prefix).copy()
             record["predicted_skeleton_prefix"] = normalize_skeleton(predicted_prefix).copy()
+
+            if self.debug:
+                print("[E2EAdapter][debug] prefix:", predicted_prefix, flush=True)
+                print("[E2EAdapter][debug] skeleton:", record["predicted_skeleton_prefix"], flush=True)
         except Exception as exc:  # pragma: no cover - parse errors vary
             record["error"] = f"Failed to parse E2E expression: {exc}"
             record["prediction_success"] = False
@@ -844,3 +867,19 @@ def _format_fvu_value(value: float) -> str:
     if np.isneginf(value):  # pragma: no cover - defensive
         return "-inf"
     return f"{value:.6g}"
+
+
+def _canonicalize_e2e_infix(expr: str) -> str:
+    """Map E2E operator tokens to standard infix symbols before SymPy parsing."""
+    replacements = {
+        "add": "+",
+        "sub": "-",
+        "mul": "*",
+        "pow": "**",
+        "inv": "1/",
+    }
+    # Tokenize on whitespace and parentheses to avoid touching identifiers like "mulx_0".
+    spaced = re.sub(r"([()])", r" \1 ", expr)
+    tokens = spaced.split()
+    mapped = [replacements.get(tok, tok) for tok in tokens]
+    return " ".join(mapped)
