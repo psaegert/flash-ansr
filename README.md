@@ -72,9 +72,9 @@ y_pred = model.predict(X)
 
 ### Training
 
-<img src="./assets/images/nsr-training.drawio.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
+<!-- <img src="./assets/images/nsr-training.drawio.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
 
-> **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
+> **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)) -->
 
 ### Architecture
 
@@ -85,7 +85,7 @@ y_pred = model.predict(X)
 ### Results
 <img src="./assets/images/test_time_compute_fastsrb.svg" width="100%" style="background-color: white; padding: 10px; border-radius: 10px;">
 
-> **Test Time Compute scaling.** ⚡ANSR, NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)), and PySR [citation needed] are evaluated on the FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
+> **Test Time Compute scaling.** ⚡ANSR, NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)), PySR [Cranmer 2023](https://arxiv.org/abs/2305.01582), and E2E [Kamienny et al. 2022](https://arxiv.org/abs/2204.10532) are evaluated on the FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
 > AMD 9950X (16C32T), RTX 4090 (24GB).
 
 
@@ -97,7 +97,7 @@ y_pred = model.predict(X)
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.4.1},
+    version = {0.4.2},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```
