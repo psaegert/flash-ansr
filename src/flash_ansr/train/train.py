@@ -217,7 +217,13 @@ class Trainer:
             **config_['optimizer'].get('kwargs', {}),
         )
 
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # On CPU we avoid float16 autocast to prevent overflow; prefer bf16 when available.
+        cpu_bf16_supported = bool(getattr(torch.cpu, "is_bf16_supported", lambda: False)())
+        if torch.cuda.is_available():
+            amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            amp_dtype = torch.bfloat16 if cpu_bf16_supported else torch.float32
+
         scaler = torch.amp.GradScaler(enabled=amp_dtype == torch.float16)
         print(f'Using amp_dtype={amp_dtype}, GradScaler enabled={scaler.is_enabled()}')
 
@@ -629,7 +635,12 @@ class Trainer:
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
-            with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
+            if self.amp_dtype == torch.float32:
+                autocast_context = torch.autocast(self.device.type, dtype=self.amp_dtype, enabled=False)
+            else:
+                autocast_context = torch.autocast(self.device.type, dtype=self.amp_dtype)
+
+            with autocast_context:
                 logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device))
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
