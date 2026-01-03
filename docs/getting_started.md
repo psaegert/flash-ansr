@@ -35,7 +35,12 @@ print("Expression:", model.get_expression())
 
 y_pred = model.predict(X)
 print("Predictions:", y_pred[:5])
+
+# All results are stored in model.results as a pandas DataFrame
+model.results
 ```
+
+Find more details in the [API Reference](api.md).
 
 
 ## One-command evaluation
@@ -43,9 +48,11 @@ print("Predictions:", y_pred[:5])
 flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-120M_fastsrb.yaml -v
 ```
 Produces a pickle under `results/evaluation/...` with entries like:
+
 - `predicted_expression`
 - `predicted_log_prob`
 - `y_pred`
+- `...`
 
 For more details, see [Evaluation](evaluation.md).
 

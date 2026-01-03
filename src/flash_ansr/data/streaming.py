@@ -1,3 +1,5 @@
+"""Shared-memory streaming of procedurally generated training samples."""
+
 import multiprocessing as mp
 import os
 import random
@@ -19,6 +21,7 @@ from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 @dataclass
 class WorkerConfig:
+    """Configuration passed to worker processes generating samples."""
     skeleton_pool: SkeletonPool
     tokenizer: Tokenizer
     padding: Literal["random", "zero"]
@@ -74,6 +77,7 @@ class SharedMemoryWorkerPool:
         worker_preprocess: bool = False,
         preprocessor_prompt_config: dict[str, Any] | None = None,
     ) -> None:
+        """Allocate shared buffers and spin up producer workers."""
         if self._is_initialized:
             return
 
@@ -156,6 +160,7 @@ class SharedMemoryWorkerPool:
         self._is_initialized = True
 
     def shutdown(self) -> None:
+        """Tear down workers and release shared resources."""
         if not self._is_initialized:
             return
 
@@ -195,21 +200,25 @@ class SharedMemoryWorkerPool:
             self.worker_preprocess_enabled = False
 
     def acquire_slot(self) -> int:
+        """Reserve a buffer slot for a forthcoming job."""
         if self._available_slots_queue is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         return self._available_slots_queue.get()
 
     def submit_job(self, slot_idx: int, n_support: int | None) -> None:
+        """Queue a work item for a specific slot."""
         if self._work_queue is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         self._work_queue.put((slot_idx, n_support))
 
     def get_completed_slot(self) -> int:
+        """Block until a filled slot is available."""
         if self._result_queue is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         return self._result_queue.get()
 
     def release_slot(self, slot_idx: int) -> None:
+        """Return a slot to the available pool after consumption."""
         if self._available_slots_queue is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         self._available_slots_queue.put(slot_idx)

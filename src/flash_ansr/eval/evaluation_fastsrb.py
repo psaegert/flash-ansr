@@ -252,7 +252,7 @@ class FastSRBEvaluation(Evaluation):
             target_size=remaining,
             skip=existing,
             eq_ids=eq_list,
-            count=count,
+            datasets_per_expression=count,
             support_points=support_points,
             sample_points=support_points * 2,
             n_support_override=self.n_support,

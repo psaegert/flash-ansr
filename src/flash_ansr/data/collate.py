@@ -1,3 +1,5 @@
+"""Batch collation utilities for preparing model inputs."""
+
 from typing import Any
 
 import torch
@@ -34,6 +36,7 @@ class BatchFormatter:
         return 1 << (value - 1).bit_length()
 
     def ensure_numeric_channel(self, batch: dict[str, Any]) -> None:
+        """Ensure numeric channels exist by merging precomputed and fresh sequences."""
         input_ids = batch.get("input_ids")
         constants = batch.get("constants")
 
@@ -62,6 +65,7 @@ class BatchFormatter:
         batch["input_num"] = merged
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = "cpu") -> dict[str, Any]:
+        """Pad and bucket batch fields to consistent shapes for model consumption."""
         pad_token_id = self.tokenizer["<pad>"]
 
         def _adjust_length(tensor: torch.Tensor, target_length: int, pad_value: Any) -> torch.Tensor:

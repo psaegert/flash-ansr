@@ -15,31 +15,31 @@
 ## Models and baselines
 
 - **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. See the scaling configs under `configs/evaluation/scaling/v23.0-*/`.
-- **PySR**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony). Watchdog helper: `scripts/evaluate_PySR.py`.
-- **NeSymReS**: Adapter expects external checkout + checkpoint paths; exposes beam width/restarts. See `run_nesymres.yaml` and scaling configs.
+- **[PySR](https://github.com/MilesCranmer/PySR)**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony). Watchdog helper: `scripts/evaluate_PySR.py`.
+- **[NeSymReS](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales)**: Adapter expects external checkout + checkpoint paths; exposes beam width/restarts. See `run_nesymres.yaml` and scaling configs.
 - **SkeletonPoolModel (baseline)**: Transformer-free baseline that samples skeletons from a provided pool and only refines constants. Configure via `model_adapter.type: skeleton_pool` (or add a dedicated config entry) with pool path/config, `samples`, `unique`, `ignore_holdouts`, and `seed`. Useful for ablations and replication.
-- **BruteForceModel**: Exhaustive baseline over a provided skeleton pool. Configs live alongside the scaling files.
-- **E2E (End-to-end symbolic regression)**: External transformer baseline. Requires the authors' `model1.pt`, a working `symbolicregression` install, and the `e2e_fastsrb` scaling config.
+- **BruteForceModel (baseline)**: Exhaustive baseline over a provided skeleton pool. Configs live alongside the scaling files.
+- **[E2E](https://github.com/facebookresearch/symbolicregression)**: External transformer baseline. Requires the authors' `model1.pt`, a working `symbolicregression` install, and the `e2e_fastsrb` scaling config.
 
 ### External model setup (one-time)
 
 **PySR**
-1) Install PySR into the same environment as flash-ansr: `pip install pysr`.
-2) Trigger Julia precompilation (first import is slow): `python -c "from pysr import PySRRegressor"`.
-3) Optional but recommended for long sweeps: use the watchdog wrapper `python scripts/evaluate_PySR.py -c <config> --experiment <name> -v` to auto-restart if PySR stalls.
+1. Install PySR into the same environment as flash-ansr: `pip install pysr`.
+2. Trigger Julia precompilation (first import is slow): `python -c "from pysr import PySRRegressor"`.
+3. Optional but recommended for long sweeps: use the watchdog wrapper `python scripts/evaluate_PySR.py -c <config> --experiment <name> -v` to auto-restart if PySR stalls.
 
-**NeSymReS (100M checkpoint)**
-1) Clone their repo (see README) and install: `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`.
-2) Install Lightning compatible with the checkpoint loader: `pip install pytorch-lightning==2.5.6`.
-3) Patch Python 3.13 incompatibilities: `python scripts/patch_typing_io.py` then `python scripts/patch_nesymres.py nesymres/NeuralSymbolicRegressionThatScales`.
-4) Place the checkpoint triplet under `models/nesymres/`: `eq_setting.json`, `config.yaml`, `100M.ckpt`.
+**NeSymReS**
+1. Clone their repo (see README) and install: `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`.
+2. Install Lightning compatible with the checkpoint loader: `pip install pytorch-lightning==2.5.6`.
+3. Patch Python 3.13 incompatibilities: `python scripts/patch_typing_io.py` then `python scripts/patch_nesymres.py nesymres/NeuralSymbolicRegressionThatScales`.
+4. Place the checkpoint triplet under `models/nesymres/`: `eq_setting.json`, `config.yaml`, `100M.ckpt`.
 
 **E2E (End-to-end symbolic regression)**
-1) From `e2e/symbolicregression`, install dependencies (`pip install -r requirements.txt` or use the authors' `environment.yml`).
-2) Patch for modern numpy + scaler guard + `tree_idx` compatibility (idempotent): `python scripts/patch_symbolicregression.py e2e/symbolicregression`.
-3) Install the method with `pip install -e .`.
-4) Install the required sympytorch fork: `pip install git+https://github.com/pakamienny/sympytorch.git`.
-5) Download the pretrained checkpoint to `e2e/model1.pt` (mirror of https://dl.fbaipublicfiles.com/symbolicregression/model1.pt). Keep the filename as-is; the scaling config points there.
+1. From `e2e/symbolicregression`, install dependencies (`pip install -r requirements.txt` or use the authors' `environment.yml`).
+2. Patch for modern numpy + scaler guard + `tree_idx` compatibility (idempotent): `python scripts/patch_symbolicregression.py e2e/symbolicregression`.
+3. Install the method with `pip install -e .`.
+4. Install the required sympytorch fork: `pip install git+https://github.com/pakamienny/sympytorch.git`.
+5. Download the pretrained checkpoint to `e2e/model1.pt` (mirror of https://dl.fbaipublicfiles.com/symbolicregression/model1.pt). Keep the filename as-is; the scaling config points there.
 
 ## Express
 
@@ -87,26 +87,19 @@ git clone https://huggingface.co/psaegert/ansr-data data/ansr-data
 
 ### 1. Import test data
 
-External datasets must be imported into the ANSR format:
+External datasets must be imported into the supported format:
 
 ```sh
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/soose_nc/nc.csv" -p "soose" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/soose_nc/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/feynman/FeynmanEquations.csv" -p "feynman" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/feynman/skeleton_pool" -v
-flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/nguyen/nguyen.csv" -p "nguyen" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/nguyen/skeleton_pool" -v
+flash_ansr import-data -i "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml" -p "fastsrb" -e "dev_7-3" -b "{{ROOT}}/configs/test_set/skeleton_pool.yaml" -o "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool" -v
 ```
 
 with
 
 - `-i` the input file
-
 - `-p` the name of the parser implemented in `./src/flash_ansr/compat/convert_data.py`
-
 - `-e` the SimpliPy engine version to use for simplification
-
 - `-b` the config of a base skeleton pool to add the data to
-
 - `-o` the output directory for the resulting skeleton pool
-
 - `-v` verbose output
 
 This will create and save a skeleton pool with the parsed imported skeletons in the specified directory:
@@ -149,7 +142,9 @@ with
 
 ### 4. Evaluate the model
 
-⚡ANSR, PySR, NeSymReS, E2E, skeleton-pool, brute-force, and the FastSRB benchmark now run through a shared evaluation engine. Each run is configured in a single YAML that wires a **data source**, a **model adapter**, and runtime **runner** settings. The common CLI entry point is:
+⚡ANSR, PySR, NeSymReS, E2E, skeleton-pool, brute-force, and the FastSRB benchmark run through a shared evaluation engine.
+Each run is configured in a single YAML that wires a **data source**, a **model adapter**, and runtime **runner** settings.
+The common CLI entry point is:
 
 ```sh
 flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-20M_fastsrb.yaml --experiment flash_ansr_fastsrb_choices_00032 -v
@@ -170,7 +165,7 @@ run:
   runner:        # bookkeeping + persistence
     limit: 5000
     save_every: 250
-    output: "{{ROOT}}/results/evaluation/v22.4-60M/nguyen.pkl"
+    output: "{{ROOT}}/results/evaluation/v23.0-20M/fastsrb.pkl"
     resume: true
 ```
 
@@ -186,7 +181,7 @@ Running `flash_ansr evaluate-run ...` loads the config, resumes any previously s
 
 Ready-to-use configs live under `configs/evaluation/scaling/` (with matching `noise_sweep/` and `support_sweep/` variants). All shipped experiments target FastSRB; the `*_v23_val.yaml` siblings swap in the v23 validation skeleton pool.
 
-##### 4.2.1 FlashANSR (FastSRB)
+##### 4.2.1 FlashANSR
 
 `configs/evaluation/scaling/v23.0-20M_fastsrb.yaml` (plus the 3M and 120M variants) sweep SoftmaxSampling `choices`. Example:
 
@@ -196,7 +191,7 @@ flash_ansr evaluate-run \
   --experiment flash_ansr_fastsrb_choices_00032 -v
 ```
 
-##### 4.2.2 PySR (FastSRB)
+##### 4.2.2 PySR
 
 `configs/evaluation/scaling/pysr_fastsrb.yaml` mirrors the same sweep over `niterations`. Run a single point with:
 
@@ -208,7 +203,7 @@ flash_ansr evaluate-run \
 
 For long sweeps, `python scripts/evaluate_PySR.py -c <config> --experiment <name> -v` restarts jobs if PySR stalls.
 
-##### 4.2.3 NeSymReS (FastSRB)
+##### 4.2.3 NeSymReS
 
 `configs/evaluation/scaling/nesymres_fastsrb.yaml` varies `beam_width` for the 100M checkpoint tracked under `models/nesymres/`. Example:
 
@@ -260,7 +255,3 @@ All scaling configs are multi-experiment. Omit `--experiment` to run the full sw
 - **E2E**: `candidates_per_bag`
 
 Outputs are namespaced under `results/evaluation/scaling/<model>/<dataset>/...` so sweeps can run back-to-back.
-
-#### 4.3 Legacy CLI commands
-
-The historical subcommands (`flash_ansr evaluate`, `evaluate-fastsrb`, `evaluate-pysr`, `evaluate-nesymres`) continue to work, but they are now thin shims around the new engine and will be retired in a future release. Prefer `flash_ansr evaluate-run` plus a run config so every tool—⚡ANSR, PySR, NeSymReS, or FastSRB—shares a single, reproducible entry point.

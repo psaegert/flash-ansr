@@ -39,7 +39,20 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
     -vi 10000  # Validate every 10k steps
     ```
 5. **Logging**: Enable/disable W&B logging via `wandb_mode` inside the config.
-6. **Resume**: [planned]
+6. **Resume**: Continue from any checkpoint directory using `--resume-from` (optionally `--resume-step` when the step cannot be inferred).
+
+### Resuming training
+- Checkpoints are written under `<output-dir>/checkpoint_<step>/` when `-ci/--checkpoint-interval` is set. Each checkpoint contains `state_dict.pt` (model), `optimizer.pt`, `lr_scheduler.pt`, `scaler.pt`, and `training_state.pt` with the recorded `step`.
+- Resume with the same config you trained with and point `--resume-from` at the checkpoint directory:
+    ```bash
+    flash_ansr train \
+    -c "./configs/my_model/train.yaml" \
+    -o "./models/ansr-models/my_model" \
+    --resume-from "./models/ansr-models/my_model/checkpoint_250000" \
+    -v
+    ```
+- The trainer infers the global step from `training_state.pt` or the folder name (`checkpoint_<step>`). If you renamed the folder or the metadata is missing, supply `--resume-step <step>` to realign the optimizer and LR schedule.
+- The run keeps training until the target `steps` from the config are reached, so keep that value consistent when resuming.
 
 ## Data loader/runtime tips
 - `FlashANSRDataset` uses multiprocessing; call `dataset.shutdown()` if you exit to minimize chances of hanging processes.

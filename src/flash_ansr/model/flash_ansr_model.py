@@ -752,17 +752,6 @@ class FlashANSRModel(nn.Module):
         completed_sequences = sequences.cpu().tolist()
         completed_scores = scores.cpu().tolist()
 
-        # HACK: v22.x had a training data bug where </expression> would not be added properly.
-        # Insert an </expression> token before the <eos> token if missing.
-        eos_token = self.tokenizer['<eos>']
-        expression_end_token = self.tokenizer.token2idx.get('</expression>')
-        if expression_end_token is not None:
-            for i, seq in enumerate(completed_sequences):
-                if eos_token in seq:
-                    eos_index = seq.index(eos_token)
-                    if expression_end_token not in seq[:eos_index]:
-                        completed_sequences[i] = seq[:eos_index] + [expression_end_token] + seq[eos_index:]
-
         filtered_sequences: list[list[int]] = []
         filtered_scores: list[float] = []
         filtered_is_valid: list[bool] = []
