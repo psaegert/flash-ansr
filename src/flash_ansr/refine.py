@@ -4,10 +4,13 @@ import warnings
 
 import numpy as np
 import torch
-from scipy.optimize import curve_fit, minimize, OptimizeWarning
+from scipy.optimize import curve_fit, minimize, OptimizeWarning, least_squares
 
-from flash_ansr.expressions import ExpressionSpace
-from flash_ansr.expressions.utils import codify, substitude_constants, num_to_constants, apply_variable_mapping
+from simplipy import SimpliPyEngine
+
+from flash_ansr.expressions.compilation import codify
+from flash_ansr.expressions.token_ops import identify_constants, apply_variable_mapping
+from flash_ansr.utils.tensor_ops import pad_input_set
 
 
 class ConvergenceError(Exception):
@@ -20,7 +23,7 @@ class Refiner:
 
     Parameters
     ----------
-    expression_space : ExpressionSpace
+    simplipy_engine : SimpliPyEngine
         The expression space to use for the refiner
     '''
     input_expression: list[str]
@@ -32,16 +35,17 @@ class Refiner:
     expression_lambda: Callable
     constants_cov: np.ndarray | None
 
-    def __init__(self, expression_space: ExpressionSpace):
+    def __init__(self, simplipy_engine: SimpliPyEngine, n_variables: int):
         '''
         Initialize the Refiner with the expression or skeleton to be refined
         '''
-        self.expression_space = expression_space
+        self.simplipy_engine = simplipy_engine
+        self.n_variables: int = n_variables
 
         self.import_modules()
 
-        self.constants_values: np.ndarray | None = None
-        self.loss: float | None = None
+        self.loss = np.inf
+        self.valid_fit: bool = False
 
         self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []
 
@@ -50,9 +54,68 @@ class Refiner:
         Import the modules required for the expression
         '''
         # TODO: Check if this is necessary
-        for module in self.expression_space.modules:
+        for module in self.simplipy_engine.modules:
             if module not in globals():
                 globals()[module] = importlib.import_module(module)
+
+    def _initialize_expression(self, expression: list[str], n_inputs: int) -> None:
+        '''
+        Prepare internal state for the given expression without fitting constants.
+        '''
+        if not self.simplipy_engine.is_valid(expression, verbose=True):
+            raise ValueError("The expression is not valid")
+
+        self.input_expression = expression
+        self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
+        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(self.input_expression)
+        self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
+
+        self.expression_code = codify(
+            code_string=self.code_string,
+            variables=[f'x{i + 1}' for i in range(n_inputs)] + self.constants_symbols
+        )
+
+        # Since the SimpliPyEngine is already initialized, we can use the same global scope
+        self.expression_lambda = self.simplipy_engine.code_to_lambda(self.expression_code)
+
+    def _assign_fits(self, fits: list[tuple[np.ndarray, np.ndarray | None, float]]) -> None:
+        '''
+        Consume serialized fit results and update the refiner state.
+        '''
+        expected_constants = len(self.constants_symbols)
+
+        filtered: list[tuple[np.ndarray, np.ndarray, float]] = []
+        for constants, cov, loss in fits:
+            constants_array = np.asarray(constants, dtype=float)
+
+            if expected_constants != len(constants_array):
+                continue
+
+            cov_array = np.asarray(cov) if cov is not None else np.asarray([], dtype=float)
+            filtered.append((constants_array, cov_array, float(loss)))
+
+        self._all_constants_values = sorted(filtered, key=lambda item: item[-1])
+        self.valid_fit = any(np.isfinite(entry[-1]) for entry in self._all_constants_values)
+        if self._all_constants_values:
+            self.loss = float(self._all_constants_values[0][-1])
+        else:
+            self.loss = np.inf
+
+    @classmethod
+    def from_serialized(
+            cls,
+            simplipy_engine: SimpliPyEngine,
+            n_variables: int,
+            expression: list[str],
+            n_inputs: int,
+            fits: list[tuple[np.ndarray, np.ndarray | None, float]]) -> 'Refiner':
+        '''
+        Reconstruct a Refiner from cached fit results.
+        '''
+        refiner = cls(simplipy_engine=simplipy_engine, n_variables=n_variables)
+        refiner._initialize_expression(expression, n_inputs)
+        refiner._assign_fits(fits)
+        return refiner
 
     def fit(
             self,
@@ -63,7 +126,15 @@ class Refiner:
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             n_restarts: int = 1,
-            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None,
             converge_error: Literal['raise', 'ignore'] = 'ignore') -> 'Refiner':
@@ -92,6 +163,11 @@ class Refiner:
             The optimization method to use. One of
             - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
             - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
+            - 'minimize_lbfgsb': Use the minimize method with the L-BFGS-B algorithm
+            - 'minimize_neldermead': Use the minimize method with the Nelder-Mead algorithm
+            - 'minimize_powell': Use the minimize method with the Powell algorithm
+            - 'least_squares_trf': Use the least_squares solver with the trust region reflective algorithm
+            - 'least_squares_dogbox': Use the least_squares solver with the dogbox algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -108,60 +184,59 @@ class Refiner:
         Refiner
             The refiner object
         '''
-        if not self.expression_space.is_valid(expression, verbose=True):
-            raise ValueError("The expression is not valid")
+        self._initialize_expression(expression, X.shape[1])
 
-        self.input_expression = expression
-        self.executable_prefix_expression = self.expression_space.operators_to_realizations(self.input_expression)
-        self.prefix_expression_with_constants, self.constants_symbols = num_to_constants(self.input_expression)
-        self.code_string = self.expression_space.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
-
-        self.expression_code = codify(
-            code_string=self.code_string,
-            variables=self.expression_space.variables + self.constants_symbols
-        )
-
-        # Since the ExpressionSpace is already initialized, we can use the same global scope
-        self.expression_lambda = self.expression_space.code_to_lambda(self.expression_code)
-
-        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> float:
+        def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> np.ndarray:
             if len(constants) == 0:
                 y_pred = self.expression_lambda(*X.T)
             else:
                 y_pred = self.expression_lambda(*X.T, *constants)
 
-            return y_pred.flatten()
+            n_samples = X.shape[0]
+
+            if isinstance(y_pred, torch.Tensor):
+                y_pred = y_pred.detach().cpu().numpy()
+
+            if isinstance(y_pred, np.ndarray):
+                if y_pred.ndim == 0:
+                    y_pred = np.full((n_samples,), float(y_pred))
+                else:
+                    y_pred = y_pred.reshape(-1)
+                    if y_pred.size == 1 and n_samples > 1:
+                        y_pred = np.full((n_samples,), float(y_pred[0]))
+                    elif y_pred.size != n_samples:
+                        y_pred = np.resize(y_pred, n_samples)
+            else:
+                y_pred = np.full((n_samples,), y_pred)
+
+            return np.asarray(y_pred, dtype=float)
 
         # Forget all previous results
         self._all_constants_values = []
-        self.constants_values = None
-        self.constants_cov = None
-        self.loss = None
+        constants_values = None
+        constants_cov = None
 
         if len(self.constants_symbols) == 0:
             if no_constants_error == 'raise':
                 raise ValueError("The expression does not contain any constants")
 
-            self.constants_values = np.array([])
-            self.constants_cov = np.array([])
+            constants_values = np.array([])
+            constants_cov = np.array([])
             try:
                 diff = pred_function(X) - y[:, 0]
                 if np.isnan(diff).any():
                     self.loss = np.nan
                 else:
-                    self.loss = np.mean(diff ** 2)
+                    self.loss = np.mean(diff ** 2)  # type: ignore
             except OverflowError:
                 self.loss = np.nan
 
-            self._all_constants_values.append((self.constants_values, self.constants_cov, self.loss))  # type: ignore
+            self._all_constants_values.append((constants_values, constants_cov, self.loss))  # type: ignore
 
             return self
 
-        best_constants: np.ndarray | None = None
-        best_constants_cov: np.ndarray | None = None
-        best_loss = np.inf
-
         self._all_constants_values = []
+        self.valid_fit = False
 
         for _ in range(n_restarts):
             try:
@@ -175,29 +250,22 @@ class Refiner:
                 if np.isnan(diff).any():
                     loss = np.nan
                 else:
-                    loss = np.mean(diff ** 2)
-            except OverflowError:
+                    loss = np.mean(diff ** 2)  # type: ignore
+            except (OverflowError, TypeError):
                 loss = np.nan
 
             self._all_constants_values.append((constants, constants_cov, loss))
 
-            if loss < best_loss:
-                best_constants = constants
-                best_constants_cov = constants_cov
-                best_loss = loss
+        expected_constants = len(self.constants_symbols)
+        filtered_constants: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+        for constants, constants_cov, loss in self._all_constants_values:
+            if len(constants) == expected_constants:
+                filtered_constants.append((constants, constants_cov, loss))
 
-        if not np.isfinite(best_loss):
-            best_loss = np.nan
+        self._assign_fits(filtered_constants)
 
-        # Sort the constants by loss
-        self._all_constants_values = sorted(self._all_constants_values, key=lambda x: x[-1])
-
-        if best_constants is None and converge_error == 'raise':
+        if not self.valid_fit and converge_error == 'raise':
             raise ConvergenceError(f"The optimization did not converge after {n_restarts} restarts")
-
-        self.constants_values = best_constants
-        self.constants_cov = best_constants_cov  # type: ignore
-        self.loss = best_loss
 
         return self
 
@@ -209,7 +277,15 @@ class Refiner:
             p0: np.ndarray | None = None,
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
-            method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
         '''
@@ -235,6 +311,11 @@ class Refiner:
             The optimization method to use. One of
             - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
             - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
+            - 'minimize_lbfgsb': Use the minimize method with the L-BFGS-B algorithm
+            - 'minimize_neldermead': Use the minimize method with the Nelder-Mead algorithm
+            - 'minimize_powell': Use the minimize method with the Powell algorithm
+            - 'least_squares_trf': Use the least_squares solver with the trust region reflective algorithm
+            - 'least_squares_dogbox': Use the least_squares solver with the dogbox algorithm
         no_constants_error : str, optional
             What to do if the expression does not contain any constants. One of
             - 'raise': Raise an error
@@ -286,18 +367,54 @@ class Refiner:
 
             # Ignore OptimizeWarning warnings
             warnings.filterwarnings("ignore", category=OptimizeWarning)
+
+            def objective(p: np.ndarray) -> float:
+                return np.mean((pred_function(X_valid, *p) - y_valid.flatten()) ** 2)
+
+            def residuals(p: np.ndarray) -> np.ndarray:
+                return pred_function(X_valid, *p) - y_valid.flatten()
+
+            def _safe_matrix(mat: Any) -> np.ndarray:
+                if mat is None:
+                    return np.asarray([])
+                if hasattr(mat, 'todense'):
+                    return np.asarray(mat.todense())
+                try:
+                    return np.asarray(mat)
+                except Exception:
+                    return np.asarray([])
+
             match method:
                 case 'curve_fit_lm':
                     popt, pcov = curve_fit(pred_function, X_valid, y_valid.flatten(), p0, **optimizer_kwargs)
                 case 'minimize_bfgs':
-                    def objective(p: np.ndarray) -> float:
-                        return np.mean((pred_function(X_valid, *p) - y_valid.flatten()) ** 2)
-
                     res = minimize(objective, p0, method='BFGS', **optimizer_kwargs)
                     popt = res.x
-                    pcov = res.hess_inv  # TODO: Check if this is correct
+                    pcov = _safe_matrix(getattr(res, 'hess_inv', None))
+                case 'minimize_lbfgsb':
+                    res = minimize(objective, p0, method='L-BFGS-B', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'hess_inv', None))
+                case 'minimize_neldermead':
+                    res = minimize(objective, p0, method='Nelder-Mead', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = np.asarray([])
+                case 'minimize_powell':
+                    res = minimize(objective, p0, method='Powell', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = np.asarray([])
+                case 'least_squares_trf':
+                    res = least_squares(residuals, p0, method='trf', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'jac', None))
+                case 'least_squares_dogbox':
+                    res = least_squares(residuals, p0, method='dogbox', **optimizer_kwargs)
+                    popt = res.x
+                    pcov = _safe_matrix(getattr(res, 'jac', None))
+                case _:
+                    raise ValueError(f"Unknown optimization method: {method}")
 
-        except (RuntimeError, TypeError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             raise ConvergenceError("The optimization did not converge") from exc
 
         return popt, pcov
@@ -318,12 +435,14 @@ class Refiner:
         np.ndarray
             The predicted output
         '''
-        if self.constants_values is None and len(self.constants_symbols) > 0:
-            raise ValueError("The constants have not been fitted yet. Please call the fit method first")
-
         constants_values = self._all_constants_values[nth_best_constants][0]
 
-        if len(self.constants_symbols) == 0:
+        if len(constants_values) != len(self.constants_symbols):
+            return np.full((X.shape[0], 1), np.nan)
+
+        X = pad_input_set(X, self.n_variables)
+
+        if len(self.constants_symbols) == 0 or len(constants_values) == 0:
             y = self.expression_lambda(*X.T)
         else:
             y = self.expression_lambda(*X.T, *constants_values)  # type: ignore
@@ -365,12 +484,31 @@ class Refiner:
         list[str] or str
             The transformed expression
         '''
-        if self.constants_values is None and len(self.constants_symbols) > 0:
-            raise ValueError("The constants have not been fitted yet. Please call the fit method first")
+        constants_values = np.asarray(self._all_constants_values[nth_best_constants][0], dtype=float)
 
-        constants_values = self._all_constants_values[nth_best_constants][0]
+        expression_tokens = list(expression)
+        if constants_values.size:
+            rounded_constants = np.round(constants_values, precision)
+            constant_iter = iter(rounded_constants.tolist())
 
-        expression_with_values = substitude_constants(expression, np.round(constants_values, precision))
+            for idx, token in enumerate(expression_tokens):
+                is_constant_token = (
+                    token == "<constant>"
+                    or token.startswith("C_")
+                    or token in self.constants_symbols
+                )
+
+                if not is_constant_token:
+                    continue
+
+                try:
+                    value = next(constant_iter)
+                except StopIteration:
+                    break
+
+                expression_tokens[idx] = str(value)
+
+        expression_with_values = expression_tokens
 
         if variable_mapping is not None:
             expression_with_values = apply_variable_mapping(expression_with_values, variable_mapping)
@@ -378,7 +516,7 @@ class Refiner:
         if return_prefix:
             return expression_with_values
 
-        expression_with_values_infix = self.expression_space.prefix_to_infix(expression_with_values, **kwargs)
+        expression_with_values_infix = self.simplipy_engine.prefix_to_infix(expression_with_values, **kwargs)
         return expression_with_values_infix
 
     def __str__(self) -> str:
@@ -390,4 +528,4 @@ class Refiner:
         str
             The string representation
         '''
-        return f"Refiner(expression={self.input_expression}, best_constants={self.constants_values}, best_loss={self.loss})"
+        return f"Refiner(expression={self.input_expression}, best_constants={self._all_constants_values[0][0]}, best_loss={self._all_constants_values[0][2]})"

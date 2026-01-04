@@ -1,8 +1,10 @@
 import unittest
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from flash_ansr.eval.token_prediction import (
+from flash_ansr.eval.metrics.token_prediction import (
     correct_token_predictions_at_k,
     reciprocal_rank, recall, precision,
     f1_score, accuracy, perplexity)
@@ -126,6 +128,47 @@ class TestF1Score(unittest.TestCase):
     def test_no_reduction(self):
         result = f1_score(self.logits, self.labels, reduction='none')
         self.assertTrue(torch.equal(result, torch.tensor([4 / 5, 2 / 5])))
+
+
+class TestMetricInputFlexibility(unittest.TestCase):
+    def test_python_lists_batch_inputs(self):
+        preds = [[1, 2, 3], [3, 4, 5]]
+        labels = [[3, 2, 1], [4, 5, 6]]
+
+        expected_precision = torch.tensor([1.0, 2 / 3], dtype=torch.float32)
+        expected_recall = torch.tensor([1.0, 2 / 3], dtype=torch.float32)
+
+        precision_values = precision(preds, labels, reduction='none')
+        recall_values = recall(preds, labels, reduction='none')
+
+        self.assertTrue(torch.allclose(precision_values, expected_precision))
+        self.assertTrue(torch.allclose(recall_values, expected_recall))
+
+    def test_single_sequence_numpy_arrays(self):
+        preds = np.array([1, 2, 2, 0])
+        labels = np.array([2, 3, 0])
+
+        precision_value = precision(preds, labels, ignore_index=0, reduction='mean')
+        recall_value = recall(preds, labels, ignore_index=0, reduction='mean')
+        f1_value = f1_score(preds, labels, ignore_index=0, reduction='mean')
+
+        self.assertTrue(torch.allclose(precision_value, torch.tensor(0.5)))
+        self.assertTrue(torch.allclose(recall_value, torch.tensor(0.5)))
+        self.assertTrue(torch.allclose(f1_value, torch.tensor(0.5)))
+
+    def test_string_tokens_with_ignore(self):
+        preds = [["cat", "dog", "PAD"], ["apple", "banana", "banana"]]
+        labels = [["dog", "mouse", "PAD"], ["banana", "pear"]]
+
+        expected = torch.tensor([0.5, 0.5], dtype=torch.float32)
+
+        precision_values = precision(preds, labels, ignore_index="PAD", reduction='none')
+        recall_values = recall(preds, labels, ignore_index="PAD", reduction='none')
+        f1_values = f1_score(preds, labels, ignore_index="PAD", reduction='none')
+
+        self.assertTrue(torch.allclose(precision_values, expected))
+        self.assertTrue(torch.allclose(recall_values, expected))
+        self.assertTrue(torch.allclose(f1_values, expected))
 
 
 class TestAccuracy(unittest.TestCase):

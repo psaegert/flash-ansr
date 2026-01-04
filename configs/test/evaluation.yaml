@@ -1,14 +1,25 @@
 n_support: 512
-beam_width: 16
-n_restarts: 16
-max_len: 15
+
+n_restarts: 8
 refiner_method: 'curve_fit_lm'
-numeric_head: False
-equivalence_pruning: True
-pointwise_close_criterion: 0.95
-pointwise_close_accuracy_rtol: 0.05
-pointwise_close_accuracy_atol: 0.001
-r2_close_criterion: 0.95
-refiner_p0_noise: 'uniform'
-refiner_p0_noise_kwargs: {'low': 1, 'high': 5}
+refiner_p0_noise: 'normal'
+refiner_p0_noise_kwargs:
+  loc: 0.0
+  scale: 5
+parsimony: 0.05
+refiner_workers: null
+
+generation_config:
+  method: 'softmax_sampling'
+  kwargs:
+    choices: 32
+    top_k: 0
+    top_p: 1
+    max_len: 32
+    batch_size: 128
+    temperature: 1
+    valid_only: true
+    simplify: true
+    unique: true
+
 device: cpu

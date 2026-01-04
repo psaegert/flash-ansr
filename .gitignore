@@ -1,12 +1,15 @@
-# WIP
-/src/flash_ansr/models/encoders/deep_sets2.py
-/src/flash_ansr/models/encoders/point_net.py
-/src/flash_ansr/models/encoders/point_net2.py
-
 # Models & Data
 /models
 data
+!/src/flash_ansr/data
+!/src/flash_ansr/data/**/*.py
 /results
+/nesymres
+/e2e
+/maintenance
+
+.vscode/
+get_results.sh
 
 *.ckpt
 

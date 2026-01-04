@@ -1,19 +1,15 @@
-model: ./nsr.yaml
+model: ./model.yaml
 
 optimizer:
   name: AdamW
   kwargs:
     lr: 1  # Will be multiplied by scheduler
     weight_decay: 0.01
-    amsgrad: True
+    betas: [0.9, 0.95]
 
-lr_scheduler:
-  name: WarmupLinearAnnealing
-  kwargs:
-    min_lr: 0
-    max_lr: 1e-4
-    warmup_steps: 1
-    total_steps: 2
+lr_schedule:
+  - [0, 0.0]
+  - [100_000, 1e-4]  # 5% of steps
 
 batch_size: 4
 
@@ -22,7 +18,11 @@ val_dataset: ./dataset_val.yaml
 val_size: 4
 val_batch_size: 4
 
-numeric_prediction_loss_weight: 0.5
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
 
 steps: 2
 device: cpu

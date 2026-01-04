@@ -4,13 +4,12 @@ drawdata
 editdistance
 einops
 matplotlib
-nltk
 numpy
 pyyaml
-rouge_score
 schedulefree
 scikit-learn
 scipy
+simplipy
 torch
 torch_optimizer
 tqdm

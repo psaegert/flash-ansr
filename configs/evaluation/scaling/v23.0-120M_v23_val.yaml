@@ -1,0 +1,264 @@
+defaults:
+  data_source: &flash_ansr_v23_source
+    type: skeleton_dataset
+    dataset: "{{ROOT}}/configs/v23.0-120M/dataset_val.yaml"
+    n_support: 512
+    noise_level: 0.0
+    preprocess: false
+    device: cuda
+    datasets_per_expression: 10
+  max_trials: 100
+  model_adapter: &flash_ansr_adapter
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M"
+    evaluation_config:
+      n_support: 512
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: normal
+      refiner_p0_noise_kwargs:
+        loc: 0.0
+        scale: 5
+      parsimony: 0.05
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 32
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: true
+          unique: true
+      device: cuda
+    complexity: none
+    device: cuda
+  runner: &flash_ansr_v23_runner
+    limit: 1000
+    save_every: 64
+    resume: true
+
+experiments:
+  flash_ansr_v23_choices_00001:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00001.pkl"
+
+  flash_ansr_v23_choices_00002:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00002.pkl"
+
+  flash_ansr_v23_choices_00004:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00004.pkl"
+
+  flash_ansr_v23_choices_00008:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00008.pkl"
+
+  flash_ansr_v23_choices_00016:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00016.pkl"
+
+  flash_ansr_v23_choices_00032:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 32
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00032.pkl"
+
+  flash_ansr_v23_choices_00064:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 64
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00064.pkl"
+
+  flash_ansr_v23_choices_00128:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 128
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00128.pkl"
+
+  flash_ansr_v23_choices_00256:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 256
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00256.pkl"
+
+  flash_ansr_v23_choices_00512:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 512
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_00512.pkl"
+
+  flash_ansr_v23_choices_01024:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1024
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_01024.pkl"
+
+  flash_ansr_v23_choices_02048:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2048
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_02048.pkl"
+
+  flash_ansr_v23_choices_04096:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4096
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_04096.pkl"
+
+  flash_ansr_v23_choices_08192:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8192
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_08192.pkl"
+
+  flash_ansr_v23_choices_16384:
+    run:
+      data_source: *flash_ansr_v23_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16384
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_16384.pkl"
+
+  flash_ansr_v23_choices_65536:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 65536
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_65536.pkl"
+
+  flash_ansr_v23_choices_262144:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 262144
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_262144.pkl"
+
+  flash_ansr_v23_choices_1048576:
+    run:
+      data_source:
+        <<: *flash_ansr_v23_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1048576
+      runner:
+        <<: *flash_ansr_v23_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/v23_val/choices_1048576.pkl"

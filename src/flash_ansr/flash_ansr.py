@@ -1,27 +1,40 @@
 import os
 import copy
-from typing import Literal, Any, Iterable, TypedDict, Callable
+import numbers
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from types import TracebackType
+from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Tuple, Sequence, TypeVar
 import warnings
 
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
 from tqdm import tqdm
-from collections import defaultdict
 
 from sklearn.base import BaseEstimator
 
-from flash_ansr.utils import substitute_root_path, GenerationConfig
+from simplipy import SimpliPyEngine
+
+from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
+from flash_ansr.model import FlashANSRModel, Tokenizer
+from flash_ansr.decoding.mcts import MCTSConfig
+from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
 from flash_ansr.refine import Refiner, ConvergenceError
-from flash_ansr.models import FlashANSRTransformer
-from flash_ansr.expressions import ExpressionSpace
-from flash_ansr.train.train import OptimizerFactory
+from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig
+from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.tensor_ops import pad_input_set
+from flash_ansr.results import (
+    RESULTS_FORMAT_VERSION,
+    deserialize_results_payload,
+    load_results_payload,
+    save_results_payload,
+    serialize_results_payload,
+)
 
 
 class Result(TypedDict):
     refiner: Refiner
-    numeric_prediction: torch.Tensor | None
     beam: list[int]
     log_prob: float
     expression: list[str]
@@ -31,61 +44,229 @@ class Result(TypedDict):
     function: Callable
     fits: list[tuple[np.ndarray, np.ndarray, float]]
     score: float
-    target_complexity: int | float | None
+    requested_complexity: int | float | None
     fvu: float
+    prompt_metadata: dict[str, list[list[str]]] | None
+
+
+_GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
+_GLOBAL_REFINEMENT_DATA: dict[str, np.ndarray | None] = {'X': None, 'y': None}
+
+
+_T = TypeVar('_T')
+
+
+def _iterate_with_progress(iterable: Iterable[_T], total: int, verbose: bool, desc: str) -> Iterator[_T]:
+    if not verbose:
+        yield from iterable
+        return
+
+    yield from tqdm(iterable, total=total, desc=desc, smoothing=0.0)
+
+
+class _RefinementContext:
+    def __init__(self, engine: SimpliPyEngine, inputs: np.ndarray, targets: np.ndarray) -> None:
+        self._engine = engine
+        self._inputs = inputs
+        self._targets = targets
+        self._previous_engine: SimpliPyEngine | None = None
+        self._previous_data: dict[str, np.ndarray | None] | None = None
+
+    def __enter__(self) -> None:
+        global _GLOBAL_SIMPLIPY_ENGINE, _GLOBAL_REFINEMENT_DATA
+        self._previous_engine = _GLOBAL_SIMPLIPY_ENGINE
+        self._previous_data = _GLOBAL_REFINEMENT_DATA.copy()
+        _GLOBAL_SIMPLIPY_ENGINE = self._engine
+        _GLOBAL_REFINEMENT_DATA = {'X': self._inputs, 'y': self._targets}
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        global _GLOBAL_SIMPLIPY_ENGINE, _GLOBAL_REFINEMENT_DATA
+        _GLOBAL_SIMPLIPY_ENGINE = self._previous_engine
+        if self._previous_data is not None:
+            _GLOBAL_REFINEMENT_DATA = self._previous_data
+        else:
+            _GLOBAL_REFINEMENT_DATA = {'X': None, 'y': None}
+
+
+def _resolve_refinement_arrays(payload: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    X = payload.get('X')
+    y = payload.get('y')
+    if X is None or y is None:
+        X = _GLOBAL_REFINEMENT_DATA.get('X')
+        y = _GLOBAL_REFINEMENT_DATA.get('y')
+    if X is None or y is None:
+        raise RuntimeError("Refinement worker is missing shared input data.")
+    return X, y
+
+
+def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    simplipy_engine = payload.get('simplipy_engine') or _GLOBAL_SIMPLIPY_ENGINE
+    if simplipy_engine is None:
+        raise RuntimeError("Refinement worker does not have access to a SimpliPyEngine instance.")
+
+    numpy_errors = payload.get('numpy_errors')
+    numpy_state = np.geterr()
+    if numpy_errors is not None:
+        np.seterr(all=numpy_errors)
+
+    seed = payload.get('seed')
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    X, y = _resolve_refinement_arrays(payload)
+
+    try:
+        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables']).fit(
+            expression=payload['expression'],
+            X=X,
+            y=y,
+            n_restarts=payload['n_restarts'],
+            method=payload['method'],
+            p0=None,
+            p0_noise=payload['p0_noise'],
+            p0_noise_kwargs=payload['p0_noise_kwargs'],
+            converge_error=payload['converge_error'],
+        )
+    except ConvergenceError:
+        if payload['converge_error'] == 'raise':
+            raise
+        warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
+    finally:
+        np.seterr(**numpy_state)
+
+    if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+        warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
+        if payload['converge_error'] == 'raise':
+            raise ConvergenceError("The optimization did not converge")
+        return None, warning
+
+    loss = float(refiner._all_constants_values[0][-1])
+    sample_count = int(y.shape[0])
+    fvu = FlashANSR._compute_fvu(loss, sample_count, payload['y_variance'])
+    score = FlashANSR._score_from_fvu(fvu, len(payload['expression']), payload['parsimony'])
+
+    serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+    for constants, constants_cov, fit_loss in refiner._all_constants_values:
+        cov_payload: np.ndarray | None
+        if constants_cov is None or getattr(constants_cov, 'size', 0) == 0:
+            cov_payload = None
+        else:
+            cov_payload = np.asarray(constants_cov)
+        serialized_fits.append((np.asarray(constants), cov_payload, float(fit_loss)))
+
+    metadata_snapshot = payload.get('metadata_snapshot')
+    result = {
+        'log_prob': payload['log_prob'],
+        'fvu': fvu,
+        'score': score,
+        'expression': payload['expression'],
+        'complexity': len(payload['expression']),
+        'requested_complexity': payload['complexity'],
+        'raw_beam': payload['raw_beam'],
+        'beam': payload['beam'],
+        'raw_beam_decoded': payload['raw_beam_decoded'],
+        'fits': serialized_fits,
+        'valid_fit': refiner.valid_fit,
+        'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
+    }
+
+    return result, None
 
 
 class FlashANSR(BaseEstimator):
-    '''
-    Flash Amortized Neural Symbolic Regressor.
+    """Flash Amortized Neural Symbolic Regressor.
 
     Parameters
     ----------
-    expression_space : ExpressionSpace
-        The expression space used for manipulating expressions.
-    flash_ansr_transformer : FlashANSRTransformer
-        The core transformer model.
+    simplipy_engine : SimpliPyEngine
+        Engine responsible for manipulating and evaluating symbolic expressions.
+    flash_ansr_model : FlashANSRModel
+        Trained transformer backbone that proposes expression programs.
+    tokenizer : Tokenizer
+        Tokenizer mapping model outputs to expression tokens.
     generation_config : GenerationConfig, optional
-        The generation configuration, by default None.
-    numeric_head : bool, optional
-        Whether to use the numeric head, by default False.
+        Configuration that controls candidate generation. If ``None`` a default
+        ``SoftmaxSamplingConfig`` is created.
     n_restarts : int, optional
-        The number of restarts for the refiner, by default 1.
-    refiner_method : str, optional
-        The optimization method to use. One of
-        - 'curve_fit_lm': Use the curve_fit method with the Levenberg-Marquardt algorithm
-        - 'minimize_bfgs': Use the minimize method with the BFGS algorithm
-    p0_noise : {'uniform', 'normal'}, optional
-        The type of noise to add to the initial guess, by default 'normal'.
-    p0_noise_kwargs : dict, optional
-        The keyword arguments for the noise function, by default None.
-    numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'}, optional
-        The behavior for numpy errors, by default 'ignore'.
+        Number of optimizer restarts used by the refiner when fitting constants.
+    refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
+        Optimization routine employed by the refiner.
+    refiner_p0_noise : {'uniform', 'normal'}, optional
+        Distribution applied to perturb initial constant guesses. ``None`` disables
+        perturbations.
+    refiner_p0_noise_kwargs : dict or {'default'} or None, optional
+        Keyword arguments forwarded to the noise sampler. ``'default'`` yields
+        ``{'low': -5, 'high': 5}`` for the uniform distribution.
+    numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
+        Desired NumPy error handling strategy applied during constant refinement.
     parsimony : float, optional
-        The parsimony coefficient, by default 0.2.
-    verbose : bool, optional
-        Whether to print verbose output, by default False.
-    '''
+        Penalty coefficient that discourages overly complex expressions.
+    refiner_workers : int or None, optional
+        Number of worker processes to run during constant refinement. ``None``
+        (the default) uses all available CPU cores, while explicit integers
+        select a fixed pool size. Set ``0`` to disable multiprocessing.
+    """
+
+    FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
+
+    @classmethod
+    def _normalize_variance(cls, variance: float) -> float:
+        if not np.isfinite(variance):
+            return cls.FLOAT64_EPS
+        return max(float(variance), cls.FLOAT64_EPS)
+
+    @classmethod
+    def _compute_fvu(cls, loss: float, sample_count: int, variance: float) -> float:
+        if sample_count <= 1:
+            return float(loss)
+        return float(loss) / cls._normalize_variance(variance)
+
+    @classmethod
+    def _score_from_fvu(cls, fvu: float, complexity: int, parsimony: float) -> float:
+        if not np.isfinite(fvu) or fvu <= 0:
+            safe_fvu = cls.FLOAT64_EPS
+        else:
+            safe_fvu = max(float(fvu), cls.FLOAT64_EPS)
+        return float(np.log10(safe_fvu) + parsimony * complexity)
+
     def __init__(
             self,
-            expression_space: ExpressionSpace,
-            flash_ansr_transformer: FlashANSRTransformer,
+            simplipy_engine: SimpliPyEngine,
+            flash_ansr_model: FlashANSRModel,
+            tokenizer: Tokenizer,
             generation_config: GenerationConfig | None = None,
-            numeric_head: bool = False,
             n_restarts: int = 8,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
-            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
+            refiner_method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
+            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.05):
-        self.expression_space = expression_space
-        self.flash_ansr_transformer = flash_ansr_transformer.eval()
+            parsimony: float = 0.05,
+            refiner_workers: int | None = None):
+        self.simplipy_engine = simplipy_engine
+        self.flash_ansr_model = flash_ansr_model.eval()
+        self.tokenizer = tokenizer
+
+        if refiner_p0_noise_kwargs == 'default':
+            refiner_p0_noise_kwargs = {'low': -5, 'high': 5}
 
         if generation_config is None:
-            generation_config = GenerationConfig()
+            generation_config = SoftmaxSamplingConfig()
 
         self.generation_config = generation_config
-        self.numeric_head = numeric_head
         self.n_restarts = n_restarts
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
@@ -93,114 +274,373 @@ class FlashANSR(BaseEstimator):
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
 
+        cpu_count = os.cpu_count() or 1
+
+        if refiner_workers is None:
+            resolved_workers = max(1, cpu_count)
+        elif isinstance(refiner_workers, numbers.Integral):
+            resolved_workers = max(0, int(refiner_workers))
+        else:
+            raise TypeError("refiner_workers must be an integer or None.")
+
+        self.refiner_workers = resolved_workers
+
         self._results: list[Result] = []
         self.results: pd.DataFrame = pd.DataFrame()
+        self._mcts_cache: dict[Tuple[int, ...], dict[str, Any]] = {}
+
+        self._input_dim: int | None = None
 
         self.variable_mapping: dict[str, str] = {}
+        self._prompt_prefix: PromptPrefix | None = None
+        self._prompt_metadata: dict[str, list[list[str]]] | None = None
 
     @classmethod
     def load(
             cls,
             directory: str,
             generation_config: GenerationConfig | None = None,
-            numeric_head: bool = False,
             n_restarts: int = 1,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
+            refiner_method: Literal[
+                'curve_fit_lm',
+                'minimize_bfgs',
+                'minimize_lbfgsb',
+                'minimize_neldermead',
+                'minimize_powell',
+                'least_squares_trf',
+                'least_squares_dogbox',
+            ] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
-            refiner_p0_noise_kwargs: dict | None = None,
+            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
-            device: str = 'cpu') -> "FlashANSR":
+            device: str = 'cpu',
+            refiner_workers: int | None = None) -> "FlashANSR":
+        """Instantiate a `FlashANSR` model from a configuration directory.
+
+        Parameters
+        ----------
+        directory : str
+            Directory that contains ``model.yaml``, ``tokenizer.yaml`` and
+            ``state_dict.pt`` artifacts.
+        generation_config : GenerationConfig, optional
+            Generation parameters to override defaults during candidate search.
+        n_restarts : int, optional
+            Number of restarts passed to the refiner.
+        refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
+            Optimization routine for constant fitting.
+        refiner_p0_noise : {'uniform', 'normal'}, optional
+            Distribution used to perturb initial constant guesses.
+        refiner_p0_noise_kwargs : dict or {'default'} or None, optional
+            Additional keyword arguments for the noise sampler. ``'default'``
+            resolves to ``{'low': -5, 'high': 5}``.
+        numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
+            NumPy floating-point error policy applied during refinement.
+        parsimony : float, optional
+            Parsimony coefficient used when compiling results.
+        device : str, optional
+            Torch device where the model weights will be loaded.
+        refiner_workers : int or None, optional
+            Desired worker-pool size for constant refinement. ``None`` uses the
+            number of available CPU cores, integers select an explicit pool size,
+            and ``0`` disables multiprocessing. Mirrors the constructor parameter.
+
+        Returns
+        -------
+        model : FlashANSR
+            Fully initialized regressor ready for inference.
+        """
         directory = substitute_root_path(directory)
 
-        expression_space_path = os.path.join(directory, 'expression_space.yaml')
-        flash_ansr_transformer_path = os.path.join(directory, 'nsr.yaml')
+        flash_ansr_model_path = os.path.join(directory, 'model.yaml')
+        tokenizer_path = os.path.join(directory, 'tokenizer.yaml')
 
-        expression_space = ExpressionSpace.from_config(expression_space_path)
-
-        model = FlashANSRTransformer.from_config(flash_ansr_transformer_path)
+        model = FlashANSRModel.from_config(flash_ansr_model_path)
         model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=device))
         model.eval().to(device)
 
+        tokenizer = Tokenizer.from_config(tokenizer_path)
+
         return cls(
-            expression_space=expression_space,
-            flash_ansr_transformer=model,
+            simplipy_engine=model.simplipy_engine,
+            flash_ansr_model=model,
+            tokenizer=tokenizer,
             generation_config=generation_config,
-            numeric_head=numeric_head,
             n_restarts=n_restarts,
             refiner_method=refiner_method,
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
-            parsimony=parsimony)
+            parsimony=parsimony,
+            refiner_workers=refiner_workers)
+
+    @property
+    def n_variables(self) -> int:
+        """Number of variables the model was trained on."""
+        return self.flash_ansr_model.encoder_max_n_variables - 1
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
-        if X.shape[-1] <= self.flash_ansr_transformer.encoder_max_n_variables - 1:
+        """Limit input features to the number of variables seen during training.
+
+        Parameters
+        ----------
+        X : ndarray or Tensor or DataFrame
+            Candidate input data whose trailing dimension enumerates variables.
+
+        Returns
+        -------
+        truncated : ndarray or Tensor or DataFrame
+            Input truncated to ``self.n_variables`` columns when necessary.
+
+        Raises
+        ------
+        ValueError
+            If the input cannot be sliced to the expected number of variables.
+        """
+        if X.shape[-1] <= self.n_variables:
             return X
 
-        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.flash_ansr_transformer.encoder_max_n_variables - 1 = } variables, but the input data has {X.shape[-1] = } variables. X and y will be truncated to {self.flash_ansr_transformer.encoder_max_n_variables - 1} variables.")
+        warnings.warn(f"Input data has more variables than the model was trained on. The model was trained on {self.n_variables=} variables, but the input data has {X.shape[-1]=} variables. X and y will be truncated to {self.n_variables} variables.")
         if isinstance(X, pd.DataFrame):
-            return X.iloc[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+            return X.iloc[:, :self.n_variables]
 
         try:
-            return X[..., :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+            return X[..., :self.n_variables]
         except IndexError:
             try:
-                return X[:, :self.flash_ansr_transformer.encoder_max_n_variables - 1]
+                return X[:, :self.n_variables]
             except IndexError as exc:
                 raise ValueError('Cannot truncate the input data') from exc
 
-    def generate(self, data: torch.Tensor, complexity: int | float | None = None, verbose: bool = False) -> tuple[list[list[int]], list[float], list[bool]]:
+    def _build_mcts_config(self) -> MCTSConfig:
+        cfg = self.generation_config
+
+        reward_transform = getattr(cfg, 'reward_transform', None)
+        if reward_transform is not None and not callable(reward_transform):
+            reward_transform = None
+
+        return MCTSConfig(
+            simulations=getattr(cfg, 'simulations', 256),
+            uct_c=getattr(cfg, 'uct_c', 1.4),
+            expansion_top_k=getattr(cfg, 'expansion_top_k', 32),
+            max_depth=getattr(cfg, 'max_depth', getattr(cfg, 'max_len', 64)),
+            rollout_max_len=getattr(cfg, 'rollout_max_len', None),
+            rollout_policy=getattr(cfg, 'rollout_policy', 'sample'),
+            temperature=getattr(cfg, 'temperature', 1.0),
+            dirichlet_alpha=getattr(cfg, 'dirichlet_alpha', None),
+            dirichlet_epsilon=getattr(cfg, 'dirichlet_epsilon', 0.25),
+            invalid_penalty=getattr(cfg, 'invalid_penalty', 1e6),
+            min_visits_before_expansion=getattr(cfg, 'min_visits_before_expansion', 1),
+            reward_transform=reward_transform,
+        )
+
+    def generate(
+        self,
+        data: torch.Tensor,
+        *,
+        prompt_prefix: PromptPrefix | None = None,
+        complexity: int | float | None = None,
+        verbose: bool = False,
+    ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
+        """Generate candidate expression beams from the transformer.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            Batched input tensor where the final feature corresponds to targets.
+        prompt_prefix : PromptPrefix or None, optional
+            Serialized prompt metadata to seed generation. When omitted, the
+            method will synthesize a minimal prefix from ``complexity``
+            (if provided) so that all prompt hints share the same entry point.
+        complexity : int or float or None, optional
+            Numeric prompt hint that is only used when ``prompt_prefix`` is not
+            supplied. Callers should prefer constructing a full
+            `PromptPrefix` via the preprocessing pipeline.
+        verbose : bool, optional
+            If ``True``, progress output is emitted where supported.
+
+        Returns
+        -------
+        beams : list[list[int]]
+            Raw token sequences proposed by the transformer.
+        log_probs : list[float]
+            Log probabilities associated with each beam.
+        completed : list[bool]
+            Flags indicating whether the beam terminated with an end token.
+        rewards : list[float]
+            Decoder-specific score used during search (``nan`` for methods that do
+            not compute one).
+
+        Raises
+        ------
+
+        ValueError
+            If an unsupported generation method is requested.
+        """
+        self._mcts_cache = {}
+
+        generation_kwargs = self.generation_config.to_kwargs()
+
+        effective_prompt = prompt_prefix
+        if effective_prompt is None and complexity is not None:
+            preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
+            effective_prompt = prepare_prompt_prefix(
+                preprocessor,
+                complexity=complexity,
+                allowed_terms=None,
+                include_terms=None,
+                exclude_terms=None,
+            )
+
         match self.generation_config.method:
             case 'beam_search':
-                return self.flash_ansr_transformer.beam_search(
+                beams, log_probs, completed, rewards = run_beam_search(
+                    self.flash_ansr_model,
                     data=data,
-                    complexity=complexity,
                     verbose=verbose,
-                    **self.generation_config)
+                    prompt_prefix=effective_prompt,
+                    generation_kwargs=generation_kwargs,
+                )
+                return beams, log_probs, completed, rewards
             case 'softmax_sampling':
-                return self.flash_ansr_transformer.sample_top_kp(
+                beams, log_probs, completed, rewards = run_softmax_sampling(
+                    self.flash_ansr_model,
                     data=data,
-                    complexity=complexity,
                     verbose=verbose,
-                    **self.generation_config)
+                    prompt_prefix=effective_prompt,
+                    generation_kwargs=generation_kwargs,
+                )
+                return beams, log_probs, completed, rewards
+            case 'mcts':
+                config = self._build_mcts_config()
+                completion_sort = generation_kwargs.get('completion_sort', 'reward')
+                beam_width = generation_kwargs.get('beam_width', 16)
+
+                beams, log_probs, completed, rewards, refiner_cache = run_mcts_generation(
+                    transformer=self.flash_ansr_model,
+                    tokenizer=self.tokenizer,
+                    simplipy_engine=self.simplipy_engine,
+                    data=data,
+                    config=config,
+                    beam_width=beam_width,
+                    completion_sort=completion_sort,
+                    n_variables=self.n_variables,
+                    n_restarts=self.n_restarts,
+                    refiner_method=self.refiner_method,
+                    refiner_p0_noise=self.refiner_p0_noise,
+                    refiner_p0_noise_kwargs=self.refiner_p0_noise_kwargs,
+                    parsimony=self.parsimony,
+                    compute_fvu=self._compute_fvu,
+                    score_from_fvu=self._score_from_fvu,
+                    float64_eps=self.FLOAT64_EPS,
+                    prompt_prefix=effective_prompt,
+                    verbose=verbose,
+                )
+
+                self._mcts_cache = refiner_cache
+                return beams, log_probs, completed, rewards
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
+
+    def _prepare_prompt_prefix(
+            self,
+            *,
+            complexity: int | float | None,
+            allowed_terms: Iterable[Sequence[Any]] | None,
+            include_terms: Iterable[Sequence[Any]] | None,
+            exclude_terms: Iterable[Sequence[Any]] | None) -> PromptPrefix | None:
+        preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
+        prompt_prefix = prepare_prompt_prefix(
+            preprocessor,
+            complexity=complexity,
+            allowed_terms=allowed_terms,
+            include_terms=include_terms,
+            exclude_terms=exclude_terms,
+        )
+
+        self._prompt_prefix = prompt_prefix
+        return prompt_prefix
+
+    def _create_result_entry(self, *, payload: dict[str, Any], input_dim: int) -> Result | None:
+        fits_payload = payload.get('fits')
+        if not fits_payload:
+            return None
+
+        if not payload.get('valid_fit', False):
+            return None
+
+        refiner = Refiner.from_serialized(
+            simplipy_engine=self.simplipy_engine,
+            n_variables=self.n_variables,
+            expression=payload['expression'],
+            n_inputs=input_dim,
+            fits=fits_payload,
+        )
+
+        if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+            return None
+
+        entry: Result = {
+            'log_prob': payload['log_prob'],
+            'fvu': payload['fvu'],
+            'score': payload['score'],
+            'expression': payload['expression'],
+            'complexity': payload['complexity'],
+            'requested_complexity': payload.get('requested_complexity'),
+            'raw_beam': payload['raw_beam'],
+            'beam': payload['beam'],
+            'raw_beam_decoded': payload['raw_beam_decoded'],
+            'function': refiner.expression_lambda,
+            'refiner': refiner,
+            'fits': copy.deepcopy(refiner._all_constants_values),
+            'prompt_metadata': copy.deepcopy(payload.get('prompt_metadata')) if payload.get('prompt_metadata') is not None else None,
+        }
+
+        return entry
 
     def fit(
             self,
             X: np.ndarray | torch.Tensor | pd.DataFrame,
             y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-            complexity: int | float | Iterable | None = None,
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-            verbose: bool = False) -> None:
-        '''
-        Perform symbolic regression on the input data.
+            verbose: bool = False,
+            *,
+            complexity: int | float | None = None,
+            allowed_terms: Iterable[Sequence[Any]] | None = None,
+            include_terms: Iterable[Sequence[Any]] | None = None,
+            exclude_terms: Iterable[Sequence[Any]] | None = None) -> None:
+        """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
         Parameters
         ----------
-        X : np.ndarray | torch.Tensor | pd.DataFrame
-            The input data.
-        y : np.ndarray | torch.Tensor | pd.DataFrame | pd.Series
-            The target data.
-        complexity : int | list[int] | None, optional
-            The desired complexity (length in tokens) of the expression, by default None.
-        variable_names : list[str] | dict[str, str] | {'auto'}, optional
-            The variable names, by default 'auto'.
-            - If list[str], the i-th column of X will be named variable_names[i].
-            - If dict[str, str]:
-                - If X is array-like, the i-th column of X will be named after the variable_names keys
-                - If X is a DataFrame, variable_names will be used to map the column names to the variable names.
-            - If 'auto':
-                - If X is a DataFrame, the column names will be used as variable names.
-                - If X is an array or tensor, the variables will be named x0, x1, x2, ...
-            - If None, the variables will be named x0, x1, x2, ...
+        X : ndarray or Tensor or DataFrame
+            Feature matrix where rows index observations and columns variables.
+        y : ndarray or Tensor or DataFrame or Series
+            Target values. Multi-output targets are unsupported.
+        variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
+            Mapping from internal variable tokens to descriptive names.
         converge_error : {'raise', 'ignore', 'print'}, optional
-            The behavior for convergence errors, by default 'ignore'.
+            Handling strategy when the refiner fails to converge.
         verbose : bool, optional
-            Whether to display a progress bar, by default False.
-        '''
+            If ``True`` progress bars and diagnostic output are displayed.
+        allowed_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only list of term token sequences that may appear in the
+            generated expression.
+        include_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only subset of allowed terms that the expression should
+            prioritise using.
+        exclude_terms : Iterable[Sequence[str]] or None, optional
+            Keyword-only list of term token sequences that should be discouraged
+            during generation.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` has more than one output dimension or cannot be reshaped.
+        """
+        # TODO: Support lists
+        # TODO: Support 0-d and 1-d tensors
 
         if len(X.shape) == 1:
             X = X.reshape(-1, 1)
@@ -231,170 +671,240 @@ class FlashANSR(BaseEstimator):
                 # column i -> column name
                 self.variable_mapping = {f"x{i + 1}": name for i, name in enumerate(X.columns)}
 
-        # TODO: Improve the handling of different types
-        if complexity is None or not hasattr(complexity, '__iter__'):
-            complexity_list: list[int | float | None] = [complexity]
-        else:
-            complexity_list = complexity  # type: ignore
+        if complexity is not None and not isinstance(complexity, numbers.Real):
+            raise TypeError("complexity must be a real scalar when provided")
 
         with torch.no_grad():
             # Convert the input data to a tensor
             if not isinstance(X, torch.Tensor):
                 if isinstance(X, pd.DataFrame):
-                    X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_model.device)
                 else:
-                    X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_model.device)
             else:
-                X = X.to(self.flash_ansr_transformer.device)
+                X = X.to(self.flash_ansr_model.device)
 
             if not isinstance(y, torch.Tensor):
                 if isinstance(y, (pd.DataFrame, pd.Series)):
-                    y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_model.device)
                 else:
-                    y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_transformer.device)
+                    y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_model.device)
             else:
-                y = y.to(self.flash_ansr_transformer.device)
+                y = y.to(self.flash_ansr_model.device)
 
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
-            y_variance = y.var(dim=0).item()
+            sample_count = y.shape[0]
+            if sample_count <= 1:
+                # Torch warns when computing an unbiased variance with a single sample.
+                # Skip the reduction entirely so downstream scoring quietly falls back
+                # to the residual loss via ``_compute_fvu``.
+                y_variance = float('nan')
+            else:
+                y_variance = y.var(dim=0).item()
 
-            # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-            pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - y.shape[-1]
-
-            if pad_length > 0:
-                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
+            X = pad_input_set(X, self.n_variables)
 
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
             self._results = []
 
-            # Silence numpy errors
+            # Temporarily adopt the configured floating-point error policy for refinement.
             numpy_errors_before = np.geterr()
             np.seterr(all=self.numpy_errors)
 
-            # --- INFERENCE ---
-            for complexity in complexity_list:
-                raw_beams, log_probs, _ = self.generate(data_tensor, complexity=complexity, verbose=verbose)
+            prompt_prefix = self._prepare_prompt_prefix(
+                complexity=complexity,
+                allowed_terms=allowed_terms,
+                include_terms=include_terms,
+                exclude_terms=exclude_terms,
+            )
 
-                beams = [self.expression_space.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
+            metadata_snapshot: dict[str, list[list[str]]] | None
+            if prompt_prefix is not None:
+                metadata_snapshot = copy.deepcopy(prompt_prefix.metadata)
+            else:
+                metadata_snapshot = None
 
-                raw_beams_decoded = [self.expression_space.tokenizer.decode(raw_beam, special_tokens='<num>') for raw_beam in raw_beams]
-                beams_decoded = [self.expression_space.tokenizer.decode(beam, special_tokens='<num>') for beam in beams]
+            self._prompt_metadata = copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None
 
-                # Fit the refiner to each beam
-                for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in tqdm(zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs), desc="Fitting Constants", disable=not verbose, total=len(beams)):
-                    if self.expression_space.is_valid(beam_decoded):
-                        numeric_prediction = None
+            raw_beams, log_probs, _completed_flags, _rewards = self.generate(
+                data_tensor,
+                prompt_prefix=prompt_prefix,
+                complexity=complexity,
+                verbose=verbose,
+            )
 
-                        if self.numeric_head:
-                            raise NotImplementedError("Numeric head is not yet implemented")
-                            # with torch.no_grad():
-                            #     _, num_output = self.flash_ansr_transformer.forward(beam.unsqueeze(0), data_tensor.unsqueeze(0), numeric_head=True)
-                            #     numeric_prediction = num_output[0, :, 0][beam == self.expression_space.tokenizer["<num>"]]  # FIXME: Start at 1 or 0?
+            beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in raw_beams]
 
-                        try:
-                            refiner = Refiner(expression_space=self.expression_space).fit(
-                                expression=beam_decoded,
-                                X=X.cpu().numpy(),
-                                y=y.cpu().numpy(),
-                                n_restarts=self.n_restarts,
-                                method=self.refiner_method,
-                                p0=numeric_prediction,
-                                p0_noise=self.refiner_p0_noise,
-                                p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                                converge_error=converge_error)
+            raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in raw_beams]
+            beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
-                            if refiner.constants_values is None:  # Fit failed
-                                fvu = np.nan
-                                score = np.nan
-                            else:
-                                if y.shape[0] == 1:
-                                    # Cannot compute variance for a single sample. Use loss instead.
-                                    fvu = refiner._all_constants_values[0][-1]
-                                else:
-                                    fvu = refiner._all_constants_values[0][-1] / np.clip(y_variance, np.finfo(np.float32).eps, None)
-                                score = np.log10(fvu) + self.parsimony * len(beam_decoded)
+            X_np = X.cpu().numpy()
+            y_np = y.cpu().numpy()
 
-                            self._results.append({
-                                'log_prob': log_prob,
-                                'fvu': fvu,
-                                'score': score,
-                                'expression': beam_decoded,
-                                'complexity': len(beam_decoded),
-                                'target_complexity': complexity,
-                                'numeric_prediction': numeric_prediction,
-                                'raw_beam': raw_beam,
-                                'beam': beam,    # type: ignore
-                                'raw_beam_decoded': raw_beam_decoded,
-                                'function': refiner.expression_lambda,
-                                'refiner': refiner,
-                                'fits': copy.deepcopy(refiner._all_constants_values),
-                            })
+            refinement_jobs: list[dict[str, Any]] = []
+            beam_iterator = zip(raw_beams, raw_beams_decoded, beams, beams_decoded, log_probs)
+            for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
+                if not self.simplipy_engine.is_valid(beam_decoded):
+                    continue
 
-                        except ConvergenceError:
-                            if converge_error == 'print':
-                                print(f"Failed to converge for beam: {beam_decoded}")
+                job: dict[str, Any] = {
+                    'raw_beam': raw_beam,
+                    'raw_beam_decoded': raw_beam_decoded,
+                    'beam': beam,
+                    'expression': beam_decoded,
+                    'log_prob': log_prob,
+                    'n_variables': self.n_variables,
+                    'n_restarts': self.n_restarts,
+                    'method': self.refiner_method,
+                    'p0_noise': self.refiner_p0_noise,
+                    'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                    'converge_error': converge_error,
+                    'numpy_errors': self.numpy_errors,
+                    'y_variance': y_variance,
+                    'parsimony': self.parsimony,
+                    'complexity': complexity,
+                    'metadata_snapshot': metadata_snapshot,
+                }
+                refinement_jobs.append(job)
 
-            # --- /INFERENCE ---
+            if refinement_jobs:
+                available_methods = mp.get_all_start_methods()
+                max_workers = min(self.refiner_workers, len(refinement_jobs))
+                use_parallel = max_workers > 1 and 'fork' in available_methods
 
-            if not self._results:
-                raise ConvergenceError("The optimization did not converge for any beam")
+                input_dim = X_np.shape[1]
+                self._input_dim = input_dim
 
-            # Sort the results by the best loss of each beam
-            self._results = list(sorted(self._results, key=lambda x: (
-                x['score'] if not np.isnan(x['score']) else float('inf'),
-                np.isnan(x['score'])
-            )))
+                if max_workers > 1 and not use_parallel:
+                    warnings.warn("Parallel refinement requires the 'fork' start method; falling back to serial execution.")
 
-            # Create a dataframe
-            self.results = pd.DataFrame(self._results)
+                with _RefinementContext(self.simplipy_engine, X_np, y_np):
+                    if use_parallel:
+                        ctx = mp.get_context('fork')
+                        seed_sequence = np.random.SeedSequence()
+                        spawned = seed_sequence.spawn(len(refinement_jobs))
+                        for job, seq in zip(refinement_jobs, spawned):
+                            job['seed'] = int(seq.generate_state(1, dtype=np.uint32)[0])
 
-            # Explode the fits for each beam
-            self.results = self.results.explode('fits')
-            self.results['beam_id'] = self.results.index
-            self.results.reset_index(drop=True, inplace=True)
+                        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+                            futures = [executor.submit(_refine_candidate_worker, job) for job in refinement_jobs]
+                            for future in _iterate_with_progress(
+                                as_completed(futures),
+                                total=len(futures),
+                                verbose=verbose,
+                                desc="Fitting Constants",
+                            ):
+                                result, warning_msg = future.result()
+                                if warning_msg and converge_error == 'print':
+                                    print(warning_msg)
+                                if result is not None:
+                                    entry = self._create_result_entry(payload=result, input_dim=input_dim)
+                                    if entry is not None:
+                                        self._results.append(entry)
+                    else:
+                        for job in _iterate_with_progress(
+                            refinement_jobs,
+                            total=len(refinement_jobs),
+                            verbose=verbose,
+                            desc="Fitting Constants",
+                        ):
+                            serial_payload = job.copy()
+                            serial_payload.update({'X': X_np, 'y': y_np, 'simplipy_engine': self.simplipy_engine})
+                            result, warning_msg = _refine_candidate_worker(serial_payload)
+                            if warning_msg and converge_error == 'print':
+                                print(warning_msg)
+                            if result is not None:
+                                entry = self._create_result_entry(payload=result, input_dim=input_dim)
+                                if entry is not None:
+                                    self._results.append(entry)
 
-            # Split the fit tuples into columns
-            fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
-            self.results = pd.concat([self.results, fits_columns], axis=1)
-            self.results.drop(columns=['fits'], inplace=True)
+            self.compile_results(self.parsimony)
 
             np.seterr(**numpy_errors_before)
 
-    def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
-        '''
-        Predict the target data using the fitted model.
+    def compile_results(self, parsimony: float) -> None:
+        """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
 
         Parameters
         ----------
-        X : np.ndarray | torch.Tensor | pd.DataFrame
-            The input data.
+        parsimony : float
+            Parsimony coefficient used to recompute scores before ranking.
+
+        Raises
+        ------
+        ConvergenceError
+            If no beams converged during refinement.
+        """
+        if not self._results:
+            raise ConvergenceError("The optimization did not converge for any beam")
+
+        self.initial_parsimony = self.parsimony
+        self.parsimony = parsimony
+
+        # Compute the new score for each result
+        for result in self._results:
+            if 'score' in result:
+                # Recompute the score with the new parsimony coefficient
+                fvu = result.get('fvu', np.nan)
+                if np.isfinite(fvu):
+                    result['score'] = self._score_from_fvu(float(fvu), len(result['expression']), self.parsimony)
+                else:
+                    result['score'] = np.nan
+
+        # Sort the results by the best loss of each beam
+        self._results = list(sorted(self._results, key=lambda x: (
+            x['score'] if not np.isnan(x['score']) else float('inf'),
+            np.isnan(x['score'])
+        )))
+
+        # Create a dataframe
+        self.results = pd.DataFrame(self._results)
+
+        # Explode the fits for each beam
+        self.results = self.results.explode('fits')
+        self.results['beam_id'] = self.results.index
+        self.results.reset_index(drop=True, inplace=True)
+
+        # Split the fit tuples into columns
+        fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
+        self.results = pd.concat([self.results, fits_columns], axis=1)
+        self.results.drop(columns=['fits'], inplace=True)
+
+    def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
+        """Evaluate a fitted expression on new data.
+
+        Parameters
+        ----------
+        X : ndarray or Tensor or DataFrame
+            Feature matrix to evaluate.
         nth_best_beam : int, optional
-            The nth best beam to use, by default 0.
+            Beam index to select from the ranked results.
         nth_best_constants : int, optional
-            The nth best constants to use for the given beam, by default 0.
+            Index of the constant fit to choose for the selected beam.
 
         Returns
         -------
-        np.ndarray
-            The predicted target data.
-        '''
+        y_pred : ndarray
+            Predicted targets with the same leading dimension as ``X``.
+
+        Raises
+        ------
+        ValueError
+            If the model has not been fitted before prediction.
+        """
+        # TODO: Support lists
+        # TODO: Support 0-d and 1-d tensors
+
         X = self._truncate_input(X)
 
         if isinstance(X, pd.DataFrame):
             X = X.values
 
-        # Pad the x_tensor with zeros to match the expected maximum input dimension of the set transformer
-        pad_length = self.flash_ansr_transformer.encoder_max_n_variables - X.shape[-1] - 1
-
-        if pad_length > 0:
-            if isinstance(X, torch.Tensor):
-                X = nn.functional.pad(X, (0, pad_length, 0, 0), value=0)
-            elif isinstance(X, np.ndarray):
-                X = np.pad(X, ((0, 0), (0, pad_length)), mode='constant', constant_values=0)
+        X = pad_input_set(X, self.n_variables)
 
         if len(self._results) == 0:
             raise ValueError("The model has not been fitted yet. Please call the fit method first.")
@@ -402,28 +912,28 @@ class FlashANSR(BaseEstimator):
         return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
 
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
-        '''
-        Get the nth best expression.
+        """Retrieve a formatted expression from the compiled results.
 
         Parameters
         ----------
         nth_best_beam : int, optional
-            The nth best beam to use, by default 0.
+            Beam index to extract from ``self._results``.
         nth_best_constants : int, optional
-            The nth best constants to use for the given beam, by default 0.
+            Constant fit index for the selected beam.
         return_prefix : bool, optional
-            Whether to return the expression with the prefix, by default False.
+            If ``True`` return the prefix notation instead of infix string.
         precision : int, optional
-            The precision for rounding the constants, by default 2.
+            Number of decimal places used when rendering constants.
         map_variables : bool, optional
-            Whether to map the variables to their specified names if possible, by default True.
+            When ``True`` apply ``self.variable_mapping`` to humanise variables.
         **kwargs : Any
+            Extra keyword arguments forwarded to :meth:`Refiner.transform`.
 
         Returns
         -------
-        list[str] | str
-            The nth best expression.
-        '''
+        expression : list[str] or str
+            Expression either as a token list or human-readable string.
+        """
         return self._results[nth_best_beam]['refiner'].transform(
             expression=self._results[nth_best_beam]['expression'],
             nth_best_constants=nth_best_constants,
@@ -432,208 +942,77 @@ class FlashANSR(BaseEstimator):
             variable_mapping=self.variable_mapping if map_variables else None,
             **kwargs)
 
-    def specialize(
-            self,
-            X: np.ndarray | torch.Tensor | pd.DataFrame,
-            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-            generation_config: GenerationConfig | None = None,
-            numeric_head: bool = False,
-            n_restarts: int = 8,
-            refiner_method: Literal['curve_fit_lm', 'minimize_bfgs'] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal'] | None = 'uniform',
-            refiner_p0_noise_kwargs: dict | None = {'low': -5, 'high': 5},
-            numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.3,
-            optimizer: torch.optim.Optimizer | None = None,
-            n_iter: int = 1000,
-            priority_queue_size: int = 16,
-            entropy_weight: float = 0.01,
-            gradient_norm_clip: float = 1.0,
-            verbose: bool = False) -> None:
-        '''
-        Specialize the model on the input data with Priority Queue Policy Gradient.
-        '''
-        # Defaults
-        if isinstance(refiner_p0_noise_kwargs, dict):
-            refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs)
+    def save_results(self, path: str) -> None:
+        """Persist fitted results (minus lambdas) for later reuse."""
 
-        if generation_config is None:
-            generation_config = GenerationConfig(method='softmax_sampling', choices=128, top_p=0.9, top_k=0, temperature=1.0)
+        if not self._results:
+            raise ValueError("No results available to save. Run `fit` first.")
 
-        agent = FlashANSR(
-            expression_space=self.expression_space,
-            flash_ansr_transformer=self.flash_ansr_transformer,
-            generation_config=generation_config,
-            numeric_head=numeric_head,
-            n_restarts=n_restarts,
-            refiner_method=refiner_method,
-            refiner_p0_noise=refiner_p0_noise,
-            refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
-            numpy_errors=numpy_errors,
-            parsimony=parsimony)
+        input_dim = self._input_dim if self._input_dim is not None else self.n_variables
+        metadata = {
+            "format_version": RESULTS_FORMAT_VERSION,
+            "parsimony": self.parsimony,
+            "n_variables": self.n_variables,
+            "input_dim": input_dim,
+            "variable_mapping": copy.deepcopy(self.variable_mapping),
+        }
 
-        assert id(self.flash_ansr_transformer) == id(agent.flash_ansr_transformer)
+        payload = serialize_results_payload(self._results, metadata=metadata)
+        save_results_payload(payload, path)
 
-        if optimizer is None:
-            optimizer = OptimizerFactory.get_optimizer('AdamWScheduleFree', agent.flash_ansr_transformer.parameters(), lr=1e-5, weight_decay=0.01)
+    def load_results(self, path: str, *, rebuild_refiners: bool = True) -> None:
+        """Load previously saved results and rebuild refiners if requested."""
 
-        # Set the device for training
-        device = agent.flash_ansr_transformer.device
+        payload = load_results_payload(path)
+        metadata = payload.get("metadata", {})
 
-        # Data preparation
-        if len(X.shape) == 1:
-            X = X.reshape(-1, 1)
-        if len(y.shape) == 1:
-            y = y.reshape(-1, 1)
-        x_tensor = torch.tensor(X, dtype=torch.float32, device=device)
-        y_tensor = torch.tensor(y, dtype=torch.float32, device=device)
-        pad_length = agent.flash_ansr_transformer.encoder_max_n_variables - x_tensor.shape[-1] - y_tensor.shape[-1]
-        if pad_length > 0:
-            x_tensor = nn.functional.pad(x_tensor, (0, pad_length, 0, 0), value=0)
-        data_tensor = torch.cat([x_tensor, y_tensor], dim=-1)
+        version = int(payload.get("version", 0))
+        if version != RESULTS_FORMAT_VERSION:
+            warnings.warn(
+                f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
+            )
 
-        self.specialize_history = []
-        pbar = tqdm(range(n_iter), desc="Specializing", disable=not verbose)
+        parsimony = float(metadata.get("parsimony", self.parsimony))
+        n_variables = int(metadata.get("n_variables", self.n_variables))
+        input_dim = int(metadata.get("input_dim", n_variables))
 
-        priority_queue_beams = []
-        priority_queue_objective = []
+        self._input_dim = input_dim
+        self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
 
-        total_unique_generated: set[tuple[str]] = set()
+        restored = deserialize_results_payload(
+            payload,
+            simplipy_engine=self.simplipy_engine,
+            n_variables=n_variables,
+            input_dim=input_dim,
+            rebuild_refiners=rebuild_refiners,
+        )
 
-        for _ in pbar:
-            try:
-                # Generate sequences and evaluate
-                agent.flash_ansr_transformer.eval()
-                agent.fit(X, y)
-
-                statistics_lists = defaultdict(list)
-
-                n_new = 0
-                for _, df in agent.results.groupby('beam_id'):
-                    # Check if the beam can be used
-                    if not np.isfinite(df['fvu']).any():
-                        continue
-
-                    # Check if the beam is new
-                    new_beam_candidate = tuple(df['raw_beam'].iloc[0])
-                    if new_beam_candidate in priority_queue_beams:
-                        continue
-
-                    statistics_lists['fvu'].extend(df['fvu'])
-                    statistics_lists['complexity'].append(df['complexity'].iloc[0])
-
-                    total_unique_generated.add(new_beam_candidate)
-                    priority_queue_beams.append(new_beam_candidate)
-                    priority_queue_objective.append(np.nanmedian(df['score']))
-                    n_new += 1
-
-                if n_new == 0:
-                    # Sample again
-                    continue
-
-                statistics = {
-                    'min_fvu': np.nanmin(statistics_lists['fvu']),
-                    'max_fvu': np.nanmax(statistics_lists['fvu']),
-                    'mean_fvu': np.nanmean(statistics_lists['fvu']),
-                    'min_complexity': np.nanmin(statistics_lists['complexity']),
-                    'max_complexity': np.nanmax(statistics_lists['complexity']),
-                    'mean_complexity': np.nanmean(statistics_lists['complexity']),
-                    'n_total': len(total_unique_generated),
-                    'n_new': n_new,
-                }
-
-                # Sort by reward
-                sorted_indices = np.argsort(priority_queue_objective)
-                priority_queue_beams = [priority_queue_beams[i] for i in sorted_indices][:priority_queue_size]
-                priority_queue_objective = [priority_queue_objective[i] for i in sorted_indices][:priority_queue_size]
-
-                # Padding sequences to same length
-                max_length = max(len(beam) for beam in priority_queue_beams)
-                padded_beams = [list(beam) + [agent.expression_space.tokenizer['<pad>']] * (max_length - len(beam)) for beam in priority_queue_beams]
-
-                beam_tensor = torch.tensor(padded_beams, dtype=torch.long).to(device)
-
-                # Increase the log probability of the best expressions (in the priority queue)
-                agent.flash_ansr_transformer.train()
-                if hasattr(optimizer, 'train'):
-                    optimizer.train()
-                optimizer.zero_grad()
-
-                logits, _ = agent.flash_ansr_transformer.forward(beam_tensor, data_tensor.unsqueeze(0).repeat(len(priority_queue_beams), 1, 1))
-                log_probs = torch.log_softmax(logits, dim=-1)
-
-                # Get log probs for actions taken
-                taken_log_probs = log_probs.gather(2, beam_tensor[:, 1:].unsqueeze(-1)).squeeze(-1)
-
-                # Compute masks for padding and sequence endings
-                pad_mask = beam_tensor != agent.expression_space.tokenizer['<pad>']
-
-                # Increase average log likelihood (not weighted by reward)
-                policy_loss = -torch.mean(taken_log_probs[pad_mask[:, 1:]])
-
-                # Average loss over batch
-                policy_loss /= len(priority_queue_beams)
-
-                # Regularize the entropy of the taken actions (tokens) and ignore padding
-                entropy = - torch.sum(torch.exp(log_probs) * log_probs, dim=-1) * pad_mask
-                entropy = torch.mean(entropy)
-
-                loss = policy_loss - entropy_weight * entropy
-
-                # Backprop and update
-                loss.backward()
-                gradient_norms = torch.nn.utils.clip_grad_norm_(agent.flash_ansr_transformer.parameters(), gradient_norm_clip)
-                optimizer.step()
-
-                logs = {
-                    'NLL': policy_loss.item(),
-                    'H': entropy.item(),
-                    'max_gradient_norm': torch.max(gradient_norms).item(),
-                    **statistics,
-                }
-
-            except ConvergenceError:
-                warnings.warn("Convergence error occurred during training. Skipping iteration.")
-                pass
-
-            self.specialize_history.append(logs)
-            pbar.set_postfix({
-                'NLL': f"{logs['NLL']:.2e}",
-                'H': f"{logs['H']:.2e}",
-                'Max Queue Objective': f"{np.nanmax(priority_queue_objective):.1f}",
-                'Min Queue Objective': f"{np.nanmin(priority_queue_objective):.1f}",
-                'Min FVU': f"{np.nanmin(agent.results['fvu']):.2e}",
-                'Explored': len(total_unique_generated),
-                'Best Expression': agent.expression_space.prefix_to_infix(agent.expression_space.tokenizer.decode(priority_queue_beams[0], special_tokens='<num>')),
-            })
-
-        pbar.close()
+        self._results = restored
+        self.compile_results(parsimony)
 
     def to(self, device: str) -> "FlashANSR":
-        '''
-        Move the model to a device.
+        """Move the transformer weights to ``device``.
 
         Parameters
         ----------
         device : str
-            The device to move the model to.
+            Target torch device (e.g. ``'cpu'`` or ``'cuda:0'``).
 
         Returns
         -------
-        FlashANSR
-            The model on the new device.
-        '''
-        self.flash_ansr_transformer.to(device)
+        model : FlashANSR
+            Self, enabling fluent chaining.
+        """
+        self.flash_ansr_model.to(device)
         return self
 
     def eval(self) -> "FlashANSR":
-        '''
-        Set the model to evaluation mode.
+        """Put the transformer into evaluation mode.
 
         Returns
         -------
-        FlashANSR
-            The model in evaluation mode.
-        '''
-        self.flash_ansr_transformer.eval()
+        model : FlashANSR
+            Self, enabling fluent chaining.
+        """
+        self.flash_ansr_model.eval()
         return self

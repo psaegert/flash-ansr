@@ -1,0 +1,94 @@
+defaults:
+  data_source: &flash_ansr_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 10
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &flash_ansr_adapter
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-3M"
+    evaluation_config: &flash_ansr_eval_config
+      n_support: 512
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: normal
+      refiner_p0_noise_kwargs:
+        loc: 0.0
+        scale: 5
+      parsimony: 0.05
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 4069
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: true
+          unique: true
+      device: cuda
+    complexity: none
+    device: cuda
+  runner: &flash_ansr_fastsrb_runner
+    limit: null
+    save_every: 64
+    resume: true
+
+experiments:
+  flash_ansr_fastsrb_noise_0p000:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-3M/fastsrb/noise_0p000.pkl"
+
+  flash_ansr_fastsrb_noise_0p001:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        noise_level: 0.001
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-3M/fastsrb/noise_0p001.pkl"
+
+  flash_ansr_fastsrb_noise_0p010:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        noise_level: 0.01
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-3M/fastsrb/noise_0p010.pkl"
+
+  flash_ansr_fastsrb_noise_0p100:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        noise_level: 0.1
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-3M/fastsrb/noise_0p100.pkl"

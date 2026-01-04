@@ -1,2 +1,2 @@
 from .evaluation import Evaluation
-from .utils import NoOpStemmer
+from .evaluation_fastsrb import FastSRBEvaluation

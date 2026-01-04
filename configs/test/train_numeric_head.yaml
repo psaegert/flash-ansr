@@ -1,0 +1,29 @@
+model: ./model_numeric_head.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [100_000, 1e-4]
+
+batch_size: 4
+
+train_dataset: ./dataset_train.yaml
+val_dataset: ./dataset_val.yaml
+val_size: 4
+val_batch_size: 4
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 2
+device: cpu
+numeric_loss_weight: 1.0

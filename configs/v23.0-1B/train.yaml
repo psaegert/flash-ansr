@@ -1,0 +1,31 @@
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.025  # Optimized based on scaling laws
+    betas: [0.9, 0.99995]  # β1=0.9, β2=0.99995 based on token half life
+
+lr_schedule:
+  - [0, 0.0]
+  - [750_000, 3e-5]    # Extended warmup
+  - [3_000_000, 3e-5]  # Stable phase
+  - [4_000_000, 0.0]   # Cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 100_000
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 4_000_000
+device: cuda

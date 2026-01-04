@@ -2,17 +2,25 @@ import os
 import warnings
 import random
 import pickle
+from copy import deepcopy
 
 from types import CodeType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 import numpy as np
 
-from flash_ansr.utils import load_config, substitute_root_path, save_config
-from flash_ansr.expressions.expression_space import ExpressionSpace
-from flash_ansr.expressions.utils import codify, num_to_constants, generate_ubi_dist, get_distribution
+from simplipy import SimpliPyEngine
+
+from flash_ansr.utils.config_io import load_config, save_config
+from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.expressions.compilation import codify
+from flash_ansr.expressions.prior_factory import build_prior_callable
+from flash_ansr.expressions.holdout import HoldoutManager
+from flash_ansr.expressions.skeleton_sampling import SkeletonSampler
+from flash_ansr.expressions.support_sampling import SupportSampler, SupportSamplingError
+from flash_ansr.expressions.token_ops import identify_constants, flatten_nested_list
 
 
 class NoValidSampleFoundError(Exception):
@@ -25,24 +33,26 @@ class SkeletonPool:
 
     Parameters
     ----------
-    expression_space : ExpressionSpace
+    simplipy_engine : SimpliPyEngine
         The expression space to operate in.
     sample_strategy : dict[str, Any]
         The strategy to use for sampling skeletons.
-    literal_prior : str or Callable[..., np.ndarray]
+    literal_prior : dict[str, Any] | list[dict[str, Any]]
         The prior distribution for the literals.
-    literal_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the literal prior distribution.
-    support_prior : str or Callable[..., np.ndarray]
-        The prior distribution for the support points.
-    support_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the support prior distribution.
-    n_support_prior : str or Callable[..., np.ndarray]
-        The prior distribution for the number of support points.
-    n_support_prior_kwargs : dict[str, Any]
-        The keyword arguments to pass to the number of support points prior distribution.
-    holdout_pools : list[SkeletonPool] or None, optional
-        A list of SkeletonPools (i.e. sets of skeletons) to exclude from sampling.
+    support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support prior. When provided, it will overwrite the
+        corresponding entry in ``support_sampler_config``.
+    support_scale_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support-scale prior. Merged into ``support_sampler_config``
+        when supplied.
+    n_support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+        Legacy override for the support-count prior. Merged into ``support_sampler_config``
+        when supplied.
+    support_sampler_config : dict[str, Any] or None, optional
+        Unified configuration describing how support points are generated (priors,
+        uniqueness constraints, quantized behaviour, etc.).
+    holdout_pools : Sequence[SkeletonPool | str] or None, optional
+        SkeletonPools or paths to pools to exclude when sampling.
     allow_nan : bool, optional
         Whether to allow NaNs in the support points.
     simplify : bool, optional
@@ -51,61 +61,68 @@ class SkeletonPool:
 
     def __init__(
             self,
-            expression_space: ExpressionSpace,
+            simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
-            literal_prior: str | Callable[..., np.ndarray],
-            literal_prior_kwargs: dict[str, Any],
-            support_prior: str | Callable[..., np.ndarray],
-            support_prior_kwargs: dict[str, Any],
-            n_support_prior: str | Callable[..., np.ndarray],
-            n_support_prior_kwargs: dict[str, Any],
-            holdout_pools: list["SkeletonPool"] | None = None,
+            literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            variables: list[str],
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_sampler_config: dict[str, Any] | None = None,
+            operator_weights: dict[str, float] | None = None,
+            holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
             simplify: bool = True) -> None:
-        self.expression_space = expression_space
+        self.simplipy_engine = simplipy_engine
         self.sample_strategy = sample_strategy
+        self.variables = variables
+        self.n_variables = len(self.variables)
+        self.operator_weights = operator_weights or {op: 1.0 for op in self.simplipy_engine.operator_arity.keys()}
 
-        np.random.default_rng(seed=0)
-        self.holdout_X = np.random.uniform(-10, 10, (512, 3))
-        self.holdout_C = np.random.uniform(-10, 10, (512, 100))
-        self.holdout_y: set[tuple] = set()
-        self.holdout_skeletons: set[tuple[str]] = set()
+        self.holdout_manager = HoldoutManager(n_variables=self.n_variables, allow_nan=allow_nan)
 
-        self.holdout_pools: list["SkeletonPool"] = []
+        self.holdout_pools: list["SkeletonPool | str"] = []
         for holdout_pool in holdout_pools or []:
             self.register_holdout_pool(holdout_pool)
 
         self.skeletons: set[tuple[str]] = set()
         self.skeleton_codes: dict[tuple[str], tuple[CodeType, list[str]]] = {}
 
-        # Parameters from https://github.com/facebookresearch/SymbolicMathematics/blob/main/src/envs/char_sp.py
-        self._n_leaves = 1
-        self._n_unary_operators = 1
-        self._n_binary_operators = 1
+        self.skeleton_sampler = SkeletonSampler(
+            simplipy_engine=self.simplipy_engine,
+            sample_strategy=self.sample_strategy,
+            variables=self.variables,
+            operator_weights=self.operator_weights,
+        )
 
-        self.unary_operators = [k for k, v in self.expression_space.operator_arity.items() if v == 1]
-        self.binary_operators = [k for k, v in self.expression_space.operator_arity.items() if v == 2]
+        if isinstance(literal_prior, (dict, list)):
+            self.literal_prior_config = literal_prior
+            self.literal_prior: Callable = build_prior_callable(literal_prior)
+        elif callable(literal_prior):
+            self.literal_prior = literal_prior
+        else:
+            raise ValueError("literal_prior must be either a dict, list of dicts, or a callable")
 
-        self.unary_operator_probs = np.array([self.expression_space.operator_weights[op] for op in self.unary_operators])
-        self.unary_operator_probs = self.unary_operator_probs / self.unary_operator_probs.sum()
-        self.binary_operator_probs = np.array([self.expression_space.operator_weights[op] for op in self.binary_operators])
-        self.binary_operator_probs = self.binary_operator_probs / self.binary_operator_probs.sum()
+        support_config = deepcopy(support_sampler_config) if support_sampler_config is not None else {}
 
-        self.variable_probability = len(self.expression_space.variables) / (len(self.expression_space.variables) + 1)
+        if support_prior is not None:
+            support_config["support_prior"] = support_prior
+        if support_scale_prior is not None:
+            support_config["support_scale_prior"] = support_scale_prior
+        if n_support_prior is not None:
+            support_config["n_support_prior"] = n_support_prior
 
-        self.unary_binary_distribution = generate_ubi_dist(
-            self.sample_strategy.get('max_operators', 10),
-            self._n_leaves, self._n_unary_operators, self._n_binary_operators)
-
-        self.literal_prior = get_distribution(literal_prior, literal_prior_kwargs)
-        self.literal_prior_kwargs = literal_prior_kwargs
-        self.support_prior = get_distribution(support_prior, support_prior_kwargs)
-        self.support_prior_kwargs = support_prior_kwargs
-        self.n_support_prior = get_distribution(n_support_prior, n_support_prior_kwargs)
-        self.n_support_prior_kwargs = n_support_prior_kwargs
+        self.support_sampler_config = support_config
 
         self.allow_nan = allow_nan
         self.simplify = simplify
+
+        independent_dims = self.sample_strategy.get('independent_dimensions', False)
+        self.support_sampler = SupportSampler(
+            n_variables=self.n_variables,
+            independent_dimensions=independent_dims,
+            config=self.support_sampler_config,
+        )
 
         self.operator_probs: np.ndarray | None = None
 
@@ -130,19 +147,22 @@ class SkeletonPool:
             config_ = config_["skeleton_pool"]
 
         # If the config is a string, convert relative paths within the config to absolute paths
-        if isinstance(config, str) and isinstance(config_["expression_space"], str):
-            if config_["expression_space"].startswith('.'):
-                config_["expression_space"] = os.path.join(os.path.dirname(config), config_["expression_space"])
+        if isinstance(config, str) and isinstance(config_["simplipy_engine"], str):
+            if config_["simplipy_engine"].startswith('.'):
+                config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])
+
+        support_sampler_cfg = deepcopy(config_.get("support_sampler")) if config_.get("support_sampler") else {}
+        for key in ("support_prior", "support_scale_prior", "n_support_prior"):
+            if key in config_ and key not in support_sampler_cfg:
+                support_sampler_cfg[key] = config_[key]
 
         return cls(
-            expression_space=ExpressionSpace.from_config(config_["expression_space"]),
+            simplipy_engine=SimpliPyEngine.load(config_["simplipy_engine"], install=True),
             sample_strategy=config_["sample_strategy"],
             literal_prior=config_["literal_prior"],
-            literal_prior_kwargs=config_["literal_prior_kwargs"],
-            support_prior=config_["support_prior"],
-            support_prior_kwargs=config_["support_prior_kwargs"],
-            n_support_prior=config_["n_support_prior"],
-            n_support_prior_kwargs=config_["n_support_prior_kwargs"],
+            variables=config_["variables"],
+            support_sampler_config=support_sampler_cfg,
+            operator_weights=config_.get("operator_weights"),
             holdout_pools=config_["holdout_pools"],
             allow_nan=config_["allow_nan"],
             simplify=config_.get("simplify", True)
@@ -152,16 +172,17 @@ class SkeletonPool:
     def from_dict(
             cls,
             skeletons: set[tuple[str]],
-            expression_space: ExpressionSpace,
+            simplipy_engine: SimpliPyEngine,
             sample_strategy: dict[str, Any],
-            literal_prior: str | Callable[..., np.ndarray],
-            literal_prior_kwargs: dict[str, Any],
-            support_prior: str | Callable[..., np.ndarray],
-            support_prior_kwargs: dict[str, Any],
-            n_support_prior: str | Callable[..., np.ndarray],
-            n_support_prior_kwargs: dict[str, Any],
+            literal_prior: dict[str, Any] | list[dict[str, Any]] | Callable,
+            variables: list[str],
+            support_sampler_config: dict[str, Any] | None = None,
+            support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            support_scale_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            n_support_prior: dict[str, Any] | list[dict[str, Any]] | Callable | None = None,
+            operator_weights: dict[str, float] | None = None,
             skeleton_codes: dict[tuple[str], tuple[CodeType, list[str]]] | None = None,
-            holdout_pools: list["SkeletonPool"] | None = None,
+            holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
             simplify: bool = True) -> "SkeletonPool":
         '''
@@ -171,26 +192,29 @@ class SkeletonPool:
         ----------
         skeletons : set[tuple[str]]
             The set of skeletons to include in the pool.
-        expression_space : ExpressionSpace
+        simplipy_engine : SimpliPyEngine
             The expression space to operate in.
         sample_strategy : dict[str, Any]
             The strategy to use for sampling skeletons.
-        literal_prior : str or Callable[..., np.ndarray]
+        literal_prior : dict[str, Any] | list[dict[str, Any]]
             The prior distribution for the literals.
-        literal_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the literal prior distribution.
-        support_prior : str or Callable[..., np.ndarray]
-            The prior distribution for the support points.
-        support_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the support prior distribution.
-        n_support_prior : str or Callable[..., np.ndarray]
-            The prior distribution for the number of support points.
-        n_support_prior_kwargs : dict[str, Any]
-            The keyword arguments to pass to the number of support points prior distribution.
+        variables : list[str]
+            The variables to use in the expressions.
+        support_sampler_config : dict[str, Any] or None, optional
+            Unified support sampling configuration. If provided alongside the legacy
+            priors below, the legacy values overwrite matching keys within this config.
+        support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support prior.
+        support_scale_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support-scale prior.
+        n_support_prior : dict[str, Any] | list[dict[str, Any]] | Callable or None, optional
+            Optional override for the support-count prior.
+        operator_weights : dict[str, float] or None, optional
+            A dictionary mapping operators to their weights.
         skeleton_codes : dict[tuple[str], tuple[CodeType, list[str]]] or None, optional
             A dictionary mapping skeletons to their compiled codes.
-        holdout_pools : list[SkeletonPool] or None, optional
-            A list of SkeletonPools (i.e. sets of skeletons) to exclude from sampling.
+        holdout_pools : Sequence[SkeletonPool | str] or None, optional
+            SkeletonPools or paths to pools to exclude when sampling.
         allow_nan : bool, optional
             Whether to allow NaNs in the support points.
         simplify : bool, optional
@@ -202,15 +226,16 @@ class SkeletonPool:
             The SkeletonPool object.
         '''
         skeleton_pool = cls(
-            expression_space=expression_space,
+            simplipy_engine=simplipy_engine,
             sample_strategy=sample_strategy,
             literal_prior=literal_prior,
-            literal_prior_kwargs=literal_prior_kwargs,
+            variables=variables,
             support_prior=support_prior,
-            support_prior_kwargs=support_prior_kwargs,
+            support_scale_prior=support_scale_prior,
             n_support_prior=n_support_prior,
-            n_support_prior_kwargs=n_support_prior_kwargs,
-            holdout_pools=holdout_pools or [],
+            support_sampler_config=support_sampler_config,
+            operator_weights=operator_weights,
+            holdout_pools=holdout_pools,
             allow_nan=allow_nan,
             simplify=simplify
         )
@@ -239,12 +264,12 @@ class SkeletonPool:
             A dictionary mapping skeletons to their compiled codes.
         '''
         codes = {}
-        for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose):
+        for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose, smoothing=0.0):
             # Codify the Expression
-            executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-            code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, self.expression_space.variables + constants)
+            executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, self.variables + constants)
 
             codes[skeleton] = (code, constants)
 
@@ -287,66 +312,135 @@ class SkeletonPool:
         if constants is None:
             raise ValueError("Need constants for test of functional equivalence")
 
-        if tuple(skeleton) in self.holdout_skeletons:  # (symbolic equivalence)
-            return True
+        no_constant_expression = self.remove_num(skeleton)
 
         if code is None:
-            # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
-            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-            code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, self.expression_space.variables + constants)
+            executable_prefix_expression = self.simplipy_engine.operators_to_realizations(no_constant_expression)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, self.variables + constants)
 
-        # Evaluate the expression and check if its image is in the holdout images (functional equivalence)
-        f = self.expression_space.code_to_lambda(code)
+        compiled_fn = self.simplipy_engine.code_to_lambda(code)
 
-        warnings.filterwarnings("ignore", category=RuntimeWarning)
-        X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
         try:
-            expression_image = f(*X_with_constants.T).round(4)
-            expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
-        except OverflowError:
-            return True  # Just to be safe
-
-        if tuple(expression_image) in self.holdout_y:
+            return self.holdout_manager.is_held_out(
+                no_constant_expression,
+                compiled_fn,
+                num_constants=len(constants),
+            )
+        except (OverflowError, NameError):
+            print("Overflow or Name error during holdout evaluation, assuming held out")
+            print(f'Skeleton: {skeleton}')
+            print(f'Constants: {constants}')
+            print(f'Code: {code}')
             return True
 
-        return False
+    @property
+    def holdout_skeletons(self) -> set[tuple[str, ...]]:
+        return self.holdout_manager.skeleton_hashes
 
-    def register_holdout_pool(self, holdout_pool: "SkeletonPool") -> None:
+    @property
+    def holdout_y(self) -> set[tuple[float, ...] | tuple[tuple[float, ...], ...]]:
+        return self.holdout_manager.expression_images
+
+    @property
+    def holdout_X(self) -> np.ndarray:
+        return self.holdout_manager.holdout_X
+
+    @property
+    def holdout_C(self) -> np.ndarray:
+        return self.holdout_manager.holdout_C
+
+    def remove_num(self, expression: list[str] | tuple[str, ...], verbose: bool = False, debug: bool = False) -> list[str]:
+        stack: list = []
+        i = len(expression) - 1
+
+        if debug:
+            print(f'Input expression: {expression}')
+
+        while i >= 0:
+            token = expression[i]
+
+            if debug:
+                print(f'Stack: {stack}')
+                print(f'Processing token {token}')
+
+            if token in self.simplipy_engine.operator_arity_compat or token in self.simplipy_engine.operator_aliases:
+                operator = self.simplipy_engine.operator_aliases.get(token, token)
+                arity = self.simplipy_engine.operator_arity_compat[operator]
+                operands = list(reversed(stack[-arity:]))
+
+                if any(operand[0] == '<constant>' for operand in operands):
+                    if verbose:
+                        print('Removing constant')
+
+                    non_num_operands = [operand for operand in operands if operand[0] != '<constant>']
+
+                    if len(non_num_operands) == 0:
+                        new_term = '<constant>'
+                    elif len(non_num_operands) == 1:
+                        new_term = non_num_operands[0]
+                    else:
+                        raise NotImplementedError('Removing a constant from n-operand operator is not implemented')
+
+                    _ = [stack.pop() for _ in range(arity)]
+                    stack.append([new_term])
+                    i -= 1
+                    continue
+
+                _ = [stack.pop() for _ in range(arity)]
+                stack.append([operator, operands])
+
+            else:
+                stack.append([token])
+
+            i -= 1
+
+        return flatten_nested_list(stack, reverse=True)
+
+    def register_holdout_pool(self, holdout_pool: "SkeletonPool | str") -> None:
         '''
         Register a holdout pool to exclude from sampling: Cache the skeletons and their images to compare against when sampling.
 
         Parameters
         ----------
         holdout_pool : SkeletonPool or str
-            The holdout pool to register.
+            The holdout pool object or path to register.
         '''
         if isinstance(holdout_pool, str):
-            _, holdout_pool = SkeletonPool.load(holdout_pool)
+            if holdout_pool in self.holdout_pools:
+                return
 
-        for skeleton in holdout_pool.skeletons:
-            # Remove constants since permutations are not detected as duplicates
-            no_constant_expression = self.expression_space.remove_num(skeleton)
-            executable_prefix_expression = self.expression_space.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-            code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-            code = codify(code_string, self.expression_space.variables + constants)
+            _, holdout_pool_obj = SkeletonPool.load(holdout_pool)
+            self.holdout_pools.append(holdout_pool)
+        else:
+            if any(existing is holdout_pool for existing in self.holdout_pools if not isinstance(existing, str)):
+                return
 
-            # Evaluate the Expression and store the result
-            f = self.expression_space.code_to_lambda(code)
-            X_with_constants = np.concatenate([self.holdout_X, self.holdout_C[:, :len(constants)]], axis=1)
-            warnings.filterwarnings("ignore", category=RuntimeWarning)
-            try:
-                expression_image = f(*X_with_constants.T).round(4)
-                expression_image[np.isnan(expression_image)] = 0  # Cannot compare NaNs
-            except OverflowError:
-                self.holdout_skeletons.add(skeleton)
-                continue
+            holdout_pool_obj = holdout_pool
+            self.holdout_pools.append(holdout_pool_obj)
 
-            self.holdout_skeletons.add(skeleton)
-            self.holdout_y.add(tuple(expression_image))
+        for skeleton in holdout_pool_obj.skeletons:
+            no_constant_expression = holdout_pool_obj.remove_num(skeleton)
+            executable_prefix_expression = holdout_pool_obj.simplipy_engine.operators_to_realizations(no_constant_expression)
+            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            code_string = holdout_pool_obj.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+            code = codify(code_string, holdout_pool_obj.variables + constants)
+            compiled_fn = holdout_pool_obj.simplipy_engine.code_to_lambda(code)
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                self.holdout_manager.register_skeleton(
+                    no_constant_expression,
+                    compiled_fn,
+                    num_constants=len(constants),
+                    n_variables=holdout_pool_obj.n_variables,
+                )
+
+    def clear_holdouts(self) -> None:
+        """Remove all registered holdout pools and associated constraints."""
+        self.holdout_pools = []
+        self.holdout_manager = HoldoutManager(n_variables=self.n_variables, allow_nan=self.allow_nan)
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True) -> None:
         '''
@@ -405,105 +499,7 @@ class SkeletonPool:
 
         return load_config(config_path), pool
 
-    def sample_next_pos_ubi(self, n_empty_nodes: int, n_operators: int) -> tuple[int, int]:
-        '''
-        See https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales/blob/main/src/nesymres/dataset/generator.py
-        '''
-        assert n_empty_nodes > 0
-        assert n_operators > 0
-
-        # Check if the unary-binary distribution needs to be expanded
-        if n_empty_nodes >= len(self.unary_binary_distribution):
-            self.unary_binary_distribution = generate_ubi_dist(n_empty_nodes + 1, self._n_leaves, self._n_unary_operators, self._n_binary_operators)
-
-        probs = []
-        for i in range(n_empty_nodes):
-            probs.append((self._n_leaves ** i) * self._n_unary_operators * self.unary_binary_distribution[n_empty_nodes - i][n_operators - 1])
-        for i in range(n_empty_nodes):
-            probs.append((self._n_leaves ** i) * self._n_binary_operators * self.unary_binary_distribution[n_empty_nodes - i + 1][n_operators - 1])
-
-        probs = [p / self.unary_binary_distribution[n_empty_nodes][n_operators] for p in probs]
-        probs = np.array(probs, dtype=np.float64)  # type: ignore
-
-        e = np.random.choice(2 * n_empty_nodes, p=probs)
-
-        arity = 1 if e < n_empty_nodes else 2
-        e = e % n_empty_nodes
-
-        return e, arity
-
-    def get_leaf(self) -> list[str]:
-        '''
-        Sample a leaf node (either a variable or a constant).
-
-        Returns
-        -------
-        list[str]
-            The leaf node.
-        '''
-        if random.random() < self.variable_probability:
-            return [random.choice(self.expression_space.variables)]
-
-        return ['<num>']
-
-    def _sample_skeleton(self, n_operators: int) -> list[str]:
-        '''
-        Create a tree with exactly `n_operators` operators.
-
-        Parameters
-        ----------
-        n_operators : int
-            The number of operators to include in the tree.
-
-        Returns
-        -------
-        list[str]
-            The tree as a list of tokens.
-
-        Notes
-        -----
-        See https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales/blob/main/src/nesymres/dataset/generator.py
-        '''
-        stack: list[str | None] = [None]
-        n_empty_nodes = 1  # number of empty nodes
-        l_leaves = 0  # left leaves - None states reserved for leaves
-        t_leaves = 1  # total number of leaves (just used for sanity check)
-
-        # create tree
-        for n in range(n_operators, 0, -1):
-
-            # next operator, arity and position
-            skipped, arity = self.sample_next_pos_ubi(n_empty_nodes, n)
-            if arity == 1:
-                op = np.random.choice(self.unary_operators, p=self.unary_operator_probs)
-            else:
-                op = np.random.choice(self.binary_operators, p=self.binary_operator_probs)
-
-            n_empty_nodes += self.expression_space.operator_arity[op] - 1 - skipped  # created empty nodes - skipped future leaves
-            t_leaves += self.expression_space.operator_arity[op] - 1            # update number of total leaves
-            l_leaves += skipped                           # update number of left leaves
-
-            # update tree
-            pos = [i for i, v in enumerate(stack) if v is None][l_leaves]
-            stack = stack[:pos] + [op] + [None for _ in range(self.expression_space.operator_arity[op])] + stack[pos + 1:]
-
-        # sanity check
-        assert len([1 for v in stack if v in self.expression_space.operator_arity.keys()]) == n_operators
-        assert len([1 for v in stack if v is None]) == t_leaves
-
-        # create leaves
-        leaves = [self.get_leaf() for _ in range(t_leaves)]
-        np.random.shuffle(leaves)
-
-        # insert leaves into tree
-        for pos in range(len(stack) - 1, -1, -1):
-            if stack[pos] is None:
-                stack = stack[:pos] + leaves.pop() + stack[pos + 1:]
-        assert len(leaves) == 0
-
-        return stack  # type: ignore
-
-    def sample_skeleton(self, new: bool = False) -> tuple[tuple[str], CodeType, list[str]]:
+    def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str]]:
         '''
         Sample a skeleton from the pool.
 
@@ -539,21 +535,24 @@ class SkeletonPool:
                     case _:
                         raise ValueError(f"Invalid n_operator_distribution: {self.sample_strategy['n_operator_distribution']}")
 
-                skeleton = self._sample_skeleton(n_operators)
+                skeleton = self.skeleton_sampler.sample(n_operators)
                 if self.simplify:
-                    skeleton = self.expression_space.simplify(skeleton, inplace=True)
+                    try:
+                        skeleton = self.simplipy_engine.simplify(skeleton, inplace=True, max_pattern_length=4)
+                    except Exception as e:
+                        print(f"Failed to simplify skeleton: {skeleton}")
+                        raise NoValidSampleFoundError(f"Failed to simplify skeleton: {skeleton}") from e
 
-                if self.expression_space.simplification == "sympy":
-                    if not self.expression_space.is_valid(skeleton):
-                        continue
+                    if any(forbidden_token in skeleton for forbidden_token in ['float("inf")', 'float("-inf")', 'float("nan")']):
+                        raise NoValidSampleFoundError(f"Skeleton contains forbidden tokens: {skeleton}")
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
-                    executable_prefix_expression = self.expression_space.operators_to_realizations(skeleton)
-                    prefix_expression_with_constants, constants = num_to_constants(executable_prefix_expression, inplace=True)
-                    code_string = self.expression_space.prefix_to_infix(prefix_expression_with_constants, realization=True)
-                    code = codify(code_string, self.expression_space.variables + constants)
+                    executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
+                    prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+                    code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                    code = codify(code_string, self.variables + constants)
 
-                    if not self.is_held_out(skeleton, constants, code):
+                    if not decontaminate or not self.is_held_out(skeleton, constants):
                         return tuple(skeleton), code, constants   # type: ignore
         else:
             skeleton = random.choice(tuple(self.skeletons))  # type: ignore
@@ -563,7 +562,7 @@ class SkeletonPool:
 
         raise NoValidSampleFoundError(f"Failed to sample a non-contaminated skeleton after {self.sample_strategy['max_tries']} retries")
 
-    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def sample_data(self, code: CodeType, n_constants: int = 0, n_support: int | None = None, support_prior: Callable | None = None, support_scale_prior: Callable | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         '''
         Sample support points and literals for an expression.
 
@@ -577,28 +576,32 @@ class SkeletonPool:
             The number of support points to sample. If None, the number of support points will be sampled from the prior distribution.
         support_prior : Callable or None, optional
             The prior distribution for the support points. If None, the default support prior will be used.
+        support_scale_prior : Callable or None, optional
+            The prior distribution for the support scale. If None, the default support scale prior will be
 
         Returns
         -------
         tuple[np.ndarray, np.ndarray, np.ndarray]
             The support points, their images, and the literals.
         '''
-        expression_callable = self.expression_space.code_to_lambda(code)
+        expression_callable = self.simplipy_engine.code_to_lambda(code)
         if n_support is None:
-            n_support = int(np.round(self.n_support_prior(size=1))[0])
+            n_support = self.support_sampler.sample_n_support()
 
         for _ in range(self.sample_strategy['max_tries']):
             literals = self.literal_prior(size=n_constants).astype(np.float32)
 
-            support_prior = support_prior or self.support_prior
+            override_support_prior = SupportSampler.ensure_prior_callable(support_prior) if support_prior is not None else None
+            override_support_scale = SupportSampler.ensure_prior_callable(support_scale_prior) if support_scale_prior is not None else None
 
-            # Use the default support prior as defined by the configuration
-            if self.sample_strategy.get('independent_dimensions', False):
-                # Sample each dimension independently
-                x_support = np.concatenate([support_prior(size=(n_support, 1)) for _ in range(len(self.expression_space.variables))], axis=1).astype(np.float32)
-            else:
-                #
-                x_support = support_prior(size=(n_support, len(self.expression_space.variables))).astype(np.float32)
+            try:
+                x_support = self.support_sampler.sample(
+                    n_support=n_support,
+                    support_prior=override_support_prior,
+                    support_scale_prior=override_support_scale,
+                )
+            except SupportSamplingError:
+                continue
 
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -669,41 +672,30 @@ class SkeletonPool:
         verbose : bool, optional
             Whether to display a progress bar.
         '''
-        n_duplicates = 0
-        n_invalid = 0
+        n_skipped = 0
         n_created = len(self.skeletons)
 
-        pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose)
+        pbar = tqdm(total=size, desc="Creating Skeleton Pool", disable=not verbose, smoothing=0.0)
 
         while n_created < size:
             try:
                 skeleton, code, constants = self.sample_skeleton(new=True)
             except NoValidSampleFoundError:
+                n_skipped += 1
+                pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
                 continue
 
-            if self.simplify:
-                simplified_skeleton = self.expression_space.simplify(skeleton, inplace=False)
-            else:
-                simplified_skeleton = skeleton
+            if not self.simplipy_engine.is_valid(skeleton):
+                raise ValueError(f"Invalid skeleton: {skeleton}")
 
-            if not self.expression_space.is_valid(simplified_skeleton):
-                n_invalid += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
-                # raise ValueError(f"Invalid simplified skeleton: {skeleton} -> {simplified_skeleton}")
-
-            if skeleton in self.skeletons:
-                n_duplicates += 1
-                pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
-                continue
-
-            h = tuple(simplified_skeleton)
-            self.skeletons.add(h)
-            self.skeleton_codes[h] = (code, constants)
+            if not isinstance(skeleton, tuple):
+                skeleton = tuple(skeleton)
+            self.skeletons.add(skeleton)
+            self.skeleton_codes[skeleton] = (code, constants)
             n_created += 1
 
             pbar.update(1)
-            pbar.set_postfix_str(f"Duplicates: {n_duplicates:,}, Invalid: {n_invalid:,}")
+            pbar.set_postfix_str(f"Skipped: {n_skipped:,}")
 
             if n_created >= size:
                 break
@@ -728,28 +720,24 @@ class SkeletonPool:
 
         train_pool = SkeletonPool.from_dict(
             set(train_keys),
-            expression_space=self.expression_space,
+            simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            literal_prior_kwargs=self.literal_prior_kwargs,
-            support_prior=self.support_prior,
-            support_prior_kwargs=self.support_prior_kwargs,
-            n_support_prior=self.n_support_prior,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in train_keys},
-            n_support_prior_kwargs=self.n_support_prior_kwargs,
+            variables=self.variables,
+            support_sampler_config=deepcopy(self.support_sampler_config),
+            operator_weights=self.operator_weights,
             holdout_pools=self.holdout_pools,
             allow_nan=self.allow_nan)
         test_pool = SkeletonPool.from_dict(
             set(test_keys),
-            expression_space=self.expression_space,
+            simplipy_engine=self.simplipy_engine,
             sample_strategy=self.sample_strategy,
             literal_prior=self.literal_prior,
-            literal_prior_kwargs=self.literal_prior_kwargs,
-            support_prior=self.support_prior,
-            support_prior_kwargs=self.support_prior_kwargs,
-            n_support_prior=self.n_support_prior,
-            n_support_prior_kwargs=self.n_support_prior_kwargs,
             skeleton_codes={k: v for k, v in self.skeleton_codes.items() if k in test_keys},
+            variables=self.variables,
+            support_sampler_config=deepcopy(self.support_sampler_config),
+            operator_weights=self.operator_weights,
             holdout_pools=self.holdout_pools,
             allow_nan=self.allow_nan)
 

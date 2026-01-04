@@ -1,2 +1,59 @@
 skeleton_pool: './skeleton_pool_val.yaml'
+tokenizer: './tokenizer.yaml'
 padding: 'zero'
+preprocessor:
+  prompt:
+    prompt_feature:
+      max_random_term_attempts: 64
+      prompt_probability: 1.0
+      allowed_terms:
+        probability: 1.0
+        actual_terms:
+          distribution: uniform_int
+          params:
+            low: 12
+            high: 36
+        generated_terms:
+          distribution: uniform_int
+          params:
+            low: 0
+            high: 3
+        length:
+          distribution: triangular
+          params:
+            left: 1
+            mode: 4
+            right: 10
+        min_length: 1
+        max_relative_length: 0.45
+        force_expression_term: true
+      include_terms:
+        probability: 1.0
+        count:
+          distribution: uniform_int
+          params:
+            low: 0
+            high: 3
+        length:
+          distribution: triangular
+          params:
+            left: 1
+            mode: 3
+            right: 8
+        min_length: 1
+        max_relative_length: 0.45
+      exclude_terms:
+        probability: 1.0
+        count:
+          distribution: uniform_int
+          params:
+            low: 0
+            high: 4
+        length:
+          distribution: triangular
+          params:
+            left: 1
+            mode: 4
+            right: 10
+        min_length: 1
+        max_relative_length: 0.45

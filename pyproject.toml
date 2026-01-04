@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["dependencies"]
-version = "0.2.0"
+version = "0.4.2"
 urls = { Github = "https://github.com/psaegert/flash-ansr"}
 
 [project.scripts]
@@ -26,11 +26,19 @@ dev = [
     "mypy",
     "flake8",
     "pygount",
+    "pylint",
     "types-setuptools",
     "types-tqdm",
     "types-toml",
     "types-PyYAML",
-    "radon"
+    "radon",
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocs-autorefs",
+    "mkdocstrings",
+    "mkdocs-get-deps",
+    "mkdocs-material-extensions",
+    "mkdocstrings-python"
 ]
 
 [tool.setuptools]
@@ -51,7 +59,7 @@ build-backend = "setuptools.build_meta"
 
 
 [tool.flake8]
-ignore = ["E501"]
+ignore = ["E501", "W503"]
 exclude = [
     ".git",
 	"__pycache__",
@@ -73,3 +81,8 @@ disallow_incomplete_defs = true
 explicit_package_bases = true
 exclude = "(.venv|tests/|experimental/|src/flash_ansr/compat/nesymres.py)"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:This process .*use of fork.*deadlocks in the child.:DeprecationWarning",
+]

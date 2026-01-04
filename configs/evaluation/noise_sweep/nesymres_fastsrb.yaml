@@ -1,0 +1,65 @@
+defaults:
+  data_source: &nesymres_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 10
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &nesymres_adapter
+    type: nesymres
+    eq_setting_path: "{{ROOT}}/models/nesymres/eq_setting.json"
+    config_path: "{{ROOT}}/models/nesymres/config.yaml"
+    weights_path: "{{ROOT}}/models/nesymres/100M.ckpt"
+    simplipy_engine: "dev_7-3"
+    n_restarts: 4
+    device: cuda
+    remove_padding: true
+    beam_width: 4
+  runner: &nesymres_fastsrb_runner
+    limit: null
+    save_every: 32
+    resume: true
+
+experiments:
+  nesymres_fastsrb_noise_0p000:
+    run:
+      data_source: *nesymres_fastsrb_source
+      model_adapter: *nesymres_adapter
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/nesymres/fastsrb/noise_0p000.pkl"
+
+  nesymres_fastsrb_noise_0p001:
+    run:
+      data_source:
+        <<: *nesymres_fastsrb_source
+        noise_level: 0.001
+      model_adapter: *nesymres_adapter
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/nesymres/fastsrb/noise_0p001.pkl"
+
+  nesymres_fastsrb_noise_0p010:
+    run:
+      data_source:
+        <<: *nesymres_fastsrb_source
+        noise_level: 0.01
+      model_adapter: *nesymres_adapter
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/nesymres/fastsrb/noise_0p010.pkl"
+
+  nesymres_fastsrb_noise_0p100:
+    run:
+      data_source:
+        <<: *nesymres_fastsrb_source
+        noise_level: 0.1
+      model_adapter: *nesymres_adapter
+      runner:
+        <<: *nesymres_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/nesymres/fastsrb/noise_0p100.pkl"
