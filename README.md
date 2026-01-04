@@ -26,7 +26,6 @@
 pip install flash-ansr
 ```
 
-
 ```python
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,8 +38,8 @@ from flash_ansr import (
   get_path,
 )
 
-# Specify the model
-# Here: https://huggingface.co/psaegert/flash-ansr-v23.0-120M
+# Select a model from Hugging Face
+# https://huggingface.co/models?search=flash-ansr-v23.0
 MODEL = "psaegert/flash-ansr-v23.0-120M"
 
 # Download the latest snapshot of the model
@@ -72,19 +71,19 @@ y_pred = model.predict(X)
 
 ### Training
 
-<img src="./assets/images/flash-ansr-training.png" width="300">
+<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="300">
 
 > **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
 
 ### Architecture
 
-<img src="./assets/images/flash-ansr.png">
+<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr.png">
 
 > **FlashANSR Architecture.** The model consists of an upgraded version of the SetTransformer ([Lee et al. 2019](https://arxiv.org/abs/1810.00825)) as an encoder, and a Pre-Norm Transformer decoder ([Vaswani et al. 2017](https://arxiv.org/abs/1706.03762)) as a generative model over symbolic expressions.
 
 ### Results
 Coming soon
-<!-- <img src="./assets/images/test_time_compute_fastsrb.svg">
+<!-- <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/test_time_compute_fastsrb.svg">
 
 > **Test Time Compute scaling.** ⚡ANSR, NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)), PySR ([Cranmer 2023](https://arxiv.org/abs/2305.01582)), and E2E ([Kamienny et al. 2022](https://arxiv.org/abs/2204.10532)) are evaluated on the FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
 > AMD 9950X (16C32T), RTX 4090 (24GB). -->
@@ -98,7 +97,7 @@ Coming soon
     title = {Flash Amortized Neural Symbolic Regression},
     year = 2024,
     publisher = {GitHub},
-    version = {0.4.2},
+    version = {0.4.3},
     url = {https://github.com/psaegert/flash-ansr}
 }
 ```
