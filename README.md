@@ -72,7 +72,7 @@ y_pred = model.predict(X)
 
 ### Training
 
-<img src="./assets/images/flash-ansr-training.png" width="600">
+<img src="./assets/images/flash-ansr-training.png" width="300">
 
 > **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
 
@@ -83,10 +83,11 @@ y_pred = model.predict(X)
 > **FlashANSR Architecture.** The model consists of an upgraded version of the SetTransformer ([Lee et al. 2019](https://arxiv.org/abs/1810.00825)) as an encoder, and a Pre-Norm Transformer decoder ([Vaswani et al. 2017](https://arxiv.org/abs/1706.03762)) as a generative model over symbolic expressions.
 
 ### Results
-<img src="./assets/images/test_time_compute_fastsrb.svg">
+Coming soon
+<!-- <img src="./assets/images/test_time_compute_fastsrb.svg">
 
 > **Test Time Compute scaling.** ⚡ANSR, NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)), PySR ([Cranmer 2023](https://arxiv.org/abs/2305.01582)), and E2E ([Kamienny et al. 2022](https://arxiv.org/abs/2204.10532)) are evaluated on the FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
-> AMD 9950X (16C32T), RTX 4090 (24GB).
+> AMD 9950X (16C32T), RTX 4090 (24GB). -->
 
 
 
