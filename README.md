@@ -67,11 +67,13 @@ print(model.get_expression())
 y_pred = model.predict(X)
 ```
 
+Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+
 # Overview
 
 ### Training
 
-<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="300">
+<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="500">
 
 > **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
 
@@ -79,7 +81,7 @@ y_pred = model.predict(X)
 
 <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr.png">
 
-> **FlashANSR Architecture.** The model consists of an upgraded version of the SetTransformer ([Lee et al. 2019](https://arxiv.org/abs/1810.00825)) as an encoder, and a Pre-Norm Transformer decoder ([Vaswani et al. 2017](https://arxiv.org/abs/1706.03762)) as a generative model over symbolic expressions.
+> **FlashANSR Architecture.** The model consists of an upgraded version of the Set Transformer ([Lee et al. 2019](https://arxiv.org/abs/1810.00825)) encoder, and a Pre-Norm Transformer decoder ([Vaswani et al. 2017](https://arxiv.org/abs/1706.03762), [Xiong et al. 2020](https://arxiv.org/abs/2002.04745)) as a generative model over symbolic expressions.
 
 ### Results
 Coming soon
@@ -92,12 +94,19 @@ Coming soon
 
 # Citation
 ```bibtex
+@mastersthesis{flash-ansr2024-thesis,
+  author  = {Paul Saegert},
+  title   = {Flash Amortized Neural Symbolic Regression},
+  school  = {Heidelberg University},
+  year    = {2025},
+  url     = {https://github.com/psaegert/flash-ansr-thesis}
+}
 @software{flash-ansr2024,
-    author = {Paul Saegert},
-    title = {Flash Amortized Neural Symbolic Regression},
-    year = 2024,
-    publisher = {GitHub},
-    version = {0.4.3},
-    url = {https://github.com/psaegert/flash-ansr}
+  author  = {Paul Saegert},
+  title   = {Flash Amortized Neural Symbolic Regression},
+  year    = {2024},
+  publisher   = {GitHub},
+  version = {0.4.4},
+  url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
