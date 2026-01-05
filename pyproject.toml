@@ -8,7 +8,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["dependencies"]
 version = "0.4.3"
-urls = { Github = "https://github.com/psaegert/flash-ansr"}
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/psaegert/flash-ansr"
+Issues = "https://github.com/psaegert/flash-ansr/issues"
+PyPI = "https://pypi.org/project/flash-ansr/"
+ReadtheDocs = "https://flash-ansr.readthedocs.io/"
 
 [project.scripts]
 flash_ansr = "flash_ansr.__main__:main"
