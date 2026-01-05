@@ -67,6 +67,8 @@ print(model.get_expression())
 y_pred = model.predict(X)
 ```
 
+Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+
 # Overview
 
 ### Training
@@ -97,14 +99,14 @@ Coming soon
   title   = {Flash Amortized Neural Symbolic Regression},
   school  = {Heidelberg University},
   year    = {2025},
-  url = {https://github.com/psaegert/flash-ansr-thesis}
+  url     = {https://github.com/psaegert/flash-ansr-thesis}
 }
 @software{flash-ansr2024,
-  author = {Paul Saegert},
-  title = {Flash Amortized Neural Symbolic Regression},
-  year = 2024,
-  publisher = {GitHub},
-  version = {0.4.3},
-  url = {https://github.com/psaegert/flash-ansr}
+  author  = {Paul Saegert},
+  title   = {Flash Amortized Neural Symbolic Regression},
+  year    = {2024},
+  publisher   = {GitHub},
+  version = {0.4.4},
+  url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
