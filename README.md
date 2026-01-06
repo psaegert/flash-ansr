@@ -1,4 +1,4 @@
-<h1 align="center" style="margin-top: 0px;">⚡ANSR:<br>Flash Amortized Neural Symbolic Regression</h1>
+<h1 align="center" style="margin-top: 0px;">⚡Flash-ANSR:<br>Fast Amortized Neural Symbolic Regression</h1>
 
 <div align="center">
 
@@ -106,7 +106,7 @@ Coming soon
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.4.4},
+  version = {0.4.5},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```

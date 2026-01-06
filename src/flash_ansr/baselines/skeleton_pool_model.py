@@ -67,7 +67,7 @@ class SkeletonPoolModel(BaseEstimator):
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
         if refiner_p0_noise_kwargs == 'default':
-            refiner_p0_noise_kwargs = {'low': -5, 'high': 5}
+            refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony

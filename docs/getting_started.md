@@ -15,29 +15,44 @@ See [all available models on Hugging Face](https://huggingface.co/models?search=
 
 ## Minimal inference Example
 ```python
-import numpy as np
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig, get_path
+import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Define some data
-X = np.random.randn(256, 2)
-y = X[:, 0] + X[:, 1]
+# Import flash_ansr
+from flash_ansr import (
+  FlashANSR,
+  SoftmaxSamplingConfig,
+  install_model,
+  get_path,
+)
 
-# Load the model (assuming v23.0-120M is installed)
+# Select a model from Hugging Face
+# https://huggingface.co/models?search=flash-ansr-v23.0
+MODEL = "psaegert/flash-ansr-v23.0-120M"
+
+# Download the latest snapshot of the model
+# By default, the model is downloaded to the directory `./models/` in the package root
+install_model(MODEL)
+
+# Load the model
 model = FlashANSR.load(
-    directory=get_path('models', 'psaegert/flash-ansr-v23.0-120M'),
-    generation_config=SoftmaxSamplingConfig(choices=256),
-)  # .to(device) for GPU. Highly recommended.
+  directory=get_path('models', MODEL),
+  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
+  n_restarts=8,
+).to(device)
 
-# Find an expression that fits the data by sampling from the model
+# Define data
+X = ...
+y = ...
+
+# Fit the model to the data
 model.fit(X, y, verbose=True)
 
-print("Expression:", model.get_expression())
+# Show the best expression
+print(model.get_expression())
 
+# Predict with the best expression
 y_pred = model.predict(X)
-print("Predictions:", y_pred[:5])
-
-# All results are stored in model.results as a pandas DataFrame
-model.results
 ```
 
 Find more details in the [API Reference](api.md).

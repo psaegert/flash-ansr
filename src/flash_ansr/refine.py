@@ -125,7 +125,7 @@ class Refiner:
             p0: np.ndarray | None = None,
             p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
-            n_restarts: int = 1,
+            n_restarts: int = 8,
             method: Literal[
                 'curve_fit_lm',
                 'minimize_bfgs',
