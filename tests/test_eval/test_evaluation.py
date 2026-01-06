@@ -17,7 +17,7 @@ from flash_ansr.data import FlashANSRDataset
 from flash_ansr.expressions import SkeletonPool
 
 
-MODEL = "psaegert/flash-ansr-v19.0-6M"
+MODEL = "psaegert/flash-ansr-v23.0-3M"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

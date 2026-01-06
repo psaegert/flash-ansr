@@ -15,16 +15,44 @@ pip install flash-ansr
 flash_ansr install psaegert/flash-ansr-v23.0-120M
 ```
 ```python
-import numpy as np
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig, get_path
+import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-X = np.random.randn(256, 2)
-model = FlashANSR.load(
-   directory=get_path('models', 'psaegert/flash-ansr-v23.0-120M'),
-   generation_config=SoftmaxSamplingConfig(choices=512),
+# Import flash_ansr
+from flash_ansr import (
+  FlashANSR,
+  SoftmaxSamplingConfig,
+  install_model,
+  get_path,
 )
-expr = model.fit(X, X[:, 0] + X[:, 1])
-print(expr)
+
+# Select a model from Hugging Face
+# https://huggingface.co/models?search=flash-ansr-v23.0
+MODEL = "psaegert/flash-ansr-v23.0-120M"
+
+# Download the latest snapshot of the model
+# By default, the model is downloaded to the directory `./models/` in the package root
+install_model(MODEL)
+
+# Load the model
+model = FlashANSR.load(
+  directory=get_path('models', MODEL),
+  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
+  n_restarts=8,
+).to(device)
+
+# Define data
+X = ...
+y = ...
+
+# Fit the model to the data
+model.fit(X, y, verbose=True)
+
+# Show the best expression
+print(model.get_expression())
+
+# Predict with the best expression
+y_pred = model.predict(X)
 ```
 
 ## Serving these docs locally

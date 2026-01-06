@@ -202,7 +202,7 @@ class FlashANSR(BaseEstimator):
         perturbations.
     refiner_p0_noise_kwargs : dict or {'default'} or None, optional
         Keyword arguments forwarded to the noise sampler. ``'default'`` yields
-        ``{'low': -5, 'high': 5}`` for the uniform distribution.
+        ``{'loc': 0.0, 'scale': 5.0}`` for the normal distribution.
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
         Desired NumPy error handling strategy applied during constant refinement.
     parsimony : float, optional
@@ -261,7 +261,7 @@ class FlashANSR(BaseEstimator):
         self.tokenizer = tokenizer
 
         if refiner_p0_noise_kwargs == 'default':
-            refiner_p0_noise_kwargs = {'low': -5, 'high': 5}
+            refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
 
         if generation_config is None:
             generation_config = SoftmaxSamplingConfig()
@@ -300,7 +300,7 @@ class FlashANSR(BaseEstimator):
             cls,
             directory: str,
             generation_config: GenerationConfig | None = None,
-            n_restarts: int = 1,
+            n_restarts: int = 8,
             refiner_method: Literal[
                 'curve_fit_lm',
                 'minimize_bfgs',
@@ -333,7 +333,7 @@ class FlashANSR(BaseEstimator):
             Distribution used to perturb initial constant guesses.
         refiner_p0_noise_kwargs : dict or {'default'} or None, optional
             Additional keyword arguments for the noise sampler. ``'default'``
-            resolves to ``{'low': -5, 'high': 5}``.
+            resolves to ``{'loc': 0.0, 'scale': 5.0}``.
         numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
             NumPy floating-point error policy applied during refinement.
         parsimony : float, optional

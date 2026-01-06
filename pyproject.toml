@@ -1,25 +1,62 @@
 [project]
 name = "flash_ansr"
-description = "Flash Amortized Neural Symbolic Regression"
+description = "Flash-ANSR: Fast Amortized Neural Symbolic Regression - Discover symbolic expressions from tabular data using SetTransformer and Transformer architectures"
 authors = [
     {name = "Paul Saegert"},
-    ]
+]
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.4.4"
+version = "0.4.5"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
+keywords = [
+    "symbolic-regression",
+    "neural-symbolic-regression",
+    "simulation-based-inference",
+    "transformer",
+    "set-transformer",
+    "machine-learning",
+    "pytorch",
+    "expression-discovery",
+    "equation-discovery",
+    "tabular-data",
+    "mathematical-modeling"
+]
+
+classifiers = [
+    # Development status
+    "Development Status :: 4 - Beta",
+
+    # Intended audience
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+
+    # Topic areas - focus on core functionality
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+
+    # Programming language
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+
+    # Operating system
+    "Operating System :: OS Independent",
+]
+
 [project.urls]
 Homepage = "https://github.com/psaegert/flash-ansr"
+Documentation = "https://flash-ansr.readthedocs.io/en/latest/"
+Repository = "https://github.com/psaegert/flash-ansr"
 Issues = "https://github.com/psaegert/flash-ansr/issues"
 PyPI = "https://pypi.org/project/flash-ansr/"
-ReadtheDocs = "https://flash-ansr.readthedocs.io/"
+"Bug Reports" = "https://github.com/psaegert/flash-ansr/issues"
+"Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb"
 
 [project.scripts]
 flash_ansr = "flash_ansr.__main__:main"
-
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
