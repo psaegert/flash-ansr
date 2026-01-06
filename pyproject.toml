@@ -38,9 +38,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Software Development :: Libraries :: Python Modules",
 
-    # License
-    "License :: OSI Approved :: MIT License",
-
     # Programming language
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
