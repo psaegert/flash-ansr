@@ -25,7 +25,7 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 - `./scripts/train.sh <config>`: convenience wrapper to launch training with the bundle.
 
 ## Full training workflow
-1. **Import test sets**: Ajdust and run `./scripts/import_test_sets.sh` to import test sets. The data generating processes during training will exclude these skeletons to ensure fair evaluation.
+1. **Import test sets**: Adjust and run `./scripts/import_test_sets.sh` to import test sets. The data generating processes during training will exclude these skeletons to ensure fair evaluation.
 2. **Configure skeleton pools and datasets**: Adjust the `skeleton_pool_*.yaml` and `dataset_*.yaml` files inside your chosen config bundle to set operator priors, expression depths, and data sampling strategies.
 3. **Prepare held out skeleton pools** (optional if reusing shipped ones):
     ```bash
