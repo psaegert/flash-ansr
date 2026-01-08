@@ -3,7 +3,9 @@
 
 The upstream E2E repo assumes older numpy/scaler handling. This script makes the
 copy under ``e2e/symbolicregression`` compatible with current numpy, avoids an
-infinite loop in ``rescale_function`` when scaler params are missing, and adds a
+infinite loop in ``rescale_function`` when scaler params are missing, drops the
+deprecated ``functorch`` dependency that conflicts with modern torch, rebuilds
+``requirements.txt`` from ``environment.yml`` (sans functorch), and adds a
 `tree_idx` alias expected by newer call sites.
 """
 from __future__ import annotations
@@ -141,6 +143,85 @@ def _switch_to_torch_func_grad(repo_root: Path) -> bool:
     return True
 
 
+def _drop_functorch_dependency(repo_root: Path) -> bool:
+    """Remove functorch pins that conflict with modern torch builds."""
+
+    changed_any = False
+
+    req_path = repo_root / "requirements.txt"
+    if req_path.exists():
+        req_text = req_path.read_text()
+        req_lines = req_text.splitlines()
+        filtered_req = [line for line in req_lines if not line.strip().startswith("functorch")]
+        updated_req = "\n".join(filtered_req) + ("\n" if req_text.endswith("\n") else "")
+        if updated_req != req_text:
+            req_path.write_text(updated_req)
+            changed_any = True
+
+    env_path = repo_root / "environment.yml"
+    if env_path.exists():
+        env_text = env_path.read_text()
+        env_lines = env_text.splitlines()
+        filtered_env = [line for line in env_lines if "functorch" not in line.strip()]
+        updated_env = "\n".join(filtered_env) + ("\n" if env_text.endswith("\n") else "")
+        if updated_env != env_text:
+            env_path.write_text(updated_env)
+            changed_any = True
+
+    return changed_any
+
+
+def _rewrite_requirements_from_env(repo_root: Path) -> bool:
+    """Regenerate requirements.txt from environment.yml pip section, dropping functorch."""
+
+    env_path = repo_root / "environment.yml"
+    req_path = repo_root / "requirements.txt"
+
+    if not env_path.exists():
+        raise PatchError(f"Missing file: {env_path}")
+
+    env_lines = env_path.read_text().splitlines()
+
+    in_pip = False
+    pip_indent = None
+    pip_packages: list[str] = []
+
+    for line in env_lines:
+        stripped = line.strip()
+        if not in_pip:
+            if stripped == "- pip:":
+                in_pip = True
+                pip_indent = len(line) - len(line.lstrip())
+            continue
+
+        current_indent = len(line) - len(line.lstrip())
+        if pip_indent is not None and current_indent <= pip_indent:
+            # Left the pip section.
+            in_pip = False
+            continue
+
+        if stripped.startswith("- "):
+            pkg = stripped[2:].strip()
+            if not pkg or pkg.startswith("#"):
+                continue
+            if pkg.startswith("functorch"):
+                continue
+            pip_packages.append(pkg)
+
+    if not pip_packages:
+        raise PatchError("No pip dependencies found in environment.yml")
+
+    rebuilt = "\n".join(pip_packages) + "\n"
+
+    if req_path.exists():
+        current = req_path.read_text()
+        if current == rebuilt:
+            return False
+
+    req_path.write_text(rebuilt)
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -165,6 +246,8 @@ def main() -> int:
         ("add retrieve_tree tree_idx alias", _add_tree_idx_alias),
         ("replace np.infty with np.inf", _replace_np_infty),
         ("switch to torch.func.grad where available", _switch_to_torch_func_grad),
+        ("drop functorch dependency", _drop_functorch_dependency),
+        ("rewrite requirements.txt from environment.yml", _rewrite_requirements_from_env),
     ]
 
     failures = 0
