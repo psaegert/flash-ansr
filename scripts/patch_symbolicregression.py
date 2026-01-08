@@ -263,7 +263,7 @@ def _write_pyproject(repo_root: Path) -> bool:
         "requires = [\"setuptools>=61\", \"wheel\"]\n"
         "build-backend = \"setuptools.build_meta\"\n\n"
         "[project]\n"
-        "name = \"symbolicregression\"\n"
+        "name = \"e2e-symbolicregression\"\n"
         "version = \"0.0.0\"\n"
         "description = \"Meta symbolic regression baseline (packaged for flash-ansr compatibility).\"\n"
         "readme = \"README.md\"\n"
