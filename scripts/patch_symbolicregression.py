@@ -4,13 +4,14 @@
 The upstream E2E repo assumes older numpy/scaler handling. This script makes the
 copy under ``e2e/symbolicregression`` compatible with current numpy, avoids an
 infinite loop in ``rescale_function`` when scaler params are missing, drops the
-deprecated ``functorch`` dependency that conflicts with modern torch, rebuilds
-``requirements.txt`` from ``environment.yml`` (sans functorch), and adds a
+deprecated ``functorch`` dependency that conflicts with modern torch, rebuilds an
+unpinned ``requirements.txt`` from ``environment.yml`` (sans functorch), and adds a
 `tree_idx` alias expected by newer call sites.
 """
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -48,19 +49,17 @@ def _fix_rescale_loop(repo_root: Path) -> bool:
     if "idx += 1  # guard against missing scaler params" in text:
         return False
 
-    snippet = """
-                if k>=len(a):
-                    continue
-    """
-    replacement = """
-                if k >= len(a):
-                    idx += 1  # guard against missing scaler params
-                    continue
-    """
-    if snippet.strip() not in text:
+    pattern = r"(?m)^(?P<indent>\s*)if\s*k\s*>=\s*len\(a\):\s*\n(?P=indent)\s*continue\s*$"
+    replacement = (
+        "\\g<indent>if k >= len(a):\n"
+        "\\g<indent>    idx += 1  # guard against missing scaler params\n"
+        "\\g<indent>    continue"
+    )
+
+    if not re.search(pattern, text):
         raise PatchError("Expected rescale_function guard not found; file layout changed?")
 
-    updated = text.replace(snippet, replacement)
+    updated = re.sub(pattern, replacement, text, count=1)
     if updated == text:
         return False
 
@@ -172,7 +171,7 @@ def _drop_functorch_dependency(repo_root: Path) -> bool:
 
 
 def _rewrite_requirements_from_env(repo_root: Path) -> bool:
-    """Regenerate requirements.txt from environment.yml pip section, dropping functorch."""
+    """Regenerate requirements.txt from environment.yml pip section, dropping functorch and pins."""
 
     env_path = repo_root / "environment.yml"
     req_path = repo_root / "requirements.txt"
@@ -185,6 +184,7 @@ def _rewrite_requirements_from_env(repo_root: Path) -> bool:
     in_pip = False
     pip_indent = None
     pip_packages: list[str] = []
+    seen: set[str] = set()
 
     for line in env_lines:
         stripped = line.strip()
@@ -206,7 +206,13 @@ def _rewrite_requirements_from_env(repo_root: Path) -> bool:
                 continue
             if pkg.startswith("functorch"):
                 continue
-            pip_packages.append(pkg)
+
+            # Strip version specifiers (==, >=, <=, etc.) to keep requirements unpinned.
+            base = re.split(r"[<>=]", pkg, maxsplit=1)[0].strip()
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            pip_packages.append(base)
 
     if not pip_packages:
         raise PatchError("No pip dependencies found in environment.yml")
