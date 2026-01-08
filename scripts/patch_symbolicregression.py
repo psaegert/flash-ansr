@@ -5,8 +5,9 @@ The upstream E2E repo assumes older numpy/scaler handling. This script makes the
 copy under ``e2e/symbolicregression`` compatible with current numpy, avoids an
 infinite loop in ``rescale_function`` when scaler params are missing, drops the
 deprecated ``functorch`` dependency that conflicts with modern torch, rebuilds an
-unpinned ``requirements.txt`` from ``environment.yml`` (sans functorch), and adds a
-`tree_idx` alias expected by newer call sites.
+unpinned ``requirements.txt`` from ``environment.yml`` (sans functorch), emits a
+``pyproject.toml`` for editable installs, and adds a `tree_idx` alias expected by
+newer call sites.
 """
 from __future__ import annotations
 
@@ -234,6 +235,56 @@ def _rewrite_requirements_from_env(repo_root: Path) -> bool:
     return True
 
 
+def _write_pyproject(repo_root: Path) -> bool:
+    """Create a minimal pyproject.toml for editable installs if missing."""
+
+    path = repo_root / "pyproject.toml"
+    if path.exists():
+        return False
+
+    req_path = repo_root / "requirements.txt"
+    if not req_path.exists():
+        raise PatchError("requirements.txt not found; run rewrite step first")
+
+    deps: list[str] = []
+    for line in req_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        deps.append(stripped)
+
+    if not deps:
+        raise PatchError("No dependencies found in requirements.txt for pyproject generation")
+
+    deps_str = "\n    \"" + "\",\n    \"".join(deps) + "\",\n"
+
+    content = (
+        "[build-system]\n"
+        "requires = [\"setuptools>=61\", \"wheel\"]\n"
+        "build-backend = \"setuptools.build_meta\"\n\n"
+        "[project]\n"
+        "name = \"symbolicregression\"\n"
+        "version = \"0.0.0\"\n"
+        "description = \"Meta symbolic regression baseline (packaged for flash-ansr compatibility).\"\n"
+        "readme = \"README.md\"\n"
+        "license = { file = \"LICENSE\" }\n"
+        "authors = [{ name = \"Meta Platforms, Inc.\" }]\n"
+        "requires-python = \">=3.8\"\n"
+        "dependencies = [\n"
+        f"{deps_str}"
+        "]\n\n"
+        "[tool.setuptools]\n"
+        "packages = { find = { where = [\".\"], include = [\"symbolicregression*\"], exclude = [\"**/tests\", \"**/.ipynb_checkpoints\"] } }\n"
+        "include-package-data = true\n\n"
+        "[project.urls]\n"
+        "Homepage = \"https://github.com/facebookresearch/symbolicregression\"\n"
+        "Repository = \"https://github.com/facebookresearch/symbolicregression\"\n"
+    )
+
+    path.write_text(content)
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -260,6 +311,7 @@ def main() -> int:
         ("switch to torch.func.grad where available", _switch_to_torch_func_grad),
         ("drop functorch dependency", _drop_functorch_dependency),
         ("rewrite requirements.txt from environment.yml", _rewrite_requirements_from_env),
+        ("write pyproject.toml for editable install", _write_pyproject),
     ]
 
     failures = 0
