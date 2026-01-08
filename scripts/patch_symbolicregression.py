@@ -171,7 +171,10 @@ def _drop_functorch_dependency(repo_root: Path) -> bool:
 
 
 def _rewrite_requirements_from_env(repo_root: Path) -> bool:
-    """Regenerate requirements.txt from environment.yml pip section, dropping functorch and pins."""
+    """Regenerate requirements.txt from environment.yml pip section, dropping functorch and pins.
+
+    Also appends sympytorch from its git source so installs are self-contained.
+    """
 
     env_path = repo_root / "environment.yml"
     req_path = repo_root / "requirements.txt"
@@ -216,6 +219,9 @@ def _rewrite_requirements_from_env(repo_root: Path) -> bool:
 
     if not pip_packages:
         raise PatchError("No pip dependencies found in environment.yml")
+
+    if "sympytorch" not in seen:
+        pip_packages.append("sympytorch @ git+https://github.com/pakamienny/sympytorch.git")
 
     rebuilt = "\n".join(pip_packages) + "\n"
 
