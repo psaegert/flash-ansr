@@ -97,7 +97,7 @@ experiments:
         <<: *nesymres_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00128.pkl"
 
-  nesymres_fastsrb_beam_width_00256:
+  nesymres_fastsrb_beam_width_00512:
     run:
       data_source:
         <<: *nesymres_fastsrb_source
@@ -107,7 +107,7 @@ experiments:
         beam_width: 512
       runner:
         <<: *nesymres_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/nesymres/fastsrb/beam_width_00512.pkl"
 
   nesymres_fastsrb_beam_width_02048:
     run:
