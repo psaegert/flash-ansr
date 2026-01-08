@@ -90,7 +90,6 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 5
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 64
@@ -102,7 +101,6 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 5
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 128
@@ -114,10 +112,45 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 1
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 256
       runner:
         <<: *e2e_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00256.pkl"
+
+  e2e_fastsrb_candidates_00512:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 512
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00512.pkl"
+
+  e2e_fastsrb_candidates_02048:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 2048
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_02048.pkl"
+
+  e2e_fastsrb_candidates_08192:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 1
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 8192
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_08192.pkl"
