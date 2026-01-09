@@ -17,7 +17,7 @@ defaults:
     device: cuda
     candidates_per_bag: 1
     max_input_points: 200
-    max_number_bags: 10
+    max_number_bags: 100
     n_trees_to_refine: 10
     rescale: true
   runner: &e2e_fastsrb_runner
