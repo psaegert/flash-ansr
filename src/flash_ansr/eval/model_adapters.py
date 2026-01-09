@@ -342,6 +342,7 @@ class E2EAdapter(EvaluationModelAdapter):
         max_number_bags: int = 10,
         n_trees_to_refine: int = 10,
         rescale: bool = True,
+        max_generated_output_len: int = 200,
         debug: bool = False,
     ) -> None:
         self.model_path = model_path
@@ -352,6 +353,7 @@ class E2EAdapter(EvaluationModelAdapter):
         self.max_number_bags = max_number_bags
         self.n_trees_to_refine = n_trees_to_refine
         self.rescale = rescale
+        self.max_generated_output_len = max_generated_output_len
         self.debug = debug
 
         self._estimator: Any | None = None
@@ -393,6 +395,12 @@ class E2EAdapter(EvaluationModelAdapter):
             model.beam_size = self.candidates_per_bag
         elif hasattr(model, "module") and hasattr(model.module, "beam_size"):
             model.module.beam_size = self.candidates_per_bag
+
+        # Allow overriding generation length to keep chunking stable for large beam sizes.
+        if hasattr(model, "max_generated_output_len"):
+            model.max_generated_output_len = self.max_generated_output_len
+        elif hasattr(model, "module") and hasattr(model.module, "max_generated_output_len"):
+            model.module.max_generated_output_len = self.max_generated_output_len
 
         self._estimator = Estimator(
             model=model,

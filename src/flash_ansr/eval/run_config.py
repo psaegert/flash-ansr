@@ -466,6 +466,9 @@ def _build_e2e_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) ->
 
     candidates_per_bag = _coerce_int(config.get("candidates_per_bag", 1), "model_adapter.candidates_per_bag")
     max_input_points = _coerce_int(config.get("max_input_points", 200), "model_adapter.max_input_points")
+    max_generated_output_len = _coerce_int(
+        config.get("max_generated_output_len", 200), "model_adapter.max_generated_output_len"
+    )
 
     max_number_bags_cfg = config.get("max_number_bags")
     max_number_bags = _coerce_optional_int(max_number_bags_cfg, "model_adapter.max_number_bags")
@@ -484,6 +487,7 @@ def _build_e2e_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) ->
         max_number_bags=max_number_bags,
         n_trees_to_refine=n_trees_to_refine,
         rescale=rescale,
+        max_generated_output_len=max_generated_output_len,
     )
 
 
