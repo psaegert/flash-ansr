@@ -312,7 +312,7 @@ class SkeletonPool:
         if constants is None:
             raise ValueError("Need constants for test of functional equivalence")
 
-        no_constant_expression = self.remove_num(skeleton)
+        no_constant_expression = self.get_structural_prototype(skeleton)
 
         if code is None:
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(no_constant_expression)
@@ -351,7 +351,7 @@ class SkeletonPool:
     def holdout_C(self) -> np.ndarray:
         return self.holdout_manager.holdout_C
 
-    def remove_num(self, expression: list[str] | tuple[str, ...], verbose: bool = False, debug: bool = False) -> list[str]:
+    def get_structural_prototype(self, expression: list[str] | tuple[str, ...], verbose: bool = False, debug: bool = False) -> list[str]:
         stack: list = []
         i = len(expression) - 1
 
@@ -421,7 +421,7 @@ class SkeletonPool:
             self.holdout_pools.append(holdout_pool_obj)
 
         for skeleton in holdout_pool_obj.skeletons:
-            no_constant_expression = holdout_pool_obj.remove_num(skeleton)
+            no_constant_expression = holdout_pool_obj.get_structural_prototype(skeleton)
             executable_prefix_expression = holdout_pool_obj.simplipy_engine.operators_to_realizations(no_constant_expression)
             prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
             code_string = holdout_pool_obj.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
