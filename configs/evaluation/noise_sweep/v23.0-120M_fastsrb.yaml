@@ -25,7 +25,7 @@ defaults:
       generation_config:
         method: softmax_sampling
         kwargs:
-          choices: 4069
+          choices: 2048
           top_k: 0
           top_p: 1
           max_len: 64
