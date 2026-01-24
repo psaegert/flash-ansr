@@ -1,10 +1,11 @@
 import os
 import copy
+import math
 import numbers
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from types import TracebackType
-from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Tuple, Sequence, TypeVar
+from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Tuple, Sequence, TypeVar, cast
 import warnings
 
 import numpy as np
@@ -47,6 +48,7 @@ class Result(TypedDict):
     requested_complexity: int | float | None
     fvu: float
     prompt_metadata: dict[str, list[list[str]]] | None
+    pruned_variant: bool
 
 
 _GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
@@ -174,6 +176,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'fits': serialized_fits,
         'valid_fit': refiner.valid_fit,
         'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
+        'pruned_variant': bool(payload.get('pruned_variant', False)),
     }
 
     return result, None
@@ -211,6 +214,11 @@ class FlashANSR(BaseEstimator):
         Number of worker processes to run during constant refinement. ``None``
         (the default) uses all available CPU cores, while explicit integers
         select a fixed pool size. Set ``0`` to disable multiprocessing.
+    prune_constant_budget : int or float, optional
+        Apply constant-pruning refinement to the best beams after the initial
+        refinement (ranked by FVU). If ``> 1`` treated as an absolute count; if
+        ``0 < value <= 1`` treated as a fraction of beams (ceil). Set to 0 to
+        disable. Defaults to 16.
     """
 
     FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
@@ -235,6 +243,226 @@ class FlashANSR(BaseEstimator):
             safe_fvu = max(float(fvu), cls.FLOAT64_EPS)
         return float(np.log10(safe_fvu) + parsimony * complexity)
 
+    def _score_log_probs_batch(
+            self,
+            *,
+            sequences: list[list[int]],
+            prompt_prefix: PromptPrefix | None,
+            memory: torch.Tensor,
+            device: torch.device) -> list[float]:
+        if not sequences:
+            return []
+
+        base_tokens, _base_num = self.flash_ansr_model._resolve_generation_prefix(prompt_prefix=prompt_prefix)
+        try:
+            eos_id = int(self.tokenizer['<eos>'])
+        except KeyError:
+            eos_id = None
+        pad_id = int(self.tokenizer['<pad>']) if '<pad>' in self.tokenizer else 0
+
+        full_sequences: list[list[int]] = []
+        lengths: list[int] = []
+        for seq in sequences:
+            extended = list(base_tokens) + list(seq)
+            if eos_id is not None:
+                extended = extended + [eos_id]
+            full_sequences.append(extended)
+            lengths.append(len(extended))
+
+        max_len = max(lengths)
+        batch_size = len(full_sequences)
+
+        input_tokens = torch.full((batch_size, max_len), pad_id, device=device, dtype=torch.long)
+        for i, seq in enumerate(full_sequences):
+            input_tokens[i, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
+
+        with torch.no_grad():
+            logits = self.flash_ansr_model.forward(input_tokens=input_tokens, data=None, input_num=None, memory=memory)
+            log_probs = torch.log_softmax(logits, dim=-1)
+
+        gathered: list[float] = []
+        for i, seq_len in enumerate(lengths):
+            if seq_len <= 1:
+                gathered.append(float('-inf'))
+                continue
+
+            targets = input_tokens[i, 1:seq_len]
+            step_log_probs = log_probs[i, :seq_len - 1]
+            token_log_probs = step_log_probs.gather(1, targets.unsqueeze(-1)).squeeze(-1)
+            gathered.append(float(token_log_probs.sum().item()))
+
+        return gathered
+
+    def _resolve_prune_count(self, candidate_total: int) -> int:
+        if candidate_total <= 0:
+            return 0
+
+        k_value = self.prune_constant_budget
+        if k_value <= 0:
+            return 0
+
+        if 0 < k_value <= 1:
+            return min(candidate_total, max(1, int(math.ceil(candidate_total * k_value))))
+
+        return min(candidate_total, int(math.floor(k_value)))
+
+    @staticmethod
+    def _is_constant_token(token: str) -> bool:
+        if token == '<constant>':
+            return True
+        if token.startswith('C_') and token[2:].isdigit():
+            return True
+        if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
+            return True
+        try:
+            float(token)
+            return True
+        except ValueError:
+            return False
+
+    def _get_operator_arity(self, token: str) -> int | None:
+        aliases = getattr(self.simplipy_engine, 'operator_aliases', {})
+        operator_arity = getattr(self.simplipy_engine, 'operator_arity_compat', {})
+        return operator_arity.get(aliases.get(token, token))
+
+    def _prefix_to_tree(self, expression: list[str]) -> list[Any] | str:
+        aliases = getattr(self.simplipy_engine, 'operator_aliases', {})
+        operator_arity = getattr(self.simplipy_engine, 'operator_arity_compat', {})
+
+        stack: list[list[Any] | str] = []
+        for token in reversed(expression):
+            arity = operator_arity.get(aliases.get(token, token))
+            if arity is None:
+                stack.append(token)
+                continue
+
+            if len(stack) < arity:
+                raise ValueError(f"Cannot build tree for expression: {expression}")
+
+            children = [stack.pop() for _ in range(arity)]
+            children.reverse()
+            stack.append([token, *children])
+
+        if len(stack) != 1:
+            raise ValueError(f"Expression did not reduce to a single tree: {expression}")
+
+        return stack[0]
+
+    def _tree_to_prefix(self, node: list[Any] | str) -> list[str]:
+        if isinstance(node, list):
+            tokens: list[str] = [node[0]]
+            for child in node[1:]:
+                tokens.extend(self._tree_to_prefix(child))
+            return tokens
+        return [node]
+
+    def _collapse_binary_after_constant_prune(
+            self,
+            operator: str,
+            kept_child: list[Any] | str,
+            removed_left: bool,
+            removed_right: bool) -> list[Any] | str | None:
+        canonical = getattr(self.simplipy_engine, 'operator_aliases', {}).get(operator, operator)
+        has_neg = self._get_operator_arity('neg') == 1
+        has_inv = self._get_operator_arity('inv') == 1
+
+        if removed_left and removed_right:
+            return None
+
+        if canonical in {'+', '*'}:
+            return kept_child
+
+        if canonical == '-':
+            if removed_left and not removed_right:
+                if has_neg:
+                    return ['neg', kept_child]
+                return ['*', '(-1)', kept_child]
+            return kept_child
+
+        if canonical == '/':
+            if removed_left:
+                if has_inv:
+                    return ['inv', kept_child]
+                return ['/', '1', kept_child]
+            return kept_child
+
+        return kept_child
+
+    def _prune_constants_from_tree(
+            self,
+            node: list[Any] | str,
+            removal_ids: set[int],
+            counter: list[int]) -> list[Any] | str | None:
+        if isinstance(node, list):
+            operator = node[0]
+            children = node[1:]
+            pruned_children: list[list | str | None] = []
+            removed_flags: list[bool] = []
+
+            for child in children:
+                pruned_child = self._prune_constants_from_tree(child, removal_ids, counter)
+                pruned_children.append(pruned_child)
+                removed_flags.append(pruned_child is None)
+
+            arity = len(children)
+            if arity == 1:
+                if removed_flags[0]:
+                    return None
+                return [operator, pruned_children[0]]
+
+            if arity == 2:
+                if removed_flags[0] or removed_flags[1]:
+                    kept_child = pruned_children[0] if not removed_flags[0] else pruned_children[1]
+                    if kept_child is None:
+                        return None
+                    return self._collapse_binary_after_constant_prune(operator, kept_child, removed_flags[0], removed_flags[1])
+                return [operator, pruned_children[0], pruned_children[1]]
+
+            kept_children = [child for child in pruned_children if child is not None]
+            if not kept_children:
+                return None
+            if len(kept_children) == 1:
+                return kept_children[0]
+            return [operator, *kept_children]
+
+        token = node
+        if self._is_constant_token(token):
+            idx = counter[0]
+            counter[0] += 1
+            if idx in removal_ids:
+                return None
+
+        return token
+
+    def _generate_constant_pruning_variants(self, expression: list[str]) -> list[list[str]]:
+        constant_count = sum(1 for token in expression if self._is_constant_token(token))
+        if constant_count == 0:
+            return [expression]
+
+        try:
+            tree = self._prefix_to_tree(expression)
+        except ValueError:
+            return [expression]
+
+        variants: list[list[str]] = []
+        seen: set[tuple[str, ...]] = set()
+
+        for mask in range(1 << constant_count):
+            removal_ids = {idx for idx in range(constant_count) if mask & (1 << idx)}
+            pruned_tree = self._prune_constants_from_tree(tree, removal_ids, counter=[0])
+            if pruned_tree is None:
+                continue
+
+            prefix_variant = self._tree_to_prefix(pruned_tree)
+            variant_key = tuple(prefix_variant)
+            if variant_key in seen:
+                continue
+
+            seen.add(variant_key)
+            variants.append(prefix_variant)
+
+        return variants
+
     def __init__(
             self,
             simplipy_engine: SimpliPyEngine,
@@ -255,7 +483,8 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
-            refiner_workers: int | None = None):
+            refiner_workers: int | None = None,
+            prune_constant_budget: float | int = 16):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_model = flash_ansr_model.eval()
         self.tokenizer = tokenizer
@@ -273,6 +502,7 @@ class FlashANSR(BaseEstimator):
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
         self.parsimony = parsimony
+        self.prune_constant_budget = max(0.0, float(prune_constant_budget))
 
         cpu_count = os.cpu_count() or 1
 
@@ -315,7 +545,8 @@ class FlashANSR(BaseEstimator):
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             parsimony: float = 0.05,
             device: str = 'cpu',
-            refiner_workers: int | None = None) -> "FlashANSR":
+            refiner_workers: int | None = None,
+            prune_constant_budget: float | int = 16) -> "FlashANSR":
         """Instantiate a `FlashANSR` model from a configuration directory.
 
         Parameters
@@ -344,6 +575,9 @@ class FlashANSR(BaseEstimator):
             Desired worker-pool size for constant refinement. ``None`` uses the
             number of available CPU cores, integers select an explicit pool size,
             and ``0`` disables multiprocessing. Mirrors the constructor parameter.
+        prune_constant_budget : int, optional
+            Number of top beams (by FVU) or fraction of beams (if 0<value<=1)
+            to prune after initial refinement when pruning is enabled.
 
         Returns
         -------
@@ -372,7 +606,8 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
             parsimony=parsimony,
-            refiner_workers=refiner_workers)
+            refiner_workers=refiner_workers,
+            prune_constant_budget=prune_constant_budget)
 
     @property
     def n_variables(self) -> int:
@@ -594,6 +829,7 @@ class FlashANSR(BaseEstimator):
             'refiner': refiner,
             'fits': copy.deepcopy(refiner._all_constants_values),
             'prompt_metadata': copy.deepcopy(payload.get('prompt_metadata')) if payload.get('prompt_metadata') is not None else None,
+            'pruned_variant': bool(payload.get('pruned_variant', False)),
         }
 
         return entry
@@ -709,6 +945,9 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
+            with torch.no_grad():
+                memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
+
             self._results = []
 
             # Temporarily adopt the configured floating-point error policy for refinement.
@@ -757,6 +996,7 @@ class FlashANSR(BaseEstimator):
                     'beam': beam,
                     'expression': beam_decoded,
                     'log_prob': log_prob,
+                    'pruned_variant': False,
                     'n_variables': self.n_variables,
                     'n_restarts': self.n_restarts,
                     'method': self.refiner_method,
@@ -772,26 +1012,29 @@ class FlashANSR(BaseEstimator):
                 refinement_jobs.append(job)
 
             if refinement_jobs:
-                available_methods = mp.get_all_start_methods()
-                max_workers = min(self.refiner_workers, len(refinement_jobs))
-                use_parallel = max_workers > 1 and 'fork' in available_methods
-
                 input_dim = X_np.shape[1]
                 self._input_dim = input_dim
 
-                if max_workers > 1 and not use_parallel:
-                    warnings.warn("Parallel refinement requires the 'fork' start method; falling back to serial execution.")
+                def _run_refinement_jobs(jobs: list[dict[str, Any]]) -> None:
+                    if not jobs:
+                        return
 
-                with _RefinementContext(self.simplipy_engine, X_np, y_np):
+                    available_methods = mp.get_all_start_methods()
+                    max_workers = min(self.refiner_workers, len(jobs))
+                    use_parallel = max_workers > 1 and 'fork' in available_methods
+
+                    if max_workers > 1 and not use_parallel:
+                        warnings.warn("Parallel refinement requires the 'fork' start method; falling back to serial execution.")
+
                     if use_parallel:
                         ctx = mp.get_context('fork')
                         seed_sequence = np.random.SeedSequence()
-                        spawned = seed_sequence.spawn(len(refinement_jobs))
-                        for job, seq in zip(refinement_jobs, spawned):
+                        spawned = seed_sequence.spawn(len(jobs))
+                        for job, seq in zip(jobs, spawned):
                             job['seed'] = int(seq.generate_state(1, dtype=np.uint32)[0])
 
                         with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
-                            futures = [executor.submit(_refine_candidate_worker, job) for job in refinement_jobs]
+                            futures = [executor.submit(_refine_candidate_worker, job) for job in jobs]
                             for future in _iterate_with_progress(
                                 as_completed(futures),
                                 total=len(futures),
@@ -807,8 +1050,8 @@ class FlashANSR(BaseEstimator):
                                         self._results.append(entry)
                     else:
                         for job in _iterate_with_progress(
-                            refinement_jobs,
-                            total=len(refinement_jobs),
+                            jobs,
+                            total=len(jobs),
                             verbose=verbose,
                             desc="Fitting Constants",
                         ):
@@ -821,6 +1064,77 @@ class FlashANSR(BaseEstimator):
                                 entry = self._create_result_entry(payload=result, input_dim=input_dim)
                                 if entry is not None:
                                     self._results.append(entry)
+
+                with _RefinementContext(self.simplipy_engine, X_np, y_np):
+                    _run_refinement_jobs(refinement_jobs)
+
+                    prune_count_candidates = [r for r in self._results if np.isfinite(r.get('fvu', np.nan))]
+                    top_k_resolved = self._resolve_prune_count(len(prune_count_candidates))
+
+                    if top_k_resolved > 0:
+                        sorted_results = sorted(prune_count_candidates, key=lambda r: r.get('fvu', np.inf))
+                        top_results = sorted_results[:top_k_resolved]
+
+                        seen_expressions = {tuple(r['expression']) for r in self._results}
+                        variant_records: list[tuple[list[str], list[int], float]] = []
+
+                        for base_result in top_results:
+                            variants = self._generate_constant_pruning_variants(base_result['expression'])
+                            for variant in variants:
+                                variant_key = tuple(variant)
+                                if variant_key in seen_expressions:
+                                    continue
+
+                                simplified_variant = self.simplipy_engine.simplify(list(variant), max_pattern_length=4)
+                                if not self.simplipy_engine.is_valid(simplified_variant):
+                                    continue
+
+                                simplified_key = tuple(simplified_variant)
+                                if simplified_key in seen_expressions:
+                                    continue
+
+                                seen_expressions.add(simplified_key)
+
+                                try:
+                                    encoded_variant = self.tokenizer.encode(simplified_variant, return_tensors=False)
+                                except KeyError:
+                                    continue
+                                inherited_log_prob = float(base_result.get('log_prob', float('nan')))
+                                variant_records.append((simplified_variant, encoded_variant, inherited_log_prob))
+
+                        pruning_jobs: list[dict[str, Any]] = []
+                        if variant_records:
+                            scored_log_probs = self._score_log_probs_batch(
+                                sequences=[rec[1] for rec in variant_records],
+                                prompt_prefix=prompt_prefix,
+                                memory=memory_for_scoring,
+                                device=data_tensor.device,
+                            )
+
+                            for (variant_expr, encoded_variant, inherited_lp), new_lp in zip(variant_records, scored_log_probs):
+                                log_prob_value = float(new_lp) if np.isfinite(new_lp) else inherited_lp
+                                pruning_job: dict[str, Any] = {
+                                    'raw_beam': encoded_variant,
+                                    'raw_beam_decoded': variant_expr,
+                                    'beam': encoded_variant,
+                                    'expression': variant_expr,
+                                    'log_prob': log_prob_value,
+                                    'pruned_variant': True,
+                                    'n_variables': self.n_variables,
+                                    'n_restarts': self.n_restarts,
+                                    'method': self.refiner_method,
+                                    'p0_noise': self.refiner_p0_noise,
+                                    'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                                    'converge_error': converge_error,
+                                    'numpy_errors': self.numpy_errors,
+                                    'y_variance': y_variance,
+                                    'parsimony': self.parsimony,
+                                    'complexity': complexity,
+                                    'metadata_snapshot': metadata_snapshot,
+                                }
+                                pruning_jobs.append(pruning_job)
+
+                        _run_refinement_jobs(pruning_jobs)
 
             self.compile_results(self.parsimony)
 
@@ -861,18 +1175,23 @@ class FlashANSR(BaseEstimator):
             np.isnan(x['score'])
         )))
 
-        # Create a dataframe
+        # Attach only the best fit (lowest loss) per beam for readability
+        best_fit_payloads: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+        for result in self._results:
+            fits_list = result.get('fits', [])
+            if fits_list:
+                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], min(fits_list, key=lambda tpl: tpl[2]))
+            else:
+                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], (np.array([]), None, float('nan')))
+            best_fit_payloads.append(best_fit)
+
         self.results = pd.DataFrame(self._results)
-
-        # Explode the fits for each beam
-        self.results = self.results.explode('fits')
-        self.results['beam_id'] = self.results.index
-        self.results.reset_index(drop=True, inplace=True)
-
-        # Split the fit tuples into columns
-        fits_columns = pd.DataFrame(self.results['fits'].tolist(), columns=['fit_constants', 'fit_covariances', 'fit_loss'])
-        self.results = pd.concat([self.results, fits_columns], axis=1)
-        self.results.drop(columns=['fits'], inplace=True)
+        if not self.results.empty:
+            self.results['beam_id'] = self.results.index
+            self.results['fit_constants'] = [bf[0] for bf in best_fit_payloads]
+            self.results['fit_covariances'] = [bf[1] for bf in best_fit_payloads]
+            self.results['fit_loss'] = [bf[2] for bf in best_fit_payloads]
+            self.results.drop(columns=['fits'], inplace=True, errors='ignore')
 
     def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
         """Evaluate a fitted expression on new data.
