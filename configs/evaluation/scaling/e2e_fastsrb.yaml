@@ -181,14 +181,14 @@ experiments:
         <<: *e2e_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_32768.pkl"
 
-  e2e_fastsrb_candidates_131072:
-    run:
-      data_source:
-        <<: *e2e_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *e2e_adapter
-        candidates_per_bag: 131072
-      runner:
-        <<: *e2e_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_131072.pkl"
+  # e2e_fastsrb_candidates_131072:
+  #   run:
+  #     data_source:
+  #       <<: *e2e_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *e2e_adapter
+  #       candidates_per_bag: 131072
+  #     runner:
+  #       <<: *e2e_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_131072.pkl"

@@ -206,14 +206,14 @@ experiments:
         <<: *brute_force_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/brute_force/fastsrb/max_expressions_262144.pkl"
 
-  brute_force_fastsrb_max_expressions_1048576:
-    run:
-      data_source:
-        <<: *brute_force_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *brute_force_adapter
-        max_expressions: 1048576
-      runner:
-        <<: *brute_force_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/brute_force/fastsrb/max_expressions_1048576.pkl"
+  # brute_force_fastsrb_max_expressions_1048576:
+  #   run:
+  #     data_source:
+  #       <<: *brute_force_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *brute_force_adapter
+  #       max_expressions: 1048576
+  #     runner:
+  #       <<: *brute_force_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/brute_force/fastsrb/max_expressions_1048576.pkl"

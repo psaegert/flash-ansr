@@ -251,16 +251,16 @@ experiments:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_262144.pkl"
 
-  flash_ansr_fastsrb_choices_1048576:
-    run:
-      data_source:
-        <<: *flash_ansr_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 1048576
-      runner:
-        <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_1048576.pkl"
+  # flash_ansr_fastsrb_choices_1048576:
+  #   run:
+  #     data_source:
+  #       <<: *flash_ansr_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 1048576
+  #     runner:
+  #       <<: *flash_ansr_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_1048576.pkl"
