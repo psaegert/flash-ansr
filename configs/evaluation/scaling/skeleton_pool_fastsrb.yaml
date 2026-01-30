@@ -182,38 +182,36 @@ experiments:
         <<: *skeleton_pool_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_16384.pkl"
 
-  skeleton_pool_fastsrb_samples_65536:
+  skeleton_pool_fastsrb_samples_32768:
+    run:
+      data_source: *skeleton_pool_fastsrb_source
+      model_adapter:
+        <<: *skeleton_pool_adapter
+        samples: 32768
+      runner:
+        <<: *skeleton_pool_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_32768.pkl"
+
+  skeleton_pool_fastsrb_samples_131072:
     run:
       data_source:
         <<: *skeleton_pool_fastsrb_source
         datasets_per_expression: 5
       model_adapter:
         <<: *skeleton_pool_adapter
-        samples: 65536
+        samples: 131072
       runner:
         <<: *skeleton_pool_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_65536.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_131072.pkl"
 
-  skeleton_pool_fastsrb_samples_262144:
+  skeleton_pool_fastsrb_samples_524288:
     run:
       data_source:
         <<: *skeleton_pool_fastsrb_source
         datasets_per_expression: 5
       model_adapter:
         <<: *skeleton_pool_adapter
-        samples: 262144
+        samples: 524288
       runner:
         <<: *skeleton_pool_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_262144.pkl"
-
-  skeleton_pool_fastsrb_samples_1048576:
-    run:
-      data_source:
-        <<: *skeleton_pool_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *skeleton_pool_adapter
-        samples: 1048576
-      runner:
-        <<: *skeleton_pool_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_1048576.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_524288.pkl"
