@@ -19,8 +19,8 @@ simplify: true
 literal_prior:
   name: 'uniform'
   kwargs:
-    min_value: 1
-    max_value: 5
+    low: 1
+    high: 5
 
 support_sampler:
   support_prior:
