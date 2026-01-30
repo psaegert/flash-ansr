@@ -13,8 +13,8 @@ defaults:
   model_adapter: &skeleton_pool_adapter
     type: skeleton_pool
     simplipy_engine: "dev_7-3"
-    skeleton_pool: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool_max8"
-    samples: 32
+    skeleton_pool: "{{ROOT}}/models/prior/skeleton_pool.yaml"
+    samples: 4096
     unique: true
     ignore_holdouts: true
     seed: 42
@@ -28,7 +28,7 @@ defaults:
     parsimony: 0.05
   runner: &skeleton_pool_fastsrb_runner
     limit: null
-    save_every: 64
+    save_every: 4
     resume: true
 
 experiments:
