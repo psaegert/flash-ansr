@@ -14,7 +14,7 @@ defaults:
     type: skeleton_pool
     simplipy_engine: "dev_7-3"
     skeleton_pool: "{{ROOT}}/models/prior/skeleton_pool.yaml"
-    samples: 4096
+    samples: 2048
     unique: true
     ignore_holdouts: true
     seed: 42

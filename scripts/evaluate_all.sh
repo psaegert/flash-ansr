@@ -5,5 +5,5 @@ flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-1B_fastsrb_sup
 python scripts/evaluate_PySR.py  -c configs/evaluation/scaling/pysr_fastsrb.yaml  -v
 flash_ansr evaluate-run -c configs/evaluation/scaling/nesymres_fastsrb.yaml -v
 flash_ansr evaluate-run -c configs/evaluation/scaling/e2e_fastsrb.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/scaling/skeleton_pool_fastsrb.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/scaling/brute_force_fastsrb.yaml -v
+flash_ansr evaluate-run -c configs/evaluation/scaling/skeleton_pool_fastsrb.yaml -v
+flash_ansr evaluate-run -c configs/evaluation/scaling/brute_force_fastsrb.yaml -v
