@@ -380,6 +380,7 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, A
         parsimony=eval_cfg["parsimony"],
         device=eval_cfg.get("device", config.get("device", "cpu")),
         refiner_workers=config.get("refiner_workers", eval_cfg.get("refiner_workers")),
+        prune_constant_budget=eval_cfg.get("prune_constant_budget", 0),
     )
 
     complexity = config.get("complexity", eval_cfg.get("complexity", "none"))
