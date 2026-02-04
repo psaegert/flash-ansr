@@ -38,6 +38,7 @@ class Result(TypedDict):
     refiner: Refiner
     beam: list[int]
     log_prob: float
+    constant_count: int
     expression: list[str]
     raw_beam: list[int]
     raw_beam_decoded: str
@@ -151,7 +152,22 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     loss = float(refiner._all_constants_values[0][-1])
     sample_count = int(y.shape[0])
     fvu = FlashANSR._compute_fvu(loss, sample_count, payload['y_variance'])
-    score = FlashANSR._score_from_fvu(fvu, len(payload['expression']), payload['parsimony'])
+
+    expression_tokens = payload['expression']
+    constant_count = int(payload.get('constant_count', 0))
+    if constant_count <= 0:
+        constant_count = sum(1 for tok in expression_tokens if FlashANSR._is_constant_token(tok))
+        payload['constant_count'] = constant_count
+
+    score = FlashANSR._score_from_fvu(
+        fvu,
+        len(expression_tokens),
+        constant_count,
+        payload.get('log_prob'),
+        payload['length_penalty'],
+        payload['constants_penalty'],
+        payload['likelihood_penalty'],
+    )
 
     serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
     for constants, constants_cov, fit_loss in refiner._all_constants_values:
@@ -168,6 +184,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'fvu': fvu,
         'score': score,
         'expression': payload['expression'],
+        'constant_count': payload['constant_count'],
         'complexity': len(payload['expression']),
         'requested_complexity': payload['complexity'],
         'raw_beam': payload['raw_beam'],
@@ -208,8 +225,12 @@ class FlashANSR(BaseEstimator):
         ``{'loc': 0.0, 'scale': 5.0}`` for the normal distribution.
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
         Desired NumPy error handling strategy applied during constant refinement.
-    parsimony : float, optional
-        Penalty coefficient that discourages overly complex expressions.
+    length_penalty : float, optional
+        Penalty coefficient that discourages overly long expressions.
+    constants_penalty : float, optional
+        Penalty coefficient applied to the number of constants present in an expression.
+    likelihood_penalty : float, optional
+        Penalty coefficient applied to the negative log likelihood of the generated beam.
     refiner_workers : int or None, optional
         Number of worker processes to run during constant refinement. ``None``
         (the default) uses all available CPU cores, while explicit integers
@@ -236,12 +257,28 @@ class FlashANSR(BaseEstimator):
         return float(loss) / cls._normalize_variance(variance)
 
     @classmethod
-    def _score_from_fvu(cls, fvu: float, complexity: int, parsimony: float) -> float:
+    def _score_from_fvu(
+            cls,
+            fvu: float,
+            complexity: int,
+            constant_count: int,
+            log_prob: float | None,
+            length_penalty: float,
+            constants_penalty: float,
+            likelihood_penalty: float) -> float:
         if not np.isfinite(fvu) or fvu <= 0:
             safe_fvu = cls.FLOAT64_EPS
         else:
             safe_fvu = max(float(fvu), cls.FLOAT64_EPS)
-        return float(np.log10(safe_fvu) + parsimony * complexity)
+
+        likelihood_term = 0.0
+        if log_prob is not None and np.isfinite(log_prob):
+            likelihood_term = likelihood_penalty * (-float(log_prob))
+
+        return float(np.log10(safe_fvu)
+                     + length_penalty * complexity
+                     + constants_penalty * max(int(constant_count), 0)
+                     + likelihood_term)
 
     def _score_log_probs_batch(
             self,
@@ -319,6 +356,10 @@ class FlashANSR(BaseEstimator):
             return True
         except ValueError:
             return False
+
+    @classmethod
+    def _count_constants(cls, expression: Sequence[str]) -> int:
+        return sum(1 for token in expression if cls._is_constant_token(token))
 
     def _get_operator_arity(self, token: str) -> int | None:
         aliases = getattr(self.simplipy_engine, 'operator_aliases', {})
@@ -482,7 +523,9 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.05,
+            length_penalty: float = 0.05,
+            constants_penalty: float = 0.0,
+            likelihood_penalty: float = 0.0,
             refiner_workers: int | None = None,
             prune_constant_budget: float | int = 16):
         self.simplipy_engine = simplipy_engine
@@ -501,7 +544,9 @@ class FlashANSR(BaseEstimator):
         self.refiner_p0_noise = refiner_p0_noise
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
-        self.parsimony = parsimony
+        self.length_penalty = length_penalty
+        self.constants_penalty = float(constants_penalty)
+        self.likelihood_penalty = float(likelihood_penalty)
         self.prune_constant_budget = max(0.0, float(prune_constant_budget))
 
         cpu_count = os.cpu_count() or 1
@@ -543,7 +588,9 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            parsimony: float = 0.05,
+            length_penalty: float = 0.05,
+            constants_penalty: float = 0.0,
+            likelihood_penalty: float = 0.0,
             device: str = 'cpu',
             refiner_workers: int | None = None,
             prune_constant_budget: float | int = 16) -> "FlashANSR":
@@ -567,8 +614,13 @@ class FlashANSR(BaseEstimator):
             resolves to ``{'loc': 0.0, 'scale': 5.0}``.
         numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
             NumPy floating-point error policy applied during refinement.
-        parsimony : float, optional
-            Parsimony coefficient used when compiling results.
+        length_penalty : float, optional
+            Length penalty used when compiling results.
+        constants_penalty : float, optional
+            Penalty applied per constant present in the expression during
+            scoring.
+        likelihood_penalty : float, optional
+            Penalty applied to the negative log likelihood of each beam.
         device : str, optional
             Torch device where the model weights will be loaded.
         refiner_workers : int or None, optional
@@ -605,7 +657,9 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             numpy_errors=numpy_errors,
-            parsimony=parsimony,
+            length_penalty=length_penalty,
+            constants_penalty=constants_penalty,
+            likelihood_penalty=likelihood_penalty,
             refiner_workers=refiner_workers,
             prune_constant_budget=prune_constant_budget)
 
@@ -764,7 +818,9 @@ class FlashANSR(BaseEstimator):
                     refiner_method=self.refiner_method,
                     refiner_p0_noise=self.refiner_p0_noise,
                     refiner_p0_noise_kwargs=self.refiner_p0_noise_kwargs,
-                    parsimony=self.parsimony,
+                    length_penalty=self.length_penalty,
+                    constants_penalty=self.constants_penalty,
+                    likelihood_penalty=self.likelihood_penalty,
                     compute_fvu=self._compute_fvu,
                     score_from_fvu=self._score_from_fvu,
                     float64_eps=self.FLOAT64_EPS,
@@ -820,6 +876,7 @@ class FlashANSR(BaseEstimator):
             'fvu': payload['fvu'],
             'score': payload['score'],
             'expression': payload['expression'],
+            'constant_count': int(payload.get('constant_count', self._count_constants(payload['expression']))),
             'complexity': payload['complexity'],
             'requested_complexity': payload.get('requested_complexity'),
             'raw_beam': payload['raw_beam'],
@@ -990,12 +1047,15 @@ class FlashANSR(BaseEstimator):
                 if not self.simplipy_engine.is_valid(beam_decoded):
                     continue
 
+                constant_count = self._count_constants(beam_decoded)
+
                 job: dict[str, Any] = {
                     'raw_beam': raw_beam,
                     'raw_beam_decoded': raw_beam_decoded,
                     'beam': beam,
                     'expression': beam_decoded,
                     'log_prob': log_prob,
+                    'constant_count': constant_count,
                     'pruned_variant': False,
                     'n_variables': self.n_variables,
                     'n_restarts': self.n_restarts,
@@ -1005,7 +1065,9 @@ class FlashANSR(BaseEstimator):
                     'converge_error': converge_error,
                     'numpy_errors': self.numpy_errors,
                     'y_variance': y_variance,
-                    'parsimony': self.parsimony,
+                    'length_penalty': self.length_penalty,
+                    'constants_penalty': self.constants_penalty,
+                    'likelihood_penalty': self.likelihood_penalty,
                     'complexity': complexity,
                     'metadata_snapshot': metadata_snapshot,
                 }
@@ -1076,7 +1138,7 @@ class FlashANSR(BaseEstimator):
                         top_results = sorted_results[:top_k_resolved]
 
                         seen_expressions = {tuple(r['expression']) for r in self._results}
-                        variant_records: list[tuple[list[str], list[int], float]] = []
+                        variant_records: list[tuple[list[str], list[int], float, int]] = []
 
                         for base_result in top_results:
                             variants = self._generate_constant_pruning_variants(base_result['expression'])
@@ -1100,7 +1162,8 @@ class FlashANSR(BaseEstimator):
                                 except KeyError:
                                     continue
                                 inherited_log_prob = float(base_result.get('log_prob', float('nan')))
-                                variant_records.append((simplified_variant, encoded_variant, inherited_log_prob))
+                                constant_count = self._count_constants(simplified_variant)
+                                variant_records.append((simplified_variant, encoded_variant, inherited_log_prob, constant_count))
 
                         pruning_jobs: list[dict[str, Any]] = []
                         if variant_records:
@@ -1111,7 +1174,7 @@ class FlashANSR(BaseEstimator):
                                 device=data_tensor.device,
                             )
 
-                            for (variant_expr, encoded_variant, inherited_lp), new_lp in zip(variant_records, scored_log_probs):
+                            for (variant_expr, encoded_variant, inherited_lp, variant_constant_count), new_lp in zip(variant_records, scored_log_probs):
                                 log_prob_value = float(new_lp) if np.isfinite(new_lp) else inherited_lp
                                 pruning_job: dict[str, Any] = {
                                     'raw_beam': encoded_variant,
@@ -1119,6 +1182,7 @@ class FlashANSR(BaseEstimator):
                                     'beam': encoded_variant,
                                     'expression': variant_expr,
                                     'log_prob': log_prob_value,
+                                    'constant_count': variant_constant_count,
                                     'pruned_variant': True,
                                     'n_variables': self.n_variables,
                                     'n_restarts': self.n_restarts,
@@ -1128,7 +1192,9 @@ class FlashANSR(BaseEstimator):
                                     'converge_error': converge_error,
                                     'numpy_errors': self.numpy_errors,
                                     'y_variance': y_variance,
-                                    'parsimony': self.parsimony,
+                                    'length_penalty': self.length_penalty,
+                                    'constants_penalty': self.constants_penalty,
+                                    'likelihood_penalty': self.likelihood_penalty,
                                     'complexity': complexity,
                                     'metadata_snapshot': metadata_snapshot,
                                 }
@@ -1136,17 +1202,29 @@ class FlashANSR(BaseEstimator):
 
                         _run_refinement_jobs(pruning_jobs)
 
-            self.compile_results(self.parsimony)
+            self.compile_results()
 
             np.seterr(**numpy_errors_before)
 
-    def compile_results(self, parsimony: float) -> None:
+    def compile_results(
+            self,
+            length_penalty: float | None = None,
+            *,
+            constants_penalty: float | None = None,
+            likelihood_penalty: float | None = None) -> None:
         """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
 
         Parameters
         ----------
-        parsimony : float
-            Parsimony coefficient used to recompute scores before ranking.
+        length_penalty : float, optional
+            Length penalty applied during score recomputation. Defaults to the
+            current ``length_penalty`` value on the model.
+        constants_penalty : float, optional
+            Constant-count penalty applied during score recomputation. Defaults
+            to the current ``constants_penalty`` value on the model.
+        likelihood_penalty : float, optional
+            Negative log-likelihood penalty applied during score recomputation.
+            Defaults to the current ``likelihood_penalty`` value on the model.
 
         Raises
         ------
@@ -1156,16 +1234,33 @@ class FlashANSR(BaseEstimator):
         if not self._results:
             raise ConvergenceError("The optimization did not converge for any beam")
 
-        self.initial_parsimony = self.parsimony
-        self.parsimony = parsimony
+        self.initial_length_penalty = getattr(self, 'length_penalty', 0.0)
+        self.initial_constants_penalty = getattr(self, 'constants_penalty', 0.0)
+        self.initial_likelihood_penalty = getattr(self, 'likelihood_penalty', 0.0)
+
+        if length_penalty is not None:
+            self.length_penalty = float(length_penalty)
+        if constants_penalty is not None:
+            self.constants_penalty = float(constants_penalty)
+        if likelihood_penalty is not None:
+            self.likelihood_penalty = float(likelihood_penalty)
 
         # Compute the new score for each result
         for result in self._results:
             if 'score' in result:
-                # Recompute the score with the new parsimony coefficient
                 fvu = result.get('fvu', np.nan)
+                log_prob = result.get('log_prob')
+                constant_count = int(result.get('constant_count', self._count_constants(result.get('expression', []))))
                 if np.isfinite(fvu):
-                    result['score'] = self._score_from_fvu(float(fvu), len(result['expression']), self.parsimony)
+                    result['score'] = self._score_from_fvu(
+                        float(fvu),
+                        len(result['expression']),
+                        constant_count,
+                        log_prob,
+                        self.length_penalty,
+                        self.constants_penalty,
+                        self.likelihood_penalty,
+                    )
                 else:
                     result['score'] = np.nan
 
@@ -1270,7 +1365,9 @@ class FlashANSR(BaseEstimator):
         input_dim = self._input_dim if self._input_dim is not None else self.n_variables
         metadata = {
             "format_version": RESULTS_FORMAT_VERSION,
-            "parsimony": self.parsimony,
+            "length_penalty": self.length_penalty,
+            "constants_penalty": self.constants_penalty,
+            "likelihood_penalty": self.likelihood_penalty,
             "n_variables": self.n_variables,
             "input_dim": input_dim,
             "variable_mapping": copy.deepcopy(self.variable_mapping),
@@ -1291,11 +1388,16 @@ class FlashANSR(BaseEstimator):
                 f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
             )
 
-        parsimony = float(metadata.get("parsimony", self.parsimony))
+        length_penalty = float(metadata.get("length_penalty", getattr(self, "length_penalty", 0.0)))
+        constants_penalty = float(metadata.get("constants_penalty", getattr(self, "constants_penalty", 0.0)))
+        likelihood_penalty = float(metadata.get("likelihood_penalty", getattr(self, "likelihood_penalty", 0.0)))
         n_variables = int(metadata.get("n_variables", self.n_variables))
         input_dim = int(metadata.get("input_dim", n_variables))
 
         self._input_dim = input_dim
+        self.length_penalty = length_penalty
+        self.constants_penalty = constants_penalty
+        self.likelihood_penalty = likelihood_penalty
         self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
 
         restored = deserialize_results_payload(
@@ -1307,7 +1409,11 @@ class FlashANSR(BaseEstimator):
         )
 
         self._results = restored
-        self.compile_results(parsimony)
+        self.compile_results(
+            length_penalty=length_penalty,
+            constants_penalty=constants_penalty,
+            likelihood_penalty=likelihood_penalty,
+        )
 
     def to(self, device: str) -> "FlashANSR":
         """Move the transformer weights to ``device``.

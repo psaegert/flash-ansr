@@ -339,7 +339,9 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
             "refiner_method": "curve_fit_lm",
             "refiner_p0_noise": "normal",
             "refiner_p0_noise_kwargs": {"loc": 0.0, "scale": 1.0},
-            "parsimony": 0.1,
+            "length_penalty": 0.2,
+            "constants_penalty": 0.01,
+            "likelihood_penalty": 0.0,
             "device": "cuda",
             "refiner_workers": None,
             "generation_config": {
@@ -364,6 +366,7 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
         def load(*, directory, generation_config, **kwargs):
             captured["flash_ansr_gen"] = generation_config
             captured["flash_ansr_dir"] = directory
+            captured["flash_ansr_kwargs"] = kwargs
             return SimpleNamespace()
 
     class DummyAdapter:
@@ -390,6 +393,9 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
     assert captured["method"] == "softmax_sampling"
     assert captured["kwargs"]["choices"] == 2
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 2
+    assert captured["flash_ansr_kwargs"]["length_penalty"] == 0.2
+    assert captured["flash_ansr_kwargs"]["constants_penalty"] == 0.01
+    assert captured["flash_ansr_kwargs"]["likelihood_penalty"] == 0.0
 
 
 def test_skeleton_dataset_max_trials(monkeypatch):
@@ -452,7 +458,9 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
         "refiner_method": "curve_fit_lm",
         "refiner_p0_noise": "normal",
         "refiner_p0_noise_kwargs": {"loc": 0.0, "scale": 1.0},
-        "parsimony": 0.1,
+        "length_penalty": 0.15,
+        "constants_penalty": 0.0,
+        "likelihood_penalty": 0.0,
         "device": "cuda",
         "generation_config": {
             "method": "softmax_sampling",
@@ -475,6 +483,9 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
     assert captured["kwargs"]["choices"] == 4
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 4
     assert captured["flash_ansr_kwargs"]["n_restarts"] == 2
+    assert captured["flash_ansr_kwargs"]["length_penalty"] == 0.15
+    assert captured["flash_ansr_kwargs"]["constants_penalty"] == 0.0
+    assert captured["flash_ansr_kwargs"]["likelihood_penalty"] == 0.0
 
 
 def test_pysr_adapter_accepts_non_dataset_with_explicit_engine(monkeypatch):

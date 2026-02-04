@@ -21,7 +21,9 @@ defaults:
       refiner_p0_noise_kwargs:
         loc: 0.0
         scale: 5
-      parsimony: 0.05
+      length_penalty: 0.05
+      constants_penalty: 0.0
+      likelihood_penalty: 0.0
       prune_constant_budget: 0
       generation_config:
         method: softmax_sampling

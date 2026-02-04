@@ -66,7 +66,9 @@ class FlashANSRAdapter(EvaluationModelAdapter):
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
         complexity_value = self._resolve_complexity(record)
@@ -150,7 +152,9 @@ def _evaluate_refiner_baseline(model: Any, sample: EvaluationSample) -> Evaluati
     """Shared evaluation logic for refiner-backed baseline models."""
 
     record = sample.clone_metadata()
-    record["parsimony"] = getattr(model, "parsimony", None)
+    record["length_penalty"] = getattr(model, "length_penalty", None)
+    record["constants_penalty"] = getattr(model, "constants_penalty", None)
+    record["likelihood_penalty"] = getattr(model, "likelihood_penalty", None)
 
     y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
 
@@ -415,7 +419,9 @@ class E2EAdapter(EvaluationModelAdapter):
             raise RuntimeError("E2EAdapter.prepare must be called before evaluation")
 
         record = sample.clone_metadata()
-        record["parsimony"] = None
+        record["length_penalty"] = getattr(self._estimator, "length_penalty", None)
+        record["constants_penalty"] = getattr(self._estimator, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self._estimator, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_val = sample.x_validation.copy()
@@ -543,7 +549,9 @@ class NeSymReSAdapter(EvaluationModelAdapter):
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_validation = sample.x_validation.copy()

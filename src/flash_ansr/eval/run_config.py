@@ -377,7 +377,9 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, A
         refiner_method=eval_cfg.get("refiner_method", "curve_fit_lm"),
         refiner_p0_noise=eval_cfg["refiner_p0_noise"],
         refiner_p0_noise_kwargs=eval_cfg.get("refiner_p0_noise_kwargs"),
-        parsimony=eval_cfg["parsimony"],
+        length_penalty=eval_cfg.get("length_penalty", 0.0),
+        constants_penalty=eval_cfg.get("constants_penalty", 0.0),
+        likelihood_penalty=eval_cfg.get("likelihood_penalty", 0.0),
         device=eval_cfg.get("device", config.get("device", "cpu")),
         refiner_workers=config.get("refiner_workers", eval_cfg.get("refiner_workers")),
         prune_constant_budget=eval_cfg.get("prune_constant_budget", 0),
@@ -529,7 +531,9 @@ def _build_skeleton_pool_adapter(config: Mapping[str, Any], context: Mapping[str
         refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
         refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
         numpy_errors=config.get("numpy_errors", "ignore"),
-        parsimony=float(config.get("parsimony", 0.05)),
+        length_penalty=_coerce_float(config.get("length_penalty", 0.05), "model_adapter.length_penalty"),
+        constants_penalty=_coerce_float(config.get("constants_penalty", 0.0), "model_adapter.constants_penalty"),
+        likelihood_penalty=_coerce_float(config.get("likelihood_penalty", 0.0), "model_adapter.likelihood_penalty"),
     )
 
     return SkeletonPoolAdapter(model)
@@ -556,7 +560,9 @@ def _build_brute_force_adapter(config: Mapping[str, Any], context: Mapping[str, 
         refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
         refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
         numpy_errors=config.get("numpy_errors", "ignore"),
-        parsimony=float(config.get("parsimony", 0.05)),
+        length_penalty=_coerce_float(config.get("length_penalty", 0.05), "model_adapter.length_penalty"),
+        constants_penalty=_coerce_float(config.get("constants_penalty", 0.0), "model_adapter.constants_penalty"),
+        likelihood_penalty=_coerce_float(config.get("likelihood_penalty", 0.0), "model_adapter.likelihood_penalty"),
     )
 
     return BruteForceAdapter(model)
@@ -622,6 +628,15 @@ def _coerce_int(value: Any, field_name: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
         raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _coerce_float(value: Any, field_name: str) -> float:
+    if value is None:
+        raise ValueError(f"{field_name} must be provided")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field_name} must be a float") from exc
 
 
 def _coerce_optional_int(value: Any, field_name: str) -> int | None:
