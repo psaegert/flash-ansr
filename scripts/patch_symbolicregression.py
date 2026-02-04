@@ -3,12 +3,16 @@
 
 The upstream E2E repo assumes older numpy/scaler handling. This script makes the
 copy under ``e2e/symbolicregression`` compatible with current numpy, avoids an
-infinite loop in ``rescale_function`` when scaler params are missing, and adds a
-`tree_idx` alias expected by newer call sites.
+infinite loop in ``rescale_function`` when scaler params are missing, drops the
+deprecated ``functorch`` dependency that conflicts with modern torch, rebuilds an
+unpinned ``requirements.txt`` from ``environment.yml`` (sans functorch), emits a
+``pyproject.toml`` for editable installs, and adds a `tree_idx` alias expected by
+newer call sites.
 """
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -46,19 +50,17 @@ def _fix_rescale_loop(repo_root: Path) -> bool:
     if "idx += 1  # guard against missing scaler params" in text:
         return False
 
-    snippet = """
-                if k>=len(a):
-                    continue
-    """
-    replacement = """
-                if k >= len(a):
-                    idx += 1  # guard against missing scaler params
-                    continue
-    """
-    if snippet.strip() not in text:
+    pattern = r"(?m)^(?P<indent>\s*)if\s*k\s*>=\s*len\(a\):\s*\n(?P=indent)\s*continue\s*$"
+    replacement = (
+        "\\g<indent>if k >= len(a):\n"
+        "\\g<indent>    idx += 1  # guard against missing scaler params\n"
+        "\\g<indent>    continue"
+    )
+
+    if not re.search(pattern, text):
         raise PatchError("Expected rescale_function guard not found; file layout changed?")
 
-    updated = text.replace(snippet, replacement)
+    updated = re.sub(pattern, replacement, text, count=1)
     if updated == text:
         return False
 
@@ -141,6 +143,148 @@ def _switch_to_torch_func_grad(repo_root: Path) -> bool:
     return True
 
 
+def _drop_functorch_dependency(repo_root: Path) -> bool:
+    """Remove functorch pins that conflict with modern torch builds."""
+
+    changed_any = False
+
+    req_path = repo_root / "requirements.txt"
+    if req_path.exists():
+        req_text = req_path.read_text()
+        req_lines = req_text.splitlines()
+        filtered_req = [line for line in req_lines if not line.strip().startswith("functorch")]
+        updated_req = "\n".join(filtered_req) + ("\n" if req_text.endswith("\n") else "")
+        if updated_req != req_text:
+            req_path.write_text(updated_req)
+            changed_any = True
+
+    env_path = repo_root / "environment.yml"
+    if env_path.exists():
+        env_text = env_path.read_text()
+        env_lines = env_text.splitlines()
+        filtered_env = [line for line in env_lines if "functorch" not in line.strip()]
+        updated_env = "\n".join(filtered_env) + ("\n" if env_text.endswith("\n") else "")
+        if updated_env != env_text:
+            env_path.write_text(updated_env)
+            changed_any = True
+
+    return changed_any
+
+
+def _rewrite_requirements_from_env(repo_root: Path) -> bool:
+    """Regenerate requirements.txt from environment.yml pip section, dropping functorch and pins.
+
+    Also appends sympytorch from its git source so installs are self-contained.
+    """
+
+    env_path = repo_root / "environment.yml"
+    req_path = repo_root / "requirements.txt"
+
+    if not env_path.exists():
+        raise PatchError(f"Missing file: {env_path}")
+
+    env_lines = env_path.read_text().splitlines()
+
+    in_pip = False
+    pip_indent = None
+    pip_packages: list[str] = []
+    seen: set[str] = set()
+
+    for line in env_lines:
+        stripped = line.strip()
+        if not in_pip:
+            if stripped == "- pip:":
+                in_pip = True
+                pip_indent = len(line) - len(line.lstrip())
+            continue
+
+        current_indent = len(line) - len(line.lstrip())
+        if pip_indent is not None and current_indent <= pip_indent:
+            # Left the pip section.
+            in_pip = False
+            continue
+
+        if stripped.startswith("- "):
+            pkg = stripped[2:].strip()
+            if not pkg or pkg.startswith("#"):
+                continue
+            if pkg.startswith("functorch"):
+                continue
+
+            # Strip version specifiers (==, >=, <=, etc.) to keep requirements unpinned.
+            base = re.split(r"[<>=]", pkg, maxsplit=1)[0].strip()
+            if not base or base in seen:
+                continue
+            seen.add(base)
+            pip_packages.append(base)
+
+    if not pip_packages:
+        raise PatchError("No pip dependencies found in environment.yml")
+
+    if "sympytorch" not in seen:
+        pip_packages.append("sympytorch @ git+https://github.com/pakamienny/sympytorch.git")
+
+    rebuilt = "\n".join(pip_packages) + "\n"
+
+    if req_path.exists():
+        current = req_path.read_text()
+        if current == rebuilt:
+            return False
+
+    req_path.write_text(rebuilt)
+    return True
+
+
+def _write_pyproject(repo_root: Path) -> bool:
+    """Create a minimal pyproject.toml for editable installs if missing."""
+
+    path = repo_root / "pyproject.toml"
+    if path.exists():
+        return False
+
+    req_path = repo_root / "requirements.txt"
+    if not req_path.exists():
+        raise PatchError("requirements.txt not found; run rewrite step first")
+
+    deps: list[str] = []
+    for line in req_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        deps.append(stripped)
+
+    if not deps:
+        raise PatchError("No dependencies found in requirements.txt for pyproject generation")
+
+    deps_str = "\n    \"" + "\",\n    \"".join(deps) + "\",\n"
+
+    content = (
+        "[build-system]\n"
+        "requires = [\"setuptools>=61\", \"wheel\"]\n"
+        "build-backend = \"setuptools.build_meta\"\n\n"
+        "[project]\n"
+        "name = \"e2e-symbolicregression\"\n"
+        "version = \"0.0.0\"\n"
+        "description = \"Meta symbolic regression baseline (packaged for flash-ansr compatibility).\"\n"
+        "readme = \"README.md\"\n"
+        "license = { file = \"LICENSE\" }\n"
+        "authors = [{ name = \"Meta Platforms, Inc.\" }]\n"
+        "requires-python = \">=3.8\"\n"
+        "dependencies = [\n"
+        f"{deps_str}"
+        "]\n\n"
+        "[tool.setuptools]\n"
+        "packages = { find = { where = [\".\"], include = [\"symbolicregression*\"], exclude = [\"**/tests\", \"**/.ipynb_checkpoints\"] } }\n"
+        "include-package-data = true\n\n"
+        "[project.urls]\n"
+        "Homepage = \"https://github.com/facebookresearch/symbolicregression\"\n"
+        "Repository = \"https://github.com/facebookresearch/symbolicregression\"\n"
+    )
+
+    path.write_text(content)
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -165,6 +309,9 @@ def main() -> int:
         ("add retrieve_tree tree_idx alias", _add_tree_idx_alias),
         ("replace np.infty with np.inf", _replace_np_infty),
         ("switch to torch.func.grad where available", _switch_to_torch_func_grad),
+        ("drop functorch dependency", _drop_functorch_dependency),
+        ("rewrite requirements.txt from environment.yml", _rewrite_requirements_from_env),
+        ("write pyproject.toml for editable install", _write_pyproject),
     ]
 
     failures = 0

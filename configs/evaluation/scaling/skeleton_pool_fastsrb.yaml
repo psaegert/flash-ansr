@@ -13,7 +13,7 @@ defaults:
   model_adapter: &skeleton_pool_adapter
     type: skeleton_pool
     simplipy_engine: "dev_7-3"
-    skeleton_pool: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool_max8"
+    skeleton_pool: "{{ROOT}}/models/prior/skeleton_pool.yaml"
     samples: 32
     unique: true
     ignore_holdouts: true
@@ -25,7 +25,9 @@ defaults:
       loc: 0.0
       scale: 5
     numpy_errors: ignore
-    parsimony: 0.05
+    length_penalty: 0.05
+    constants_penalty: 0.0
+    likelihood_penalty: 0.0
   runner: &skeleton_pool_fastsrb_runner
     limit: null
     save_every: 64
@@ -206,14 +208,14 @@ experiments:
         <<: *skeleton_pool_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_262144.pkl"
 
-  skeleton_pool_fastsrb_samples_1048576:
-    run:
-      data_source:
-        <<: *skeleton_pool_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *skeleton_pool_adapter
-        samples: 1048576
-      runner:
-        <<: *skeleton_pool_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_1048576.pkl"
+  # skeleton_pool_fastsrb_samples_1048576:
+  #   run:
+  #     data_source:
+  #       <<: *skeleton_pool_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *skeleton_pool_adapter
+  #       samples: 1048576
+  #     runner:
+  #       <<: *skeleton_pool_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/skeleton_pool/fastsrb/samples_1048576.pkl"

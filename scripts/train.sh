@@ -20,7 +20,7 @@ cmd=(
 )
 
 if [ -n "${OMP_NUM_THREADS:-}" ]; then
-    echo "Using OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+    echo "train.sh: Using OMP_NUM_THREADS=${OMP_NUM_THREADS}"
     cmd+=(-w "${OMP_NUM_THREADS}")
 fi
 

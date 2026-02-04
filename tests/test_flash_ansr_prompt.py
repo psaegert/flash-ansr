@@ -35,9 +35,52 @@ class _DummyModel:
         self.preprocessor = preprocessor
         self.device = torch.device("cpu")
         self.encoder_max_n_variables = 2
+        self.memory: torch.Tensor | None = None
 
     def eval(self) -> "_DummyModel":
         return self
+
+    def _resolve_generation_prefix(
+        self,
+        *,
+        prompt_prefix: PromptPrefix | None = None,
+        initial_tokens: list[int] | None = None,
+        input_num: list[float] | None = None,
+    ) -> tuple[list[int], list[float] | None]:
+        if prompt_prefix is not None:
+            tokens = [int(token) for token in prompt_prefix.tokens]
+            numeric_values = [float(value) for value in prompt_prefix.numeric]
+            return tokens, numeric_values
+
+        if initial_tokens is not None:
+            tokens = list(initial_tokens)
+            numeric = [float(value) for value in input_num] if input_num is not None else None
+            return tokens, numeric
+
+        return [int(self.tokenizer['<bos>'])], None
+
+    def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+        if data.ndim == 2:
+            data = data.unsqueeze(0)
+
+        batch_size = data.shape[0]
+        self.memory = torch.zeros((batch_size, 1, self.encoder_max_n_variables), device=data.device, dtype=torch.float32)
+        return self.memory
+
+    def forward(
+        self,
+        input_tokens: torch.Tensor,
+        data: torch.Tensor | None = None,
+        input_num: torch.Tensor | None = None,
+        memory: torch.Tensor | None = None,
+        data_attn_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        self.memory = memory if memory is not None else self.memory
+
+        batch, seq_len = input_tokens.shape
+        vocab_size = len(self.tokenizer)
+        logits = torch.zeros((batch, seq_len, vocab_size), device=input_tokens.device, dtype=torch.float32)
+        return logits
 
 
 class _DummyRefiner:

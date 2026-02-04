@@ -382,7 +382,7 @@ class Trainer:
                 raise ValueError("resume_step must be non-negative")
 
             remaining_steps = max(0, steps - step_offset)
-            if verbose:
+            if verbose and step_offset > 0:
                 print(f"Resuming from step {step_offset} with {remaining_steps} steps remaining (target={steps})")
 
             if remaining_steps == 0:

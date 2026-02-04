@@ -13,6 +13,24 @@ from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.refine import ConvergenceError, Refiner
 
 
+def _is_constant_token(token: str) -> bool:
+    if token == '<constant>':
+        return True
+    if token.startswith('C_') and token[2:].isdigit():
+        return True
+    if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
+        return True
+    try:
+        float(token)
+        return True
+    except ValueError:
+        return False
+
+
+def _count_constants(tokens: list[str]) -> int:
+    return sum(1 for tok in tokens if _is_constant_token(tok))
+
+
 def run_mcts_generation(
     *,
     transformer: FlashANSRModel,
@@ -27,9 +45,11 @@ def run_mcts_generation(
     refiner_method: str,
     refiner_p0_noise: str | None,
     refiner_p0_noise_kwargs: dict | None,
-    parsimony: float,
+    length_penalty: float,
+    constants_penalty: float,
+    likelihood_penalty: float,
     compute_fvu: Callable[[float, int, float], float],
-    score_from_fvu: Callable[[float, int, float], float],
+    score_from_fvu: Callable[[float, int, int, float | None, float, float, float], float],
     float64_eps: float,
     prompt_prefix: PromptPrefix | None,
     verbose: bool,
@@ -90,7 +110,16 @@ def run_mcts_generation(
         if not np.isfinite(fvu):
             return cache_and_return(-config.invalid_penalty, {"length": expression_length, "log_fvu": float("nan")})
 
-        score = score_from_fvu(fvu, len(expression_decoded), parsimony)
+        constant_count = _count_constants(expression_decoded)
+        score = score_from_fvu(
+            fvu,
+            len(expression_decoded),
+            constant_count,
+            None,
+            length_penalty,
+            constants_penalty,
+            likelihood_penalty,
+        )
         reward = -score
         log_fvu = float(np.log10(max(float(fvu), float64_eps)))
 

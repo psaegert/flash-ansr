@@ -105,7 +105,10 @@ class Evaluation():
         if verbose:
             print(
                 "Evaluating model with configuration: "
-                f"model.parsimony={model.parsimony}, noise_level={self.noise_level}, "
+                f"length_penalty={getattr(model, 'length_penalty', None)}, "
+                f"constants_penalty={getattr(model, 'constants_penalty', None)}, "
+                f"likelihood_penalty={getattr(model, 'likelihood_penalty', None)}, "
+                f"noise_level={self.noise_level}, "
                 f"n_support={self.n_support}, complexity={self.complexity}"
             )
 
