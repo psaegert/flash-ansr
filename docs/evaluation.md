@@ -14,7 +14,7 @@
 
 ## Models and baselines
 
-- **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. Scoring now uses `length_penalty` (formerly parsimony, default 0.05), `constants_penalty` (default 0.0), and `likelihood_penalty` (default 0.0). See the scaling configs under `configs/evaluation/scaling/v23.0-*/`.
+- **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. Scoring now uses `length_penalty` (default 0.05), `constants_penalty` (default 0.0), and `likelihood_penalty` (default 0.0). See the scaling configs under `configs/evaluation/scaling/v23.0-*/`.
 - **[PySR](https://github.com/MilesCranmer/PySR)**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony/complexity penalty). Watchdog helper: `scripts/evaluate_PySR.py`.
 - **[NeSymReS](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales)**: Adapter expects external checkout + checkpoint paths; exposes beam width/restarts. See `run_nesymres.yaml` and scaling configs.
 - **SkeletonPoolModel (baseline)**: Transformer-free baseline that samples skeletons from a provided pool and only refines constants. Configure via `model_adapter.type: skeleton_pool` (or add a dedicated config entry) with pool path/config, `samples`, `unique`, `ignore_holdouts`, and `seed`. Useful for ablations and replication.

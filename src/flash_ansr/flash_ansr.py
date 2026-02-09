@@ -1209,7 +1209,6 @@ class FlashANSR(BaseEstimator):
     def compile_results(
             self,
             length_penalty: float | None = None,
-            *,
             constants_penalty: float | None = None,
             likelihood_penalty: float | None = None) -> None:
         """Aggregate refiner outputs into a tidy `pandas.DataFrame`.

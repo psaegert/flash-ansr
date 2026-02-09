@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 import types
-from typing import Any, Generator, Literal
+from typing import Any, Callable, Generator, Literal, Sequence
 
 import numpy as np
 import torch
@@ -18,6 +18,11 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.metrics import (
+    build_expression_callable,
+    estimate_curvature_metric,
+    estimate_fisher_metric,
+)
 
 
 class FlashANSRDataset:
@@ -269,6 +274,80 @@ class FlashANSRDataset:
         for key in samples[0].keys():
             batch[key] = [sample[key] for sample in samples]
 
+    def _compute_expression_metrics(self, batch: dict[str, Any], metrics: Sequence[str] | str) -> None:
+        expressions = batch.get("expression")
+        x_tensors = batch.get("x_tensors")
+        data_attn_mask = batch.get("data_attn_mask")
+        if not expressions or x_tensors is None:
+            return
+
+        if isinstance(metrics, str):
+            if metrics.lower() == "all":
+                metrics_set = {"fisher", "hessian"}
+            else:
+                metrics_set = {metrics.lower()}
+        else:
+            metrics_set = set(m.lower() for m in metrics)
+        compute_fisher = "fisher" in metrics_set
+        compute_hessian = "hessian" in metrics_set
+        if not (compute_fisher or compute_hessian):
+            return
+
+        if data_attn_mask is None:
+            data_attn_mask = torch.ones(
+                x_tensors.shape[:2],
+                device=x_tensors.device,
+                dtype=torch.bool,
+            )
+
+        compiled_cache: dict[tuple[str, ...], Callable[[torch.Tensor], torch.Tensor] | None] = {}
+        fisher_vals: list[float] = []
+        hessian_vals: list[float] = []
+
+        for idx, expression_tokens in enumerate(expressions):
+            expr_key = tuple(str(token) for token in expression_tokens)
+            compiled_fn = compiled_cache.get(expr_key)
+            if compiled_fn is None:
+                try:
+                    compiled_fn = build_expression_callable(
+                        self.skeleton_pool.simplipy_engine,
+                        expression_tokens,
+                        self.skeleton_pool.variables,
+                    )
+                except Exception:
+                    compiled_fn = None
+                compiled_cache[expr_key] = compiled_fn
+
+            if compiled_fn is None:
+                if compute_fisher:
+                    fisher_vals.append(float("nan"))
+                if compute_hessian:
+                    hessian_vals.append(float("nan"))
+                continue
+
+            mask = data_attn_mask[idx]
+            X = x_tensors[idx]
+            X = X[mask] if mask is not None else X
+            X = X.to(dtype=torch.float32)
+
+            try:
+                if compute_fisher:
+                    fisher = estimate_fisher_metric(compiled_fn, X)
+                    fisher_vals.append(float(fisher.detach().cpu().item()))
+                if compute_hessian:
+                    curvature = estimate_curvature_metric(compiled_fn, X)
+                    hessian_vals.append(float(curvature.detach().cpu().item()))
+            except Exception:
+                if compute_fisher:
+                    fisher_vals.append(float("nan"))
+                if compute_hessian:
+                    hessian_vals.append(float("nan"))
+
+        if compute_fisher:
+            batch["fisher_metric"] = torch.tensor(fisher_vals, dtype=torch.float32)
+        if compute_hessian:
+            batch["curvature_metric"] = torch.tensor(hessian_vals, dtype=torch.float32)
+
     def _initialize_stream(
         self,
         *,
@@ -308,6 +387,7 @@ class FlashANSRDataset:
         n_per_equation: int = 1,
         preprocess: bool = False,
         preprocess_in_worker: bool | None = None,
+        include_metrics: Sequence[str] | str | None = None,
         tokenizer_oov: Literal["unk", "raise"] = "raise",
         num_workers: int | None = None,
         prefetch_factor: int = 2,
@@ -337,6 +417,8 @@ class FlashANSRDataset:
             Whether to run the preprocessor on generated batches.
         preprocess_in_worker : bool, optional
             Force preprocessing inside workers (True), main process (False), or auto-select (None).
+        include_metrics : Sequence[str] or str or None, default None
+            Metrics to compute for each sampled expression. Supported values: "fisher", "hessian".
         tokenizer_oov : {"unk", "raise"}, default "raise"
             How to handle tokens missing from the tokenizer.
         num_workers : int, optional
@@ -382,6 +464,12 @@ class FlashANSRDataset:
             )
 
         if self.data is not None:
+            if include_metrics:
+                warnings.warn(
+                    "Metric computation is only supported for streaming datasets; ignoring include_metrics.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             precompiled_kwargs = tqdm_kwargs.copy()
             precompiled_kwargs.setdefault("desc", "Iterating over pre-compiled dataset")
             precompiled_kwargs.setdefault("disable", not verbose)
@@ -459,6 +547,9 @@ class FlashANSRDataset:
                         batch_dict = self.preprocessor.format(batch_dict)
 
                 self._collator.ensure_numeric_channel(batch_dict)
+
+                if include_metrics:
+                    self._compute_expression_metrics(batch_dict, include_metrics)
 
                 if persistent:
                     cloned_batch: dict[str, Any] = {}
