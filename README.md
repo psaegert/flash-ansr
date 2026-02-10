@@ -16,8 +16,8 @@
 
 </div>
 
-# Papers
-- WIP
+# Publications
+- Saegert & Köthe 2026, _Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression_ (preprint, under review) [https://arxiv.org/abs/2602.08885](https://arxiv.org/abs/2602.08885)
 
 
 # Usage
@@ -71,29 +71,43 @@ Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/
 
 # Overview
 
-### Training
-
-<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="500">
-
-> **⚡ANSR Training on Fully Procedurally Generated Data** Inspired by NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427))
-
-### Architecture
-
-<img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr.png">
-
-> **FlashANSR Architecture.** The model consists of an upgraded version of the Set Transformer ([Lee et al. 2019](https://arxiv.org/abs/1810.00825)) encoder, and a Pre-Norm Transformer decoder ([Vaswani et al. 2017](https://arxiv.org/abs/1706.03762), [Xiong et al. 2020](https://arxiv.org/abs/2002.04745)) as a generative model over symbolic expressions.
-
-### Results
-Coming soon
-<!-- <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/test_time_compute_fastsrb.svg">
-
-> **Test Time Compute scaling.** ⚡ANSR, NeSymReS ([Biggio et al. 2021](https://arxiv.org/abs/2106.06427)), PySR ([Cranmer 2023](https://arxiv.org/abs/2305.01582)), and E2E ([Kamienny et al. 2022](https://arxiv.org/abs/2204.10532)) are evaluated on the FastSRB benchmark with 10 datasets per equation, $n_{support}=512$, noise level 0.0.\
-> AMD 9950X (16C32T), RTX 4090 (24GB). -->
-
+<table>
+  <tr>
+    <td align="center">
+      <h3>Training</h3>
+      <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="420">
+      <p><strong>The FLASH-ANSR training pipeline.</strong> Following the
+established standard encoder-decoder paradigm, our framework
+integrates <a href="https://github.com/psaegert/simplipy">SimpliPy</a> (top center) into the loop for synchronous
+simplification of on-the-fly generated training expressions.</p>
+    </td>
+    <td align="center">
+      <h3>Architecture</h3>
+      <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr.svg" width="420">
+      <p><strong>Flash-ANSR model architecture.</strong> The Set Transformer <a href="https://arxiv.org/abs/1810.00825">[Lee et al. 2019]</a> encoder ingests a variable-sized set of input-output pairs and produces a fixed-size latent representation via Induced Set Attention Blocks (ISAB) and Set Attention Blocks (SAB). The Transformer decoder <a href="https://arxiv.org/abs/1706.03762">[Vaswani et al. 2017]</a>, <a href="https://arxiv.org/abs/2002.04745">[Xiong et al. 2020]</a> autoregressively generates a symbolic expression token-by-token, attending to the encoded dataset at each step.</p>
+    </td>
+        <td align="center">
+      <h3>SRSD/FastSRB Results</h3>
+      <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/small_test_time_compute_fastsrb.svg" width="420">
+      <p><strong>Left:</strong> Validation Numeric Recovery Rate (vNRR) as a function of inference time (log scale). FLASH-ANSR models (shades of blue) scale monotonically with compute, with the 120M model partially surpassing the PySR baseline (red). Baselines NeSymReS <a href="https://proceedings.mlr.press/v139/biggio21a/biggio21a.pdf">[Biggio et al. 2021]</a> and E2E <a href="https://arxiv.org/abs/2204.10532">[Kamienny et al 2022]</a> fail to generalize to the benchmark. <strong>Right:</strong> Expression Length Ratio (predicted vs ground truth) versus compute. We observe a parsimony inversion: while PySR <a href="https://arxiv.org/abs/2305.01582">[Cranmer 2023]</a> increases complexity to minimize error over time, FLASH-ANSR converges toward simpler, more canonical expressions as the sampling budget increases. Shaded regions denote 95% confidence intervals.
+    </td>
+  </tr>
+</table>
 
 
 # Citation
 ```bibtex
+@misc{saegert2026breakingsimplificationbottleneckamortized,
+  title   = {Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression},
+  author  = {Paul Saegert and Ullrich Köthe},
+  year    = {2026},
+  eprint  = {2602.08885},
+  archivePrefix =  {arXiv},
+  primaryClass  = {cs.LG},
+  url     = {https://arxiv.org/abs/2602.08885},
+}
+
+% Optionally
 @mastersthesis{flash-ansr2024-thesis,
   author  = {Paul Saegert},
   title   = {Flash Amortized Neural Symbolic Regression},
