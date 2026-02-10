@@ -75,7 +75,7 @@ Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/
   <tr>
     <td align="center">
       <h3>SRSD/FastSRB Results</h3>
-      <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/small_test_time_compute_fastsrb.svg" width="720">
+      <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/small_test_time_compute_fastsrb.svg" width="500">
       <p>Results on the SRSD/FastSRB benchmark <a href="https://arxiv.org/abs/2206.10540">[Matsubara et al. 2022]</a>, <a href="https://arxiv.org/abs/2508.14481">[Martinek 2025]</a> <strong>Left:</strong> Validation Numeric Recovery Rate (vNRR) as a function of inference time (log scale). FLASH-ANSR models (shades of blue) scale monotonically with compute, with the 120M model partially surpassing the PySR baseline (red). Baselines NeSymReS <a href="https://proceedings.mlr.press/v139/biggio21a/biggio21a.pdf">[Biggio et al. 2021]</a> and E2E <a href="https://arxiv.org/abs/2204.10532">[Kamienny et al. 2022]</a> fail to generalize to the benchmark. <strong>Right:</strong> Expression Length Ratio (predicted vs ground truth) versus compute. We observe a parsimony inversion: while PySR <a href="https://arxiv.org/abs/2305.01582">[Cranmer 2023]</a> increases complexity to minimize error over time, FLASH-ANSR converges toward simpler, more canonical expressions as the sampling budget increases. Shaded regions denote 95% confidence intervals.</p>
     </td>
   </tr>
@@ -86,7 +86,7 @@ Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/
     <td align="center">
       <h3>Training</h3>
       <img src="https://raw.githubusercontent.com/psaegert/flash-ansr/refs/heads/main/assets/images/flash-ansr-training.png" width="420">
-      <p><strong>The FLASH-ANSR training pipeline.</strong> Following the
+      <p><strong>The Flash-ANSR training pipeline.</strong> Following the
 established standard encoder-decoder paradigm, our framework
 integrates <a href="https://github.com/psaegert/simplipy">SimpliPy</a> (top center) into the loop for synchronous
 simplification of on-the-fly generated training expressions.</p>
