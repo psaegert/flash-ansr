@@ -43,65 +43,65 @@ defaults:
     resume: true
 
 experiments:
-  flash_ansr_val_choices_00001:
-    run:
-      data_source: *flash_ansr_val_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 1
-      runner:
-        <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00001.pkl"
+  # flash_ansr_val_choices_00001:
+  #   run:
+  #     data_source: *flash_ansr_val_source
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 1
+  #     runner:
+  #       <<: *flash_ansr_val_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00001.pkl"
 
-  flash_ansr_val_choices_00002:
-    run:
-      data_source: *flash_ansr_val_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 2
-      runner:
-        <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00002.pkl"
+  # flash_ansr_val_choices_00002:
+  #   run:
+  #     data_source: *flash_ansr_val_source
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 2
+  #     runner:
+  #       <<: *flash_ansr_val_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00002.pkl"
 
-  flash_ansr_val_choices_00004:
-    run:
-      data_source: *flash_ansr_val_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 4
-      runner:
-        <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00004.pkl"
+  # flash_ansr_val_choices_00004:
+  #   run:
+  #     data_source: *flash_ansr_val_source
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 4
+  #     runner:
+  #       <<: *flash_ansr_val_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00004.pkl"
 
-  flash_ansr_val_choices_00008:
-    run:
-      data_source: *flash_ansr_val_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 8
-      runner:
-        <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00008.pkl"
+  # flash_ansr_val_choices_00008:
+  #   run:
+  #     data_source: *flash_ansr_val_source
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 8
+  #     runner:
+  #       <<: *flash_ansr_val_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00008.pkl"
 
-  flash_ansr_val_choices_00016:
-    run:
-      data_source: *flash_ansr_val_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 16
-      runner:
-        <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00016.pkl"
+  # flash_ansr_val_choices_00016:
+  #   run:
+  #     data_source: *flash_ansr_val_source
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 16
+  #     runner:
+  #       <<: *flash_ansr_val_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M/val/choices_00016.pkl"
 
   flash_ansr_val_choices_00032:
     run:
