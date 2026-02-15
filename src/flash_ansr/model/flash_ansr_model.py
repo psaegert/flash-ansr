@@ -370,7 +370,6 @@ class FlashANSRModel(nn.Module):
                     break
 
                 active_indices = active_mask.nonzero(as_tuple=True)[0]
-                current_sequences = {int(idx): sequences[idx, :current_length].tolist() for idx in active_indices.tolist()}
 
                 candidate_scores_list: list[torch.Tensor] = []
                 candidate_parents: list[torch.Tensor] = []
@@ -416,11 +415,10 @@ class FlashANSRModel(nn.Module):
                 for rank_idx in range(sorted_indices.numel()):
                     parent_idx = int(flat_parents[sorted_indices[rank_idx]])
                     token_id = int(flat_tokens[sorted_indices[rank_idx]])
-                    base_seq = current_sequences[parent_idx]
-                    new_seq = base_seq + [token_id]
                     new_score = float(sorted_scores[rank_idx].item())
 
                     if token_id == eos_token_id:
+                        new_seq = sequences[parent_idx, :current_length].tolist() + [token_id]
                         if unique:
                             try:
                                 candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
@@ -448,16 +446,17 @@ class FlashANSRModel(nn.Module):
                         register_completed_sequence(simplified_tuple, new_score)
                         continue
 
-                    seq_tuple = tuple(new_seq)
-                    if unique and seq_tuple in next_beam_set:
-                        n_pruned += 1
-                        continue
+                    if unique:
+                        seq_tuple = (*sequences[parent_idx, :current_length].tolist(), token_id)
+                        if seq_tuple in next_beam_set:
+                            n_pruned += 1
+                            continue
+                        next_beam_set.add(seq_tuple)
 
-                    next_beam_set.add(seq_tuple)
-
-                    seq_len = len(new_seq)
-                    next_sequences[next_count, :seq_len] = torch.tensor(new_seq, device=device)
-                    next_lengths[next_count] = seq_len
+                    # Direct tensor copy: avoids Python list → torch.tensor round-trip
+                    next_sequences[next_count, :current_length] = sequences[parent_idx, :current_length]
+                    next_sequences[next_count, current_length] = token_id
+                    next_lengths[next_count] = current_length + 1
                     next_scores[next_count] = new_score
                     next_finished[next_count] = False
                     next_count += 1
@@ -475,6 +474,7 @@ class FlashANSRModel(nn.Module):
 
                 pbar.set_postfix({'completed': len(completed_sequences_scores), 'pruned': n_pruned})
                 pbar.update(1)
+            pbar.close()
 
         combined_sequences: list[tuple[list[int], float]] = [
             (list(seq_tuple), score) for seq_tuple, score in completed_sequences_scores.items()
@@ -687,17 +687,16 @@ class FlashANSRModel(nn.Module):
 
         memory = self._create_memory(data)
 
+        # Pre-allocate numeric template once (mirrors beam_search optimisation)
+        numeric_template: torch.Tensor | None = None
+        if base_input_num is not None:
+            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
+            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+
         def build_input_num_tensor(current_length: int, batch_size: int) -> torch.Tensor | None:
-            if base_input_num is None:
+            if numeric_template is None:
                 return None
-
-            if current_length <= len(base_input_num):
-                values = base_input_num[:current_length]
-            else:
-                values = base_input_num + [float('nan')] * (current_length - len(base_input_num))
-
-            tensor = torch.tensor(values, device=device, dtype=torch.float32).unsqueeze(0)
-            return tensor.repeat(batch_size, 1).unsqueeze(-1)
+            return numeric_template[:current_length].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1)
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
         with torch.no_grad():
