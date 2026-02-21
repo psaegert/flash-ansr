@@ -1,0 +1,94 @@
+defaults:
+  data_source: &flash_ansr_val_source
+    type: skeleton_dataset
+    dataset: "{{ROOT}}/configs/v23.0-120M-ablation-1/dataset_val.yaml"
+    datasets_per_expression: 10
+    n_support: 512
+    noise_level: 0.0
+    max_trials: 100
+    target_size: 1000  # 100 skeletons × 10 repeats
+  model_adapter: &flash_ansr_adapter
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-ablation-1"
+    evaluation_config: &flash_ansr_eval_config
+      n_support: 512
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: normal
+      refiner_p0_noise_kwargs:
+        loc: 0.0
+        scale: 5
+      length_penalty: 0.05
+      constants_penalty: 0.0
+      likelihood_penalty: 0.0
+      prune_constant_budget: 0
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 2048
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: false
+          unique: true
+      device: cuda
+    complexity: none
+    device: cuda
+  runner: &flash_ansr_val_runner
+    limit: null
+    save_every: 64
+    resume: true
+
+experiments:
+  flash_ansr_val_noise_0p000:
+    run:
+      data_source: *flash_ansr_val_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-120M-ablation-1/val/noise_0p000.pkl"
+
+  flash_ansr_val_noise_0p001:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        noise_level: 0.001
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-120M-ablation-1/val/noise_0p001.pkl"
+
+  flash_ansr_val_noise_0p010:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        noise_level: 0.01
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-120M-ablation-1/val/noise_0p010.pkl"
+
+  flash_ansr_val_noise_0p100:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        noise_level: 0.1
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/noise_sweep/v23.0-120M-ablation-1/val/noise_0p100.pkl"

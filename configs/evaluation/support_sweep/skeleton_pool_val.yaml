@@ -35,8 +35,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 1
-        sample_points: 2  # fit and validation splits
+        n_support: 1
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -46,8 +45,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 2
-        sample_points: 4
+        n_support: 2
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -57,8 +55,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 4
-        sample_points: 8
+        n_support: 4
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -68,8 +65,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 8
-        sample_points: 16
+        n_support: 8
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -79,8 +75,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 16
-        sample_points: 32
+        n_support: 16
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -90,8 +85,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 32
-        sample_points: 64
+        n_support: 32
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -101,8 +95,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 64
-        sample_points: 128
+        n_support: 64
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -112,8 +105,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 128
-        sample_points: 256
+        n_support: 128
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -123,8 +115,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 256
-        sample_points: 512
+        n_support: 256
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -134,8 +125,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 512
-        sample_points: 1024
+        n_support: 512
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -145,8 +135,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 1024
-        sample_points: 2048
+        n_support: 1024
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
@@ -156,8 +145,7 @@ experiments:
     run:
       data_source:
         <<: *skeleton_pool_val_source
-        support_points: 2048
-        sample_points: 4096
+        n_support: 2048
       model_adapter: *skeleton_pool_adapter
       runner:
         <<: *skeleton_pool_val_runner
