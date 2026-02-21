@@ -1,0 +1,141 @@
+defaults:
+  data_source: &pysr_val_source
+    type: skeleton_dataset
+    dataset: "{{ROOT}}/configs/v23.0-120M/dataset_val.yaml"
+    datasets_per_expression: 10
+    n_support: 1024
+    noise_level: 0.0
+    max_trials: 100
+    target_size: 1000  # 100 skeletons × 10 repeats
+  model_adapter: &pysr_adapter
+    type: pysr
+    timeout_in_seconds: 3600
+    niterations: 128
+    padding: false
+    use_mult_div_operators: false
+    simplipy_engine: "dev_7-3"
+  runner: &pysr_val_runner
+    limit: null
+    save_every: 4
+    resume: true
+
+experiments:
+  pysr_val_support_00001:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 1
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00001.pkl"
+
+  pysr_val_support_00002:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 2
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00002.pkl"
+
+  pysr_val_support_00004:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 4
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00004.pkl"
+
+  pysr_val_support_00008:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 8
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00008.pkl"
+
+  pysr_val_support_00016:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 16
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00016.pkl"
+
+  pysr_val_support_00032:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 32
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00032.pkl"
+
+  pysr_val_support_00064:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 64
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00064.pkl"
+
+  pysr_val_support_00128:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 128
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00128.pkl"
+
+  pysr_val_support_00256:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 256
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00256.pkl"
+
+  pysr_val_support_00512:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 512
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_00512.pkl"
+
+  pysr_val_support_01024:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 1024
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_01024.pkl"
+
+  pysr_val_support_02048:
+    run:
+      data_source:
+        <<: *pysr_val_source
+        n_support: 2048
+      model_adapter: *pysr_adapter
+      runner:
+        <<: *pysr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/pysr/val/support_02048.pkl"

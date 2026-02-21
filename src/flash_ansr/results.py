@@ -15,11 +15,33 @@ from flash_ansr.utils.paths import substitute_root_path
 RESULTS_FORMAT_VERSION = 1
 
 
+def _is_constant_token(token: str) -> bool:
+    if token == '<constant>':
+        return True
+    if token.startswith('C_') and token[2:].isdigit():
+        return True
+    if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
+        return True
+    try:
+        float(token)
+        return True
+    except ValueError:
+        return False
+
+
+def _count_constants(expression: Iterable[str] | None) -> int:
+    if expression is None:
+        return 0
+    return sum(1 for token in expression if _is_constant_token(str(token)))
+
+
 def compile_results_table(
     results: Iterable[dict[str, Any]],
     *,
-    parsimony: float,
-    score_from_fvu: Callable[[float, int, float], float],
+    length_penalty: float,
+    constants_penalty: float,
+    likelihood_penalty: float,
+    score_from_fvu: Callable[[float, int, int, float | None, float, float, float], float],
 ) -> tuple[list[dict[str, Any]], pd.DataFrame]:
     """Recompute scores and return a sorted result list plus dataframe."""
     result_list = list(results)
@@ -30,8 +52,18 @@ def compile_results_table(
         if "score" not in result:
             continue
         fvu = result.get("fvu", np.nan)
+        log_prob = result.get("log_prob")
+        constant_count = int(result.get("constant_count", _count_constants(result.get("expression"))))
         if np.isfinite(fvu):
-            result["score"] = score_from_fvu(float(fvu), len(result.get("expression", [])), parsimony)
+            result["score"] = score_from_fvu(
+                float(fvu),
+                len(result.get("expression", [])),
+                constant_count,
+                log_prob,
+                length_penalty,
+                constants_penalty,
+                likelihood_penalty,
+            )
         else:
             result["score"] = np.nan
 

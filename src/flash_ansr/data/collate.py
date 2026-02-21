@@ -182,6 +182,14 @@ class BatchFormatter:
                 for c in batch["complexity"]
             ]
 
+        for key in ("fisher_metric", "curvature_metric"):
+            if key not in batch:
+                continue
+            if isinstance(batch[key], torch.Tensor):
+                batch[key] = batch[key].to(device=device, dtype=torch.float32)
+            else:
+                batch[key] = torch.tensor(batch[key], device=device, dtype=torch.float32)
+
         batch["labels"] = batch["input_ids"].clone()[..., 1:]
 
         batch["expression_ids"] = []

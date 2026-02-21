@@ -79,6 +79,21 @@ def gamma_dist(
     return samples
 
 
+def cauchy_dist(
+    loc: float = 0.0,
+    scale: float = 1.0,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    size: Any = 1,
+) -> np.ndarray:
+    """Sample from a Cauchy distribution with optional clipping."""
+    scale = max(scale, 1e-9)
+    samples = loc + scale * np.random.standard_cauchy(size=size)
+    if min_value is not None and max_value is not None:
+        return np.clip(samples, min_value, max_value)
+    return samples
+
+
 def binomial_dist(
     n: int,
     p: float,
@@ -99,6 +114,7 @@ BASE_DISTRIBUTIONS: dict[str, Callable[..., np.ndarray]] = {
     "log_uniform": log_uniform_dist,
     "log_normal": log_normal_dist,
     "gamma": gamma_dist,
+    "cauchy": cauchy_dist,
     "binomial": binomial_dist,
 }
 

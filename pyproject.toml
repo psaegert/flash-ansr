@@ -52,7 +52,6 @@ Documentation = "https://flash-ansr.readthedocs.io/en/latest/"
 Repository = "https://github.com/psaegert/flash-ansr"
 Issues = "https://github.com/psaegert/flash-ansr/issues"
 PyPI = "https://pypi.org/project/flash-ansr/"
-"Bug Reports" = "https://github.com/psaegert/flash-ansr/issues"
 "Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb"
 
 [project.scripts]

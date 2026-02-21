@@ -1,0 +1,269 @@
+defaults:
+  data_source: &flash_ansr_fastsrb_source
+    type: fastsrb
+    benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
+    datasets_per_expression: 10
+    support_points: 512
+    sample_points: 1024
+    method: random
+    max_trials: 100
+    incremental: false
+    random_state: 42
+    noise_level: 0.0
+  model_adapter: &flash_ansr_adapter
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-ablation-2"
+    evaluation_config:
+      n_support: 512
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: uniform
+      refiner_p0_noise_kwargs:
+        low: 1
+        high: 5
+      length_penalty: 0.05
+      constants_penalty: 0.0
+      likelihood_penalty: 0.0
+      prune_constant_budget: 0
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 32
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: false
+          unique: true
+      device: cuda
+    complexity: none
+    device: cuda
+  runner: &flash_ansr_fastsrb_runner
+    limit: null
+    save_every: 64
+    resume: true
+
+experiments:
+  flash_ansr_fastsrb_choices_00001:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00001.pkl"
+
+  flash_ansr_fastsrb_choices_00002:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00002.pkl"
+
+  flash_ansr_fastsrb_choices_00004:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00004.pkl"
+
+  flash_ansr_fastsrb_choices_00008:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00008.pkl"
+
+  flash_ansr_fastsrb_choices_00016:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00016.pkl"
+
+  flash_ansr_fastsrb_choices_00032:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 32
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00032.pkl"
+
+  flash_ansr_fastsrb_choices_00064:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 64
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00064.pkl"
+
+  flash_ansr_fastsrb_choices_00128:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 128
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00128.pkl"
+
+  flash_ansr_fastsrb_choices_00256:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 256
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00256.pkl"
+
+  flash_ansr_fastsrb_choices_00512:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 512
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_00512.pkl"
+
+  flash_ansr_fastsrb_choices_01024:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1024
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_01024.pkl"
+
+  flash_ansr_fastsrb_choices_02048:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2048
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_02048.pkl"
+
+  flash_ansr_fastsrb_choices_04096:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4096
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_04096.pkl"
+
+  flash_ansr_fastsrb_choices_08192:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8192
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_08192.pkl"
+
+  flash_ansr_fastsrb_choices_16384:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16384
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_16384.pkl"
+
+  flash_ansr_fastsrb_choices_65536:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 65536
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_65536.pkl"
+
+  flash_ansr_fastsrb_choices_262144:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 262144
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_262144.pkl"
+
+  # flash_ansr_fastsrb_choices_1048576:
+  #   run:
+  #     data_source:
+  #       <<: *flash_ansr_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 1048576
+  #     runner:
+  #       <<: *flash_ansr_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-2/fastsrb/choices_1048576.pkl"

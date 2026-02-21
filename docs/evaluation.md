@@ -14,14 +14,14 @@
 
 ## Models and baselines
 
-- **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. See the scaling configs under `configs/evaluation/scaling/v23.0-*/`.
-- **[PySR](https://github.com/MilesCranmer/PySR)**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony). Watchdog helper: `scripts/evaluate_PySR.py`.
+- **FlashANSR**: Default adapter; supports generation overrides (beam/softmax/MCTS) and prompt options. Scoring now uses `length_penalty` (default 0.05), `constants_penalty` (default 0.0), and `likelihood_penalty` (default 0.0). See the scaling configs under `configs/evaluation/scaling/v23.0-*/`.
+- **[PySR](https://github.com/MilesCranmer/PySR)**: Adapter expects PySR installed; config fields mirror PySR runtime knobs (timeout, iterations, parsimony/complexity penalty). Watchdog helper: `scripts/evaluate_PySR.py`.
 - **[NeSymReS](https://github.com/SymposiumOrganization/NeuralSymbolicRegressionThatScales)**: Adapter expects external checkout + checkpoint paths; exposes beam width/restarts. See `run_nesymres.yaml` and scaling configs.
 - **SkeletonPoolModel (baseline)**: Transformer-free baseline that samples skeletons from a provided pool and only refines constants. Configure via `model_adapter.type: skeleton_pool` (or add a dedicated config entry) with pool path/config, `samples`, `unique`, `ignore_holdouts`, and `seed`. Useful for ablations and replication.
 - **BruteForceModel (baseline)**: Exhaustive baseline over a provided skeleton pool. Configs live alongside the scaling files.
 - **[E2E](https://github.com/facebookresearch/symbolicregression)**: External transformer baseline. Requires the authors' `model1.pt`, a working `symbolicregression` install, and the `e2e_fastsrb` scaling config.
 
-### External model setup (one-time)
+## External model setup (one-time)
 
 **PySR**
 1. Install PySR into the same environment as flash-ansr: `pip install pysr`.
@@ -29,17 +29,20 @@
 3. Optional but recommended for long sweeps: use the watchdog wrapper `python scripts/evaluate_PySR.py -c <config> --experiment <name> -v` to auto-restart if PySR stalls.
 
 **NeSymReS**
-1. Clone their repo (see README) and install: `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`.
+1. Clone their repo and install: `pip install -e nesymres/NeuralSymbolicRegressionThatScales/src`.
 2. Install Lightning compatible with the checkpoint loader: `pip install pytorch-lightning==2.5.6`.
 3. Patch Python 3.13 incompatibilities: `python scripts/patch_typing_io.py` then `python scripts/patch_nesymres.py nesymres/NeuralSymbolicRegressionThatScales`.
 4. Place the checkpoint triplet under `models/nesymres/`: `eq_setting.json`, `config.yaml`, `100M.ckpt`.
 
 **E2E (End-to-end symbolic regression)**
-1. From `e2e/symbolicregression`, install dependencies (`pip install -r requirements.txt` or use the authors' `environment.yml`).
+1. Clone the repo: `git clone https://github.com/facebookresearch/symbolicregression.git e2e/symbolicregression`
 2. Patch for modern numpy + scaler guard + `tree_idx` compatibility (idempotent): `python scripts/patch_symbolicregression.py e2e/symbolicregression`.
-3. Install the method with `pip install -e .`.
-4. Install the required sympytorch fork: `pip install git+https://github.com/pakamienny/sympytorch.git`.
-5. Download the pretrained checkpoint to `e2e/model1.pt` (mirror of https://dl.fbaipublicfiles.com/symbolicregression/model1.pt). Keep the filename as-is; the scaling config points there.
+3. Editable install (deps auto-resolved, includes sympytorch): `pip install -e e2e/symbolicregression`.
+4. Download the pretrained checkpoint to `/models/e2e/model1.pt` (mirror of https://dl.fbaipublicfiles.com/symbolicregression/model1.pt). Keep the filename as-is; the scaling config points there.
+```
+mkdir -p models/e2e
+wget -O models/e2e/model1.pt https://dl.fbaipublicfiles.com/symbolicregression/model1.pt
+```
 
 ## Configs at a glance
 

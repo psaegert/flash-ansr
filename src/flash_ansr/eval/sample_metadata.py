@@ -7,7 +7,9 @@ import numpy as np
 
 
 COMMON_PREDICTION_FIELDS: Mapping[str, Any] = {
-    "parsimony": None,
+    "length_penalty": None,
+    "constants_penalty": None,
+    "likelihood_penalty": None,
     "fit_time": None,
     "predicted_expression": None,
     "predicted_expression_prefix": None,

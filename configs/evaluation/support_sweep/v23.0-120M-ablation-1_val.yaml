@@ -1,0 +1,212 @@
+defaults:
+  data_source: &flash_ansr_val_source
+    type: skeleton_dataset
+    dataset: "{{ROOT}}/configs/v23.0-120M-ablation-1/dataset_val.yaml"
+    datasets_per_expression: 10
+    n_support: 1024
+    noise_level: 0.0
+    max_trials: 100
+    target_size: 1000  # 100 skeletons × 10 repeats
+  model_adapter: &flash_ansr_adapter
+    type: flash_ansr
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-ablation-1"
+    evaluation_config: &flash_ansr_eval_config
+      n_support: 2048
+      n_restarts: 8
+      refiner_method: curve_fit_lm
+      refiner_p0_noise: normal
+      refiner_p0_noise_kwargs:
+        loc: 0.0
+        scale: 5
+      length_penalty: 0.05
+      constants_penalty: 0.0
+      likelihood_penalty: 0.0
+      prune_constant_budget: 0
+      generation_config:
+        method: softmax_sampling
+        kwargs:
+          choices: 2048
+          top_k: 0
+          top_p: 1
+          max_len: 64
+          batch_size: 128
+          temperature: 1
+          valid_only: true
+          simplify: false
+          unique: true
+      device: cuda
+    complexity: none
+    device: cuda
+  runner: &flash_ansr_val_runner
+    limit: null
+    save_every: 64
+    resume: true
+
+experiments:
+  flash_ansr_val_support_00001:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 1
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 1
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00001.pkl"
+
+  flash_ansr_val_support_00002:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 2
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 2
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00002.pkl"
+
+  flash_ansr_val_support_00004:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 4
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 4
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00004.pkl"
+
+  flash_ansr_val_support_00008:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 8
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 8
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00008.pkl"
+
+  flash_ansr_val_support_00016:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 16
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 16
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00016.pkl"
+
+  flash_ansr_val_support_00032:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 32
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 32
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00032.pkl"
+
+  flash_ansr_val_support_00064:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 64
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 64
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00064.pkl"
+
+  flash_ansr_val_support_00128:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 128
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 128
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00128.pkl"
+
+  flash_ansr_val_support_00256:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 256
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 256
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00256.pkl"
+
+  flash_ansr_val_support_00512:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 512
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 512
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00512.pkl"
+
+  flash_ansr_val_support_01024:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 1024
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 1024
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_01024.pkl"
+
+  flash_ansr_val_support_02048:
+    run:
+      data_source:
+        <<: *flash_ansr_val_source
+        n_support: 2048
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 2048
+      runner:
+        <<: *flash_ansr_val_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_02048.pkl"

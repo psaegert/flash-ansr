@@ -37,7 +37,7 @@ install_model(MODEL)
 # Load the model
 model = FlashANSR.load(
   directory=get_path('models', MODEL),
-  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
+  generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
   n_restarts=8,
 ).to(device)
 

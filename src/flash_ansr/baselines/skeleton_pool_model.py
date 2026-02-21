@@ -56,7 +56,9 @@ class SkeletonPoolModel(BaseEstimator):
         refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
         refiner_p0_noise_kwargs: dict | Literal['default'] | None = 'default',
         numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-        parsimony: float = 0.05,
+        length_penalty: float = 0.05,
+        constants_penalty: float = 0.0,
+        likelihood_penalty: float = 0.0,
     ) -> None:
         self.simplipy_engine = simplipy_engine
         self.samples = samples
@@ -70,7 +72,9 @@ class SkeletonPoolModel(BaseEstimator):
             refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
-        self.parsimony = parsimony
+        self.length_penalty = float(length_penalty)
+        self.constants_penalty = float(constants_penalty)
+        self.likelihood_penalty = float(likelihood_penalty)
 
         self._pool = self._ensure_pool(skeleton_pool)
         self._results: list[dict[str, Any]] = []
@@ -93,13 +97,47 @@ class SkeletonPoolModel(BaseEstimator):
             return float(loss)
         return float(loss) / cls._normalize_variance(variance)
 
+    @staticmethod
+    def _is_constant_token(token: str) -> bool:
+        if token == '<constant>':
+            return True
+        if token.startswith('C_') and token[2:].isdigit():
+            return True
+        if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
+            return True
+        try:
+            float(token)
+            return True
+        except ValueError:
+            return False
+
     @classmethod
-    def _score_from_fvu(cls, fvu: float, complexity: int, parsimony: float) -> float:
+    def _count_constants(cls, expression: Sequence[str]) -> int:
+        return sum(1 for token in expression if cls._is_constant_token(token))
+
+    @classmethod
+    def _score_from_fvu(
+            cls,
+            fvu: float,
+            complexity: int,
+            constant_count: int,
+            log_prob: float | None,
+            length_penalty: float,
+            constants_penalty: float,
+            likelihood_penalty: float) -> float:
         if not np.isfinite(fvu) or fvu <= 0:
             safe_fvu = cls.FLOAT64_EPS
         else:
             safe_fvu = max(float(fvu), cls.FLOAT64_EPS)
-        return float(math.log10(safe_fvu) + parsimony * complexity)
+
+        likelihood_term = 0.0
+        if log_prob is not None and np.isfinite(log_prob):
+            likelihood_term = likelihood_penalty * (-float(log_prob))
+
+        return float(math.log10(safe_fvu)
+                     + length_penalty * complexity
+                     + constants_penalty * max(int(constant_count), 0)
+                     + likelihood_term)
 
     def _ensure_pool(self, skeleton_pool_ref: str | dict[str, Any] | SkeletonPool) -> SkeletonPool:
         if isinstance(skeleton_pool_ref, SkeletonPool):
@@ -248,13 +286,23 @@ class SkeletonPoolModel(BaseEstimator):
             if not np.isfinite(fvu):
                 continue
 
-            score = self._score_from_fvu(fvu, len(expression_tokens), self.parsimony)
+            constant_count = self._count_constants(expression_tokens)
+            score = self._score_from_fvu(
+                fvu,
+                len(expression_tokens),
+                constant_count,
+                None,
+                self.length_penalty,
+                self.constants_penalty,
+                self.likelihood_penalty,
+            )
 
             results.append({
                 'log_prob': float('nan'),
                 'fvu': fvu,
                 'score': score,
                 'expression': expression_tokens,
+                'constant_count': constant_count,
                 'complexity': len(expression_tokens),
                 'requested_complexity': None,
                 'raw_beam': expression_tokens,
@@ -268,7 +316,7 @@ class SkeletonPoolModel(BaseEstimator):
 
         np.seterr(**numpy_state)
 
-        # Lower scores are better because they are log-scaled FVU plus parsimony.
+        # Lower scores are better because they combine log-scaled FVU with penalties.
         results.sort(key=lambda item: item['score'])
 
         self._results = results
@@ -318,7 +366,9 @@ class SkeletonPoolModel(BaseEstimator):
         input_dim = self._input_dim if self._input_dim is not None else self.n_variables
         metadata = {
             "format_version": RESULTS_FORMAT_VERSION,
-            "parsimony": self.parsimony,
+            "length_penalty": self.length_penalty,
+            "constants_penalty": self.constants_penalty,
+            "likelihood_penalty": self.likelihood_penalty,
             "n_variables": self.n_variables,
             "input_dim": input_dim,
             "variable_mapping": None,
@@ -339,8 +389,9 @@ class SkeletonPoolModel(BaseEstimator):
                 f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
             )
 
-        parsimony = float(metadata.get("parsimony", self.parsimony))
-        self.parsimony = parsimony
+        self.length_penalty = float(metadata.get("length_penalty", self.length_penalty))
+        self.constants_penalty = float(metadata.get("constants_penalty", self.constants_penalty))
+        self.likelihood_penalty = float(metadata.get("likelihood_penalty", self.likelihood_penalty))
         n_variables = int(metadata.get("n_variables", self.n_variables))
         input_dim = int(metadata.get("input_dim", n_variables))
 

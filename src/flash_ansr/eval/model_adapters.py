@@ -66,7 +66,9 @@ class FlashANSRAdapter(EvaluationModelAdapter):
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
         complexity_value = self._resolve_complexity(record)
@@ -150,7 +152,9 @@ def _evaluate_refiner_baseline(model: Any, sample: EvaluationSample) -> Evaluati
     """Shared evaluation logic for refiner-backed baseline models."""
 
     record = sample.clone_metadata()
-    record["parsimony"] = getattr(model, "parsimony", None)
+    record["length_penalty"] = getattr(model, "length_penalty", None)
+    record["constants_penalty"] = getattr(model, "constants_penalty", None)
+    record["likelihood_penalty"] = getattr(model, "likelihood_penalty", None)
 
     y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
 
@@ -342,6 +346,7 @@ class E2EAdapter(EvaluationModelAdapter):
         max_number_bags: int = 10,
         n_trees_to_refine: int = 10,
         rescale: bool = True,
+        max_generated_output_len: int = 200,
         debug: bool = False,
     ) -> None:
         self.model_path = model_path
@@ -352,6 +357,7 @@ class E2EAdapter(EvaluationModelAdapter):
         self.max_number_bags = max_number_bags
         self.n_trees_to_refine = n_trees_to_refine
         self.rescale = rescale
+        self.max_generated_output_len = max_generated_output_len
         self.debug = debug
 
         self._estimator: Any | None = None
@@ -394,6 +400,12 @@ class E2EAdapter(EvaluationModelAdapter):
         elif hasattr(model, "module") and hasattr(model.module, "beam_size"):
             model.module.beam_size = self.candidates_per_bag
 
+        # Allow overriding generation length to keep chunking stable for large beam sizes.
+        if hasattr(model, "max_generated_output_len"):
+            model.max_generated_output_len = self.max_generated_output_len
+        elif hasattr(model, "module") and hasattr(model.module, "max_generated_output_len"):
+            model.module.max_generated_output_len = self.max_generated_output_len
+
         self._estimator = Estimator(
             model=model,
             max_input_points=self.max_input_points,
@@ -407,7 +419,9 @@ class E2EAdapter(EvaluationModelAdapter):
             raise RuntimeError("E2EAdapter.prepare must be called before evaluation")
 
         record = sample.clone_metadata()
-        record["parsimony"] = None
+        record["length_penalty"] = getattr(self._estimator, "length_penalty", None)
+        record["constants_penalty"] = getattr(self._estimator, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self._estimator, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_val = sample.x_validation.copy()
@@ -535,7 +549,9 @@ class NeSymReSAdapter(EvaluationModelAdapter):
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_validation = sample.x_validation.copy()

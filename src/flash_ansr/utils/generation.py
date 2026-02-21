@@ -108,7 +108,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     def __init__(
         self,
         *,
-        choices: int = 32,
+        choices: int = 1024,
         top_k: int = 0,
         top_p: float = 1.0,
         max_len: int = 64,
