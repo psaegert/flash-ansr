@@ -17,7 +17,6 @@ defaults:
       n_support: 2048
       n_restarts: 8
       refiner_method: curve_fit_lm
-      refiner_p0_noise: normal
       refiner_p0_noise: uniform
       refiner_p0_noise_kwargs:
         low: 1
@@ -36,7 +35,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: false
+          simplify: true
           unique: true
       device: cuda
     complexity: none
@@ -47,65 +46,65 @@ defaults:
     resume: true
 
 experiments:
-  # flash_ansr_fastsrb_support_00001:
-  #   run:
-  #     data_source:
-  #       <<: *flash_ansr_fastsrb_source
-  #       support_points: 1
-  #       sample_points: 2  # fit and validation splits
-  #     model_adapter:
-  #       <<: *flash_ansr_adapter
-  #       evaluation_config:
-  #         <<: *flash_ansr_eval_config
-  #         n_support: 1
-  #     runner:
-  #       <<: *flash_ansr_fastsrb_runner
-  #       output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00001.pkl"
+  flash_ansr_fastsrb_support_00001:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        support_points: 1
+        sample_points: 2  # fit and validation splits
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 1
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00001.pkl"
 
-  # flash_ansr_fastsrb_support_00002:
-  #   run:
-  #     data_source:
-  #       <<: *flash_ansr_fastsrb_source
-  #       support_points: 2
-  #       sample_points: 4
-  #     model_adapter:
-  #       <<: *flash_ansr_adapter
-  #       evaluation_config:
-  #         <<: *flash_ansr_eval_config
-  #         n_support: 2
-  #     runner:
-  #       <<: *flash_ansr_fastsrb_runner
-  #       output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00002.pkl"
+  flash_ansr_fastsrb_support_00002:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        support_points: 2
+        sample_points: 4
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 2
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00002.pkl"
 
-  # flash_ansr_fastsrb_support_00004:
-  #   run:
-  #     data_source:
-  #       <<: *flash_ansr_fastsrb_source
-  #       support_points: 4
-  #       sample_points: 8
-  #     model_adapter:
-  #       <<: *flash_ansr_adapter
-  #       evaluation_config:
-  #         <<: *flash_ansr_eval_config
-  #         n_support: 4
-  #     runner:
-  #       <<: *flash_ansr_fastsrb_runner
-  #       output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00004.pkl"
+  flash_ansr_fastsrb_support_00004:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        support_points: 4
+        sample_points: 8
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 4
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00004.pkl"
 
-  # flash_ansr_fastsrb_support_00008:
-  #   run:
-  #     data_source:
-  #       <<: *flash_ansr_fastsrb_source
-  #       support_points: 8
-  #       sample_points: 16
-  #     model_adapter:
-  #       <<: *flash_ansr_adapter
-  #       evaluation_config:
-  #         <<: *flash_ansr_eval_config
-  #         n_support: 8
-  #     runner:
-  #       <<: *flash_ansr_fastsrb_runner
-  #       output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00008.pkl"
+  flash_ansr_fastsrb_support_00008:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        support_points: 8
+        sample_points: 16
+      model_adapter:
+        <<: *flash_ansr_adapter
+        evaluation_config:
+          <<: *flash_ansr_eval_config
+          n_support: 8
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-2/fastsrb/support_00008.pkl"
 
   flash_ansr_fastsrb_support_00016:
     run:

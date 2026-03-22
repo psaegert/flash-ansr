@@ -14,7 +14,6 @@ defaults:
       n_support: 2048
       n_restarts: 8
       refiner_method: curve_fit_lm
-      refiner_p0_noise: normal
       refiner_p0_noise: uniform
       refiner_p0_noise_kwargs:
         low: 1
@@ -33,7 +32,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: false
+          simplify: true
           unique: true
       device: cuda
     complexity: none

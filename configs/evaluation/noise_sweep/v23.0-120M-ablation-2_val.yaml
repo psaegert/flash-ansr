@@ -32,7 +32,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: false
+          simplify: true
           unique: true
       device: cuda
     complexity: none
