@@ -3,7 +3,6 @@ import re
 import warnings
 import random
 import pickle
-import threading
 from copy import deepcopy
 
 from types import CodeType
@@ -39,38 +38,74 @@ def _sympy_simplify_call(expr_str: str) -> str:
 
 
 def _sympy_simplify_with_timeout(expr_str: str, timeout_seconds: float = 1.0) -> tuple[str, float] | None:
-    """Return (simplified_str, elapsed) or None on timeout / error."""
+    """Return (simplified_str, elapsed) or None on timeout / error.
+
+    Uses os.fork() so that hung SymPy calls can be killed via SIGKILL,
+    preventing zombie-thread accumulation that degrades performance.
+    """
     import time
-    result_holder: list[str | None] = [None]
-    error_holder: list[bool] = [False]
+    import signal
+    import select
+    import sympy  # noqa: F401 – ensure imported before fork
 
-    def _worker() -> None:
-        try:
-            result_holder[0] = _sympy_simplify_call(expr_str)
-        except Exception:
-            error_holder[0] = True
-
-    t = threading.Thread(target=_worker, daemon=True)
+    r_fd, w_fd = os.pipe()
     start = time.time()
-    t.start()
-    t.join(timeout=timeout_seconds)
+    pid = os.fork()
+
+    if pid == 0:
+        # ── child process ──
+        os.close(r_fd)
+        try:
+            result = _sympy_simplify_call(expr_str)
+            os.write(w_fd, result.encode('utf-8'))
+        except Exception:
+            pass
+        finally:
+            os.close(w_fd)
+            os._exit(0)
+
+    # ── parent process ──
+    os.close(w_fd)
+
+    ready, _, _ = select.select([r_fd], [], [], timeout_seconds)
     elapsed = time.time() - start
-    if t.is_alive() or error_holder[0] or result_holder[0] is None:
+
+    if ready:
+        chunks = []
+        while True:
+            chunk = os.read(r_fd, 4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        os.close(r_fd)
+        data = b''.join(chunks)
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        if data:
+            return (data.decode('utf-8'), elapsed)
         return None
-    return (result_holder[0], elapsed)
+    else:
+        os.close(r_fd)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+        return None
 
 
 def _constantify_skeleton(skeleton: list[str]) -> list[str]:
-    """Replace mult<N>/div<N> tokens with multiplication/division by a constant."""
+    """Replace mult<N>/div<N> tokens with multiplication by a constant."""
     result: list[str] = []
     for token in skeleton:
         m = re.match(r'^(mult|div)(\d+)$', token)
         if m:
-            kind, number = m.group(1), m.group(2)
-            if kind == 'mult':
-                result.extend(['*', number])
-            else:
-                result.extend(['/', '1', number])
+            result.extend(['*', m.group(2)])
         else:
             result.append(token)
     return result
