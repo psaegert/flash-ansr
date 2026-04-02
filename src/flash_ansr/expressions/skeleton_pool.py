@@ -3,7 +3,7 @@ import re
 import warnings
 import random
 import pickle
-import multiprocessing as mp
+import threading
 from copy import deepcopy
 
 from types import CodeType
@@ -30,33 +30,34 @@ class NoValidSampleFoundError(Exception):
     pass
 
 
-def _sympy_simplify_worker(queue: mp.Queue, expr_str: str, timeout_seconds: float) -> None:
-    """Run sympy.simplify in a subprocess to enforce a wall-clock timeout."""
-    import time
+def _sympy_simplify_call(expr_str: str) -> str:
+    """Run sympy.simplify (called in a thread to allow timeout)."""
     from sympy import simplify as _sp_simplify, parse_expr as _sp_parse  # noqa: delayed import
-    try:
-        expr = _sp_parse(expr_str)
-        start = time.time()
-        result = _sp_simplify(expr, ratio=1)
-        elapsed = time.time() - start
-        queue.put((str(result), elapsed))
-    except Exception:
-        queue.put(None)
+    expr = _sp_parse(expr_str)
+    result = _sp_simplify(expr, ratio=1)
+    return str(result)
 
 
 def _sympy_simplify_with_timeout(expr_str: str, timeout_seconds: float = 1.0) -> tuple[str, float] | None:
     """Return (simplified_str, elapsed) or None on timeout / error."""
-    queue: mp.Queue = mp.Queue()
-    proc = mp.Process(target=_sympy_simplify_worker, args=(queue, expr_str, timeout_seconds))
-    proc.start()
-    proc.join(timeout_seconds)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join()
+    import time
+    result_holder: list[str | None] = [None]
+    error_holder: list[bool] = [False]
+
+    def _worker() -> None:
+        try:
+            result_holder[0] = _sympy_simplify_call(expr_str)
+        except Exception:
+            error_holder[0] = True
+
+    t = threading.Thread(target=_worker, daemon=True)
+    start = time.time()
+    t.start()
+    t.join(timeout=timeout_seconds)
+    elapsed = time.time() - start
+    if t.is_alive() or error_holder[0] or result_holder[0] is None:
         return None
-    if queue.empty():
-        return None
-    return queue.get()
+    return (result_holder[0], elapsed)
 
 
 def _constantify_skeleton(skeleton: list[str]) -> list[str]:
