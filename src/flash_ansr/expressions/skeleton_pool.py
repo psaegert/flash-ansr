@@ -642,7 +642,10 @@ class SkeletonPool:
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
                     prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
-                    code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                    try:
+                        code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
+                    except ValueError:
+                        raise NoValidSampleFoundError(f"Malformed prefix expression after simplification: {skeleton}")
                     code = codify(code_string, self.variables + constants)
 
                     if not decontaminate or not self.is_held_out(skeleton, constants):
