@@ -102,7 +102,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     batch_size: int
     temperature: float
     valid_only: bool
-    simplify: bool
+    simplify: bool | str
     unique: bool
 
     def __init__(
@@ -115,7 +115,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool = True,
+        simplify: bool | str = True,
         unique: bool = True,
     ) -> None:
         self.method = 'softmax_sampling'

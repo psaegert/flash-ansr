@@ -1,7 +1,9 @@
 import os
+import re
 import warnings
 import random
 import pickle
+import multiprocessing as mp
 from copy import deepcopy
 
 from types import CodeType
@@ -12,6 +14,7 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 
 from simplipy import SimpliPyEngine
+from simplipy.utils import explicit_constant_placeholders, numbers_to_constant
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
@@ -25,6 +28,51 @@ from flash_ansr.expressions.token_ops import identify_constants, flatten_nested_
 
 class NoValidSampleFoundError(Exception):
     pass
+
+
+def _sympy_simplify_worker(queue: mp.Queue, expr_str: str, timeout_seconds: float) -> None:
+    """Run sympy.simplify in a subprocess to enforce a wall-clock timeout."""
+    import time
+    from sympy import simplify as _sp_simplify, parse_expr as _sp_parse  # noqa: delayed import
+    try:
+        expr = _sp_parse(expr_str)
+        start = time.time()
+        result = _sp_simplify(expr, ratio=1)
+        elapsed = time.time() - start
+        queue.put((str(result), elapsed))
+    except Exception:
+        queue.put(None)
+
+
+def _sympy_simplify_with_timeout(expr_str: str, timeout_seconds: float = 1.0) -> tuple[str, float] | None:
+    """Return (simplified_str, elapsed) or None on timeout / error."""
+    queue: mp.Queue = mp.Queue()
+    proc = mp.Process(target=_sympy_simplify_worker, args=(queue, expr_str, timeout_seconds))
+    proc.start()
+    proc.join(timeout_seconds)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        return None
+    if queue.empty():
+        return None
+    return queue.get()
+
+
+def _constantify_skeleton(skeleton: list[str]) -> list[str]:
+    """Replace mult<N>/div<N> tokens with multiplication/division by a constant."""
+    result: list[str] = []
+    for token in skeleton:
+        m = re.match(r'^(mult|div)(\d+)$', token)
+        if m:
+            kind, number = m.group(1), m.group(2)
+            if kind == 'mult':
+                result.extend(['*', number])
+            else:
+                result.extend(['/', '1', number])
+        else:
+            result.append(token)
+    return result
 
 
 class SkeletonPool:
@@ -55,8 +103,9 @@ class SkeletonPool:
         SkeletonPools or paths to pools to exclude when sampling.
     allow_nan : bool, optional
         Whether to allow NaNs in the support points.
-    simplify : bool, optional
-        Whether to simplify sampled skeletons.
+    simplify : bool or str, optional
+        Whether and how to simplify sampled skeletons.
+        ``True`` uses SimpliPy, ``'sympy'`` uses SymPy (with timeout), ``False`` disables simplification.
     '''
 
     def __init__(
@@ -72,7 +121,7 @@ class SkeletonPool:
             operator_weights: dict[str, float] | None = None,
             holdout_pools: Sequence["SkeletonPool | str"] | None = None,
             allow_nan: bool = False,
-            simplify: bool = True) -> None:
+            simplify: bool | str = True) -> None:
         self.simplipy_engine = simplipy_engine
         self.sample_strategy = sample_strategy
         self.variables = variables
@@ -499,6 +548,42 @@ class SkeletonPool:
 
         return load_config(config_path), pool
 
+    def _sympy_simplify_skeleton(self, skeleton: list[str]) -> list[str]:
+        """Simplify a skeleton using SymPy with a subprocess timeout."""
+        # Replace mult/div tokens with arithmetic equivalents
+        expression = _constantify_skeleton(list(skeleton))
+
+        # Extract constant placeholders
+        expression, constants = explicit_constant_placeholders(expression)
+
+        # Convert prefix to infix for SymPy
+        infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
+
+        # Replace constant placeholders with random numerical values
+        for c in constants:
+            infix = infix.replace(c, str(np.random.uniform(-10, 10)))
+
+        # Run SymPy simplification with timeout
+        result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
+        if result is None:
+            raise NoValidSampleFoundError("SymPy simplification timed out or failed")
+
+        simplified_infix, _ = result
+
+        # Translate SymPy function names back
+        simplified_infix = simplified_infix.replace('Abs', 'abs')
+
+        # Parse back to prefix notation
+        prefix = self.simplipy_engine.parse(simplified_infix)
+
+        # Convert numeric literals back to constant placeholders
+        prefix = numbers_to_constant(prefix, inplace=True)
+
+        if any(forbidden_token in prefix for forbidden_token in ['float("inf")', 'float("-inf")', 'float("nan")', 'zoo', 'nan', 'oo']):
+            raise NoValidSampleFoundError(f"SymPy result contains forbidden tokens: {prefix}")
+
+        return prefix
+
     def sample_skeleton(self, new: bool = False, decontaminate: bool = True) -> tuple[tuple[str], CodeType, list[str]]:
         '''
         Sample a skeleton from the pool.
@@ -536,7 +621,7 @@ class SkeletonPool:
                         raise ValueError(f"Invalid n_operator_distribution: {self.sample_strategy['n_operator_distribution']}")
 
                 skeleton = self.skeleton_sampler.sample(n_operators)
-                if self.simplify:
+                if self.simplify is True:
                     try:
                         skeleton = self.simplipy_engine.simplify(skeleton, inplace=True, max_pattern_length=4)
                     except Exception as e:
@@ -545,6 +630,13 @@ class SkeletonPool:
 
                     if any(forbidden_token in skeleton for forbidden_token in ['float("inf")', 'float("-inf")', 'float("nan")']):
                         raise NoValidSampleFoundError(f"Skeleton contains forbidden tokens: {skeleton}")
+                elif self.simplify == 'sympy':
+                    try:
+                        skeleton = self._sympy_simplify_skeleton(skeleton)
+                    except NoValidSampleFoundError:
+                        raise
+                    except Exception as e:
+                        raise NoValidSampleFoundError(f"SymPy failed on skeleton: {skeleton}") from e
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
