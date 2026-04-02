@@ -17,6 +17,7 @@ from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
 from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
+from flash_ansr.expressions.skeleton_pool import _sympy_simplify_with_timeout
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
@@ -650,7 +651,7 @@ class FlashANSRModel(nn.Module):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool = True,
+        simplify: bool | str = True,
         unique: bool = True,
         verbose: bool = False,
         *,
@@ -767,8 +768,19 @@ class FlashANSRModel(nn.Module):
             expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
-                if simplify:
+                if simplify is True:
                     expression = self.simplipy_engine.simplify(expression, max_pattern_length=4)
+                elif simplify == 'sympy':
+                    try:
+                        from simplipy.utils import numbers_to_constant
+                        infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
+                        result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
+                        if result is not None:
+                            simplified_infix = result[0].replace('Abs', 'abs')
+                            expression = self.simplipy_engine.parse(simplified_infix)
+                            expression = numbers_to_constant(expression, inplace=True)
+                    except Exception:
+                        pass  # keep unsimplified expression on failure
 
                 expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:

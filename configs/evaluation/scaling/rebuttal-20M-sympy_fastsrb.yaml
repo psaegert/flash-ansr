@@ -2,7 +2,7 @@ defaults:
   data_source: &flash_ansr_fastsrb_source
     type: fastsrb
     benchmark_path: "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml"
-    datasets_per_expression: 10
+    datasets_per_expression: 5
     support_points: 512
     sample_points: 1024
     method: random
@@ -35,7 +35,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: true
+          simplify: 'sympy'
           unique: true
       device: cuda
     complexity: none
@@ -46,11 +46,58 @@ defaults:
     resume: true
 
 experiments:
-  rebuttal_sympy_fastsrb:
+  rebuttal_sympy_fastsrb_choices_00001:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
         <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00001.pkl"
+  rebuttal_sympy_fastsrb_choices_00004:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00004.pkl"
+  rebuttal_sympy_fastsrb_choices_00016:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00016.pkl"
+  rebuttal_sympy_fastsrb_choices_00064:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 64
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00064.pkl"
+  rebuttal_sympy_fastsrb_choices_00256:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 256
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00256.pkl"
