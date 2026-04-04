@@ -777,8 +777,10 @@ class FlashANSRModel(nn.Module):
                         result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
                         if result is not None:
                             simplified_infix = result[0].replace('Abs', 'abs')
-                            expression = self.simplipy_engine.parse(simplified_infix)
-                            expression = numbers_to_constant(expression, inplace=True)
+                            parsed = self.simplipy_engine.parse(simplified_infix)
+                            parsed = numbers_to_constant(parsed, inplace=True)
+                            if self.simplipy_engine.is_valid(parsed):
+                                expression = parsed
                     except Exception:
                         pass  # keep unsimplified expression on failure
 
