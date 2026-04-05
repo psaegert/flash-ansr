@@ -788,7 +788,11 @@ class FlashANSRModel(nn.Module):
                 if unique and expression_tuple in seen_expressions:
                     continue
 
-                expression_tokens = self.tokenizer.encode(expression)
+                try:
+                    expression_tokens = self.tokenizer.encode(expression)
+                except KeyError:
+                    continue
+
                 reconstructed_sequence = before + expression_tokens + after
                 filtered_sequences.append(reconstructed_sequence)
                 filtered_scores.append(score)
