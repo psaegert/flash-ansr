@@ -217,7 +217,7 @@ class FlashANSRModel(nn.Module):
 
         return memory
 
-    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None, past_key_values: list | None = None, use_cache: bool = False) -> torch.Tensor | tuple[torch.Tensor, list]:
         if memory is not None:
             self.memory = memory
         elif data is not None:
@@ -245,7 +245,12 @@ class FlashANSRModel(nn.Module):
         # However, the provided `TransformerDecoder` code doesn't support this.
         # A simple solution is to add the numeric embeddings to the symbolic embeddings
         # before passing them to the decoder.
-        decoder_output = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings)
+        decoder_output = self.decoder(tokens=input_tokens, encoder_memory=self.memory, extra_parallel_embeddings=numeric_embeddings, past_key_values=past_key_values, use_cache=use_cache)
+
+        if use_cache:
+            decoder_output, new_past_key_values = decoder_output
+            logits = self.next_token_head(decoder_output)
+            return logits, new_past_key_values
 
         logits = self.next_token_head(decoder_output)
 
@@ -288,6 +293,7 @@ class FlashANSRModel(nn.Module):
         unique: bool = True,
         verbose: bool = False,
         limit_expansions: bool = True,
+        use_cache: bool = False,
         *,
         prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
@@ -365,6 +371,8 @@ class FlashANSRModel(nn.Module):
                 break
 
         with torch.no_grad():
+            kv_cache: list | None = None
+
             for current_length in range(prefix_length, max_len):
                 active_mask = (~finished) & torch.isfinite(scores)
                 if not torch.any(active_mask):
@@ -375,14 +383,39 @@ class FlashANSRModel(nn.Module):
                 candidate_scores_list: list[torch.Tensor] = []
                 candidate_parents: list[torch.Tensor] = []
                 candidate_tokens: list[torch.Tensor] = []
+                step_kv_parts: list[list] = []
 
                 for start_idx in range(0, active_indices.numel(), batch_size):
                     batch_indices = active_indices[start_idx:start_idx + batch_size]
 
-                    input_ids_tensor = sequences[batch_indices, :current_length]
-                    input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
+                    if use_cache and kv_cache is not None:
+                        # Incremental: only the last token
+                        input_ids_tensor = sequences[batch_indices, current_length - 1:current_length]
+                        # Pass numeric embedding for the new token position to preserve bias contribution
+                        if numeric_template is not None:
+                            input_num_tensor = numeric_template[current_length - 1:current_length].unsqueeze(0).expand(len(batch_indices), -1).unsqueeze(-1)
+                        else:
+                            input_num_tensor = None
+                        batch_past = [
+                            (
+                                (lc[0][0][batch_indices], lc[0][1][batch_indices]),
+                                (lc[1][0][batch_indices], lc[1][1][batch_indices]),
+                            )
+                            for lc in kv_cache
+                        ]
+                    else:
+                        input_ids_tensor = sequences[batch_indices, :current_length]
+                        input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
+                        batch_past = None
 
-                    logits = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
+                    result = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory, past_key_values=batch_past, use_cache=use_cache)
+
+                    if use_cache:
+                        logits, new_past = result
+                        step_kv_parts.append(new_past)
+                    else:
+                        logits = result
+
                     next_token_log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
 
                     vocab_size = next_token_log_probs.size(-1)
@@ -399,6 +432,28 @@ class FlashANSRModel(nn.Module):
                     candidate_parents.append(batch_indices.repeat_interleave(expansion_per_beam))
                     candidate_tokens.append(top_token_ids.reshape(-1))
 
+                # Assemble step-level KV cache from mini-batch parts (indexed 0..n_active-1)
+                if use_cache and step_kv_parts:
+                    if len(step_kv_parts) == 1:
+                        step_kv_cache = step_kv_parts[0]
+                    else:
+                        n_layers = len(step_kv_parts[0])
+                        step_kv_cache = [
+                            (
+                                (
+                                    torch.cat([p[li][0][0] for p in step_kv_parts], dim=0),
+                                    torch.cat([p[li][0][1] for p in step_kv_parts], dim=0),
+                                ),
+                                (
+                                    torch.cat([p[li][1][0] for p in step_kv_parts], dim=0),
+                                    torch.cat([p[li][1][1] for p in step_kv_parts], dim=0),
+                                ),
+                            )
+                            for li in range(n_layers)
+                        ]
+                    # Build mapping: beam_idx -> position in step_kv_cache
+                    active_to_pos = {int(idx): pos for pos, idx in enumerate(active_indices)}
+
                 flat_scores = torch.cat(candidate_scores_list).reshape(-1)
                 flat_parents = torch.cat(candidate_parents)
                 flat_tokens = torch.cat(candidate_tokens)
@@ -412,6 +467,7 @@ class FlashANSRModel(nn.Module):
 
                 next_beam_set: set[tuple[int, ...]] = set()
                 next_count = 0
+                parent_cache_indices: list[int] = []
 
                 for rank_idx in range(sorted_indices.numel()):
                     parent_idx = int(flat_parents[sorted_indices[rank_idx]])
@@ -460,10 +516,26 @@ class FlashANSRModel(nn.Module):
                     next_lengths[next_count] = current_length + 1
                     next_scores[next_count] = new_score
                     next_finished[next_count] = False
+                    if use_cache:
+                        parent_cache_indices.append(active_to_pos[parent_idx])
                     next_count += 1
 
                     if next_count >= beam_width:
                         break
+
+                # Reindex KV-cache for the surviving beams
+                if use_cache and step_kv_parts and parent_cache_indices:
+                    reindex = torch.tensor(parent_cache_indices, device=device, dtype=torch.long)
+                    # Pad to beam_width (unused slots get index 0, harmless)
+                    if len(reindex) < beam_width:
+                        reindex = torch.cat([reindex, reindex.new_zeros(beam_width - len(reindex))])
+                    kv_cache = [
+                        (
+                            (lc[0][0][reindex].clone(), lc[0][1][reindex].clone()),
+                            (lc[1][0][reindex].clone(), lc[1][1][reindex].clone()),
+                        )
+                        for lc in step_kv_cache
+                    ]
 
                 if next_count == 0 and completed_sequences_scores:
                     break
@@ -546,6 +618,7 @@ class FlashANSRModel(nn.Module):
 
             with torch.no_grad():
                 logits = self.forward(input_ids, None, input_num=input_num_tensor, memory=memory)
+                assert isinstance(logits, torch.Tensor)
                 next_logits = logits[:, -1, :].squeeze(0)
                 log_probs = torch.log_softmax(next_logits, dim=-1)
 
@@ -654,6 +727,7 @@ class FlashANSRModel(nn.Module):
         simplify: bool | str = True,
         unique: bool = True,
         verbose: bool = False,
+        use_cache: bool = False,
         *,
         prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
@@ -700,6 +774,10 @@ class FlashANSRModel(nn.Module):
             return numeric_template[:current_length].unsqueeze(0).expand(batch_size, -1).unsqueeze(-1)
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
+        # KV-cache state: list of per-layer caches, each holding tensors of shape
+        # (choices, n_heads, cached_len, head_dim).  Indexed by batch_indices per mini-batch.
+        kv_cache: list | None = None
+
         with torch.no_grad():
             total_steps = max(0, max_len - prefix_length)
             pbar = tqdm(total=total_steps, disable=not verbose, desc="Generating tokens", smoothing=0.0)
@@ -711,13 +789,39 @@ class FlashANSRModel(nn.Module):
                 if active_indices.numel() == 0:
                     break
 
+                step_kv_parts: list[tuple[torch.Tensor, list]] = []
+
                 for start_idx in range(0, len(active_indices), batch_size):
                     batch_indices = active_indices[start_idx: start_idx + batch_size]
 
-                    input_ids_tensor = sequences[batch_indices, :current_length]
-                    input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
+                    if use_cache and kv_cache is not None:
+                        # Incremental: only feed the last token
+                        input_ids_tensor = sequences[batch_indices, current_length - 1: current_length]
+                        # Pass numeric embedding for the new token position to preserve bias contribution
+                        if numeric_template is not None:
+                            input_num_tensor = numeric_template[current_length - 1:current_length].unsqueeze(0).expand(len(batch_indices), -1).unsqueeze(-1)
+                        else:
+                            input_num_tensor = None
+                        batch_past = [
+                            (
+                                (layer_cache[0][0][batch_indices], layer_cache[0][1][batch_indices]),
+                                (layer_cache[1][0][batch_indices], layer_cache[1][1][batch_indices]),
+                            )
+                            for layer_cache in kv_cache
+                        ]
+                    else:
+                        input_ids_tensor = sequences[batch_indices, :current_length]
+                        input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
+                        batch_past = None
 
-                    logits = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory)
+                    result = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory, past_key_values=batch_past, use_cache=use_cache)
+
+                    if use_cache:
+                        logits, new_past = result
+                        step_kv_parts.append((batch_indices, new_past))
+                    else:
+                        logits = result
+
                     next_token_logits = logits[:, -1, :]
 
                     original_scores = torch.log_softmax(next_token_logits, dim=-1)
@@ -745,6 +849,32 @@ class FlashANSRModel(nn.Module):
                     sequences[batch_indices, current_length] = sampled_tokens
                     scores[batch_indices] += torch.gather(original_scores, 1, sampled_tokens.unsqueeze(-1)).squeeze(-1)
                     is_finished[batch_indices] |= (sampled_tokens == eos_token)
+
+                # Assemble updated KV-cache from mini-batch parts
+                if use_cache and step_kv_parts:
+                    n_layers = len(step_kv_parts[0][1])
+                    new_kv_cache = []
+                    for li in range(n_layers):
+                        if kv_cache is None:
+                            # Prefill: concatenate all parts in sample order
+                            sa_k = torch.cat([p[1][li][0][0] for p in step_kv_parts], dim=0)
+                            sa_v = torch.cat([p[1][li][0][1] for p in step_kv_parts], dim=0)
+                            ca_k = torch.cat([p[1][li][1][0] for p in step_kv_parts], dim=0)
+                            ca_v = torch.cat([p[1][li][1][1] for p in step_kv_parts], dim=0)
+                        else:
+                            # Incremental: self-attn cache grows by 1 token, cross-attn is static
+                            old_sa_k, old_sa_v = kv_cache[li][0]
+                            ca_k, ca_v = kv_cache[li][1]
+                            # Pad self-attention cache by 1 position for all samples
+                            pad_shape = (old_sa_k.shape[0], old_sa_k.shape[1], 1, old_sa_k.shape[3])
+                            sa_k = torch.cat([old_sa_k, old_sa_k.new_zeros(pad_shape)], dim=2)
+                            sa_v = torch.cat([old_sa_v, old_sa_v.new_zeros(pad_shape)], dim=2)
+                            # Scatter active results into the padded cache
+                            for batch_idx, new_past in step_kv_parts:
+                                sa_k[batch_idx] = new_past[li][0][0]
+                                sa_v[batch_idx] = new_past[li][0][1]
+                        new_kv_cache.append(((sa_k, sa_v), (ca_k, ca_v)))
+                    kv_cache = new_kv_cache
 
                 pbar.update(1)
             pbar.close()

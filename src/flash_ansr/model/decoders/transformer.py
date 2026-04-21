@@ -1,11 +1,14 @@
 """Transformer decoder stack built from reusable decoder components."""
-from typing import Optional
+from typing import Optional, Tuple
 
 import torch
 from torch import nn
 
 from flash_ansr.model.common import get_norm_layer
 from flash_ansr.model.decoders.components import RotaryEmbedding, TransformerDecoderBlock
+
+# Type alias for the per-layer cache: ((self_attn_k, self_attn_v), (cross_attn_k, cross_attn_v))
+LayerCache = Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]
 
 
 class TransformerDecoder(nn.Module):
@@ -66,19 +69,45 @@ class TransformerDecoder(nn.Module):
         tokens: torch.Tensor,
         encoder_memory: torch.Tensor,
         extra_parallel_embeddings: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        past_key_values: list[LayerCache] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, list[LayerCache]]:
         seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
 
         if extra_parallel_embeddings is not None:
             h = h + extra_parallel_embeddings
 
-        rope_emb = self.rope(h, seq_len=seq_len)
-        encoder_memory = self.cross_attn_kv_proj(encoder_memory)
-        encoder_memory = self.cross_attn_kv_norm(encoder_memory)
+        if past_key_values is not None:
+            # Incremental decoding: tokens is only the new token(s).
+            # The total sequence length so far = cached length + current tokens.
+            cached_seq_len = past_key_values[0][0][0].shape[2]  # layer0 -> self_attn_cache -> K -> seq dim
+            total_seq_len = cached_seq_len + seq_len
+            rope_emb = self.rope(h, seq_len=total_seq_len)
+            # Slice RoPE to only the new positions
+            cos_full, sin_full = rope_emb
+            rope_emb = (cos_full[:, :, cached_seq_len:total_seq_len, :], sin_full[:, :, cached_seq_len:total_seq_len, :])
+        else:
+            rope_emb = self.rope(h, seq_len=seq_len)
 
-        for layer in self.layers:
-            h = layer(h, encoder_memory, rope_emb)
+        # Project and normalise encoder memory (only on prefill, reuse from cache otherwise)
+        if past_key_values is None:
+            encoder_memory = self.cross_attn_kv_proj(encoder_memory)
+            encoder_memory = self.cross_attn_kv_norm(encoder_memory)
+
+        new_key_values: list[LayerCache] = [] if use_cache else []
+
+        for i, layer in enumerate(self.layers):
+            layer_past = past_key_values[i] if past_key_values is not None else None
+            layer_out = layer(h, encoder_memory, rope_emb, past_key_value=layer_past, use_cache=use_cache)
+            if use_cache:
+                h, layer_cache = layer_out
+                new_key_values.append(layer_cache)
+            else:
+                h = layer_out
 
         h = self.output_norm(h)
+
+        if use_cache:
+            return h, new_key_values
         return h

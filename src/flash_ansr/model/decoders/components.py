@@ -90,35 +90,60 @@ class Attention(nn.Module):
     def forward(
         self,
         query: torch.Tensor,
-        key_value: torch.Tensor,
+        key_value: torch.Tensor | None,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         is_causal: bool = False,
-    ) -> torch.Tensor:
+        past_key_value: Tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         batch_size_q, seq_len_q, _ = query.shape
-        batch_size_kv, seq_len_kv, _ = key_value.shape
 
         q = self.w_q(query)
-        k = self.w_k(key_value)
-        v = self.w_v(key_value)
-
         q = q.view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
-        if self.use_rope:
-            cos, sin = rope_emb
-            q, k = apply_rotary_emb(q, k, cos, sin)
+        if key_value is not None:
+            batch_size_kv, seq_len_kv, _ = key_value.shape
+            k = self.w_k(key_value)
+            v = self.w_v(key_value)
+            k = k.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+            v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+
+            if self.use_rope:
+                cos, sin = rope_emb
+                q, k = apply_rotary_emb(q, k, cos, sin)
+
+            if past_key_value is not None:
+                # Self-attention incremental: append new K/V to cached
+                k = torch.cat([past_key_value[0], k], dim=2)
+                v = torch.cat([past_key_value[1], v], dim=2)
+        elif past_key_value is not None:
+            # Static KV from cache (cross-attention reuse): skip K/V computation
+            k, v = past_key_value
+            if self.use_rope:
+                cos, sin = rope_emb
+                q = (q * cos) + (rotate_half(q) * sin)
+                q = q.type_as(query)
+        else:
+            raise ValueError("Either key_value or past_key_value must be provided")
 
         attn_output = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            is_causal=is_causal,
+            is_causal=is_causal if past_key_value is None else False,
             dropout_p=self.dropout if self.training else 0.0,
         )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
-        return self.w_o(attn_output)
+        output = self.w_o(attn_output)
+
+        if use_cache:
+            # Ensure cached K/V batch dim matches Q (handles encoder memory broadcast)
+            if k.shape[0] != batch_size_q:
+                k = k.expand(batch_size_q, -1, -1, -1).contiguous()
+                v = v.expand(batch_size_q, -1, -1, -1).contiguous()
+            return output, (k, v)
+        return output
 
 
 class TransformerDecoderBlock(nn.Module):
@@ -154,11 +179,29 @@ class TransformerDecoderBlock(nn.Module):
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
+        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
+        sa_past = past_key_value[0] if past_key_value is not None else None
+        ca_past = past_key_value[1] if past_key_value is not None else None
+
         normed_x = self.self_attn_norm(x)
-        x = x + self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True)
-        x = x + self.cross_attention(self.cross_attn_norm(x), encoder_memory, rope_emb=rope_emb)
+        sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+        if use_cache:
+            sa_out, sa_cache = sa_out
+        x = x + sa_out
+
+        # When cross-attention cache is available, pass key_value=None to reuse cached K/V
+        ca_key_value = None if ca_past is not None else encoder_memory
+        ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+        if use_cache:
+            ca_out, ca_cache = ca_out
+        x = x + ca_out
+
         x = x + self.ffn(self.ffn_norm(x))
+
+        if use_cache:
+            return x, (sa_cache, ca_cache)
         return x
 
     def forward(
@@ -166,7 +209,9 @@ class TransformerDecoderBlock(nn.Module):
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
+        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
         if self.training and self.use_checkpointing:
             cos, sin = rope_emb
 
@@ -180,7 +225,7 @@ class TransformerDecoderBlock(nn.Module):
 
             return checkpoint(ckpt_fn, x, encoder_memory, cos, sin, use_reentrant=False)
 
-        return self._forward(x, encoder_memory, rope_emb)
+        return self._forward(x, encoder_memory, rope_emb, past_key_value=past_key_value, use_cache=use_cache)
 
 
 class PositionalEncoding(nn.Module):

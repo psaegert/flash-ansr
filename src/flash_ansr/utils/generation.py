@@ -44,6 +44,7 @@ class BeamSearchConfig(GenerationConfigBase):
         'batch_size',
         'unique',
         'limit_expansions',
+        'use_cache',
     )
 
     method: Literal['beam_search']
@@ -52,6 +53,7 @@ class BeamSearchConfig(GenerationConfigBase):
     batch_size: int
     unique: bool
     limit_expansions: bool
+    use_cache: bool
 
     def __init__(
         self,
@@ -61,6 +63,7 @@ class BeamSearchConfig(GenerationConfigBase):
         batch_size: int = 128,
         unique: bool = True,
         limit_expansions: bool = True,
+        use_cache: bool = False,
     ) -> None:
         self.method = 'beam_search'
         self.beam_width = beam_width
@@ -68,6 +71,7 @@ class BeamSearchConfig(GenerationConfigBase):
         self.batch_size = batch_size
         self.unique = unique
         self.limit_expansions = limit_expansions
+        self.use_cache = use_cache
 
     def to_kwargs(self) -> dict[str, Any]:
         return {
@@ -76,6 +80,7 @@ class BeamSearchConfig(GenerationConfigBase):
             'batch_size': self.batch_size,
             'unique': self.unique,
             'limit_expansions': self.limit_expansions,
+            'use_cache': self.use_cache,
         }
 
 
@@ -92,6 +97,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         'valid_only',
         'simplify',
         'unique',
+        'use_cache',
     )
 
     method: Literal['softmax_sampling']
@@ -104,6 +110,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     valid_only: bool
     simplify: bool | str
     unique: bool
+    use_cache: bool
 
     def __init__(
         self,
@@ -117,6 +124,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         valid_only: bool = True,
         simplify: bool | str = True,
         unique: bool = True,
+        use_cache: bool = False,
     ) -> None:
         self.method = 'softmax_sampling'
         self.choices = choices
@@ -128,6 +136,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.valid_only = valid_only
         self.simplify = simplify
         self.unique = unique
+        self.use_cache = use_cache
 
     def to_kwargs(self) -> dict[str, Any]:
         return {
@@ -140,6 +149,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
             'valid_only': self.valid_only,
             'simplify': self.simplify,
             'unique': self.unique,
+            'use_cache': self.use_cache,
         }
 
 
