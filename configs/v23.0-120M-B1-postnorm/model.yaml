@@ -33,4 +33,4 @@ decoder_use_rope_self_attn: true
 decoder_use_rope_cross_attn: false
 decoder_block_norm_position: 'post'
 
-use_checkpointing: false
+use_checkpointing: true
