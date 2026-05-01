@@ -147,7 +147,7 @@ class Attention(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    """Pre-norm transformer decoder block with optional RoPE and checkpointing."""
+    """Transformer decoder block with optional RoPE, checkpointing, and pre/post-norm."""
 
     def __init__(
         self,
@@ -161,9 +161,15 @@ class TransformerDecoderBlock(nn.Module):
         self_attn_norm_type: str = "rms",
         cross_attn_norm_type: str = "rms",
         ffn_norm_type: str = "rms",
+        norm_position: str = "pre",
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
+
+        norm_position_l = norm_position.lower()
+        if norm_position_l not in ("pre", "post"):
+            raise ValueError(f"norm_position must be 'pre' or 'post', got {norm_position!r}")
+        self.norm_position = norm_position_l
 
         self.self_attn_norm = get_norm_layer(self_attn_norm_type, dim)
         self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn)
@@ -185,20 +191,35 @@ class TransformerDecoderBlock(nn.Module):
         sa_past = past_key_value[0] if past_key_value is not None else None
         ca_past = past_key_value[1] if past_key_value is not None else None
 
-        normed_x = self.self_attn_norm(x)
-        sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
-        if use_cache:
-            sa_out, sa_cache = sa_out
-        x = x + sa_out
+        if self.norm_position == "pre":
+            normed_x = self.self_attn_norm(x)
+            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            if use_cache:
+                sa_out, sa_cache = sa_out
+            x = x + sa_out
 
-        # When cross-attention cache is available, pass key_value=None to reuse cached K/V
-        ca_key_value = None if ca_past is not None else encoder_memory
-        ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
-        if use_cache:
-            ca_out, ca_cache = ca_out
-        x = x + ca_out
+            # When cross-attention cache is available, pass key_value=None to reuse cached K/V
+            ca_key_value = None if ca_past is not None else encoder_memory
+            ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+            if use_cache:
+                ca_out, ca_cache = ca_out
+            x = x + ca_out
 
-        x = x + self.ffn(self.ffn_norm(x))
+            x = x + self.ffn(self.ffn_norm(x))
+        else:
+            # Post-norm: x = norm(x + sublayer(x))
+            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            if use_cache:
+                sa_out, sa_cache = sa_out
+            x = self.self_attn_norm(x + sa_out)
+
+            ca_key_value = None if ca_past is not None else encoder_memory
+            ca_out = self.cross_attention(x, ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+            if use_cache:
+                ca_out, ca_cache = ca_out
+            x = self.cross_attn_norm(x + ca_out)
+
+            x = self.ffn_norm(x + self.ffn(x))
 
         if use_cache:
             return x, (sa_cache, ca_cache)

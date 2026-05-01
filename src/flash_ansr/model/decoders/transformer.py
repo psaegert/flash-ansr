@@ -32,6 +32,7 @@ class TransformerDecoder(nn.Module):
         use_checkpointing: bool = False,
         use_rope_self_attn: bool = False,
         use_rope_cross_attn: bool = False,
+        block_norm_position: str = "pre",
     ):
         super().__init__()
         head_dim = model_dim // n_heads
@@ -57,6 +58,7 @@ class TransformerDecoder(nn.Module):
                 self_attn_norm_type=block_self_attn_norm_type,
                 cross_attn_norm_type=block_cross_attn_norm_type,
                 ffn_norm_type=block_ffn_norm_type,
+                norm_position=block_norm_position,
             )
             for _ in range(n_layers)
         ])

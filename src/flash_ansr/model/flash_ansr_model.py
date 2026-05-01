@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
+from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
 from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
@@ -60,6 +60,10 @@ class FlashANSRModel(nn.Module):
         decoder_use_rope_self_attn: bool = False,
         decoder_use_rope_cross_attn: bool = False,
 
+        decoder_block_norm_position: str = "pre",
+        encoder_block_norm_position: str = "pre",
+        pre_encoder_bits: int = 32,
+
         use_checkpointing: bool = False,
     ) -> None:
         super().__init__()
@@ -68,9 +72,17 @@ class FlashANSRModel(nn.Module):
         self.tokenizer = tokenizer
         self.encoder_max_n_variables = encoder_max_n_variables
 
-        self.pre_encoder = IEEE75432PreEncoder(input_size=encoder_max_n_variables)
+        if pre_encoder_bits == 32:
+            pre_encoder_cls = IEEE75432PreEncoder
+        elif pre_encoder_bits == 16:
+            pre_encoder_cls = IEEE75416PreEncoder
+        else:
+            raise ValueError(f"pre_encoder_bits must be 16 or 32, got {pre_encoder_bits}")
+        self.pre_encoder_bits = pre_encoder_bits
 
-        self.pre_encoder_numeric_tokens = IEEE75432PreEncoder(input_size=1)
+        self.pre_encoder = pre_encoder_cls(input_size=encoder_max_n_variables)
+
+        self.pre_encoder_numeric_tokens = pre_encoder_cls(input_size=1)
         self.pre_encoder_noise_scale = pre_encoder_noise_scale
         self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, decoder_input_dim)
 
@@ -88,6 +100,7 @@ class FlashANSRModel(nn.Module):
             attn_norm=encoder_attn_norm,
             ffn_norm=encoder_ffn_norm,
             output_norm=encoder_output_norm,
+            norm_position=encoder_block_norm_position,
             use_checkpointing=use_checkpointing
         )
 
@@ -112,6 +125,7 @@ class FlashANSRModel(nn.Module):
             output_norm_type=decoder_output_norm,
             use_rope_self_attn=decoder_use_rope_self_attn,
             use_rope_cross_attn=decoder_use_rope_cross_attn,
+            block_norm_position=decoder_block_norm_position,
             use_checkpointing=use_checkpointing,
         )
 
@@ -192,6 +206,10 @@ class FlashANSRModel(nn.Module):
             decoder_output_norm=config_["decoder_output_norm"],
             decoder_use_rope_self_attn=config_["decoder_use_rope_self_attn"],
             decoder_use_rope_cross_attn=config_["decoder_use_rope_cross_attn"],
+
+            decoder_block_norm_position=config_.get("decoder_block_norm_position", "pre"),
+            encoder_block_norm_position=config_.get("encoder_block_norm_position", "pre"),
+            pre_encoder_bits=config_.get("pre_encoder_bits", 32),
 
             use_checkpointing=config_["use_checkpointing"],
         )
