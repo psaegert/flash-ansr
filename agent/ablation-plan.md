@@ -11,12 +11,15 @@ Hard freeze: **May 28**.
 - 20 M model measured: SimpliPy/Unsimplified 10 M ≈ 4 h, 100 M ≈ 40 h;
   SymPy 10 M ≈ 60 h; SymPy 100 M infeasible (~600 h).
 
-## Status (May 1)
-- **B1/B2/B4**: training launched on A100 cluster, all three in parallel.
-  Expected completion: **~May 16** (day 15.4, 370 h).
-- **Solomon**: free until A100 checkpoints arrive → running Z1/Z2 now.
-- **Valkyrie**: Track A chain running: S10(4 h) → U10(4 h) → S100(40 h) → U100(40 h) → Y10(60 h).
-  Expected completion: **~May 9** (day 8.8, 148 h total).
+## Status (May 2)
+- **Z1**: ✅ done (Solomon, May 2). Results: `results/evaluation/scaling/v23.0-120M-Z1-bfgs/fastsrb/`
+- **Z2**: ✅ done (Solomon, May 2). Results: `results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/`
+- **A_S10**: ✅ trained (Valkyrie). Eval pending on Solomon.
+- **A_U10**: ✅ trained (Valkyrie). Eval pending on Solomon.
+- **A_S100**: ⏳ training on Valkyrie (~40 h, done ~May 3 evening).
+- **A_U100**: ⏳ queued (~40 h after S100, done ~May 4 evening).
+- **A_Y10**: ⏳ queued (~60 h after U100, done ~May 7).
+- **B1/B2/B4**: ⏳ training on A100 cluster. Expected completion: **~May 16** (370 h).
 
 ## Binding constraint
 **Solomon's eval queue** is the bottleneck, and the window is tight.
@@ -67,10 +70,13 @@ required to test the scaling-law hypothesis; A_S10 and A_U10 are therefore
 
 | Day | Solomon (S) | Valkyrie (V) | A100 cluster (C) |
 |---|---|---|---|
-| 0–2 | **Z1 + Z2** (5-pt sweeps, ~8 h total) | A_S10(4h) + A_U10(4h) running | **B1 + B2 + B4 in parallel** |
-| 2–8.8 | idle / paper writing | A_S100(40h) → A_U100(40h) → A_Y10(60h) | training continuing |
-| ~8.8 | **eval Track A** (5 × 30 min ≈ 2.5 h) | done | training continuing |
-| 8.8–15.4 | idle / paper writing | — | training continuing |
+| ~~0–2~~ | ~~**Z1 + Z2**~~ ✅ done May 2 | ~~A_S10(4h) + A_U10(4h)~~ ✅ done | **B1 + B2 + B4 in parallel** |
+| 2 | **eval A_S10 + A_U10** (~1 h) | A_S100(40h) running | training continuing |
+| 2–3.7 | idle / paper writing | A_S100 running | training continuing |
+| ~3.7 | **eval A_S100** (~30 min) | A_U100(40h) running | training continuing |
+| ~5.4 | **eval A_U100** (~30 min) | A_Y10(60h) running | training continuing |
+| ~7.9 | **eval A_Y10** (~30 min) | done | training continuing |
+| 7.9–15.4 | idle / paper writing | — | training continuing |
 | ~15.4 | rsync A100 checkpoints; start B eval queue | — | **done** |
 | 15.4–16.4 | **eval B1** | — | — |
 | 16.4–17.4 | **eval B2** | — | — |
