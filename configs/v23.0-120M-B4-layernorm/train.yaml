@@ -13,7 +13,7 @@ lr_schedule:
   - [2_400_000, 1e-4]
   - [3_000_000, 0.0]  # 20% of steps cooldown
 
-batch_size: 64
+batch_size: 128
 gradient_accumulation_steps: 2
 
 train_dataset: ./dataset_train.yaml
