@@ -41,10 +41,57 @@ defaults:
     resume: true
 
 experiments:
-  flash_ansr_fastsrb_beam_search_00032:
+  flash_ansr_fastsrb_beam_search_00001:
     run:
       data_source: *flash_ansr_fastsrb_source
-      model_adapter: *flash_ansr_adapter
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          beam_width: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00001.pkl"
+
+  flash_ansr_fastsrb_beam_search_00004:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          beam_width: 4
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00004.pkl"
+
+  flash_ansr_fastsrb_beam_search_00016:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          beam_width: 16
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00016.pkl"
+
+  flash_ansr_fastsrb_beam_search_00064:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          beam_width: 64
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00064.pkl"
+
+  flash_ansr_fastsrb_beam_search_00256:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          beam_width: 256
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/beam_search_00256.pkl"
