@@ -44,6 +44,33 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert len(beams) == 4
         assert len(scores) == 4
 
+    def test_beam_search_eos_not_dropped(self):
+        """Regression test: EOS candidates ranked below the beam_width-th non-EOS
+        must still be registered as completed sequences.
+
+        With beam_width=1 the single active-beam slot fills on the very first
+        non-EOS candidate.  Under the old (buggy) code any EOS at rank ≥ 1 was
+        silently dropped, leaving no completed sequence at all.  With the fix the
+        returned sequence must be EOS-terminated.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+        eos_id = nsr.tokenizer['<eos>']
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, scores, _ = nsr.beam_search(
+                x,
+                beam_width=1,
+                max_len=20,
+                unique=False,
+                limit_expansions=False,
+            )
+            assert len(beams) >= 1, f"seed={seed}: no beams returned"
+            assert beams[0][-1] == eos_id, (
+                f"seed={seed}: top beam is not EOS-terminated — got token {beams[0][-1]}"
+            )
+
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 

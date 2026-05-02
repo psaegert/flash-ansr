@@ -450,6 +450,10 @@ class FlashANSRModel(nn.Module):
                     candidate_parents.append(batch_indices.repeat_interleave(expansion_per_beam))
                     candidate_tokens.append(top_token_ids.reshape(-1))
 
+                # Phase 3: declare before the block so it is always bound;
+                # assigned in each branch without a repeated type annotation.
+                active_to_pos: dict[int, int] = {}
+
                 # Assemble step-level KV cache from mini-batch parts (indexed 0..n_active-1)
                 if use_cache and step_kv_parts:
                     if len(step_kv_parts) == 1:
@@ -478,6 +482,11 @@ class FlashANSRModel(nn.Module):
 
                 sorted_scores, sorted_indices = torch.sort(flat_scores, descending=True)
 
+                # Phase 2: single bulk GPU→CPU transfer; avoids O(N) individual syncs
+                sorted_parents_cpu: list[int] = flat_parents[sorted_indices].tolist()
+                sorted_tokens_cpu: list[int] = flat_tokens[sorted_indices].tolist()
+                sorted_scores_cpu: list[float] = sorted_scores.tolist()
+
                 next_sequences = torch.full_like(sequences, pad_token_id)
                 next_lengths = torch.zeros_like(lengths)
                 next_scores = torch.full_like(scores, float('-inf'))
@@ -487,10 +496,10 @@ class FlashANSRModel(nn.Module):
                 next_count = 0
                 parent_cache_indices: list[int] = []
 
-                for rank_idx in range(sorted_indices.numel()):
-                    parent_idx = int(flat_parents[sorted_indices[rank_idx]])
-                    token_id = int(flat_tokens[sorted_indices[rank_idx]])
-                    new_score = float(sorted_scores[rank_idx].item())
+                for rank_idx in range(len(sorted_scores_cpu)):
+                    parent_idx = sorted_parents_cpu[rank_idx]
+                    token_id = sorted_tokens_cpu[rank_idx]
+                    new_score = sorted_scores_cpu[rank_idx]
 
                     if token_id == eos_token_id:
                         new_seq = sequences[parent_idx, :current_length].tolist() + [token_id]
@@ -498,7 +507,8 @@ class FlashANSRModel(nn.Module):
                             try:
                                 candidate_expression, before, after = self.tokenizer.extract_expression_from_beam(new_seq)
                             except ValueError:
-                                simplified_tuple = tuple(new_seq)
+                                n_pruned += 1
+                                continue
                             else:
                                 expr_key = tuple(candidate_expression)
 
@@ -515,10 +525,25 @@ class FlashANSRModel(nn.Module):
                                     )
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
+                                else:
+                                    simplified_tuple = tentative_simplified_tuple
                         else:
                             simplified_tuple = tuple(new_seq)
 
                         register_completed_sequence(simplified_tuple, new_score)
+                        continue
+
+                    # Phase 1: if the beam is already full, this non-EOS candidate has
+                    # nowhere to go.  EOS candidates are handled above and `continue` before
+                    # reaching here, so we only land here for non-EOS tokens.
+                    # Keep the loop running so lower-ranked EOS candidates are still processed;
+                    # bail out early only when the score has dropped below the worst score in
+                    # the (already-full) completed pool — no future candidate can improve it.
+                    if next_count >= beam_width:
+                        if (completed_sequences_heap
+                                and len(completed_sequences_scores) >= beam_width
+                                and new_score < completed_sequences_heap[0][0]):
+                            break
                         continue
 
                     if unique:
@@ -537,9 +562,6 @@ class FlashANSRModel(nn.Module):
                     if use_cache:
                         parent_cache_indices.append(active_to_pos[parent_idx])
                     next_count += 1
-
-                    if next_count >= beam_width:
-                        break
 
                 # Reindex KV-cache for the surviving beams
                 if use_cache and step_kv_parts and parent_cache_indices:
@@ -567,8 +589,10 @@ class FlashANSRModel(nn.Module):
                 pbar.update(1)
             pbar.close()
 
-        combined_sequences: list[tuple[list[int], float]] = [
-            (list(seq_tuple), score) for seq_tuple, score in completed_sequences_scores.items()
+        # Sequences from completed_sequences_scores are EOS-terminated; active-beam
+        # fallbacks are not.  Track the flag separately so the return value is accurate.
+        combined_sequences: list[tuple[list[int], float, bool]] = [
+            (list(seq_tuple), score, True) for seq_tuple, score in completed_sequences_scores.items()
         ]
 
         for beam_idx in range(beam_width):
@@ -577,15 +601,17 @@ class FlashANSRModel(nn.Module):
                 if seq_len == 0:
                     continue
                 seq = sequences[beam_idx, :seq_len].tolist()
-                combined_sequences.append((seq, float(scores[beam_idx].item())))
+                combined_sequences.append((seq, float(scores[beam_idx].item()), False))
 
-        for i, (seq, score) in enumerate(combined_sequences):
+        combined_sequences_final: list[tuple[list[int], float, bool]] = []
+        for seq, score, is_complete in combined_sequences:
             constantified_seq = self.tokenizer.constantify_expression(seq)
-            combined_sequences[i] = (constantified_seq, score)
+            combined_sequences_final.append((constantified_seq, score, is_complete))
 
-        combined_sequences = sorted(combined_sequences, key=lambda x: x[1], reverse=True)
+        combined_sequences_final = sorted(combined_sequences_final, key=lambda x: x[1], reverse=True)
+        top = combined_sequences_final[:beam_width]
 
-        return [seq for seq, _ in combined_sequences[:beam_width]], [score for _, score in combined_sequences[:beam_width]], [True] * len(combined_sequences[:beam_width])
+        return [seq for seq, _, _ in top], [score for _, score, _ in top], [flag for _, _, flag in top]
 
     def mcts_decode(
         self,
