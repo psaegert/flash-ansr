@@ -57,3 +57,25 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00032.pkl"
+  flash_ansr_fastsrb_choices_00256:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 256
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00256.pkl"
+  flash_ansr_fastsrb_choices_02048:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2048
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_02048.pkl"
