@@ -38,7 +38,7 @@ defaults:
   runner: &flash_ansr_fastsrb_runner
     limit: null
     save_every: 64
-    resume: true
+    resume: false
 
 experiments:
   flash_ansr_fastsrb_beam_search_00001:
@@ -47,7 +47,8 @@ experiments:
       model_adapter:
         <<: *flash_ansr_adapter
         generation_overrides:
-          beam_width: 1
+          kwargs:
+            beam_width: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00001.pkl"
@@ -58,7 +59,8 @@ experiments:
       model_adapter:
         <<: *flash_ansr_adapter
         generation_overrides:
-          beam_width: 4
+          kwargs:
+            beam_width: 4
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00004.pkl"
@@ -69,7 +71,8 @@ experiments:
       model_adapter:
         <<: *flash_ansr_adapter
         generation_overrides:
-          beam_width: 16
+          kwargs:
+            beam_width: 16
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00016.pkl"
@@ -80,7 +83,8 @@ experiments:
       model_adapter:
         <<: *flash_ansr_adapter
         generation_overrides:
-          beam_width: 64
+          kwargs:
+            beam_width: 64
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00064.pkl"
@@ -91,7 +95,8 @@ experiments:
       model_adapter:
         <<: *flash_ansr_adapter
         generation_overrides:
-          beam_width: 256
+          kwargs:
+            beam_width: 256
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00256.pkl"
