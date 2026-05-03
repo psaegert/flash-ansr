@@ -595,13 +595,19 @@ class FlashANSRModel(nn.Module):
             (list(seq_tuple), score, True) for seq_tuple, score in completed_sequences_scores.items()
         ]
 
-        for beam_idx in range(beam_width):
-            if torch.isfinite(scores[beam_idx]):
-                seq_len = int(lengths[beam_idx].item())
-                if seq_len == 0:
-                    continue
-                seq = sequences[beam_idx, :seq_len].tolist()
-                combined_sequences.append((seq, float(scores[beam_idx].item()), False))
+        # Only include active (non-EOS) beams as a true last resort. Active beams have
+        # no EOS log-probability penalty so their scores are systematically higher than
+        # completed sequences. Including them unconditionally causes them to displace
+        # EOS-terminated sequences in the final sort, returning truncated beams that
+        # lack </expression> and crash downstream.
+        if len(combined_sequences) < beam_width:
+            for beam_idx in range(beam_width):
+                if torch.isfinite(scores[beam_idx]):
+                    seq_len = int(lengths[beam_idx].item())
+                    if seq_len == 0:
+                        continue
+                    seq = sequences[beam_idx, :seq_len].tolist()
+                    combined_sequences.append((seq, float(scores[beam_idx].item()), False))
 
         combined_sequences_final: list[tuple[list[int], float, bool]] = []
         for seq, score, is_complete in combined_sequences:

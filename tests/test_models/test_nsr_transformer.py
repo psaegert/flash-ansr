@@ -71,6 +71,40 @@ class TestFlashANSRTransformer(unittest.TestCase):
                 f"seed={seed}: top beam is not EOS-terminated — got token {beams[0][-1]}"
             )
 
+    def test_beam_search_active_beams_not_mixed_with_completed(self):
+        """Regression test: active (max-len) beams must not displace EOS-terminated
+        sequences in the output.
+
+        Under the old code, active beams were always appended to combined_sequences
+        and then sorted by score.  Because active beams carry no EOS log-probability
+        penalty their cumulative log-probs are higher, so they ranked above completed
+        sequences and were returned — producing beams without </expression> that
+        crashed the downstream refiner.
+
+        The fix gates the active-beam fallback: active beams are only included when
+        the completed pool has fewer than beam_width entries.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, _, completed = nsr.beam_search(
+                x,
+                beam_width=4,
+                max_len=20,
+                unique=False,
+                limit_expansions=False,
+            )
+            n_completed = sum(completed)
+
+            # If the completed pool filled the beam, no active beams should appear.
+            if n_completed >= 4:
+                assert all(completed), (
+                    f"seed={seed}: active beams mixed into output despite "
+                    f"{n_completed} completed sequences being available"
+                )
+
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
