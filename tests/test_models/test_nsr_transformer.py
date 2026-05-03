@@ -105,6 +105,35 @@ class TestFlashANSRTransformer(unittest.TestCase):
                     f"{n_completed} completed sequences being available"
                 )
 
+    def test_beam_search_truncated_beams_are_parseable(self):
+        """Regression test: all returned beams must be parseable even when max_len
+        forces truncation before an EOS token is emitted.
+
+        With a very small max_len the beam search loop ends with active (non-EOS)
+        sequences that lack </expression>.  The fixed fallback appends </expression>
+        to any such sequence before returning it, so extract_expression_from_beam
+        must never raise ValueError regardless of max_len.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, _, _ = nsr.beam_search(
+                x,
+                beam_width=4,
+                max_len=5,
+                unique=False,
+                limit_expansions=False,
+            )
+            for i, beam in enumerate(beams):
+                try:
+                    nsr.tokenizer.extract_expression_from_beam(beam)
+                except ValueError as exc:
+                    raise AssertionError(
+                        f"seed={seed}, beam {i}: extract_expression_from_beam raised ValueError — {exc}"
+                    ) from exc
+
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 

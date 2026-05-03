@@ -609,8 +609,27 @@ class FlashANSRModel(nn.Module):
                     seq = sequences[beam_idx, :seq_len].tolist()
                     combined_sequences.append((seq, float(scores[beam_idx].item()), False))
 
+        # Look up expression delimiters once; may be None if not in the vocabulary.
+        expr_start_token_id = self.tokenizer.token2idx.get('<expression>')
+        expr_end_token_id = self.tokenizer.token2idx.get('</expression>')
+
         combined_sequences_final: list[tuple[list[int], float, bool]] = []
         for seq, score, is_complete in combined_sequences:
+            # Repair sequences that opened <expression> but never closed it.
+            # Two sub-cases:
+            #   - EOS-terminated (unique=False degenerate): [bos <expression> X <eos>]
+            #     → insert </expression> before <eos> so EOS remains the final token.
+            #   - Active beam truncated at max_len: [bos <expression> X Y Z]
+            #     → append </expression> at the end.
+            # Sequences that never opened an expression cannot be parsed and are dropped.
+            if expr_end_token_id is not None and expr_end_token_id not in seq:
+                if expr_start_token_id is None or expr_start_token_id not in seq:
+                    continue
+                if eos_token_id in seq:
+                    eos_pos = seq.index(eos_token_id)
+                    seq = seq[:eos_pos] + [expr_end_token_id] + seq[eos_pos:]
+                else:
+                    seq = seq + [expr_end_token_id]
             constantified_seq = self.tokenizer.constantify_expression(seq)
             combined_sequences_final.append((constantified_seq, score, is_complete))
 
