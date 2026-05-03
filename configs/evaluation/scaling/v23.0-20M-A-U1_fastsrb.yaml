@@ -12,7 +12,7 @@ defaults:
     noise_level: 0.0
   model_adapter: &flash_ansr_adapter
     type: flash_ansr
-    model_path: "{{ROOT}}/models/ansr-models/rebuttal-20M-sympy"
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-20M-A-U1"
     evaluation_config:
       n_support: 512
       n_restarts: 8
@@ -35,7 +35,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: 'sympy'
+          simplify: true
           unique: true
       device: cuda
     complexity: none
@@ -46,7 +46,7 @@ defaults:
     resume: true
 
 experiments:
-  rebuttal_sympy_fastsrb_choices_00001:
+  flash_ansr_fastsrb_choices_00001:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -56,8 +56,8 @@ experiments:
             choices: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00001.pkl"
-  rebuttal_sympy_fastsrb_choices_00004:
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_00001.pkl"
+  flash_ansr_fastsrb_choices_00004:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -67,8 +67,8 @@ experiments:
             choices: 4
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00004.pkl"
-  rebuttal_sympy_fastsrb_choices_00016:
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_00004.pkl"
+  flash_ansr_fastsrb_choices_00016:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -78,8 +78,8 @@ experiments:
             choices: 16
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00016.pkl"
-  rebuttal_sympy_fastsrb_choices_00064:
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_00016.pkl"
+  flash_ansr_fastsrb_choices_00064:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -89,8 +89,8 @@ experiments:
             choices: 64
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00064.pkl"
-  rebuttal_sympy_fastsrb_choices_00256:
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_00064.pkl"
+  flash_ansr_fastsrb_choices_00256:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -100,8 +100,8 @@ experiments:
             choices: 256
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_00256.pkl"
-  rebuttal_sympy_fastsrb_choices_01024:
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_00256.pkl"
+  flash_ansr_fastsrb_choices_01024:
     run:
       data_source: *flash_ansr_fastsrb_source
       model_adapter:
@@ -111,4 +111,4 @@ experiments:
             choices: 1024
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/rebuttal/rebuttal-20M-sympy/fastsrb/choices_01024.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_01024.pkl"

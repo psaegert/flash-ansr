@@ -96,10 +96,10 @@ required to test the scaling-law hypothesis; A_S10 and A_U10 are therefore
 
 ## Existing artifacts to reuse
 - 1 M rebuttal results (SimpliPy / SymPy / Unsimplified).
-- [configs/rebuttal-20M-simplipy/](../configs/rebuttal-20M-simplipy)
-- [configs/rebuttal-20M-sympy/](../configs/rebuttal-20M-sympy)
-- [configs/rebuttal-20M-sympy-50K/](../configs/rebuttal-20M-sympy-50K)
-- [configs/rebuttal-20M-unsimplified/](../configs/rebuttal-20M-unsimplified)
+- [configs/v23.0-20M-A-S1/](../configs/v23.0-20M-A-S1)
+- [configs/v23.0-20M-A-Y1/](../configs/v23.0-20M-A-Y1)
+- [configs/v23.0-20M-A-Y50K/](../configs/v23.0-20M-A-Y50K)
+- [configs/v23.0-20M-A-U1/](../configs/v23.0-20M-A-U1)
 - [configs/v23.0-120M-ablation-1/](../configs/v23.0-120M-ablation-1)
 - [configs/v23.0-120M-ablation-2/](../configs/v23.0-120M-ablation-2)
 - [configs/v23.0-120M/](../configs/v23.0-120M) — base for B1/B2/B4 diffs

@@ -88,7 +88,7 @@ SimpliPy."
 | Model | Pipeline | Training exprs | vNNR @ choices=32 | Status |
 |---|---|---|---|---|
 | v23.0-20M (baseline) | SimpliPy | 2M\* | — | existing |
-| rebuttal-20M-simplipy | SimpliPy | 1M | — | existing |
+| v23.0-20M-A-S1 | SimpliPy | 1M | — | existing |
 | v23.0-20M-A-S10 | SimpliPy | 10M | **TBD** | eval running |
 | v23.0-20M-A-U10 | Unsimplified | 10M | **TBD** | eval running |
 | v23.0-20M-A-S100 | SimpliPy | 100M | **TBD** | ~May 3 |
