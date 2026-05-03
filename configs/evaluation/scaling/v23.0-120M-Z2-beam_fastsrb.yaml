@@ -100,3 +100,15 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_00256.pkl"
+
+  flash_ansr_fastsrb_beam_search_01024:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            beam_width: 1024
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z2-beam/fastsrb/beam_search_01024.pkl"
