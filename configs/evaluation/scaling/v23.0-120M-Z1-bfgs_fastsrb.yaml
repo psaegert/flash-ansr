@@ -117,3 +117,15 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z1-bfgs/fastsrb/bfgs_choices_02048.pkl"
+
+  flash_ansr_fastsrb_bfgs_choices_08192:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8192
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-Z1-bfgs/fastsrb/bfgs_choices_08192.pkl"
