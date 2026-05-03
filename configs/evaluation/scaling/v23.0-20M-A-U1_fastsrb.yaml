@@ -123,14 +123,4 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_04096.pkl"
-  flash_ansr_fastsrb_choices_16384:
-    run:
-      data_source: *flash_ansr_fastsrb_source
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 16384
-      runner:
-        <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-U1/fastsrb/choices_16384.pkl"
+
