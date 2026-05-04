@@ -46,6 +46,50 @@ defaults:
     resume: true
 
 experiments:
+  flash_ansr_fastsrb_choices_00001:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 1
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00001.pkl"
+  flash_ansr_fastsrb_choices_00004:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00004.pkl"
+  flash_ansr_fastsrb_choices_00016:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00016.pkl"
+  flash_ansr_fastsrb_choices_00064:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 64
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-20M-A-S10/fastsrb/choices_00064.pkl"
   flash_ansr_fastsrb_choices_00032:
     run:
       data_source: *flash_ansr_fastsrb_source
