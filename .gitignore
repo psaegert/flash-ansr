@@ -8,6 +8,10 @@ data
 /e2e
 /maintenance
 
+# Internal planning / writing notes (kept locally, not part of the project)
+/agent
+/rebuttal
+
 .vscode/
 get_results.sh
 
