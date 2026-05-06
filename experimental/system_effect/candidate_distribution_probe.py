@@ -48,7 +48,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--simplify", required=True, choices=["true", "false"],
                    help="Test-time simplify flag for the generation config.")
     p.add_argument("--choices", type=int, required=True,
-                   help="Number of generation candidates per sample.")
+                   help="Number of candidates per sample. For decoder=softmax_sampling this is "
+                        "the `choices` parameter; for decoder=beam_search it is `beam_width`.")
+    p.add_argument("--decoder", default="softmax_sampling",
+                   choices=["softmax_sampling", "beam_search"],
+                   help="Decoding strategy (default: softmax_sampling).")
     p.add_argument("--n-samples", type=int, default=300,
                    help="Number of fastsrb samples to probe (stratified subsample of --source-pkl).")
     p.add_argument("--source-pkl", required=True,
@@ -93,20 +97,32 @@ def main() -> None:
         except Exception:
             return tuple(skel)
 
-    gen_config = create_generation_config(
-        method="softmax_sampling",
-        choices=args.choices,
-        top_k=0,
-        top_p=1.0,
-        max_len=64,
-        batch_size=128,
-        temperature=1.0,
-        valid_only=True,
-        simplify=simplify,
-        unique=True,
-    )
+    if args.decoder == "softmax_sampling":
+        gen_config = create_generation_config(
+            method="softmax_sampling",
+            choices=args.choices,
+            top_k=0,
+            top_p=1.0,
+            max_len=64,
+            batch_size=128,
+            temperature=1.0,
+            valid_only=True,
+            simplify=simplify,
+            unique=True,
+        )
+    elif args.decoder == "beam_search":
+        gen_config = create_generation_config(
+            method="beam_search",
+            beam_width=args.choices,
+            max_len=64,
+            batch_size=128,
+            unique=True,
+        )
+    else:
+        raise ValueError(f"Unsupported decoder: {args.decoder}")
 
-    print(f"\nLoading model {args.model_path} (simplify={simplify}, choices={args.choices})")
+    print(f"\nLoading model {args.model_path} "
+          f"(decoder={args.decoder}, simplify={simplify}, choices/beam_width={args.choices})")
     model = FlashANSR.load(
         args.model_path,
         generation_config=gen_config,
@@ -172,6 +188,7 @@ def main() -> None:
     payload = {
         "samples": out,
         "model_path": args.model_path,
+        "decoder": args.decoder,
         "simplify": simplify,
         "choices": args.choices,
         "n_samples": args.n_samples,
