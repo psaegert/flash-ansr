@@ -61,6 +61,9 @@ def parse_args() -> argparse.Namespace:
                    help="Output pickle path for the candidate dump.")
     p.add_argument("--device", default="cuda",
                    help="Torch device (default: cuda).")
+    p.add_argument("--save-every", type=int, default=16,
+                   help="Persist partial output every N completed samples (crash-safe; default 16). "
+                        "Set to 0 to disable incremental saving.")
     return p.parse_args()
 
 
@@ -70,6 +73,68 @@ def stratified_indices(eq_ids, n_target):
         return list(range(len(eq_ids)))
     stride = max(1, len(eq_ids) // n_target)
     return list(range(0, len(eq_ids), stride))[:n_target]
+
+
+def _save_payload(samples, output_path, *, model_path, decoder, simplify, choices, n_samples, wall_time):
+    """Atomic write of the probe payload (write to tmp, then os.replace)."""
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    payload = {
+        "samples": samples,
+        "model_path": model_path,
+        "decoder": decoder,
+        "simplify": simplify,
+        "choices": choices,
+        "n_samples": n_samples,
+        "n_collected": len(samples),
+        "wall_time": wall_time,
+    }
+    tmp = output_path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(payload, f)
+    os.replace(tmp, output_path)
+
+
+def _load_resume_state(output_path, *, model_path, decoder, simplify, choices):
+    """Load existing partial output if present and compatible.
+
+    Returns (samples_list, already_done_idx_set, prev_wall_time). On any
+    incompatibility (different model_path / decoder / simplify / choices),
+    raises SystemExit so we never silently overwrite a probe of a different
+    configuration.
+    """
+    if not os.path.exists(output_path):
+        return [], set(), 0.0
+    try:
+        with open(output_path, "rb") as f:
+            existing = pickle.load(f)
+    except Exception as exc:
+        print(f"WARNING: could not load existing {output_path} ({exc}); starting fresh.")
+        return [], set(), 0.0
+
+    if not isinstance(existing, dict) or "samples" not in existing:
+        print(f"WARNING: existing {output_path} is not a probe payload; starting fresh.")
+        return [], set(), 0.0
+
+    # Refuse to mix probes with different configurations.
+    mismatches = []
+    if existing.get("model_path") != model_path:
+        mismatches.append(f"model_path ({existing.get('model_path')!r} vs {model_path!r})")
+    if existing.get("decoder", "softmax_sampling") != decoder:
+        mismatches.append(f"decoder ({existing.get('decoder')!r} vs {decoder!r})")
+    if bool(existing.get("simplify")) != bool(simplify):
+        mismatches.append(f"simplify ({existing.get('simplify')!r} vs {simplify!r})")
+    if existing.get("choices") != choices:
+        mismatches.append(f"choices ({existing.get('choices')!r} vs {choices!r})")
+    if mismatches:
+        print(f"ERROR: existing {output_path} has different configuration: {', '.join(mismatches)}.")
+        print("Move it aside or delete it before re-running with a different configuration.")
+        sys.exit(1)
+
+    samples = existing.get("samples", [])
+    done = {s.get("idx") for s in samples if "idx" in s}
+    prev_wall = float(existing.get("wall_time", 0.0))
+    print(f"Resuming from {len(samples)} existing samples in {output_path} (prev wall_time {prev_wall:.1f}s).")
+    return samples, done, prev_wall
 
 
 def main() -> None:
@@ -137,9 +202,32 @@ def main() -> None:
         prune_constant_budget=0,
     ).to(args.device).eval()
 
-    out = []
+    # Resume existing partial output if it matches this configuration.
+    out, already_done, prev_wall_time = _load_resume_state(
+        args.output,
+        model_path=args.model_path,
+        decoder=args.decoder,
+        simplify=simplify,
+        choices=args.choices,
+    )
+
+    save_kwargs = dict(
+        model_path=args.model_path,
+        decoder=args.decoder,
+        simplify=simplify,
+        choices=args.choices,
+        n_samples=args.n_samples,
+    )
+    save_every = max(0, int(args.save_every))
+    n_skipped = 0
+    n_session = 0
     t_total_start = time.time()
+
     for k, idx in enumerate(selected):
+        if idx in already_done:
+            n_skipped += 1
+            continue
+
         X = np.asarray(src["x"][idx])
         y = np.asarray(src["y"][idx])
         skel_gt = src["skeleton"][idx]
@@ -150,7 +238,7 @@ def main() -> None:
             model.fit(X, y, verbose=False)
             elapsed = time.time() - t0
         except Exception as exc:
-            print(f"  [{k+1}/{len(selected)}] idx={idx} eq={src['benchmark_eq_id'][idx]} FAIL: {exc}")
+            print(f"  [{len(out)+n_skipped+1}/{len(selected)}] idx={idx} eq={src['benchmark_eq_id'][idx]} FAIL: {exc}")
             continue
 
         results = model._results
@@ -177,27 +265,23 @@ def main() -> None:
             ],
         }
         out.append(rec)
+        already_done.add(idx)
+        n_session += 1
 
         best_fvu = rec["candidates"][0]["fvu"] if rec["candidates"] else float("nan")
-        print(f"  [{k+1}/{len(selected)}] idx={idx:>4} eq={src['benchmark_eq_id'][idx]:>10} "
+        print(f"  [{len(out)+n_skipped}/{len(selected)}] idx={idx:>4} eq={src['benchmark_eq_id'][idx]:>10} "
               f"time={elapsed:6.2f}s n_results={len(results):>5} best_fvu={best_fvu:.4g}")
 
-    t_total = time.time() - t_total_start
+        # Crash-safe incremental save.
+        if save_every > 0 and n_session % save_every == 0:
+            cumulative_wall = prev_wall_time + (time.time() - t_total_start)
+            _save_payload(out, args.output, wall_time=cumulative_wall, **save_kwargs)
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-    payload = {
-        "samples": out,
-        "model_path": args.model_path,
-        "decoder": args.decoder,
-        "simplify": simplify,
-        "choices": args.choices,
-        "n_samples": args.n_samples,
-        "n_collected": len(out),
-        "wall_time": t_total,
-    }
-    with open(args.output, "wb") as f:
-        pickle.dump(payload, f)
-    print(f"\nWall time: {t_total:.1f}s   Collected: {len(out)} / {len(selected)}")
+    cumulative_wall = prev_wall_time + (time.time() - t_total_start)
+    _save_payload(out, args.output, wall_time=cumulative_wall, **save_kwargs)
+    print(f"\nWall time (session): {time.time() - t_total_start:.1f}s   "
+          f"Cumulative: {cumulative_wall:.1f}s   "
+          f"Collected: {len(out)} / {len(selected)} ({n_session} new this session, {n_skipped} resumed)")
     print(f"Saved candidate dump to {args.output}")
 
 
