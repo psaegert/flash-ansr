@@ -93,11 +93,13 @@ run_probe "v23.0-120M-beam" \
 
 run_extra_choices() {
     # Single-config-and-choice probe; smaller 'run_probe' for ad-hoc additions.
+    # Args: label, model, simplify, decoder, choices, source_pkl
     local label="$1"
     local model="$2"
     local simplify="$3"
-    local choices="$4"
-    local source_pkl="$5"
+    local decoder="$4"
+    local choices="$5"
+    local source_pkl="$6"
 
     if [ ! -f "$source_pkl" ]; then
         echo "WARNING: source pickle ${source_pkl} not found, skipping ${label} c=${choices}"
@@ -112,10 +114,10 @@ run_extra_choices() {
         return 0
     fi
     echo ""
-    echo "=== ${label} (c=${choices}, 10s inference-time anchor) ==="
+    echo "=== ${label} (decoder=${decoder} c=${choices}, 10s inference-time anchor) ==="
     python "$PROBE" \
         --model-path "${ROOT}/models/ansr-models/${model}" \
-        --decoder softmax_sampling \
+        --decoder "$decoder" \
         --simplify "$simplify" \
         --choices "$choices" \
         --n-samples "$N_SAMPLES" \
@@ -123,14 +125,38 @@ run_extra_choices() {
         --output "$out"
 }
 
+# All entries below produce the rows of the §8.1 main-text fingerprint table
+# (anchor: 4096 candidates per problem; ~10s mean inference time).
+
+# 20M @ 100M training expressions: SimpliPy vs Unsimplified
 run_extra_choices "v23.0-20M-A-S100" \
                   "v23.0-20M-A-S100" \
-                  "true" \
-                  4096 \
+                  "true"  "softmax_sampling" 4096 \
                   "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-S100}"
 
 run_extra_choices "v23.0-20M-A-U100" \
                   "v23.0-20M-A-U100" \
-                  "false" \
-                  4096 \
+                  "false" "softmax_sampling" 4096 \
                   "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-U100}"
+
+# 20M @ 10M training expressions: SimpliPy vs SymPy (Y10 pending until trained)
+run_extra_choices "v23.0-20M-A-S10" \
+                  "v23.0-20M-A-S10" \
+                  "true"  "softmax_sampling" 4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-S10}"
+
+run_extra_choices "v23.0-20M-A-Y10" \
+                  "v23.0-20M-A-Y10" \
+                  "true"  "softmax_sampling" 4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-Y10}"
+
+# 120M baseline: softmax + beam
+run_extra_choices "v23.0-120M-softmax" \
+                  "v23.0-120M" \
+                  "true"  "softmax_sampling" 4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-120M}"
+
+run_extra_choices "v23.0-120M-beam" \
+                  "v23.0-120M" \
+                  "true"  "beam_search" 4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-120M}"

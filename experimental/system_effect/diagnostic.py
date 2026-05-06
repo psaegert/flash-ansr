@@ -159,6 +159,92 @@ def cache_stats() -> dict:
     return {"cache_size": len(_CANONICAL_CACHE)}
 
 
+# ---------------------------------------------------------------------------
+# Classical per-sample metrics derived directly from a candidate dump.
+#
+# These are *not* part of the fingerprint dataclass (which is cached on disk):
+# they are cheap to recompute from the probe data, so we keep them in a
+# separate function to avoid bumping the fingerprint cache version every time
+# we add a new derived metric.
+# ---------------------------------------------------------------------------
+
+
+def derive_classical_metrics(engine, sample, operator_arity) -> dict:
+    """Per-sample classical metrics from a probed sample's candidate list.
+
+    Returns a dict containing the *binary* numeric recovery indicator
+    (vNRR per problem) and a few structural metrics computed on the best
+    candidate (the candidate with the lowest score, which `model._results`
+    sorts to position 0 in `compile_results`).
+
+    Parameters
+    ----------
+    engine : SimpliPyEngine
+        Used only for cached canonicalisation when normalising the best
+        candidate's prefix sequence; falls back gracefully if not provided.
+    sample : dict
+        One sample record from the probe dump.
+    operator_arity : Mapping[str, int]
+        Operator arity table (typically ``engine.operator_arity``), required
+        for total-nestedness computation.
+
+    Returns
+    -------
+    dict
+        Per-sample values for ``numeric_recovery_val``,
+        ``predicted_total_nestedness``, ``predicted_n_constants``,
+        ``gt_canonical_n_constants``, and ``n_constants_delta``.
+        NaNs / zeros are used for empty-candidate / missing-GT cases so
+        downstream bootstrap/aggregation behaves sensibly.
+    """
+    from flash_ansr.eval.metrics.symbolic import total_nestedness as _total_nestedness
+
+    out = {
+        "numeric_recovery_val": 0.0,
+        "predicted_total_nestedness": float("nan"),
+        "predicted_n_constants": 0,
+        "gt_canonical_n_constants": 0,
+        "n_constants_delta": float("nan"),
+    }
+
+    cands = sample.get("candidates", [])
+    if not cands:
+        return out
+
+    # vNRR: any candidate fits the data to machine precision?
+    nrr = 0.0
+    for c in cands:
+        fv = c.get("fvu", float("nan"))
+        if np.isfinite(fv) and fv <= EPS32:
+            nrr = 1.0
+            break
+    out["numeric_recovery_val"] = nrr
+
+    # Best candidate (lowest score; sorted to position 0 by compile_results).
+    best = cands[0]
+    best_expr = list(best.get("expression", []))
+    if not best_expr:
+        return out
+
+    # Normalize numeric literals to <constant> in case they slipped through.
+    best_skel = list(_normalize_skeleton(best_expr))
+
+    try:
+        out["predicted_total_nestedness"] = float(_total_nestedness(best_skel, operator_arity))
+    except Exception:
+        out["predicted_total_nestedness"] = float("nan")
+
+    # Constant counts: predicted vs GT canonical (used for excess-constants
+    # column in tables; user requested it as a "later" column but we compute
+    # it now since it's free).
+    out["predicted_n_constants"] = sum(1 for t in best_skel if t == "<constant>")
+    gt_canon = sample.get("skeleton_canonical_gt") or []
+    out["gt_canonical_n_constants"] = sum(1 for t in gt_canon if t == "<constant>")
+    out["n_constants_delta"] = out["predicted_n_constants"] - out["gt_canonical_n_constants"]
+
+    return out
+
+
 def _bootstrap_ci(values, n_resamples=1000, ci=0.95, seed=0):
     a = np.asarray(values, dtype=float)
     a = a[np.isfinite(a)]
