@@ -105,8 +105,38 @@ class AggregateFingerprint:
 # --- Internal helpers ---
 
 
-def _normalize_skeleton(expr_tokens):
-    """Replace numeric literals with the ``<constant>`` placeholder."""
+# Module-level memoization for canonicalization. Same raw skeleton ->
+# same canonical form regardless of which sample / which probe it came from,
+# so a global cache cuts repeat work across cells / probes / runs.
+_CANONICAL_CACHE: dict[tuple, tuple] = {}
+
+
+def _safe_simplify(engine, skel):
+    if not skel:
+        return tuple(skel) if skel else tuple()
+    key = tuple(skel)
+    cached = _CANONICAL_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        out = engine.simplify(list(skel), max_pattern_length=4)
+        result = tuple(out) if engine.is_valid(out) else key
+    except Exception:
+        result = key
+    _CANONICAL_CACHE[key] = result
+    return result
+
+
+def safe_simplify(engine, skel):
+    """Public wrapper around the cached canonicalization."""
+    return _safe_simplify(engine, skel)
+
+
+def normalize_skeleton(expr_tokens):
+    """Replace numeric literals with the ``<constant>`` placeholder.
+
+    Public wrapper used by notebooks and plotters so we share one definition.
+    """
     out = []
     for t in expr_tokens:
         if t == "<constant>":
@@ -120,14 +150,13 @@ def _normalize_skeleton(expr_tokens):
     return tuple(out)
 
 
-def _safe_simplify(engine, skel):
-    if not skel:
-        return tuple(skel) if skel else tuple()
-    try:
-        out = engine.simplify(list(skel), max_pattern_length=4)
-        return tuple(out) if engine.is_valid(out) else tuple(skel)
-    except Exception:
-        return tuple(skel)
+# Internal alias kept for backward compatibility with existing call sites.
+_normalize_skeleton = normalize_skeleton
+
+
+def cache_stats() -> dict:
+    """Snapshot of the canonicalization cache for telemetry / debugging."""
+    return {"cache_size": len(_CANONICAL_CACHE)}
 
 
 def _bootstrap_ci(values, n_resamples=1000, ci=0.95, seed=0):
@@ -232,6 +261,33 @@ def compute_sample_fingerprints(engine, samples) -> list[SampleFingerprint]:
         if fp is not None:
             out.append(fp)
     return out
+
+
+def compute_sample_fingerprints_cached(engine, samples, cache_path) -> list[SampleFingerprint]:
+    """Compute fingerprints, persisting them to ``cache_path`` for re-use.
+
+    The first call writes a pickle next to the dump; later calls load it.
+    Cache is keyed only by ``cache_path`` --- the caller is responsible for
+    using a stable path that captures (model, decoder, choices, n_samples).
+    """
+    import os
+    import pickle as _pickle
+
+    if cache_path and os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                cached = _pickle.load(f)
+            if isinstance(cached, list) and len(cached) == len(samples):
+                return cached
+        except Exception:
+            pass  # fall through to recompute
+
+    fps = compute_sample_fingerprints(engine, samples)
+    if cache_path:
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        with open(cache_path, "wb") as f:
+            _pickle.dump(fps, f)
+    return fps
 
 
 def aggregate_fingerprint(

@@ -85,3 +85,52 @@ run_probe "v23.0-120M-beam" \
           "true" \
           "beam_search" \
           "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-120M}"
+
+# --- 10s inference-time anchor for the 20M models (main-text table) ----------
+# 20M S100/U100 reach ~5s at c=2048; we extend to c=4096 to land at ~10s,
+# matching the standard test-time-compute scaling evaluation's ~10s target.
+# 120M models already hit ~10s at c=2048 so they are not extended here.
+
+run_extra_choices() {
+    # Single-config-and-choice probe; smaller 'run_probe' for ad-hoc additions.
+    local label="$1"
+    local model="$2"
+    local simplify="$3"
+    local choices="$4"
+    local source_pkl="$5"
+
+    if [ ! -f "$source_pkl" ]; then
+        echo "WARNING: source pickle ${source_pkl} not found, skipping ${label} c=${choices}"
+        return 0
+    fi
+
+    local choices_padded
+    choices_padded=$(printf "%05d" "$choices")
+    local out="${ROOT}/results/system_effect/cand_dist_${label}_choices${choices_padded}_n${N_SAMPLES}.pkl"
+    if [ -f "$out" ]; then
+        echo "=== SKIP ${out} (exists) ==="
+        return 0
+    fi
+    echo ""
+    echo "=== ${label} (c=${choices}, 10s inference-time anchor) ==="
+    python "$PROBE" \
+        --model-path "${ROOT}/models/ansr-models/${model}" \
+        --decoder softmax_sampling \
+        --simplify "$simplify" \
+        --choices "$choices" \
+        --n-samples "$N_SAMPLES" \
+        --source-pkl "$source_pkl" \
+        --output "$out"
+}
+
+run_extra_choices "v23.0-20M-A-S100" \
+                  "v23.0-20M-A-S100" \
+                  "true" \
+                  4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-S100}"
+
+run_extra_choices "v23.0-20M-A-U100" \
+                  "v23.0-20M-A-U100" \
+                  "false" \
+                  4096 \
+                  "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-U100}"

@@ -157,7 +157,8 @@ def main() -> None:
     for spec in args.input:
         if "=" not in spec:
             sys.exit(f"--input expects LABEL=path, got {spec!r}")
-        label, dump = spec.split("=", 1)
+        # rsplit so labels may contain '=' (e.g. "c=64=path/...")
+        label, dump = spec.rsplit("=", 1)
         parsed.append((label.strip(), dump.strip()))
 
     engine = SimpliPyEngine.load("dev_7-3", install=False)
