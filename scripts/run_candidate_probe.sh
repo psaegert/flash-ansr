@@ -53,7 +53,7 @@ run_probe() {
 }
 
 # --- (A) Training-data axis: §8.1 -------------------------------------------
-# S100 / U100 (system-level treatment: training and inference simplify match).
+# S100 / U100 / S10 (system-level treatment: training and inference simplify match).
 # Add: run_probe "v23.0-20M-A-Y10"  ... once Y10 checkpoint is available.
 
 run_probe "v23.0-20M-A-S100" \
@@ -67,6 +67,12 @@ run_probe "v23.0-20M-A-U100" \
           "false" \
           "softmax_sampling" \
           "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-U100}"
+
+run_probe "v23.0-20M-A-S10" \
+          "v23.0-20M-A-S10" \
+          "true" \
+          "softmax_sampling" \
+          "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-S10}"
 
 # --- (Z) Inference-strategy axis: §8.3 --------------------------------------
 # Same 120M baseline checkpoint, two decoders. Source pickle is the existing
