@@ -21,8 +21,10 @@ ROOT=$(pwd)
 run_eval_if_model_exists() {
     local config_path="$1"
     local model_dir="$2"
-    if [ ! -d "$model_dir" ]; then
-        echo "[skip] ${config_path}: model not found at ${model_dir}"
+    # Require the actual checkpoint file, not just the directory --- training
+    # may create the dir (logs, partial state) before a usable model lands.
+    if [ ! -f "${model_dir}/state_dict.pt" ]; then
+        echo "[skip] ${config_path}: state_dict.pt not found in ${model_dir}"
         return 0
     fi
     echo ""
