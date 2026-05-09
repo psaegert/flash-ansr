@@ -12,7 +12,7 @@ defaults:
     noise_level: 0.0
   model_adapter: &flash_ansr_adapter
     type: flash_ansr
-    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-ablation-1"
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-A-U"
     evaluation_config:
       n_support: 512
       n_restarts: 8
@@ -56,7 +56,7 @@ experiments:
             choices: 1
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00001.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00001.pkl"
 
   flash_ansr_fastsrb_choices_00002:
     run:
@@ -68,7 +68,7 @@ experiments:
             choices: 2
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00002.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00002.pkl"
 
   flash_ansr_fastsrb_choices_00004:
     run:
@@ -80,7 +80,7 @@ experiments:
             choices: 4
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00004.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00004.pkl"
 
   flash_ansr_fastsrb_choices_00008:
     run:
@@ -92,7 +92,7 @@ experiments:
             choices: 8
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00008.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00008.pkl"
 
   flash_ansr_fastsrb_choices_00016:
     run:
@@ -104,7 +104,7 @@ experiments:
             choices: 16
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00016.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00016.pkl"
 
   flash_ansr_fastsrb_choices_00032:
     run:
@@ -116,7 +116,7 @@ experiments:
             choices: 32
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00032.pkl"
 
   flash_ansr_fastsrb_choices_00064:
     run:
@@ -128,7 +128,7 @@ experiments:
             choices: 64
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00064.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00064.pkl"
 
   flash_ansr_fastsrb_choices_00128:
     run:
@@ -140,7 +140,7 @@ experiments:
             choices: 128
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00128.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00128.pkl"
 
   flash_ansr_fastsrb_choices_00256:
     run:
@@ -152,7 +152,7 @@ experiments:
             choices: 256
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00256.pkl"
 
   flash_ansr_fastsrb_choices_00512:
     run:
@@ -164,7 +164,7 @@ experiments:
             choices: 512
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_00512.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_00512.pkl"
 
   flash_ansr_fastsrb_choices_01024:
     run:
@@ -176,7 +176,7 @@ experiments:
             choices: 1024
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_01024.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_01024.pkl"
 
   flash_ansr_fastsrb_choices_02048:
     run:
@@ -188,7 +188,7 @@ experiments:
             choices: 2048
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_02048.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_02048.pkl"
 
   flash_ansr_fastsrb_choices_04096:
     run:
@@ -200,7 +200,7 @@ experiments:
             choices: 4096
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_04096.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_04096.pkl"
 
   flash_ansr_fastsrb_choices_08192:
     run:
@@ -212,7 +212,7 @@ experiments:
             choices: 8192
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_08192.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_08192.pkl"
 
   flash_ansr_fastsrb_choices_16384:
     run:
@@ -224,7 +224,7 @@ experiments:
             choices: 16384
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_16384.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_16384.pkl"
 
   flash_ansr_fastsrb_choices_65536:
     run:
@@ -238,7 +238,7 @@ experiments:
             choices: 65536
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_65536.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_65536.pkl"
 
   flash_ansr_fastsrb_choices_262144:
     run:
@@ -252,7 +252,7 @@ experiments:
             choices: 262144
       runner:
         <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_262144.pkl"
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_262144.pkl"
 
   # flash_ansr_fastsrb_choices_1048576:
   #   run:
@@ -266,4 +266,4 @@ experiments:
   #           choices: 1048576
   #     runner:
   #       <<: *flash_ansr_fastsrb_runner
-  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-ablation-1/fastsrb/choices_1048576.pkl"
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-A-U/fastsrb/choices_1048576.pkl"

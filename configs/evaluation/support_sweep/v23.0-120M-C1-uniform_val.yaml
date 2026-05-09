@@ -1,7 +1,7 @@
 defaults:
   data_source: &flash_ansr_val_source
     type: skeleton_dataset
-    dataset: "{{ROOT}}/configs/v23.0-120M-ablation-1/dataset_val.yaml"
+    dataset: "{{ROOT}}/configs/v23.0-120M-C1-uniform/dataset_val.yaml"
     datasets_per_expression: 10
     n_support: 1024
     noise_level: 0.0
@@ -9,15 +9,15 @@ defaults:
     target_size: 1000  # 100 skeletons × 10 repeats
   model_adapter: &flash_ansr_adapter
     type: flash_ansr
-    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-ablation-1"
+    model_path: "{{ROOT}}/models/ansr-models/v23.0-120M-C1-uniform"
     evaluation_config: &flash_ansr_eval_config
       n_support: 2048
       n_restarts: 8
       refiner_method: curve_fit_lm
-      refiner_p0_noise: normal
+      refiner_p0_noise: uniform
       refiner_p0_noise_kwargs:
-        loc: 0.0
-        scale: 5
+        low: 1
+        high: 5
       length_penalty: 0.05
       constants_penalty: 0.0
       likelihood_penalty: 0.0
@@ -32,7 +32,7 @@ defaults:
           batch_size: 128
           temperature: 1
           valid_only: true
-          simplify: false
+          simplify: true
           unique: true
       device: cuda
     complexity: none
@@ -55,7 +55,7 @@ experiments:
           n_support: 1
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00001.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00001.pkl"
 
   flash_ansr_val_support_00002:
     run:
@@ -69,7 +69,7 @@ experiments:
           n_support: 2
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00002.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00002.pkl"
 
   flash_ansr_val_support_00004:
     run:
@@ -83,7 +83,7 @@ experiments:
           n_support: 4
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00004.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00004.pkl"
 
   flash_ansr_val_support_00008:
     run:
@@ -97,7 +97,7 @@ experiments:
           n_support: 8
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00008.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00008.pkl"
 
   flash_ansr_val_support_00016:
     run:
@@ -111,7 +111,7 @@ experiments:
           n_support: 16
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00016.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00016.pkl"
 
   flash_ansr_val_support_00032:
     run:
@@ -125,7 +125,7 @@ experiments:
           n_support: 32
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00032.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00032.pkl"
 
   flash_ansr_val_support_00064:
     run:
@@ -139,7 +139,7 @@ experiments:
           n_support: 64
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00064.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00064.pkl"
 
   flash_ansr_val_support_00128:
     run:
@@ -153,7 +153,7 @@ experiments:
           n_support: 128
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00128.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00128.pkl"
 
   flash_ansr_val_support_00256:
     run:
@@ -167,7 +167,7 @@ experiments:
           n_support: 256
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00256.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00256.pkl"
 
   flash_ansr_val_support_00512:
     run:
@@ -181,7 +181,7 @@ experiments:
           n_support: 512
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_00512.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_00512.pkl"
 
   flash_ansr_val_support_01024:
     run:
@@ -195,7 +195,7 @@ experiments:
           n_support: 1024
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_01024.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_01024.pkl"
 
   flash_ansr_val_support_02048:
     run:
@@ -209,4 +209,4 @@ experiments:
           n_support: 2048
       runner:
         <<: *flash_ansr_val_runner
-        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-ablation-1/val/support_02048.pkl"
+        output: "{{ROOT}}/results/evaluation/support_sweep/v23.0-120M-C1-uniform/val/support_02048.pkl"
