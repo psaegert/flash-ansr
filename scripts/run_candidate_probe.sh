@@ -75,7 +75,7 @@ run_probe "v23.0-20M-A-S10" \
 
 run_probe "v23.0-20M-A-Y10" \
           "v23.0-20M-A-Y10" \
-          "true" \
+          "sympy" \
           "softmax_sampling" \
           "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-Y10}"
 
@@ -158,7 +158,7 @@ run_extra_choices "v23.0-20M-A-S10" \
 
 run_extra_choices "v23.0-20M-A-Y10" \
                   "v23.0-20M-A-Y10" \
-                  "true"  "softmax_sampling" 4096 \
+                  "sympy"  "softmax_sampling" 4096 \
                   "${SOURCE_PKL_TEMPLATE/__MODEL__/v23.0-20M-A-Y10}"
 
 # 120M baseline: softmax + beam

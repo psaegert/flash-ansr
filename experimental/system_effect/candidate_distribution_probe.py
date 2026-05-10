@@ -45,8 +45,10 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-path", required=True,
                    help="Path to a FlashANSR checkpoint dir (e.g. models/ansr-models/v23.0-20M-A-S100).")
-    p.add_argument("--simplify", required=True, choices=["true", "false"],
-                   help="Test-time simplify flag for the generation config.")
+    p.add_argument("--simplify", required=True, choices=["true", "false", "sympy"],
+                   help="Test-time simplify flag for the generation config. "
+                        "Use 'sympy' to match a SymPy-trained model (slow at large c but "
+                        "required for matched train/inference comparison).")
     p.add_argument("--choices", type=int, required=True,
                    help="Number of candidates per sample. For decoder=softmax_sampling this is "
                         "the `choices` parameter; for decoder=beam_search it is `beam_width`.")
@@ -121,7 +123,7 @@ def _load_resume_state(output_path, *, model_path, decoder, simplify, choices):
         mismatches.append(f"model_path ({existing.get('model_path')!r} vs {model_path!r})")
     if existing.get("decoder", "softmax_sampling") != decoder:
         mismatches.append(f"decoder ({existing.get('decoder')!r} vs {decoder!r})")
-    if bool(existing.get("simplify")) != bool(simplify):
+    if existing.get("simplify") != simplify:
         mismatches.append(f"simplify ({existing.get('simplify')!r} vs {simplify!r})")
     if existing.get("choices") != choices:
         mismatches.append(f"choices ({existing.get('choices')!r} vs {choices!r})")
@@ -140,7 +142,15 @@ def _load_resume_state(output_path, *, model_path, decoder, simplify, choices):
 def main() -> None:
     args = parse_args()
 
-    simplify = args.simplify == "true"
+    if args.simplify == "true":
+        simplify: bool | str = True
+    elif args.simplify == "false":
+        simplify = False
+    else:
+        # 'sympy': match a SymPy-trained model at inference. Generation config
+        # accepts the literal string and dispatches to SymPy in the model's
+        # post-generation simplification step.
+        simplify = "sympy"
 
     print(f"Loading source samples from {args.source_pkl}")
     with open(args.source_pkl, "rb") as f:
