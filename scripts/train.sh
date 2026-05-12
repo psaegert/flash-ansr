@@ -4,7 +4,8 @@ set -euo pipefail
 
 # Check if an argument was passed
 if [ $# -eq 0 ]; then
-    echo "Usage: train.sh <CONFIG>"
+    echo "Usage: train.sh <CONFIG> [extra flash_ansr train args...]"
+    echo "  e.g. train.sh v23.0-120M-B2-16bit --resume-from models/ansr-models/v23.0-120M-B2-16bit/checkpoint_2000000"
     exit 1
 else
     CONFIG=$1
@@ -24,4 +25,4 @@ if [ -n "${OMP_NUM_THREADS:-}" ]; then
     cmd+=(-w "${OMP_NUM_THREADS}")
 fi
 
-"${cmd[@]}"
+"${cmd[@]}" "${@:2}"
