@@ -8,14 +8,16 @@
 #      softmax_sampling and beam_search decoders, for matched-axis diversity
 #      comparison.
 #
-# Choices/beam_width points: {64, 256, 2048}. Resume-safe.
+# Choices/beam_width points: {64, 256, 2048} via run_probe and {4096} via
+# run_extra_choices (the §5.7 fingerprint anchor). Resume-safe: existing
+# pickles are extended to the new N_SAMPLES target rather than overwritten.
 
 set -e
 
 ROOT=$(pwd)
 PROBE="${ROOT}/experimental/system_effect/candidate_distribution_probe.py"
 SOURCE_PKL_TEMPLATE="${ROOT}/results/evaluation/scaling/__MODEL__/fastsrb/choices_00256.pkl"
-N_SAMPLES=300
+N_SAMPLES=1200  # >= max source-pickle row count; stratified_indices truncates to len(eq_ids) per source (1200 for 120M, 600 for 20M).
 
 mkdir -p "${ROOT}/results/system_effect"
 
@@ -35,10 +37,9 @@ run_probe() {
         local choices_padded
         choices_padded=$(printf "%05d" "$choices")
         local out="${ROOT}/results/system_effect/cand_dist_${label}_choices${choices_padded}_n${N_SAMPLES}.pkl"
-        if [ -f "$out" ]; then
-            echo "=== SKIP ${out} (exists) ==="
-            continue
-        fi
+        # No shell-level skip: the probe's _load_resume_state handles "is this
+        # work done" correctly even for partial pickles that need extending to
+        # a larger N.
         echo ""
         echo "=== ${label} (model=${model} decoder=${decoder} simplify=${simplify} choices=${choices}) ==="
         python "$PROBE" \
@@ -120,10 +121,9 @@ run_extra_choices() {
     local choices_padded
     choices_padded=$(printf "%05d" "$choices")
     local out="${ROOT}/results/system_effect/cand_dist_${label}_choices${choices_padded}_n${N_SAMPLES}.pkl"
-    if [ -f "$out" ]; then
-        echo "=== SKIP ${out} (exists) ==="
-        return 0
-    fi
+    # No shell-level skip: the probe's _load_resume_state handles "is this
+    # work done" correctly even for partial pickles that need extending to
+    # a larger N.
     echo ""
     echo "=== ${label} (decoder=${decoder} c=${choices}, 10s inference-time anchor) ==="
     python "$PROBE" \
