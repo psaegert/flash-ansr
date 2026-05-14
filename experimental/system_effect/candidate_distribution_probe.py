@@ -248,7 +248,7 @@ def main() -> None:
             model.fit(X, y, verbose=False)
             elapsed = time.time() - t0
         except Exception as exc:
-            print(f"  [{len(out)+n_skipped+1}/{len(selected)}] idx={idx} eq={src['benchmark_eq_id'][idx]} FAIL: {exc}")
+            print(f"  [{k+1}/{len(selected)}] idx={idx} eq={src['benchmark_eq_id'][idx]} FAIL: {exc}")
             continue
 
         results = model._results
@@ -279,7 +279,7 @@ def main() -> None:
         n_session += 1
 
         best_fvu = rec["candidates"][0]["fvu"] if rec["candidates"] else float("nan")
-        print(f"  [{len(out)+n_skipped}/{len(selected)}] idx={idx:>4} eq={src['benchmark_eq_id'][idx]:>10} "
+        print(f"  [{k+1}/{len(selected)}] idx={idx:>4} eq={src['benchmark_eq_id'][idx]:>10} "
               f"time={elapsed:6.2f}s n_results={len(results):>5} best_fvu={best_fvu:.4g}")
 
         # Crash-safe incremental save.
