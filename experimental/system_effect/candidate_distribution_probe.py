@@ -71,13 +71,15 @@ def parse_args() -> argparse.Namespace:
 
 def stratified_indices(eq_ids, n_target):
     """Pick approximately n_target indices, evenly across distinct eq_ids."""
+    if n_target <= 0:
+        return []
     if n_target >= len(eq_ids):
         return list(range(len(eq_ids)))
     stride = max(1, len(eq_ids) // n_target)
     return list(range(0, len(eq_ids), stride))[:n_target]
 
 
-def _save_payload(samples, output_path, *, model_path, decoder, simplify, choices, n_samples, wall_time):
+def _save_payload(samples, output_path, *, model_path, decoder, simplify, choices, n_samples, source_pkl, wall_time):
     """Atomic write of the probe payload (write to tmp, then os.replace)."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     payload = {
@@ -87,6 +89,7 @@ def _save_payload(samples, output_path, *, model_path, decoder, simplify, choice
         "simplify": simplify,
         "choices": choices,
         "n_samples": n_samples,
+        "source_pkl": source_pkl,
         "n_collected": len(samples),
         "wall_time": wall_time,
     }
@@ -96,13 +99,15 @@ def _save_payload(samples, output_path, *, model_path, decoder, simplify, choice
     os.replace(tmp, output_path)
 
 
-def _load_resume_state(output_path, *, model_path, decoder, simplify, choices):
+def _load_resume_state(output_path, *, model_path, decoder, simplify, choices, source_pkl):
     """Load existing partial output if present and compatible.
 
     Returns (samples_list, already_done_idx_set, prev_wall_time). On any
-    incompatibility (different model_path / decoder / simplify / choices),
-    raises SystemExit so we never silently overwrite a probe of a different
-    configuration.
+    incompatibility (different model_path / decoder / simplify / choices /
+    source_pkl), raises SystemExit so we never silently overwrite a probe of
+    a different configuration. The source_pkl check is gated on whether the
+    existing payload carries the field, so legacy pickles written before
+    source_pkl was tracked still resume cleanly.
     """
     if not os.path.exists(output_path):
         return [], set(), 0.0
@@ -127,6 +132,8 @@ def _load_resume_state(output_path, *, model_path, decoder, simplify, choices):
         mismatches.append(f"simplify ({existing.get('simplify')!r} vs {simplify!r})")
     if existing.get("choices") != choices:
         mismatches.append(f"choices ({existing.get('choices')!r} vs {choices!r})")
+    if "source_pkl" in existing and existing["source_pkl"] != source_pkl:
+        mismatches.append(f"source_pkl ({existing['source_pkl']!r} vs {source_pkl!r})")
     if mismatches:
         print(f"ERROR: existing {output_path} has different configuration: {', '.join(mismatches)}.")
         print("Move it aside or delete it before re-running with a different configuration.")
@@ -219,6 +226,7 @@ def main() -> None:
         decoder=args.decoder,
         simplify=simplify,
         choices=args.choices,
+        source_pkl=args.source_pkl,
     )
 
     save_kwargs = dict(
@@ -227,6 +235,7 @@ def main() -> None:
         simplify=simplify,
         choices=args.choices,
         n_samples=args.n_samples,
+        source_pkl=args.source_pkl,
     )
     save_every = max(0, int(args.save_every))
     n_skipped = 0
