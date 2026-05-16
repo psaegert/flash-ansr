@@ -79,8 +79,15 @@ def stratified_indices(eq_ids, n_target):
     return list(range(0, len(eq_ids), stride))[:n_target]
 
 
-def _save_payload(samples, output_path, *, model_path, decoder, simplify, choices, n_samples, source_pkl, wall_time):
-    """Atomic write of the probe payload (write to tmp, then os.replace)."""
+def _save_payload(samples, output_path, *, model_path, decoder, simplify, choices, n_samples, source_pkl, failed_indices, wall_time):
+    """Atomic write of the probe payload (write to tmp, then os.replace).
+
+    ``failed_indices`` is the set of source-pickle row indices that already
+    had a chance and raised. They are persisted so that resumes skip them
+    rather than re-attempting deterministically-failing problems (empty-X
+    for excluded equations, beam non-convergence, etc.). Matches the
+    main-evaluation convention: each problem gets exactly one chance.
+    """
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     payload = {
         "samples": samples,
@@ -90,6 +97,7 @@ def _save_payload(samples, output_path, *, model_path, decoder, simplify, choice
         "choices": choices,
         "n_samples": n_samples,
         "source_pkl": source_pkl,
+        "failed_indices": sorted(failed_indices),
         "n_collected": len(samples),
         "wall_time": wall_time,
     }
@@ -102,25 +110,31 @@ def _save_payload(samples, output_path, *, model_path, decoder, simplify, choice
 def _load_resume_state(output_path, *, model_path, decoder, simplify, choices, source_pkl):
     """Load existing partial output if present and compatible.
 
-    Returns (samples_list, already_done_idx_set, prev_wall_time). On any
-    incompatibility (different model_path / decoder / simplify / choices /
-    source_pkl), raises SystemExit so we never silently overwrite a probe of
-    a different configuration. The source_pkl check is gated on whether the
-    existing payload carries the field, so legacy pickles written before
-    source_pkl was tracked still resume cleanly.
+    Returns ``(samples_list, already_done_idx_set, failed_indices_set,
+    prev_wall_time)``. The ``already_done`` set is the union of (a) the
+    indices of successful samples and (b) the persisted failed indices, so a
+    resume skips both kinds of completed work. ``failed_indices_set`` is
+    returned separately so the caller can extend it with new failures and
+    pass it back to ``_save_payload``.
+
+    On any incompatibility (different model_path / decoder / simplify /
+    choices / source_pkl), raises SystemExit so we never silently overwrite
+    a probe of a different configuration. The source_pkl and failed_indices
+    checks gracefully handle legacy pickles written before those fields
+    were tracked.
     """
     if not os.path.exists(output_path):
-        return [], set(), 0.0
+        return [], set(), set(), 0.0
     try:
         with open(output_path, "rb") as f:
             existing = pickle.load(f)
     except Exception as exc:
         print(f"WARNING: could not load existing {output_path} ({exc}); starting fresh.")
-        return [], set(), 0.0
+        return [], set(), set(), 0.0
 
     if not isinstance(existing, dict) or "samples" not in existing:
         print(f"WARNING: existing {output_path} is not a probe payload; starting fresh.")
-        return [], set(), 0.0
+        return [], set(), set(), 0.0
 
     # Refuse to mix probes with different configurations.
     mismatches = []
@@ -140,10 +154,11 @@ def _load_resume_state(output_path, *, model_path, decoder, simplify, choices, s
         sys.exit(1)
 
     samples = existing.get("samples", [])
-    done = {s.get("idx") for s in samples if "idx" in s}
+    failed_indices = set(existing.get("failed_indices", []))
+    done = {s.get("idx") for s in samples if "idx" in s} | failed_indices
     prev_wall = float(existing.get("wall_time", 0.0))
-    print(f"Resuming from {len(samples)} existing samples in {output_path} (prev wall_time {prev_wall:.1f}s).")
-    return samples, done, prev_wall
+    print(f"Resuming from {len(samples)} existing samples + {len(failed_indices)} persisted failures in {output_path} (prev wall_time {prev_wall:.1f}s).")
+    return samples, done, failed_indices, prev_wall
 
 
 def main() -> None:
@@ -220,7 +235,7 @@ def main() -> None:
     ).to(args.device).eval()
 
     # Resume existing partial output if it matches this configuration.
-    out, already_done, prev_wall_time = _load_resume_state(
+    out, already_done, failed_indices, prev_wall_time = _load_resume_state(
         args.output,
         model_path=args.model_path,
         decoder=args.decoder,
@@ -236,6 +251,7 @@ def main() -> None:
         choices=args.choices,
         n_samples=args.n_samples,
         source_pkl=args.source_pkl,
+        failed_indices=failed_indices,
     )
     save_every = max(0, int(args.save_every))
     n_skipped = 0
@@ -258,6 +274,14 @@ def main() -> None:
             elapsed = time.time() - t0
         except Exception as exc:
             print(f"  [{k+1}/{len(selected)}] idx={idx} eq={src['benchmark_eq_id'][idx]} FAIL: {exc}")
+            # Mark this index as done so subsequent resumes don't re-attempt
+            # it. Matches the main-evaluation convention: each problem gets
+            # exactly one chance per pickle. failed_indices is persisted to
+            # the payload so the skip survives a process restart; for the
+            # rare non-deterministic refiner failure, a manual re-run after
+            # deleting the pickle is the right escape hatch.
+            already_done.add(idx)
+            failed_indices.add(idx)
             continue
 
         results = model._results
