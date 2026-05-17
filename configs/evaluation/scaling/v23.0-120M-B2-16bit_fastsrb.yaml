@@ -58,6 +58,18 @@ experiments:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00001.pkl"
 
+  flash_ansr_fastsrb_choices_00002:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00002.pkl"
+
   flash_ansr_fastsrb_choices_00004:
     run:
       data_source: *flash_ansr_fastsrb_source
@@ -69,6 +81,18 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00004.pkl"
+
+  flash_ansr_fastsrb_choices_00008:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00008.pkl"
 
   flash_ansr_fastsrb_choices_00016:
     run:
@@ -82,6 +106,18 @@ experiments:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00016.pkl"
 
+  flash_ansr_fastsrb_choices_00032:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 32
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00032.pkl"
+
   flash_ansr_fastsrb_choices_00064:
     run:
       data_source: *flash_ansr_fastsrb_source
@@ -94,6 +130,18 @@ experiments:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00064.pkl"
 
+  flash_ansr_fastsrb_choices_00128:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 128
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00128.pkl"
+
   flash_ansr_fastsrb_choices_00256:
     run:
       data_source: *flash_ansr_fastsrb_source
@@ -105,6 +153,18 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00256.pkl"
+
+  flash_ansr_fastsrb_choices_00512:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 512
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_00512.pkl"
 
   flash_ansr_fastsrb_choices_01024:
     run:
