@@ -177,3 +177,65 @@ experiments:
       runner:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_01024.pkl"
+
+  flash_ansr_fastsrb_choices_02048:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 2048
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_02048.pkl"
+
+  flash_ansr_fastsrb_choices_04096:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 4096
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_04096.pkl"
+
+  flash_ansr_fastsrb_choices_08192:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 8192
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_08192.pkl"
+
+  flash_ansr_fastsrb_choices_16384:
+    run:
+      data_source: *flash_ansr_fastsrb_source
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 16384
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_16384.pkl"
+
+  flash_ansr_fastsrb_choices_65536:
+    run:
+      data_source:
+        <<: *flash_ansr_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *flash_ansr_adapter
+        generation_overrides:
+          kwargs:
+            choices: 65536
+      runner:
+        <<: *flash_ansr_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M-B2-16bit/fastsrb/choices_65536.pkl"
