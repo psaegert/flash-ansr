@@ -67,7 +67,7 @@ print(model.get_expression())
 y_pred = model.predict(X)
 ```
 
-Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/main/demo.ipynb).
 
 # Overview
 
