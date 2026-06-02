@@ -15,7 +15,7 @@
 set -e
 
 ROOT=$(pwd)
-PROBE="${ROOT}/experimental/system_effect/candidate_distribution_probe.py"
+PROBE="${ROOT}/experimental/main/system_effect/candidate_distribution_probe.py"
 SOURCE_PKL_TEMPLATE="${ROOT}/results/evaluation/scaling/__MODEL__/fastsrb/choices_00256.pkl"
 N_SAMPLES=1200  # >= max source-pickle row count; stratified_indices truncates to len(eq_ids) per source (1200 for 120M, 600 for 20M).
 

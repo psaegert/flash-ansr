@@ -1,7 +1,7 @@
 # System-effect analysis (§8.1)
 
 Scripts and dumps for the SimpliPy vs SymPy vs Unsimplified system-effect
-analysis. Companion to [agent/system-effect-analysis-plan.md](../../agent/system-effect-analysis-plan.md).
+analysis. Companion to [agent/system-effect-analysis-plan.md](../../../agent/system-effect-analysis-plan.md).
 
 ## Scripts
 
