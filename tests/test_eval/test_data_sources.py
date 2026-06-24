@@ -230,6 +230,47 @@ def test_skeleton_dataset_metadata_uses_shared_builder():
         dataset.shutdown()
 
 
+def test_skeleton_list_pin_uses_exact_sequence():
+    # A pinned skeleton_list freezes WHICH skeletons evaluate (e.g. standard-eval val100):
+    # the source iterates exactly those, in pinned order, NOT sorted(live pool). STANDARD_EVAL.md item 1.
+    dataset = _make_dataset()
+    try:
+        probe = SkeletonDatasetSource(dataset, n_support=8, datasets_per_expression=1, target_size=3, device="cpu")
+        probe.prepare()
+        pool_skeletons = list(probe._skeleton_sequence)
+        assert len(pool_skeletons) >= 2
+        pin = [list(s) for s in reversed(pool_skeletons[:2])]  # reversed: prove order is the PIN's, not sorted
+
+        source = SkeletonDatasetSource(
+            dataset, n_support=8, datasets_per_expression=1, target_size=2, device="cpu",
+            skeleton_list=pin,
+        )
+        assert source._pinned_skeletons == [tuple(s) for s in pin]
+        source.prepare()
+        assert source._skeleton_sequence == [tuple(s) for s in pin]
+    finally:
+        dataset.shutdown()
+
+
+def test_skeleton_list_pin_hard_fails_on_skeleton_absent_from_pool():
+    # The pin guards against pool drift: a pinned skeleton missing from the pool must RAISE,
+    # never silently fall through to a placeholder (which would launder drift into a partial run).
+    dataset = _make_dataset()
+    try:
+        probe = SkeletonDatasetSource(dataset, n_support=8, datasets_per_expression=1, target_size=1, device="cpu")
+        probe.prepare()
+        real = list(probe._skeleton_sequence[0])
+
+        source = SkeletonDatasetSource(
+            dataset, n_support=8, datasets_per_expression=1, target_size=2, device="cpu",
+            skeleton_list=[real, ["__definitely_not_in_pool__"]],
+        )
+        with pytest.raises(ValueError, match="drift"):
+            source.prepare()
+    finally:
+        dataset.shutdown()
+
+
 def test_skeleton_source_masks_unused_variables_when_zero_padding():
     dataset = _make_dataset()
     try:

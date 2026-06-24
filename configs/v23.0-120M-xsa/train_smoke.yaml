@@ -1,0 +1,34 @@
+# SMOKE config for the XSA pipeline shakedown: a short, fast run that validates the full
+# train pipeline (model builds with XSA, data generates, loss decreases, checkpoint saves,
+# val runs, no crash) before committing the real ~3M-step run. NOT a quality run.
+# Fast lr warmup (so loss visibly moves), small batch/val, no compile, few steps.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [200, 1e-4]    # fast warmup so the smoke shows real learning
+  - [3000, 1e-4]
+
+batch_size: 32
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 32
+val_size: 1000
+
+compile_mode: null   # skip torch.compile for a fast smoke (real run uses reduce-overhead)
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 3000
+device: cuda

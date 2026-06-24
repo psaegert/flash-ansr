@@ -10,7 +10,7 @@ repos:
     hooks:
         - id: flake8
           additional_dependencies: [ Flake8-pyproject ]
-          exclude: ^experimental/
+          exclude: ^(experimental/|research/)
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.9.0
     hooks:
@@ -20,4 +20,4 @@ repos:
             types-tqdm==4.66.0.20240106 ,
             types-toml==0.10.8.7,
             types-PyYAML==6.0.12.20240311]
-        exclude: ^(tests/|experimental/)
+        exclude: ^(tests/|experimental/|research/)

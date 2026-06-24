@@ -7,9 +7,9 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.4.5"
+version = "0.5.0"
 license = "MIT"
-license-files = ["LICEN[CS]E*"]
+license-files = ["LICEN[CS]E*", "THIRD_PARTY_LICENSES*"]
 
 keywords = [
     "symbolic-regression",
@@ -41,6 +41,7 @@ classifiers = [
     # Programming language
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 
     # Operating system
     "Operating System :: OS Independent",
@@ -52,7 +53,6 @@ Documentation = "https://flash-ansr.readthedocs.io/en/latest/"
 Repository = "https://github.com/psaegert/flash-ansr"
 Issues = "https://github.com/psaegert/flash-ansr/issues"
 PyPI = "https://pypi.org/project/flash-ansr/"
-"Bug Reports" = "https://github.com/psaegert/flash-ansr/issues"
 "Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb"
 
 [project.scripts]
@@ -82,7 +82,15 @@ dev = [
     "mkdocstrings",
     "mkdocs-get-deps",
     "mkdocs-material-extensions",
-    "mkdocstrings-python"
+    "mkdocstrings-python",
+    "flash_ansr[baselines]"
+]
+
+# Optional: required only to run the third-party baseline model adapters (E2E, NeSymReS) in
+# flash_ansr.eval. The flash-ansr product itself does NOT use sympy (it simplifies via simplipy).
+# In the planned srbf split this extra moves to that repo. See REPO_SPLIT_PLAN.md.
+baselines = [
+    "sympy>=1.10",
 ]
 
 [tool.setuptools]
@@ -91,6 +99,8 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# Ship production code only; the interp research subpackage is clone-only (not in the wheel).
+exclude = ["flash_ansr.interp*"]
 
 
 [build-system]
@@ -127,6 +137,7 @@ exclude = "(.venv|tests/|experimental/|src/flash_ansr/compat/nesymres.py)"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 filterwarnings = [
     "ignore:This process .*use of fork.*deadlocks in the child.:DeprecationWarning",
 ]

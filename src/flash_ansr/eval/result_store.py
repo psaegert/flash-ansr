@@ -1,6 +1,7 @@
 """Utility helpers for accumulating and persisting evaluation outputs."""
 from __future__ import annotations
 
+import os
 import pickle
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -65,11 +66,27 @@ class ResultStore:
     def snapshot(self) -> Dict[str, list[Any]]:
         return {key: list(values) for key, values in self._store.items()}
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, meta: Mapping[str, Any] | None = None) -> None:
+        """Persist the dict-of-lists snapshot, atomically.
+
+        Writes to a per-process temp file then `os.replace` (atomic on POSIX), so a
+        process killed mid-write (e.g. the supervisor's stall-kill) never leaves a
+        corrupt pickle that resume would choke on. If `meta` is given, it is embedded
+        under the reserved non-list key ``__meta__`` (stripped again on resume).
+        """
         resolved = Path(substitute_root_path(str(path)))
         resolved.parent.mkdir(parents=True, exist_ok=True)
-        with resolved.open("wb") as handle:
-            pickle.dump(self.snapshot(), handle)
+        snapshot: Dict[str, Any] = self.snapshot()
+        if meta is not None:
+            snapshot["__meta__"] = dict(meta)
+        tmp = resolved.with_name(f"{resolved.name}.tmp.{os.getpid()}")
+        try:
+            with tmp.open("wb") as handle:
+                pickle.dump(snapshot, handle)
+            os.replace(tmp, resolved)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
 
     def statistics(self) -> Dict[str, Any]:
         """Return aggregate counts for valid results and placeholders."""

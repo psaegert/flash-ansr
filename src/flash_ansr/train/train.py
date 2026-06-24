@@ -21,7 +21,6 @@ from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.utils.config_io import load_config, save_config, unfold_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.eval.metrics.token_prediction import correct_token_predictions_at_k, reciprocal_rank
 from flash_ansr.train.optimizers import get_optimizer
 from flash_ansr.train.schedules import pw_linear_schedule
 
@@ -219,7 +218,17 @@ class Trainer:
 
         # On CPU we avoid float16 autocast to prevent overflow; prefer bf16 when available.
         cpu_bf16_supported = bool(getattr(torch.cpu, "is_bf16_supported", lambda: False)())
-        if torch.cuda.is_available():
+        # Opt-in override (default behavior unchanged when unset). On pre-Ampere GPUs (e.g. Turing 2080 Ti)
+        # torch.cuda.is_bf16_supported() returns True via emulation, which has no fp16 tensor cores and is
+        # slow; FLASH_ANSR_AMP_DTYPE=fp16 forces native fp16 on such cards.
+        _amp_override = os.environ.get("FLASH_ANSR_AMP_DTYPE", "").strip().lower()
+        if _amp_override in ("fp16", "float16"):
+            amp_dtype = torch.float16
+        elif _amp_override in ("bf16", "bfloat16"):
+            amp_dtype = torch.bfloat16
+        elif _amp_override in ("fp32", "float32"):
+            amp_dtype = torch.float32
+        elif torch.cuda.is_available():
             amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         else:
             amp_dtype = torch.bfloat16 if cpu_bf16_supported else torch.float32
@@ -234,7 +243,7 @@ class Trainer:
         )
 
         num_workers = config_.get("num_workers", None)
-        print(f'Using num_workers={num_workers} for data generation')
+        print(f'Using num_workers={num_workers} for data generation (set by config, may be overridden by run() arguments)')
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
 
@@ -382,7 +391,7 @@ class Trainer:
                 raise ValueError("resume_step must be non-negative")
 
             remaining_steps = max(0, steps - step_offset)
-            if verbose:
+            if verbose and step_offset > 0:
                 print(f"Resuming from step {step_offset} with {remaining_steps} steps remaining (target={steps})")
 
             if remaining_steps == 0:
@@ -641,7 +650,7 @@ class Trainer:
                 autocast_context = torch.autocast(self.device.type, dtype=self.amp_dtype)
 
             with autocast_context:
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device))
+                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device), condition_mask=micro_batch.get('condition_mask', None))
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 valid_labels = flat_labels != self.metrics_ignore_index
@@ -677,7 +686,7 @@ class Trainer:
             self.scaler.update()
 
             # Log metrics and update scheduler after the optimizer step
-            self._log_metrics(step, flat_logits, flat_labels, total_ce_loss, total_loss, total_gradient_norm)
+            self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -702,10 +711,7 @@ class Trainer:
         self.model.eval()
 
         val_ce_loss = 0.0
-        val_mrr = 0.0
-        val_acc_at_1 = 0.0
         total_items = 0
-        total_batches = 0
 
         with torch.no_grad():
             if size is None:
@@ -726,7 +732,9 @@ class Trainer:
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device))
+                    # val keeps unconditional_prob=0.0 -> condition_mask is all-True (== None == fully
+                    # conditioned), so val CE stays a pure conditioned metric comparable to prior v23 runs.
+                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device), condition_mask=batch.get('condition_mask', None))
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)
                     valid_labels = flat_labels != self.metrics_ignore_index
@@ -739,23 +747,14 @@ class Trainer:
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                     total_items += flat_labels.shape[0]
 
-                # Filter out ignored indices for metric calculation
-                valid_indices = flat_labels != self.metrics_ignore_index
-                if valid_indices.any():
-                    val_mrr += reciprocal_rank(flat_logits[valid_indices], flat_labels[valid_indices])
-                    val_acc_at_1 += correct_token_predictions_at_k(flat_logits[valid_indices], flat_labels[valid_indices], k=1)
-                    total_batches += 1
-
                 pbar.update(1)
             pbar.close()
 
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
-        avg_val_mrr = val_mrr / total_batches if total_batches > 0 else 0.0
-        avg_val_acc_at_1 = val_acc_at_1 / total_batches if total_batches > 0 else 0.0
 
         # Log averaged validation metrics
-        self._log_validation_metrics(step, avg_val_ce_loss, avg_val_mrr, avg_val_acc_at_1)
+        self._log_validation_metrics(step, avg_val_ce_loss)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Persist model weights, optimiser state, and config for ``step``.
@@ -850,17 +849,13 @@ class Trainer:
 
         return resume_step
 
-    def _log_metrics(self, step: int, logits: torch.Tensor, labels: torch.Tensor, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
         """Submit training metrics for the current batch to Weights & Biases.
 
         Parameters
         ----------
         step : int
             Global training step the metrics correspond to.
-        logits : torch.Tensor
-            Model logits for the current batch.
-        labels : torch.Tensor
-            Ground-truth labels aligned with ``logits``.
         ce_loss : float
             Cross-entropy loss for the batch.
         total_loss : float
@@ -874,14 +869,12 @@ class Trainer:
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],
-            "train_mean_reciprocal_rank": reciprocal_rank(logits, labels, ignore_index=self.metrics_ignore_index),
-            "train_correct_token_predictions_at_1": correct_token_predictions_at_k(logits, labels, k=1, ignore_index=self.metrics_ignore_index),
             "total_pflops": self.total_pflops,
         }
 
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(self, step: int, val_ce_loss: float, val_mrr: float, val_acc_at_1: float) -> None:
+    def _log_validation_metrics(self, step: int, val_ce_loss: float) -> None:
         """Submit aggregated validation metrics to Weights & Biases.
 
         Parameters
@@ -890,14 +883,8 @@ class Trainer:
             Global training step the metrics correspond to.
         val_ce_loss : float
             Mean validation cross-entropy loss.
-        val_mrr : float
-            Mean reciprocal rank on the validation set.
-        val_acc_at_1 : float
-            Accuracy at one token prediction on the validation set.
         """
         log_data = {
             "val_ce_loss": val_ce_loss,
-            "val_mean_reciprocal_rank": val_mrr,
-            "val_correct_token_predictions_at_1": val_acc_at_1,
         }
         wandb.log(log_data, step=step)  # type: ignore

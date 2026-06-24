@@ -155,6 +155,47 @@ class TestInference(unittest.TestCase):
         self.assertEqual(nsr.generation_config.method, 'softmax_sampling')
         self._assert_valid_results(nsr)
 
+    def test_softmax_sampling_batched_path(self) -> None:
+        # batch_size < choices routes to the batched (chunked, KV-cache-freeing) path,
+        # which is what the deployed c=1024 / batch_size=128 config uses. Asserts the
+        # path produces valid results and never returns more than `choices` unique beams.
+        generation_config = SoftmaxSamplingConfig(
+            choices=16,
+            top_k=8,
+            top_p=0.95,
+            max_len=24,
+            batch_size=4,  # < choices -> batched path (4 chunks, cross-chunk dedup)
+            temperature=0.8,
+            simplify=True,
+            unique=True,
+        )
+
+        nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
+
+        self.assertEqual(nsr.generation_config.method, 'softmax_sampling')
+        self._assert_valid_results(nsr)
+
+    def test_softmax_sampling_auto_batch_single_shot(self) -> None:
+        # Regression: batch_size='auto' (the library default) at a small `choices` resolves to a
+        # batch >= choices, taking the single-shot path. Previously that path forwarded the
+        # unresolved 'auto' string to sample_top_kp -> `range(0, n, 'auto')` -> TypeError. The
+        # resolved int must reach sample_top_kp regardless of which path is taken.
+        generation_config = SoftmaxSamplingConfig(
+            choices=16,
+            top_k=8,
+            top_p=0.95,
+            max_len=24,
+            batch_size='auto',  # resolves to >= choices -> single-shot path
+            temperature=0.8,
+            simplify=True,
+            unique=True,
+        )
+
+        nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
+
+        self.assertEqual(nsr.generation_config.method, 'softmax_sampling')
+        self._assert_valid_results(nsr)
+
     def test_mcts_inference(self) -> None:
         generation_config = MCTSGenerationConfig(
             beam_width=6,

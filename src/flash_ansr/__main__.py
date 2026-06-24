@@ -238,6 +238,10 @@ def main(argv: str = None) -> None:
             raw_config = load_config(config_path)
             experiment_map = raw_config.get("experiments") if isinstance(raw_config, dict) else None
 
+            from flash_ansr.eval.provenance import collect_provenance, format_provenance
+            base_prov = collect_provenance(config_path, None)
+            print(format_provenance(base_prov), flush=True)
+
             def _execute_plan(plan: EvaluationRunPlan, experiment_name: str | None = None) -> None:
                 label = f"[{experiment_name}] " if experiment_name else ""
                 if plan.completed or plan.engine is None:
@@ -252,6 +256,7 @@ def main(argv: str = None) -> None:
                     output_path=plan.output_path,
                     verbose=args.verbose,
                     progress=args.verbose,
+                    meta={**base_prov, "experiment": experiment_name},
                 )
 
                 if args.verbose:

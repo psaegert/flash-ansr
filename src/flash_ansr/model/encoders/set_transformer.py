@@ -151,6 +151,11 @@ class MAB(nn.Module):
         Normalization strategy for attention inputs. Defaults to ``"none"``.
     ffn_norm : str, optional
         Normalization strategy for feed-forward inputs. Defaults to ``"none"``.
+    norm_position : str, optional
+        Either ``"pre"`` (Pre-LN: ``x + sub(norm(x))``) or ``"post"`` (Post-LN:
+        ``norm(x + sub(x))``). Defaults to ``"pre"``. In post-norm mode the
+        residual is normalized once after the addition; ``norm_kv`` is left
+        unused on the key/value stream to mirror standard Post-LN Transformers.
     """
     def __init__(
         self,
@@ -165,9 +170,15 @@ class MAB(nn.Module):
         query_is_projected: bool = False,  # New flag
         attn_norm: str = "none",
         ffn_norm: str = "none",
+        norm_position: str = "pre",
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
+
+        norm_position_l = norm_position.lower()
+        if norm_position_l not in ("pre", "post"):
+            raise ValueError(f"norm_position must be 'pre' or 'post', got {norm_position!r}")
+        self.norm_position = norm_position_l
 
         self.norm_q = get_norm_layer(attn_norm, dim_q)
         self.norm_kv = get_norm_layer(attn_norm, dim_kv)
@@ -182,27 +193,49 @@ class MAB(nn.Module):
             query_is_projected=query_is_projected
         )
 
+        # In post-norm, the residual norm on the attention sub-layer must match
+        # the *output* dimensionality (== dim), not dim_q. For self-attention or
+        # query_is_projected blocks we have dim_q == dim, but for cross-attention
+        # MABs (e.g. ISAB.mab_cross, PMA.mab) we need a separate norm.
+        if self.norm_position == "post" and dim_q != dim:
+            self.norm_residual_attn = get_norm_layer(attn_norm, dim)
+        else:
+            self.norm_residual_attn = None
+
         self.norm_ffn = get_norm_layer(ffn_norm, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
     def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Internal forward pass supporting gradient checkpointing."""
-        # Pre-normalization prepares inputs for stable attention scores.
-        q_norm = self.norm_q(query)
+        if self.norm_position == "pre":
+            # Pre-LN: x + sub(norm(x))
+            q_norm = self.norm_q(query)
 
-        # Mask padded elements in the key/value before normalization if using SetNorms
-        if isinstance(self.norm_kv, SetNormBase):
-            kv_norm = self.norm_kv(key_value, attn_mask=attn_mask)
+            # Mask padded elements in the key/value before normalization if using SetNorms
+            if isinstance(self.norm_kv, SetNormBase):
+                kv_norm = self.norm_kv(key_value, attn_mask=attn_mask)
+            else:
+                kv_norm = self.norm_kv(key_value)
+
+            attn_output = self.attention(q_norm, kv_norm, attn_mask=attn_mask)
+            query = query + attn_output
+
+            q_norm = self.norm_ffn(query)
+            ffn_output = self.ffn(q_norm)
+            query = query + ffn_output
         else:
-            kv_norm = self.norm_kv(key_value)
+            # Post-LN: norm(x + sub(x)). norm_kv is intentionally unused on the
+            # key/value stream (mirrors standard Post-LN Transformers). The
+            # attn_mask describes the kv stream, so we do not pass it to norms
+            # operating on the query/residual stream (matches pre-norm behavior
+            # where norm_q / norm_ffn are also called without attn_mask).
+            attn_output = self.attention(query, key_value, attn_mask=attn_mask)
+            residual = query + attn_output
+            norm_attn = self.norm_residual_attn if self.norm_residual_attn is not None else self.norm_q
+            query = norm_attn(residual)
 
-        attn_output = self.attention(q_norm, kv_norm, attn_mask=attn_mask)
-        query = query + attn_output
-
-        # Pre-normalization before the feed-forward block mirrors Transformer Pre-LN.
-        q_norm = self.norm_ffn(query)
-        ffn_output = self.ffn(q_norm)
-        query = query + ffn_output
+            ffn_output = self.ffn(query)
+            query = self.norm_ffn(query + ffn_output)
         return query
 
     def forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -232,7 +265,7 @@ class MAB(nn.Module):
 class SAB(nn.Module):
     """Self-attention block operating on set elements."""
 
-    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
+    def __init__(self, dim: int, n_heads: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False, norm_position: str = "pre"):
         super().__init__()
         self.mab = MAB(
             dim_q=dim, dim_kv=dim, dim=dim, n_heads=n_heads,
@@ -240,7 +273,8 @@ class SAB(nn.Module):
             use_checkpointing=use_checkpointing,
             is_self_attention=True,
             attn_norm=attn_norm,
-            ffn_norm=ffn_norm
+            ffn_norm=ffn_norm,
+            norm_position=norm_position,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -263,7 +297,7 @@ class SAB(nn.Module):
 class ISAB(nn.Module):
     """Induced Set Attention Block with shared inducing points across the batch."""
 
-    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
+    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False, norm_position: str = "pre"):
         super().__init__()
         self.inducing_points = nn.Parameter(torch.randn(1, n_inducing_points, dim_out))
         nn.init.xavier_uniform_(self.inducing_points)
@@ -273,13 +307,15 @@ class ISAB(nn.Module):
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm,
-            query_is_projected=True
+            query_is_projected=True,
+            norm_position=norm_position,
         )
         self.mab_self = MAB(
             dim_q=dim_in, dim_kv=dim_out, dim=dim_out, n_heads=n_heads,
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=use_checkpointing, is_self_attention=False,
-            attn_norm=attn_norm, ffn_norm=ffn_norm
+            attn_norm=attn_norm, ffn_norm=ffn_norm,
+            norm_position=norm_position,
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -319,7 +355,7 @@ class ISAB(nn.Module):
 class PMA(nn.Module):
     """Pooling by multi-head attention module turning sets into fixed-size summaries."""
 
-    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False):
+    def __init__(self, dim: int, n_heads: int, n_seeds: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False, norm_position: str = "pre"):
         super().__init__()
         self.seed_vectors = nn.Parameter(torch.randn(1, n_seeds, dim))
         nn.init.xavier_uniform_(self.seed_vectors)
@@ -329,7 +365,8 @@ class PMA(nn.Module):
             ffn_hidden_dim=ffn_hidden_dim, dropout=dropout,
             use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm,
-            query_is_projected=True
+            query_is_projected=True,
+            norm_position=norm_position,
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -393,7 +430,8 @@ class SetTransformer(SetEncoder):
         self, input_dim: int, output_dim: int | None, model_dim: int = 256, n_heads: int = 8,
         n_isab: int = 2, n_sab: int = 1, n_inducing_points: Union[int, List[int]] = 32,
         n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0,
-        attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none", use_checkpointing: bool = False
+        attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none", use_checkpointing: bool = False,
+        norm_position: str = "pre",
     ):
         super().__init__()
         if isinstance(n_inducing_points, int):
@@ -402,12 +440,12 @@ class SetTransformer(SetEncoder):
         self.embedding = nn.Linear(input_dim, model_dim)
 
         self.isabs = nn.ModuleList([
-            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
+            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position)
             for n_ip in n_inducing_points
         ])
-        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
+        self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position)
         self.sabs = nn.ModuleList([
-            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing)
+            SAB(model_dim, n_heads, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position)
             for _ in range(n_sab)
         ])
         self.output_norm = get_norm_layer(output_norm, model_dim)

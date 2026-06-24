@@ -6,8 +6,6 @@ from flash_ansr.eval import model_adapters
 
 
 class _DummyModel:
-    parsimony = None
-
     def to(self, device: str):  # noqa: D401 - simple stub
         return self
 

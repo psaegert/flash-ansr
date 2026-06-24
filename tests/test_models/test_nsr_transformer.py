@@ -44,6 +44,96 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert len(beams) == 4
         assert len(scores) == 4
 
+    def test_beam_search_eos_not_dropped(self):
+        """Regression test: EOS candidates ranked below the beam_width-th non-EOS
+        must still be registered as completed sequences.
+
+        With beam_width=1 the single active-beam slot fills on the very first
+        non-EOS candidate.  Under the old (buggy) code any EOS at rank ≥ 1 was
+        silently dropped, leaving no completed sequence at all.  With the fix the
+        returned sequence must be EOS-terminated.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+        eos_id = nsr.tokenizer['<eos>']
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, scores, _ = nsr.beam_search(
+                x,
+                beam_width=1,
+                max_len=20,
+                unique=False,
+                limit_expansions=False,
+            )
+            assert len(beams) >= 1, f"seed={seed}: no beams returned"
+            assert beams[0][-1] == eos_id, (
+                f"seed={seed}: top beam is not EOS-terminated — got token {beams[0][-1]}"
+            )
+
+    def test_beam_search_active_beams_not_mixed_with_completed(self):
+        """Regression test: active (max-len) beams must not displace EOS-terminated
+        sequences in the output.
+
+        Under the old code, active beams were always appended to combined_sequences
+        and then sorted by score.  Because active beams carry no EOS log-probability
+        penalty their cumulative log-probs are higher, so they ranked above completed
+        sequences and were returned — producing beams without </expression> that
+        crashed the downstream refiner.
+
+        The fix gates the active-beam fallback: active beams are only included when
+        the completed pool has fewer than beam_width entries.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, _, completed = nsr.beam_search(
+                x,
+                beam_width=4,
+                max_len=20,
+                unique=False,
+                limit_expansions=False,
+            )
+            n_completed = sum(completed)
+
+            # If the completed pool filled the beam, no active beams should appear.
+            if n_completed >= 4:
+                assert all(completed), (
+                    f"seed={seed}: active beams mixed into output despite "
+                    f"{n_completed} completed sequences being available"
+                )
+
+    def test_beam_search_truncated_beams_are_parseable(self):
+        """Regression test: all returned beams must be parseable even when max_len
+        forces truncation before an EOS token is emitted.
+
+        With a very small max_len the beam search loop ends with active (non-EOS)
+        sequences that lack </expression>.  The fixed fallback appends </expression>
+        to any such sequence before returning it, so extract_expression_from_beam
+        must never raise ValueError regardless of max_len.
+        """
+        nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
+
+        for seed in range(5):
+            torch.manual_seed(seed)
+            x = torch.rand(13, 11)
+            beams, _, _ = nsr.beam_search(
+                x,
+                beam_width=4,
+                max_len=5,
+                unique=False,
+                limit_expansions=False,
+            )
+            for i, beam in enumerate(beams):
+                try:
+                    nsr.tokenizer.extract_expression_from_beam(beam)
+                except ValueError as exc:
+                    raise AssertionError(
+                        f"seed={seed}, beam {i}: extract_expression_from_beam raised ValueError — {exc}"
+                    ) from exc
+
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 

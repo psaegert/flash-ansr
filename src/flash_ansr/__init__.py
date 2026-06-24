@@ -5,6 +5,7 @@ from .model import (
     Tokenizer,
     RotaryEmbedding,
     IEEE75432PreEncoder,
+    IEEE75416PreEncoder,
     install_model,
     remove_model,
 )

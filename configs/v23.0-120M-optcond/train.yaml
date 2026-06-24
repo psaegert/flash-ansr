@@ -1,0 +1,36 @@
+# OPTIONAL-CONDITION FINE-TUNE of v23.0-120M (warm-start from the pretrained state_dict).
+# Driven by research/interpretability/prior_posterior/ft/ft_optional_condition.py
+# (NOT `flash_ansr train --resume-from`: strict=False weight-only graft + FRESH short schedule from step 0).
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Multiplied by the scheduler below
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+# FRESH short fine-tune schedule: brief warmup -> small CONSTANT lr (well below the 1e-4 pretrain peak).
+lr_schedule:
+  - [0, 0.0]
+  - [500, 2.0e-5]      # warmup
+  - [40_000, 2.0e-5]   # hold constant
+
+batch_size: 64
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 64
+val_size: 5_000        # cheaper than the 100k pretrain val; enough to monitor CE during fine-tune
+
+# Compile OFF: a ~25k-step fine-tune barely amortizes compile, and it de-risks the new null_memory-in-graph
+# path; gradient_checkpointing OFF first (smoke validates 4090 VRAM at batch 128, enable if it OOMs).
+compile_mode: null
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 40_000          # default horizon; gate-driven -> checkpoint often, stop when the PROPOSAL §3 gate passes
+device: cuda

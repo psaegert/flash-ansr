@@ -339,7 +339,9 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
             "refiner_method": "curve_fit_lm",
             "refiner_p0_noise": "normal",
             "refiner_p0_noise_kwargs": {"loc": 0.0, "scale": 1.0},
-            "parsimony": 0.1,
+            "length_penalty": 0.2,
+            "constants_penalty": 0.01,
+            "likelihood_penalty": 0.0,
             "device": "cuda",
             "refiner_workers": None,
             "generation_config": {
@@ -364,10 +366,11 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
         def load(*, directory, generation_config, **kwargs):
             captured["flash_ansr_gen"] = generation_config
             captured["flash_ansr_dir"] = directory
+            captured["flash_ansr_kwargs"] = kwargs
             return SimpleNamespace()
 
     class DummyAdapter:
-        def __init__(self, model, device, complexity, refiner_workers):
+        def __init__(self, model, device, complexity, refiner_workers, candidate_store_dir=None):
             self.model = model
             self.device = device
             self.complexity = complexity
@@ -390,6 +393,9 @@ def test_flash_ansr_generation_overrides(tmp_path, monkeypatch):
     assert captured["method"] == "softmax_sampling"
     assert captured["kwargs"]["choices"] == 2
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 2
+    assert captured["flash_ansr_kwargs"]["length_penalty"] == 0.2
+    assert captured["flash_ansr_kwargs"]["constants_penalty"] == 0.01
+    assert captured["flash_ansr_kwargs"]["likelihood_penalty"] == 0.0
 
 
 def test_skeleton_dataset_max_trials(monkeypatch):
@@ -437,7 +443,7 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
             return SimpleNamespace()
 
     class DummyAdapter:
-        def __init__(self, model, device, complexity, refiner_workers):
+        def __init__(self, model, device, complexity, refiner_workers, candidate_store_dir=None):
             self.model = model
             self.device = device
             self.complexity = complexity
@@ -452,7 +458,9 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
         "refiner_method": "curve_fit_lm",
         "refiner_p0_noise": "normal",
         "refiner_p0_noise_kwargs": {"loc": 0.0, "scale": 1.0},
-        "parsimony": 0.1,
+        "length_penalty": 0.15,
+        "constants_penalty": 0.0,
+        "likelihood_penalty": 0.0,
         "device": "cuda",
         "generation_config": {
             "method": "softmax_sampling",
@@ -475,6 +483,9 @@ def test_flash_ansr_inline_evaluation_config(monkeypatch):
     assert captured["kwargs"]["choices"] == 4
     assert captured["flash_ansr_gen"]["kwargs"]["choices"] == 4
     assert captured["flash_ansr_kwargs"]["n_restarts"] == 2
+    assert captured["flash_ansr_kwargs"]["length_penalty"] == 0.15
+    assert captured["flash_ansr_kwargs"]["constants_penalty"] == 0.0
+    assert captured["flash_ansr_kwargs"]["likelihood_penalty"] == 0.0
 
 
 def test_pysr_adapter_accepts_non_dataset_with_explicit_engine(monkeypatch):
@@ -612,3 +623,24 @@ def test_partial_skeleton_dataset_infers_remaining(tmp_path, monkeypatch):
     assert plan.total_limit == 6
     assert captured["target_size"] == 2
     assert plan.engine is not None
+
+
+def test_load_skeleton_list_enforces_canonical_sha():
+    # A pin file carrying _meta.sha256_canonical is integrity-checked at load: a tampered skeleton
+    # (same stored sha, different content) must RAISE -- the canonical sha is a live invariant, not doc.
+    skeletons = [["+", "x1", "x2"], ["sin", "x1"]]
+    good_sha = run_config._canonical_skeleton_sha(skeletons)
+    good = {"_meta": {"sha256_canonical": good_sha}, "skeletons": skeletons}
+    assert run_config._load_skeleton_list(good) == [("+", "x1", "x2"), ("sin", "x1")]
+
+    tampered = {"_meta": {"sha256_canonical": good_sha}, "skeletons": [["+", "x2", "x1"], ["sin", "x1"]]}
+    with pytest.raises(ValueError, match="integrity check failed"):
+        run_config._load_skeleton_list(tampered)
+
+
+def test_load_skeleton_list_inline_slice_skips_integrity_check():
+    # Inline shard slices carry no _meta -> no canonical sha to check (they are captured by config_sha).
+    sliced = {"skeletons": [["+", "x1", "x2"]]}
+    assert run_config._load_skeleton_list(sliced) == [("+", "x1", "x2")]
+    assert run_config._load_skeleton_list([["sin", "x1"]]) == [("sin", "x1")]
+    assert run_config._load_skeleton_list(None) is None

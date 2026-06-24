@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import pickle
 import warnings
@@ -15,7 +17,7 @@ from simplipy import SimpliPyEngine
 from flash_ansr.benchmarks import FastSRBBenchmark
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.eval.data_sources import FastSRBSource, SkeletonDatasetSource
-from flash_ansr.eval.engine import EvaluationEngine
+from flash_ansr.eval.engine import EvaluationEngine, OverlappedEvaluationEngine
 from flash_ansr.eval.model_adapters import (
     BruteForceAdapter,
     E2EAdapter,
@@ -140,7 +142,7 @@ def build_evaluation_run(
 
     adapter = _build_model_adapter(model_cfg, context=context)
 
-    engine = EvaluationEngine(
+    engine = _select_engine_cls(adapter)(
         data_source=data_source,
         model_adapter=adapter,
         result_store=store,
@@ -159,6 +161,63 @@ def build_evaluation_run(
 
 # ---------------------------------------------------------------------------
 # Builders
+
+def _select_engine_cls(adapter: Any) -> type[EvaluationEngine]:
+    """Pick the evaluation engine. Use the OverlappedEvaluationEngine (generate(N+1) || refine(N)) ONLY when a
+    persistent refine pool was actually created on the model -- i.e. the caller opted in via
+    ``model_adapter.persistent_refine_pool`` AND fork + ``refiner_workers > 1`` made the pool real. Otherwise the
+    plain serial EvaluationEngine, byte-identical to the historical default. Keying the CLASS off the live pool
+    (not just the flag) keeps the default fully inert: when no pool exists, no overlap code path is exercised at
+    all. The overlap engine ALSO self-degrades internally if its preconditions fail, so this is belt-and-braces.
+    """
+    model = getattr(adapter, "model", None)
+    return OverlappedEvaluationEngine if getattr(model, "_refine_pool", None) is not None else EvaluationEngine
+
+
+def _canonical_skeleton_sha(skeletons: Sequence[Sequence[str]]) -> str:
+    """The pinned-skeleton-set fingerprint. Serialization is fixed (matches val100_skeletons.json's
+    sha256_canonical generator): JSON list-of-token-lists, no whitespace. Changing it silently breaks
+    every stored pin hash -- don't."""
+    return hashlib.sha256(
+        json.dumps([list(s) for s in skeletons], separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _load_skeleton_list(spec: Any) -> list[tuple[str, ...]] | None:
+    """Resolve a ``data_source.skeleton_list`` spec to an ordered list of skeleton tuples.
+
+    Accepts a path to the pinned JSON (``{"_meta": {...}, "skeletons": [[tok, ...], ...]}`` or a bare
+    list), or an inline list of token lists. Returns None when no pin is configured. The pin freezes
+    WHICH skeletons evaluate (e.g. the standard-eval val100); SkeletonDatasetSource hard-fails if any
+    are absent from the pool. See STANDARD_EVAL.md item 1.
+
+    When the loaded object carries ``_meta.sha256_canonical``, the canonical fingerprint of the loaded
+    skeletons is recomputed and asserted to match -- so a pin FILE that was edited or corrupted fails
+    loudly at load (the in-pool check alone would pass any 100 in-pool skeletons). This makes the stored
+    canonical sha a live invariant, not just documentation.
+    """
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        with open(substitute_root_path(spec)) as fh:
+            data = json.load(fh)
+    else:
+        data = spec
+    if isinstance(data, Mapping):
+        skeletons = data["skeletons"]
+        stored_sha = data.get("_meta", {}).get("sha256_canonical")
+        if stored_sha is not None:
+            computed = _canonical_skeleton_sha(skeletons)
+            if computed != stored_sha:
+                raise ValueError(
+                    f"skeleton_list pin file integrity check failed: canonical sha256 {computed} != "
+                    f"stored {stored_sha} (the pin file was edited or corrupted). 'val' must mean the "
+                    f"exact pinned set; refusing to run on a mismatched pin."
+                )
+    else:
+        skeletons = data
+    return [tuple(s) for s in skeletons]
+
 
 def _build_data_source(
     config: Mapping[str, Any],
@@ -205,6 +264,7 @@ def _build_data_source(
             datasets_per_expression=_coerce_optional_int(config.get("datasets_per_expression"), "data_source.datasets_per_expression"),
             datasets_random_seed=_coerce_optional_int(config.get("datasets_random_seed"), "data_source.datasets_random_seed"),
             max_trials=max_trials,
+            skeleton_list=_load_skeleton_list(config.get("skeleton_list")),
         )
         return source, {"dataset": dataset}
 
@@ -286,12 +346,17 @@ def _infer_total_limit_from_data_source(config: Mapping[str, Any]) -> tuple[int 
         dataset_spec = config.get("dataset")
         if dataset_spec is None:
             raise ValueError("data_source.dataset must be provided for skeleton_dataset sources")
-        dataset = _load_dataset(dataset_spec)
         repeats = _coerce_optional_int(
             config.get("datasets_per_expression"),
             "data_source.datasets_per_expression",
         )
         per_expression = repeats if repeats is not None and repeats > 0 else 1
+        # A pinned skeleton_list fixes the expression count to exactly len(pin); without it, fall back
+        # to the live pool size. (Loading the JSON pin is far cheaper than loading the dataset.)
+        pinned = _load_skeleton_list(config.get("skeleton_list"))
+        if pinned is not None:
+            return len(pinned) * per_expression, {}
+        dataset = _load_dataset(dataset_spec)
         pool_size = len(getattr(dataset, "skeleton_pool"))
         return pool_size * per_expression, {"dataset": dataset}
 
@@ -377,9 +442,19 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, A
         refiner_method=eval_cfg.get("refiner_method", "curve_fit_lm"),
         refiner_p0_noise=eval_cfg["refiner_p0_noise"],
         refiner_p0_noise_kwargs=eval_cfg.get("refiner_p0_noise_kwargs"),
-        parsimony=eval_cfg["parsimony"],
+        length_penalty=eval_cfg.get("length_penalty", 0.0),
+        constants_penalty=eval_cfg.get("constants_penalty", 0.0),
+        likelihood_penalty=eval_cfg.get("likelihood_penalty", 0.0),
         device=eval_cfg.get("device", config.get("device", "cpu")),
         refiner_workers=config.get("refiner_workers", eval_cfg.get("refiner_workers")),
+        prune_constant_budget=eval_cfg.get("prune_constant_budget", 0),
+        # Default ON (2026-06-24): a persistent fork pool (forked pre-CUDA) enables the
+        # OverlappedEvaluationEngine (generate(N+1) || refine(N)). Self-degrades to the serial engine
+        # (byte-identical) if fork is unavailable or refiner_workers <= 1, so enabling it by default is
+        # safe: quality is unchanged, throughput improves where gen/refine can overlap. An explicit
+        # False forces the serial engine.
+        persistent_refine_pool=bool(config.get("persistent_refine_pool",
+                                               eval_cfg.get("persistent_refine_pool", True))),
     )
 
     complexity = config.get("complexity", eval_cfg.get("complexity", "none"))
@@ -391,6 +466,7 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, A
         device=adapter_device,
         complexity=complexity,
         refiner_workers=refiner_workers,
+        candidate_store_dir=config.get("candidate_store_dir"),
     )
 
 
@@ -466,6 +542,9 @@ def _build_e2e_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) ->
 
     candidates_per_bag = _coerce_int(config.get("candidates_per_bag", 1), "model_adapter.candidates_per_bag")
     max_input_points = _coerce_int(config.get("max_input_points", 200), "model_adapter.max_input_points")
+    max_generated_output_len = _coerce_int(
+        config.get("max_generated_output_len", 200), "model_adapter.max_generated_output_len"
+    )
 
     max_number_bags_cfg = config.get("max_number_bags")
     max_number_bags = _coerce_optional_int(max_number_bags_cfg, "model_adapter.max_number_bags")
@@ -484,6 +563,7 @@ def _build_e2e_adapter(config: Mapping[str, Any], context: Mapping[str, Any]) ->
         max_number_bags=max_number_bags,
         n_trees_to_refine=n_trees_to_refine,
         rescale=rescale,
+        max_generated_output_len=max_generated_output_len,
     )
 
 
@@ -524,7 +604,9 @@ def _build_skeleton_pool_adapter(config: Mapping[str, Any], context: Mapping[str
         refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
         refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
         numpy_errors=config.get("numpy_errors", "ignore"),
-        parsimony=float(config.get("parsimony", 0.05)),
+        length_penalty=_coerce_float(config.get("length_penalty", 0.05), "model_adapter.length_penalty"),
+        constants_penalty=_coerce_float(config.get("constants_penalty", 0.0), "model_adapter.constants_penalty"),
+        likelihood_penalty=_coerce_float(config.get("likelihood_penalty", 0.0), "model_adapter.likelihood_penalty"),
     )
 
     return SkeletonPoolAdapter(model)
@@ -551,7 +633,9 @@ def _build_brute_force_adapter(config: Mapping[str, Any], context: Mapping[str, 
         refiner_p0_noise=config.get("refiner_p0_noise", "normal"),
         refiner_p0_noise_kwargs=config.get("refiner_p0_noise_kwargs", "default"),
         numpy_errors=config.get("numpy_errors", "ignore"),
-        parsimony=float(config.get("parsimony", 0.05)),
+        length_penalty=_coerce_float(config.get("length_penalty", 0.05), "model_adapter.length_penalty"),
+        constants_penalty=_coerce_float(config.get("constants_penalty", 0.0), "model_adapter.constants_penalty"),
+        likelihood_penalty=_coerce_float(config.get("likelihood_penalty", 0.0), "model_adapter.likelihood_penalty"),
     )
 
     return BruteForceAdapter(model)
@@ -619,6 +703,15 @@ def _coerce_int(value: Any, field_name: str) -> int:
         raise ValueError(f"{field_name} must be an integer") from exc
 
 
+def _coerce_float(value: Any, field_name: str) -> float:
+    if value is None:
+        raise ValueError(f"{field_name} must be provided")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{field_name} must be a float") from exc
+
+
 def _coerce_optional_int(value: Any, field_name: str) -> int | None:
     if value is None:
         return None
@@ -662,6 +755,8 @@ def _load_existing_results(path: str) -> Mapping[str, Sequence[Any]] | None:
         payload = pickle.load(handle)
     if not isinstance(payload, Mapping):  # pragma: no cover - defensive
         raise ValueError("Stored evaluation results must be a mapping")
+    if "__meta__" in payload:  # provenance is a non-list key; strip before the row-store sees it
+        payload = {k: v for k, v in payload.items() if k != "__meta__"}
     return payload  # type: ignore[return-value]
 
 

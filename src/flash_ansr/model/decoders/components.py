@@ -1,5 +1,5 @@
 """Decoder-specific building blocks, including attention and positional encodings."""
-from typing import Optional, Tuple
+from typing import Optional, Tuple, cast
 
 import torch
 from torch import nn
@@ -72,6 +72,7 @@ class Attention(nn.Module):
         n_heads: int,
         dropout: float = 0.0,
         use_rope: bool = False,
+        use_xsa: bool = False,
     ):
         super().__init__()
         if dim % n_heads != 0:
@@ -80,6 +81,7 @@ class Attention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
         self.use_rope = use_rope
+        self.use_xsa = use_xsa
 
         self.w_q = nn.Linear(dim, dim)
         self.w_k = nn.Linear(dim, dim)
@@ -90,39 +92,138 @@ class Attention(nn.Module):
     def forward(
         self,
         query: torch.Tensor,
-        key_value: torch.Tensor,
+        key_value: torch.Tensor | None,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         is_causal: bool = False,
-    ) -> torch.Tensor:
+        past_key_value: Tuple[torch.Tensor, torch.Tensor] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         batch_size_q, seq_len_q, _ = query.shape
-        batch_size_kv, seq_len_kv, _ = key_value.shape
 
         q = self.w_q(query)
-        k = self.w_k(key_value)
-        v = self.w_v(key_value)
-
         q = q.view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
 
-        if self.use_rope:
-            cos, sin = rope_emb
-            q, k = apply_rotary_emb(q, k, cos, sin)
+        if key_value is not None:
+            batch_size_kv, seq_len_kv, _ = key_value.shape
+            k = self.w_k(key_value)
+            v = self.w_v(key_value)
+            k = k.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+            v = v.view(batch_size_kv, seq_len_kv, self.n_heads, self.head_dim).transpose(1, 2)
+
+            if self.use_rope:
+                cos, sin = rope_emb
+                q, k = apply_rotary_emb(q, k, cos, sin)
+
+            if past_key_value is not None:
+                # Self-attention incremental: append new K/V to cached
+                k = torch.cat([past_key_value[0], k], dim=2)
+                v = torch.cat([past_key_value[1], v], dim=2)
+        elif past_key_value is not None:
+            # Static KV from cache (cross-attention reuse): skip K/V computation
+            k, v = past_key_value
+            if self.use_rope:
+                cos, sin = rope_emb
+                q = (q * cos) + (rotate_half(q) * sin)
+                q = q.type_as(query)
+        else:
+            raise ValueError("Either key_value or past_key_value must be provided")
 
         attn_output = F.scaled_dot_product_attention(
             q,
             k,
             v,
-            is_causal=is_causal,
+            is_causal=is_causal if past_key_value is None else False,
             dropout_p=self.dropout if self.training else 0.0,
         )
 
+        if self.use_xsa:
+            # Exclusive Self-Attention (Zhai 2026, arXiv:2603.09078): subtract from each
+            # token's attention output the component parallel to that token's OWN value
+            # vector. Self-attention only. The query positions' own values are the LAST
+            # seq_len_q slots of v -- correct for both full-sequence forward (seq_len_kv ==
+            # seq_len_q) and cached decode (v = cat([past_v, new_v]); the fresh new_v are
+            # exactly the current query positions' values). Using cached v here would
+            # subtract the wrong vector -- the documented KV-cache correctness bug.
+            own_v = v[:, :, -seq_len_q:, :]
+            dot = (attn_output * own_v).sum(dim=-1, keepdim=True)
+            denom = (own_v * own_v).sum(dim=-1, keepdim=True) + 1e-12
+            attn_output = attn_output - (dot / denom) * own_v
+
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
+        output = self.w_o(attn_output)
+
+        if use_cache:
+            # Ensure cached K/V batch dim matches Q (handles encoder memory broadcast)
+            if k.shape[0] != batch_size_q:
+                k = k.expand(batch_size_q, -1, -1, -1).contiguous()
+                v = v.expand(batch_size_q, -1, -1, -1).contiguous()
+            return output, (k, v)
+        return output
+
+    # --- Static-shape (graph-capturable) decode path (additive; the dynamic path above is unchanged) ---
+
+    def forward_static_self(
+        self,
+        query: torch.Tensor,
+        rope_emb: Tuple[torch.Tensor, torch.Tensor],
+        k_buf: torch.Tensor,
+        v_buf: torch.Tensor,
+        position: int,
+        attn_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Position-indexed self-attention for a single new token (seq_len_q == 1). Writes the new
+        K/V into the preallocated buffers at ``position`` (replacing the dynamic ``torch.cat`` grow),
+        then reads the FULL buffer under ``attn_mask`` (slots > position masked). XSA is supported here:
+        the current token's own value is the freshly-computed ``v`` (seq_len_q==1), which is exactly the
+        dynamic path's ``v[:, :, -seq_len_q:, :]`` -- so the orthogonalization is bit-identical to dynamic."""
+        batch_size_q, seq_len_q, _ = query.shape
+        q = self.w_q(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.w_k(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.w_v(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        if self.use_rope:
+            cos, sin = rope_emb
+            q, k = apply_rotary_emb(q, k, cos, sin)
+        k_buf[:, :, position, :] = k[:, :, 0, :]
+        v_buf[:, :, position, :] = v[:, :, 0, :]
+        attn_output = F.scaled_dot_product_attention(q, k_buf, v_buf, attn_mask=attn_mask)
+        if self.use_xsa:
+            # Exclusive Self-Attention: subtract the component of the attention output parallel to THIS
+            # token's own value. `own_v` is the freshly-computed value for the single new token (NOT the
+            # cached buffer) -- identical to the dynamic path's `v[:, :, -seq_len_q:, :]`, so bit-identical.
+            own_v = v
+            dot = (attn_output * own_v).sum(dim=-1, keepdim=True)
+            denom = (own_v * own_v).sum(dim=-1, keepdim=True) + 1e-12
+            attn_output = attn_output - (dot / denom) * own_v
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
+        return self.w_o(attn_output)
+
+    def forward_static_cross(
+        self,
+        query: torch.Tensor,
+        encoder_memory: torch.Tensor,
+        ca_holder: list,
+    ) -> torch.Tensor:
+        """Cross-attention against the STATIC encoder memory: K/V are computed once and cached in
+        ``ca_holder`` (a 1-element list), reused every decode step. v23.0 cross-attn uses no RoPE."""
+        if self.use_rope:
+            raise NotImplementedError("static cross-attention with RoPE is not supported (v23.0 cross is RoPE-free)")
+        batch_size_q, seq_len_q, _ = query.shape
+        cached = ca_holder[0]
+        if cached is None:
+            bk, sk, _ = encoder_memory.shape
+            k = self.w_k(encoder_memory).view(bk, sk, self.n_heads, self.head_dim).transpose(1, 2)
+            v = self.w_v(encoder_memory).view(bk, sk, self.n_heads, self.head_dim).transpose(1, 2)
+            cached = (k, v)
+            ca_holder[0] = cached
+        k, v = cached
+        q = self.w_q(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        attn_output = F.scaled_dot_product_attention(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
         return self.w_o(attn_output)
 
 
 class TransformerDecoderBlock(nn.Module):
-    """Pre-norm transformer decoder block with optional RoPE and checkpointing."""
+    """Transformer decoder block with optional RoPE, checkpointing, and pre/post-norm."""
 
     def __init__(
         self,
@@ -133,15 +234,24 @@ class TransformerDecoderBlock(nn.Module):
         use_checkpointing: bool = False,
         use_rope_self_attn: bool = False,
         use_rope_cross_attn: bool = False,
+        use_xsa_self_attn: bool = False,
         self_attn_norm_type: str = "rms",
         cross_attn_norm_type: str = "rms",
         ffn_norm_type: str = "rms",
+        norm_position: str = "pre",
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
 
+        norm_position_l = norm_position.lower()
+        if norm_position_l not in ("pre", "post"):
+            raise ValueError(f"norm_position must be 'pre' or 'post', got {norm_position!r}")
+        self.norm_position = norm_position_l
+
         self.self_attn_norm = get_norm_layer(self_attn_norm_type, dim)
-        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn)
+        # XSA is applied to the decoder's causal SELF-attention only; cross-attention has
+        # no "own value" (values come from the encoder memory) so it is left untouched.
+        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn, use_xsa=use_xsa_self_attn)
 
         self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
         self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn)
@@ -154,11 +264,44 @@ class TransformerDecoderBlock(nn.Module):
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
-        normed_x = self.self_attn_norm(x)
-        x = x + self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True)
-        x = x + self.cross_attention(self.cross_attn_norm(x), encoder_memory, rope_emb=rope_emb)
-        x = x + self.ffn(self.ffn_norm(x))
+        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
+        sa_past = past_key_value[0] if past_key_value is not None else None
+        ca_past = past_key_value[1] if past_key_value is not None else None
+
+        if self.norm_position == "pre":
+            normed_x = self.self_attn_norm(x)
+            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            if use_cache:
+                sa_out, sa_cache = sa_out
+            x = x + sa_out
+
+            # When cross-attention cache is available, pass key_value=None to reuse cached K/V
+            ca_key_value = None if ca_past is not None else encoder_memory
+            ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+            if use_cache:
+                ca_out, ca_cache = ca_out
+            x = x + ca_out
+
+            x = x + self.ffn(self.ffn_norm(x))
+        else:
+            # Post-norm: x = norm(x + sublayer(x))
+            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            if use_cache:
+                sa_out, sa_cache = sa_out
+            x = self.self_attn_norm(x + sa_out)
+
+            ca_key_value = None if ca_past is not None else encoder_memory
+            ca_out = self.cross_attention(x, ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+            if use_cache:
+                ca_out, ca_cache = ca_out
+            x = self.cross_attn_norm(x + ca_out)
+
+            x = self.ffn_norm(x + self.ffn(x))
+
+        if use_cache:
+            return x, (sa_cache, ca_cache)
         return x
 
     def forward(
@@ -166,7 +309,9 @@ class TransformerDecoderBlock(nn.Module):
         x: torch.Tensor,
         encoder_memory: torch.Tensor,
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
-    ) -> torch.Tensor:
+        past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
+        use_cache: bool = False,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
         if self.training and self.use_checkpointing:
             cos, sin = rope_emb
 
@@ -176,11 +321,35 @@ class TransformerDecoderBlock(nn.Module):
                 cos: torch.Tensor,
                 sin: torch.Tensor,
             ) -> torch.Tensor:
-                return self._forward(x, encoder_memory, (cos, sin))
+                # _forward returns a bare Tensor when use_cache is unset (the ckpt path never caches).
+                return cast(torch.Tensor, self._forward(x, encoder_memory, (cos, sin)))
 
             return checkpoint(ckpt_fn, x, encoder_memory, cos, sin, use_reentrant=False)
 
-        return self._forward(x, encoder_memory, rope_emb)
+        return self._forward(x, encoder_memory, rope_emb, past_key_value=past_key_value, use_cache=use_cache)
+
+    def forward_static(
+        self,
+        x: torch.Tensor,
+        encoder_memory: torch.Tensor,
+        rope_emb: Tuple[torch.Tensor, torch.Tensor],
+        sa_buf: Tuple[torch.Tensor, torch.Tensor],
+        ca_holder: list,
+        position: int,
+        attn_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Pre-norm static decode step (v23.0 path only: pre-norm, RoPE-self; XSA supported;
+        the caller capability-gates the rest). Mirrors the pre-norm branch of ``_forward`` but with
+        position-indexed in-place KV writes instead of the dynamic cat-grow + active-row gather."""
+        if self.norm_position != "pre":
+            raise NotImplementedError("static decode supports pre-norm only")
+        normed_x = self.self_attn_norm(x)
+        sa_out = self.self_attention.forward_static_self(normed_x, rope_emb, sa_buf[0], sa_buf[1], position, attn_mask)
+        x = x + sa_out
+        ca_out = self.cross_attention.forward_static_cross(self.cross_attn_norm(x), encoder_memory, ca_holder)
+        x = x + ca_out
+        x = x + self.ffn(self.ffn_norm(x))
+        return x
 
 
 class PositionalEncoding(nn.Module):

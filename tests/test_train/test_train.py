@@ -71,7 +71,7 @@ class _DummyModel(torch.nn.Module):
         self.embed = torch.nn.Embedding(10, 4)
         self.output = torch.nn.Linear(4, 6)
 
-    def forward(self, input_ids: torch.Tensor, data_tensor: torch.Tensor, input_num: Any = None, data_attn_mask: Any = None) -> torch.Tensor:  # noqa: ANN401
+    def forward(self, input_ids: torch.Tensor, data_tensor: torch.Tensor, input_num: Any = None, data_attn_mask: Any = None, condition_mask: Any = None) -> torch.Tensor:  # noqa: ANN401
         embedded = self.embed(input_ids.long())
         return self.output(embedded)
 

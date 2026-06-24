@@ -5,7 +5,46 @@ import numpy as np
 import pytest
 
 from flash_ansr.eval.metrics.bootstrap import bootstrapped_metric_ci
+from flash_ansr.eval.metrics.numeric import fvu, is_perfect_fit
 from flash_ansr.eval.metrics.zss import build_tree, zss_tree_edit_distance
+
+
+def test_fvu_perfect_fit_is_zero() -> None:
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert fvu(y, y) == 0.0
+    assert bool(is_perfect_fit(y, y))
+
+
+def test_fvu_moderate_bad_fit_is_finite_and_not_perfect() -> None:
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    yp = np.array([1.0, 2.0, 3.0, 4.0, 500.0])
+    val = fvu(y, yp)
+    assert np.isfinite(val) and val > 0.0
+    assert not is_perfect_fit(y, yp)
+
+
+def test_fvu_non_finite_prediction_is_inf() -> None:
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert fvu(y, np.array([1.0, 2.0, 3.0, 4.0, np.inf])) == np.inf
+    assert not is_perfect_fit(y, np.array([1.0, 2.0, 3.0, 4.0, np.inf]))
+
+
+def test_fvu_divergent_finite_prediction_does_not_spuriously_perfect_fit() -> None:
+    # Regression: a finite-but-divergent prediction whose squared residual overflows
+    # float64 used to collapse to fvu == 0.0 (spurious is_perfect_fit) via the 1/ss_res
+    # rescale. It must report a terrible fit, not a perfect one.
+    y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    yp = np.array([1.0, 2.0, 3.0, 4.0, 1e167])
+    assert fvu(y, yp) > np.finfo(np.float32).eps
+    assert not is_perfect_fit(y, yp)
+
+
+def test_fvu_large_magnitude_good_fit_still_recovers() -> None:
+    # The overflow fallback must NOT punish a genuinely good fit on large-magnitude data
+    # (where the squared residual can overflow even though the relative error is tiny).
+    y = np.array([1e160, 2e160, 3e160, 4e160, 5e160])
+    yp = y * (1.0 + 1e-9)
+    assert bool(is_perfect_fit(y, yp))
 
 
 def test_bootstrap_returns_constant_interval_when_samples_identical(monkeypatch: pytest.MonkeyPatch) -> None:

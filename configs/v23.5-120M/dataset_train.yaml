@@ -1,0 +1,5 @@
+skeleton_pool: './skeleton_pool_train.yaml'
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+# CFG condition dropout: fraction of TRAIN examples emitted UNCONDITIONED (-> null_memory). VAL stays conditioned.
+unconditional_prob: 0.15

@@ -28,6 +28,7 @@ pip install flash-ansr
 
 ```python
 import torch
+import numpy as np
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Import flash_ansr
@@ -46,16 +47,16 @@ MODEL = "psaegert/flash-ansr-v23.0-120M"
 # By default, the model is downloaded to the directory `./models/` in the package root
 install_model(MODEL)
 
-# Load the model
+# Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
 model = FlashANSR.load(
   directory=get_path('models', MODEL),
-  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
-  n_restarts=8,
+  generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
+  length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
 
-# Define data
-X = ...
-y = ...
+# Define data: a small synthetic example, y = 2.5 * sin(x) + x^2 / 3
+X = np.linspace(-5, 5, 100).reshape(-1, 1)
+y = 2.5 * np.sin(X[:, 0]) + X[:, 0] ** 2 / 3
 
 # Fit the model to the data
 model.fit(X, y, verbose=True)
@@ -68,6 +69,37 @@ y_pred = model.predict(X)
 ```
 
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+
+# Inference speed
+
+Flash-ANSR v0.5 ships several inference-speed improvements, **enabled by default** and designed to be quality-neutral, so the quickstart above already runs in the fast regime. The speed-relevant settings live on the generation config:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `use_cache` | `True` | KV-cache decoding |
+| `batch_size` | `'auto'` | candidate-budget-adaptive batching (pass an `int` to override) |
+| `static_decode` | `None` | static decoding, auto-enabled for capable models (set `True`/`False` to force) |
+
+```python
+from flash_ansr import SoftmaxSamplingConfig
+
+config = SoftmaxSamplingConfig(
+  choices=1024,        # number of candidate expressions to sample
+  use_cache=True,      # KV cache (default)
+  batch_size='auto',   # candidate-budget-adaptive chunking (default)
+  static_decode=None,  # auto for capable models (default)
+)
+```
+
+Constant refinement runs in parallel; control it via `FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)`.
+
+To reproduce v0.4.x inference behavior, opt out of the new defaults:
+
+```python
+SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
+```
+
+> **Breaking change (v0.5):** the candidate-selection penalty `parsimony` was renamed to `length_penalty`. Replace any `parsimony=` arguments with `length_penalty=`.
 
 # Overview
 
@@ -125,7 +157,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.4.5},
+  version = {0.5.0},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
