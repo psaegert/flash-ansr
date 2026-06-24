@@ -157,7 +157,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.4.5},
+  version = {0.5.0},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
