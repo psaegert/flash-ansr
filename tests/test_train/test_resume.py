@@ -155,7 +155,7 @@ def test_resume_matches_baseline_loss_curve() -> None:
         logged_losses: list[float] = []
         logged_lrs: list[float] = []
 
-        def _log_metrics(step, logits, labels, ce_loss, total_loss, total_gradient_norm):  # type: ignore[override]
+        def _log_metrics(step, ce_loss, total_loss, total_gradient_norm):  # type: ignore[override]
             logged_losses.append(ce_loss)
             logged_lrs.append(trainer.optimizer.param_groups[0]['lr'])
 
