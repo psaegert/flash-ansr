@@ -86,7 +86,9 @@ class TestSimpliPyEngine(unittest.TestCase):
             ('-(x**2)', ['neg', '**', 'x', '2']),
             ('sin(x1) + 1', ['+', 'sin', 'x1', '1']),
             ('x1**2 + 1', ['+', '**', 'x1', '2', '1']),
-            ('x1**2 + 2*x1 + 1', ['+', '**', 'x1', '2', '+', '*', '2', 'x1', '1']),
+            # simplipy >=0.3.0 groups chained '+' left-associatively (a+b+c -> (a+b)+c);
+            # equivalent to the old right-assoc grouping, same token length.
+            ('x1**2 + 2*x1 + 1', ['+', '+', '**', 'x1', '2', '*', '2', 'x1', '1']),
             ('exp(- (x - 1.1)**2 / 1.2)', ['exp', '/', 'neg', '**', '-', 'x', '1.1', '2', '1.2'])
         ]
 

@@ -35,4 +35,4 @@ As baselines, we also implement:
 
 1. Load a checkpoint and select a generation config (beam, softmax, MCTS).
 2. Encode the provided \(X, y\) pairs; decode candidate expressions.
-3. Refine constants; score candidates by \(\log_{10}(\text{FVU}) + \text{parsimony penalty}\); return the best expression and predictions. All diverse results are accessible.
+3. Refine constants; score candidates by $\log_{10}(\text{FVU}) + \lambda_\ell \cdot \text{length} + \lambda_c \cdot \text{n\_constants} + \lambda_L \cdot (-\log p)$; return the best expression and predictions. All diverse results are accessible.

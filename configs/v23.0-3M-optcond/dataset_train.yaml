@@ -1,0 +1,8 @@
+skeleton_pool: './skeleton_pool_train.yaml'
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+
+# First-class optional condition (CFG): emit this fraction of TRAIN examples UNCONDITIONED (condition_mask
+# False -> routed to the model's null_memory). 0.15 ~ Ho & Salimans 10-20%. KEEP THIS OFF (0.0 / absent) on
+# the VAL dataset so validation CE stays a pure conditioned metric comparable to prior v23 runs.
+unconditional_prob: 0.15

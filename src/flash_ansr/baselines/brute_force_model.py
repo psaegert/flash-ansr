@@ -49,7 +49,9 @@ class BruteForceModel(BaseEstimator):
         refiner_p0_noise: Literal['uniform', 'normal'] | None = 'normal',
         refiner_p0_noise_kwargs: dict | Literal['default'] | None = 'default',
         numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-        parsimony: float = 0.05,
+        length_penalty: float = 0.05,
+        constants_penalty: float = 0.0,
+        likelihood_penalty: float = 0.0,
     ) -> None:
         self.simplipy_engine = simplipy_engine
         self.max_expressions = int(max_expressions)
@@ -63,7 +65,9 @@ class BruteForceModel(BaseEstimator):
             refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
         self.numpy_errors = numpy_errors
-        self.parsimony = parsimony
+        self.length_penalty = float(length_penalty)
+        self.constants_penalty = float(constants_penalty)
+        self.likelihood_penalty = float(likelihood_penalty)
 
         self._pool = self._ensure_pool(skeleton_pool)
         self._results: list[dict[str, Any]] = []
@@ -117,12 +121,45 @@ class BruteForceModel(BaseEstimator):
         return float(loss) / BruteForceModel._normalize_variance(variance)
 
     @staticmethod
-    def _score_from_fvu(fvu: float, complexity: int, parsimony: float) -> float:
+    def _is_constant_token(token: str) -> bool:
+        if token == '<constant>':
+            return True
+        if token.startswith('C_') and token[2:].isdigit():
+            return True
+        if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
+            return True
+        try:
+            float(token)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _count_constants(cls, expression: Sequence[str]) -> int:
+        return sum(1 for token in expression if cls._is_constant_token(token))
+
+    @staticmethod
+    def _score_from_fvu(
+            fvu: float,
+            complexity: int,
+            constant_count: int,
+            log_prob: float | None,
+            length_penalty: float,
+            constants_penalty: float,
+            likelihood_penalty: float) -> float:
         if not np.isfinite(fvu) or fvu <= 0:
             safe_fvu = BruteForceModel.FLOAT64_EPS
         else:
             safe_fvu = max(float(fvu), BruteForceModel.FLOAT64_EPS)
-        return float(math.log10(safe_fvu) + parsimony * complexity)
+
+        likelihood_term = 0.0
+        if log_prob is not None and np.isfinite(log_prob):
+            likelihood_term = likelihood_penalty * (-float(log_prob))
+
+        return float(math.log10(safe_fvu)
+                     + length_penalty * complexity
+                     + constants_penalty * max(int(constant_count), 0)
+                     + likelihood_term)
 
     def _leaf_nodes(self) -> list[str]:
         leaves = list(self._pool.variables)
@@ -242,13 +279,23 @@ class BruteForceModel(BaseEstimator):
             if not np.isfinite(fvu):
                 continue
 
-            score = self._score_from_fvu(fvu, len(expression_tokens), self.parsimony)
+            constant_count = self._count_constants(expression_tokens)
+            score = self._score_from_fvu(
+                fvu,
+                len(expression_tokens),
+                constant_count,
+                None,
+                self.length_penalty,
+                self.constants_penalty,
+                self.likelihood_penalty,
+            )
 
             results.append({
                 'log_prob': float('nan'),
                 'fvu': fvu,
                 'score': score,
                 'expression': expression_tokens,
+                'constant_count': constant_count,
                 'complexity': len(expression_tokens),
                 'requested_complexity': None,
                 'raw_beam': expression_tokens,

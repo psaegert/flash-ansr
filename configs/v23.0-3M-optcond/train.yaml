@@ -1,0 +1,39 @@
+# Condition-dropout FINE-TUNE of v23.0-3M (warm-start from the pretrained checkpoint).
+# Driven by research/interpretability/prior_posterior/ft/ft_optional_condition.py
+# (NOT `flash_ansr train --resume-from`: that path is strict-load + reuses the stale optimizer/schedule;
+#  the driver does a strict=False weight-only warm-start and runs a FRESH short schedule from step 0).
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Multiplied by the scheduler below
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+# FRESH short fine-tune schedule: brief warmup -> small CONSTANT lr (well below the 1e-4 pretrain peak).
+# Constant (no cooldown tail) so any early gate-driven stop is not penalized by an unreached cooldown.
+# pw_linear_schedule holds the last value for steps beyond the final point.
+lr_schedule:
+  - [0, 0.0]
+  - [500, 2.0e-5]      # warmup
+  - [25_000, 2.0e-5]   # hold constant
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 5_000        # cheaper than the 100k pretrain val; enough to monitor CE during fine-tune
+
+# Compile OFF: a ~10-25k-step fine-tune barely amortizes compile, and it de-risks the new
+# null_memory-in-graph path under reduce-overhead CUDA graphs for an unattended cluster run.
+compile_mode: null
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 25_000          # default horizon; gate-driven -> checkpoint often and stop when the §3 gate passes
+device: cuda

@@ -1,8 +1,12 @@
-# FastSRB
-flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-3M_fastsrb.yaml -v
-flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-20M_fastsrb.yaml -v
-flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-120M_fastsrb.yaml -v
-flash_ansr evaluate-run -c configs/evaluation/noise_sweep/nesymres_fastsrb.yaml -v
-python scripts/evaluate_PySR.py  -c configs/evaluation/noise_sweep/pysr_fastsrb.yaml  -v
-# flash_ansr evaluate-run -c configs/evaluation/noise_sweep/skeleton_pool_fastsrb.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/noise_sweep/brute_force_fastsrb.yaml -v
+for dataset in fastsrb val; do
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-3M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-20M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-120M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-1B_${dataset}.yaml -v
+    python scripts/evaluate_PySR.py  -c configs/evaluation/noise_sweep/pysr_${dataset}.yaml  -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/nesymres_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/e2e_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/skeleton_pool_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-120M-A-U_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/noise_sweep/v23.0-120M-C1-uniform_${dataset}.yaml -v
+done

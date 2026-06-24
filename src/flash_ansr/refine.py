@@ -123,7 +123,7 @@ class Refiner:
             X: np.ndarray,
             y: np.ndarray,
             p0: np.ndarray | None = None,
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             n_restarts: int = 8,
             method: Literal[
@@ -155,6 +155,8 @@ class Refiner:
             Add noise to the initial guess. One of
             - 'uniform': Uniform noise
             - 'normal': Normal noise
+            - 'cauchy': Heavy-tailed Cauchy noise (matches a cauchy training prior over constants)
+            - 'magspan': Magnitude-spanning init, random sign * 10**U(log_low, log_high)
         p0_noise_kwargs : dict, optional
             Keyword arguments for the noise generation
         n_restarts : int, optional
@@ -275,7 +277,7 @@ class Refiner:
             X: np.ndarray,
             y: np.ndarray,
             p0: np.ndarray | None = None,
-            p0_noise: Literal['uniform', 'normal'] | None = 'normal',
+            p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             p0_noise_kwargs: dict | None = None,
             method: Literal[
                 'curve_fit_lm',
@@ -305,6 +307,8 @@ class Refiner:
             Add noise to the initial guess. One of
             - 'uniform': Uniform noise
             - 'normal': Normal noise
+            - 'cauchy': Heavy-tailed Cauchy noise (matches a cauchy training prior over constants)
+            - 'magspan': Magnitude-spanning init, random sign * 10**U(log_low, log_high)
         p0_noise_kwargs : dict, optional
             Keyword arguments for the noise generation
         method : str, optional
@@ -354,10 +358,37 @@ class Refiner:
                             p0 *= np.random.normal(size=len(self.constants_symbols), loc=p0_noise_kwargs.get('loc', 0), scale=p0_noise_kwargs.get('scale', 1))
                         case _:
                             raise ValueError(f"Invalid option for p0_noise: Expected one of 'add', 'multiply', got {p0_noise_kwargs.get('type', 'add')}")
+                case 'cauchy':
+                    # Heavy-tailed init matching a cauchy training prior over constants. standard_cauchy is
+                    # location 0 / scale 1; rescale + shift to (loc, scale). Cauchy has no finite moments, so
+                    # individual draws can be very large -- intended only for matching a cauchy training prior.
+                    cauchy_draw = np.random.standard_cauchy(size=len(self.constants_symbols)) * p0_noise_kwargs.get('scale', 1) + p0_noise_kwargs.get('loc', 0)
+                    match p0_noise_kwargs.get('type', 'add'):
+                        case 'add':
+                            p0 += cauchy_draw
+                        case 'multiply':
+                            p0 *= cauchy_draw
+                        case _:
+                            raise ValueError(f"Invalid option for p0_noise: Expected one of 'add', 'multiply', got {p0_noise_kwargs.get('type', 'add')}")
+                case 'magspan':
+                    # Magnitude-spanning init: random sign * 10**U(log_low, log_high), so each restart's
+                    # p0 lands at a log-uniformly-drawn magnitude rather than clustering near one scale.
+                    # Defaults |p0| in [10**-0.5, 10**3] ~= [0.32, 1000], the band screened synthetically
+                    # against cauchy/normal. Independent of `scale`; tune the span via log_low/log_high.
+                    k = len(self.constants_symbols)
+                    magspan_draw = np.random.choice([-1.0, 1.0], size=k) * 10.0 ** np.random.uniform(
+                        low=p0_noise_kwargs.get('log_low', -0.5), high=p0_noise_kwargs.get('log_high', 3.0), size=k)
+                    match p0_noise_kwargs.get('type', 'add'):
+                        case 'add':
+                            p0 += magspan_draw
+                        case 'multiply':
+                            p0 *= magspan_draw
+                        case _:
+                            raise ValueError(f"Invalid option for p0_noise: Expected one of 'add', 'multiply', got {p0_noise_kwargs.get('type', 'add')}")
                 case None:
                     pass
                 case _:
-                    raise ValueError(f"Invalid option for p0: Expected one of 'uniform', 'normal' or None, got {p0}")
+                    raise ValueError(f"Invalid option for p0: Expected one of 'uniform', 'normal', 'cauchy', 'magspan' or None, got {p0}")
 
         # Minimize the objective function
         try:

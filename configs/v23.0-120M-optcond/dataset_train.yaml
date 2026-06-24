@@ -1,0 +1,7 @@
+skeleton_pool: './skeleton_pool_train.yaml'
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+
+# First-class optional condition (CFG): emit this fraction of TRAIN examples UNCONDITIONED (condition_mask
+# False -> routed to null_memory). 0.15 ~ Ho & Salimans 10-20%. VAL stays conditioned (no unconditional_prob).
+unconditional_prob: 0.15

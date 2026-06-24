@@ -1,0 +1,3 @@
+skeleton_pool: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/"
+tokenizer: './tokenizer.yaml'
+padding: 'zero'

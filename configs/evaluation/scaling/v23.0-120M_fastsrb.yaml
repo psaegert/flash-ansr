@@ -21,7 +21,10 @@ defaults:
       refiner_p0_noise_kwargs:
         loc: 0.0
         scale: 5
-      parsimony: 0.05
+      length_penalty: 0.05
+      constants_penalty: 0.0
+      likelihood_penalty: 0.0
+      prune_constant_budget: 0
       generation_config:
         method: softmax_sampling
         kwargs:
@@ -251,16 +254,16 @@ experiments:
         <<: *flash_ansr_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_262144.pkl"
 
-  flash_ansr_fastsrb_choices_1048576:
-    run:
-      data_source:
-        <<: *flash_ansr_fastsrb_source
-        datasets_per_expression: 1
-      model_adapter:
-        <<: *flash_ansr_adapter
-        generation_overrides:
-          kwargs:
-            choices: 1048576
-      runner:
-        <<: *flash_ansr_fastsrb_runner
-        output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_1048576.pkl"
+  # flash_ansr_fastsrb_choices_1048576:
+  #   run:
+  #     data_source:
+  #       <<: *flash_ansr_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *flash_ansr_adapter
+  #       generation_overrides:
+  #         kwargs:
+  #           choices: 1048576
+  #     runner:
+  #       <<: *flash_ansr_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/v23.0-120M/fastsrb/choices_1048576.pkl"

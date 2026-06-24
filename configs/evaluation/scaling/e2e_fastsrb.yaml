@@ -17,7 +17,7 @@ defaults:
     device: cuda
     candidates_per_bag: 1
     max_input_points: 200
-    max_number_bags: 10
+    max_number_bags: 100
     n_trees_to_refine: 10
     rescale: true
   runner: &e2e_fastsrb_runner
@@ -90,7 +90,6 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 5
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 64
@@ -102,7 +101,6 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 5
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 128
@@ -114,10 +112,83 @@ experiments:
     run:
       data_source:
         <<: *e2e_fastsrb_source
-        datasets_per_expression: 1
       model_adapter:
         <<: *e2e_adapter
         candidates_per_bag: 256
       runner:
         <<: *e2e_fastsrb_runner
         output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00256.pkl"
+
+  e2e_fastsrb_candidates_00512:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 512
+        max_generated_output_len: 195
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_00512.pkl"
+
+  e2e_fastsrb_candidates_01024:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 1024
+        max_generated_output_len: 97
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_01024.pkl"
+
+  e2e_fastsrb_candidates_02048:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 2048
+        max_generated_output_len: 48
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_02048.pkl"
+
+  e2e_fastsrb_candidates_08192:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 8192
+        max_generated_output_len: 12
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_08192.pkl"
+
+  e2e_fastsrb_candidates_32768:
+    run:
+      data_source:
+        <<: *e2e_fastsrb_source
+        datasets_per_expression: 5
+      model_adapter:
+        <<: *e2e_adapter
+        candidates_per_bag: 32768
+        max_generated_output_len: 3
+      runner:
+        <<: *e2e_fastsrb_runner
+        output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_32768.pkl"
+
+  # e2e_fastsrb_candidates_131072:
+  #   run:
+  #     data_source:
+  #       <<: *e2e_fastsrb_source
+  #       datasets_per_expression: 1
+  #     model_adapter:
+  #       <<: *e2e_adapter
+  #       candidates_per_bag: 131072
+  #     runner:
+  #       <<: *e2e_fastsrb_runner
+  #       output: "{{ROOT}}/results/evaluation/scaling/e2e/fastsrb/candidates_per_bag_131072.pkl"

@@ -1,6 +1,6 @@
 from .factory import ModelFactory
 from .flash_ansr_model import FlashANSRModel
-from .pre_encoder import IEEE75432PreEncoder
+from .pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from .tokenizer import Tokenizer
 from .manage import install_model, remove_model
 

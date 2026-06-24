@@ -27,6 +27,7 @@ def _make_result_entry(expr: list[str]) -> dict:
         "fvu": 0.01,
         "score": 0.02,
         "expression": expr,
+        "constant_count": 1,
         "complexity": len(expr),
         "requested_complexity": None,
         "raw_beam": expr,
@@ -45,7 +46,9 @@ def test_serialize_and_deserialize_rebuilds_refiner(tmp_path, simplipy_engine: S
 
     metadata = {
         "format_version": RESULTS_FORMAT_VERSION,
-        "parsimony": 0.1,
+        "length_penalty": 0.1,
+        "constants_penalty": 0.0,
+        "likelihood_penalty": 0.0,
         "n_variables": 1,
         "input_dim": 1,
         "variable_mapping": {"x1": "x"},
@@ -83,7 +86,11 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     expr = ["+", "x1", "<constant>"]
     results = [_make_result_entry(expr)]
 
-    payload = serialize_results_payload(results, metadata={"parsimony": 0.1})
+    payload = serialize_results_payload(results, metadata={
+        "length_penalty": 0.1,
+        "constants_penalty": 0.0,
+        "likelihood_penalty": 0.0,
+    })
 
     path = tmp_path / "results.pkl"
     save_results_payload(payload, path)
@@ -130,7 +137,9 @@ def test_skeleton_pool_model_save_load_roundtrip(tmp_path, simplipy_engine: Simp
         samples=1,
         seed=0,
         n_restarts=4,
-        parsimony=0.0,
+        length_penalty=0.0,
+        constants_penalty=0.0,
+        likelihood_penalty=0.0,
     )
 
     x = np.linspace(-2.0, 2.0, 20, dtype=float).reshape(-1, 1)
@@ -176,7 +185,9 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        parsimony=0.0,
+        length_penalty=0.0,
+        constants_penalty=0.0,
+        likelihood_penalty=0.0,
     )
 
     x = np.linspace(-2.0, 2.0, 24, dtype=float).reshape(-1, 1)
@@ -194,7 +205,9 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        parsimony=0.0,
+        length_penalty=0.0,
+        constants_penalty=0.0,
+        likelihood_penalty=0.0,
     )
     reloaded.load_results(save_path)
 

@@ -77,6 +77,7 @@ class SkeletonDatasetSource(EvaluationDataSource):
         max_trials: int | None = None,
         skip: int = 0,
         resume_state: Mapping[str, Any] | None = None,
+        skeleton_list: Sequence[Sequence[str]] | None = None,
     ) -> None:
         self.dataset = dataset
         self.n_support = n_support
@@ -109,6 +110,15 @@ class SkeletonDatasetSource(EvaluationDataSource):
         else:
             self._target_size = max(0, min(raw_target, total_available))
         self._total_available: int | None = total_available
+
+        # Optional PINNED evaluation set: an explicit, ordered list of skeletons (e.g. the standard-eval
+        # val100, frozen so "val" means the same skeletons across models/machines even if the pool file
+        # drifts). When set, _ensure_skeleton_sequence uses it verbatim AND hard-fails if any pinned
+        # skeleton is absent from the pool (drift/loss) -- it must never silently fall through to the
+        # sort-the-live-pool path or to placeholders. See STANDARD_EVAL.md item 1.
+        self._pinned_skeletons: list[tuple[str, ...]] | None = (
+            [tuple(s) for s in skeleton_list] if skeleton_list is not None else None
+        )
 
         self._prepared = False
         self._max_n_support = self._resolve_max_n_support()
@@ -216,15 +226,20 @@ class SkeletonDatasetSource(EvaluationDataSource):
         if start_expression < len(self._skeleton_sequence):
             last_skeleton = self._skeleton_sequence[start_expression]
 
-        for skeleton in schedule:
+        for offset, skeleton in enumerate(schedule):
+            row_index = start_offset + offset   # absolute, resume-stable row index (skip-aware)
             if skeleton is None:
                 schedule_placeholders += 1
                 placeholder_basis = last_skeleton or (self._skeleton_sequence[-1] if self._skeleton_sequence else tuple())
-                yield self._build_placeholder_sample(placeholder_basis, reason="source_exhausted")
+                sample = self._build_placeholder_sample(placeholder_basis, reason="source_exhausted")
+                sample.metadata["eval_row_index"] = row_index
+                yield sample
                 continue
 
             last_skeleton = skeleton
-            yield self._build_deterministic_sample(skeleton)
+            sample = self._build_deterministic_sample(skeleton)
+            sample.metadata["eval_row_index"] = row_index
+            yield sample
 
         if schedule_placeholders > 0:
             produced = self._target_size - schedule_placeholders
@@ -326,6 +341,10 @@ class SkeletonDatasetSource(EvaluationDataSource):
         if self._skeleton_sequence is not None:
             return
 
+        if self._pinned_skeletons is not None:
+            self._set_pinned_skeleton_sequence()
+            return
+
         per_expression = self.datasets_per_expression
         pool = self.dataset.skeleton_pool
         processed_samples = (self._resume_expression_index * per_expression) + self._resume_dataset_offset
@@ -341,6 +360,33 @@ class SkeletonDatasetSource(EvaluationDataSource):
 
         self._skeleton_sequence = skeletons
         total_available = len(skeletons) * per_expression
+        if self._total_available is None or self._total_available < total_available:
+            self._total_available = total_available
+
+    def _set_pinned_skeleton_sequence(self) -> None:
+        """Use the explicit pinned skeleton list verbatim, HARD-FAILING on drift.
+
+        Every pinned skeleton must be present in the live pool. A pinned skeleton that is missing
+        (pool file drifted / regenerated / reordered out of the set) is the exact condition the pin
+        exists to catch: raise, never fall through to the sort-live-pool default and never emit a
+        placeholder (a placeholder would silently launder drift into a partial run that still writes a
+        pickle). Transient sampling failures (NoValidSampleFoundError) are a DIFFERENT, expected thing
+        and are handled per-draw by the normal retry + placeholder path, not here.
+        """
+        assert self._pinned_skeletons is not None
+        pool = self.dataset.skeleton_pool
+        pool_set = set(pool.skeletons)
+        missing = [s for s in self._pinned_skeletons if s not in pool_set]
+        if missing:
+            examples = "; ".join(" ".join(s) for s in missing[:3])
+            raise ValueError(
+                f"Pinned skeleton_list drift: {len(missing)}/{len(self._pinned_skeletons)} pinned "
+                f"skeletons are absent from the pool (pool has {len(pool_set)} skeletons). The pin "
+                f"guards against exactly this -- the pool must contain every pinned skeleton. "
+                f"First missing: {examples}"
+            )
+        self._skeleton_sequence = list(self._pinned_skeletons)
+        total_available = len(self._skeleton_sequence) * self.datasets_per_expression
         if self._total_available is None or self._total_available < total_available:
             self._total_available = total_available
 
@@ -663,8 +709,11 @@ class FastSRBSource(EvaluationDataSource):
             if produced >= self._target_size:
                 break
 
+            row_index = skip + produced   # absolute, resume-stable row index (skip-aware)
             if eq_id is None:
-                yield self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
+                placeholder = self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
+                placeholder.metadata["eval_row_index"] = row_index
+                yield placeholder
                 produced += 1
                 continue
 
@@ -672,6 +721,7 @@ class FastSRBSource(EvaluationDataSource):
             per_eq_counts[eq_id] = sample_index + 1
 
             record = self._generate_sample(eq_id, sample_index, noise_rng)
+            record.metadata["eval_row_index"] = row_index
             yield record
             produced += 1
 
@@ -681,7 +731,9 @@ class FastSRBSource(EvaluationDataSource):
                 RuntimeWarning,
             )
             while produced < self._target_size:
-                yield self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
+                placeholder = self._build_placeholder_sample("__placeholder__", sample_index=-1, reason="source_exhausted")
+                placeholder.metadata["eval_row_index"] = skip + produced
+                yield placeholder
                 produced += 1
 
     def _build_schedule(self) -> list[str | None]:

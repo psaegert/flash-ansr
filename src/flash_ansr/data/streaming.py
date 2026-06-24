@@ -31,6 +31,7 @@ class WorkerConfig:
     worker_preprocess: bool
     max_seq_len: int
     preprocessor_prompt_config: dict[str, Any] | None
+    unconditional_prob: float = 0.0
 
 
 class SharedMemoryWorkerPool:
@@ -76,6 +77,7 @@ class SharedMemoryWorkerPool:
         tokenizer_oov: Literal["unk", "raise"] = "raise",
         worker_preprocess: bool = False,
         preprocessor_prompt_config: dict[str, Any] | None = None,
+        unconditional_prob: float = 0.0,
     ) -> None:
         """Allocate shared buffers and spin up producer workers."""
         if self._is_initialized:
@@ -145,6 +147,7 @@ class SharedMemoryWorkerPool:
             worker_preprocess=worker_preprocess,
             max_seq_len=max_seq_len,
             preprocessor_prompt_config=preprocessor_prompt_config,
+            unconditional_prob=unconditional_prob,
         )
 
         self._workers = []
@@ -244,6 +247,7 @@ def _producer_worker(
     worker_preprocess = worker_config.worker_preprocess
     max_seq_len = worker_config.max_seq_len
     prompt_config = worker_config.preprocessor_prompt_config
+    unconditional_prob = worker_config.unconditional_prob
 
     bos_token_id = tokenizer["<bos>"]
     eos_token_id = tokenizer["<eos>"]
@@ -335,18 +339,28 @@ def _producer_worker(
                                 input_ids = input_ids[:max_seq_len]
                                 input_ids[-1] = eos_token_id
 
+                            metadata = {
+                                "skeleton": skeleton,
+                                "skeleton_hash": skeleton_hash,
+                                "expression": substitute_constants(skeleton, values=literals, inplace=False),
+                                "n_support": int(x_support.shape[0]),
+                            }
+                            # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
+                            # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
+                            # The key is emitted iff the feature is active, so condition_mask present <=> feature
+                            # on -> existing runs (prob 0) are byte-identical and the model never sees a mask.
+                            # Flows into the batch via `metadata_fields` (data.py) and routes to `null_memory`
+                            # in the model when False. Per-worker RNG is seeded at worker start.
+                            if unconditional_prob > 0.0:
+                                metadata["condition_mask"] = bool(np.random.rand() >= unconditional_prob)
+
                             temp_samples.append(
                                 {
                                     "x": x_support,
                                     "y": y_support,
                                     "input_ids": input_ids,
                                     "constants": literals,
-                                    "metadata": {
-                                        "skeleton": skeleton,
-                                        "skeleton_hash": skeleton_hash,
-                                        "expression": substitute_constants(skeleton, values=literals, inplace=False),
-                                        "n_support": int(x_support.shape[0]),
-                                    },
+                                    "metadata": metadata,
                                 }
                             )
                             sample_found = True

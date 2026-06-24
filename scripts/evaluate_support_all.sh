@@ -1,8 +1,12 @@
-# FastSRB
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-3M_fastsrb_support.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-20M_fastsrb_support.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-120M_fastsrb_support.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/nesymres_fastsrb_support.yaml -v
-python scripts/evaluate_PySR.py  -c configs/evaluation/support_sweep/pysr_fastsrb_support.yaml  -v
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/skeleton_pool_fastsrb_support.yaml -v
-# flash_ansr evaluate-run -c configs/evaluation/support_sweep/brute_force_fastsrb_support.yaml -v
+for dataset in fastsrb val; do
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-3M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-20M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-120M_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-1B_${dataset}.yaml -v
+    python scripts/evaluate_PySR.py  -c configs/evaluation/support_sweep/pysr_${dataset}.yaml  -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/nesymres_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/e2e_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/skeleton_pool_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-120M-A-U_${dataset}.yaml -v
+    flash_ansr evaluate-run -c configs/evaluation/support_sweep/v23.0-120M-C1-uniform_${dataset}.yaml -v
+done

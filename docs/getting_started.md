@@ -34,11 +34,11 @@ MODEL = "psaegert/flash-ansr-v23.0-120M"
 # By default, the model is downloaded to the directory `./models/` in the package root
 install_model(MODEL)
 
-# Load the model
+# Load the model (KV-cache, auto-batching and static decoding are on by default in v0.5)
 model = FlashANSR.load(
   directory=get_path('models', MODEL),
-  generation_config=SoftmaxSamplingConfig(choices=32),  # or BeamSearchConfig / MCTSGenerationConfig
-  n_restarts=8,
+  generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
+  length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
 
 # Define data

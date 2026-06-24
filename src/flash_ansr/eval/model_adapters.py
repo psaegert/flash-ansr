@@ -5,16 +5,18 @@ import time
 import warnings
 import functools
 import re
+from contextlib import nullcontext
 from typing import Any, Callable, Iterable, Mapping, Optional, TYPE_CHECKING
 
 import numpy as np
 import simplipy
-import sympy as sp
 from flash_ansr.baselines import BruteForceModel, SkeletonPoolModel
 from flash_ansr.expressions.normalization import normalize_skeleton, normalize_expression
-from sympy import lambdify
+# sympy is imported lazily inside the two baseline adapters that use it (E2E, NeSymReS);
+# it is an optional `[baselines]` extra, not a core runtime dependency.
 
 from flash_ansr.eval.core import EvaluationModelAdapter, EvaluationResult, EvaluationSample
+from flash_ansr.eval.candidate_store import CandidateStoreWriter, build_candidate_ledger
 from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.refine import ConvergenceError
 
@@ -50,11 +52,18 @@ class FlashANSRAdapter(EvaluationModelAdapter):
         device: str = "cpu",
         complexity: str | list[int | float] | int | float = "none",
         refiner_workers: int | None = None,
+        candidate_store_dir: str | None = None,
     ) -> None:
         self.model = model
         self.device = device
         self.complexity = complexity
         self.refiner_workers = refiner_workers
+        # Save-all-candidates (thorough-tier quality shards only): when set, every problem's FULL
+        # candidate ledger is streamed to a compact columnar store. Off (None) -> zero overhead, so
+        # timing runs are untouched. The writer is created lazily on first capture. See STANDARD_EVAL.md
+        # Section 7 + item 5.
+        self.candidate_store_dir = candidate_store_dir
+        self._candidate_store: Any | None = None
 
     def get_simplipy_engine(self) -> Any:  # pragma: no cover - trivial accessor
         return self.model.simplipy_engine
@@ -65,26 +74,95 @@ class FlashANSRAdapter(EvaluationModelAdapter):
             self.model.refiner_workers = self.refiner_workers
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
+        """Serial fit + evaluate. Composes the two phases below; behaviour matches the pre-split path
+        (the overlapped engine drives the phases separately across two threads).
+
+        The ``np.errstate`` here restores the ``np.seterr(all=numpy_errors)`` policy that the old
+        ``fit()`` applied around the whole generate+refine span. It is applied ONLY on this serial
+        composition (single-threaded); the phases are left un-wrapped so the overlapped engine's two
+        threads never clobber a process-global error policy across each other (refinement workers
+        already set their own policy per job, and the deployed ``numpy_errors='ignore'`` is value-neutral
+        vs the numpy default -- only warning emission differs)."""
+        numpy_errors = getattr(self.model, "numpy_errors", None)
+        with np.errstate(all=numpy_errors) if numpy_errors is not None else nullcontext():
+            record, gen_state, fit_t0 = self.generate_phase(sample)
+            return self.refine_extract_phase(sample, record, gen_state, fit_t0, wall_clock=True)
+
+    def generate_phase(
+        self,
+        sample: EvaluationSample,
+    ) -> tuple[dict[str, Any], Any | None, float]:
+        """GPU generation phase: build the record and run ``model._fit_generate`` -> ``GenState``.
+
+        Returns ``(record, gen_state, fit_t0)``. On a generation-phase error ``gen_state`` is ``None``
+        and the error is recorded. Writes NOTHING to model instance state (the generate phase only
+        touches ``self.model._prompt_prefix`` / ``_mcts_cache`` / ``_n_params``, none of which the
+        commit path reads), so the overlapped engine can run this for problem N+1 on the GPU-owner
+        thread while problem N is committed on the main thread.
+        """
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
         complexity_value = self._resolve_complexity(record)
         variable_names = record.get("variable_names")
 
-        fit_time_start = time.time()
+        fit_t0 = time.time()
         try:
-            fit_args: list[Any] = [sample.x_support, y_fit]
             if variable_names is not None:
-                fit_args.append(variable_names)
-            self.model.fit(*fit_args, complexity=complexity_value)
-            fit_time = time.time() - fit_time_start
-            record["fit_time"] = fit_time
-            record["prediction_success"] = True
+                gen_state = self.model._fit_generate(sample.x_support, y_fit, variable_names, complexity=complexity_value)
+            else:
+                gen_state = self.model._fit_generate(sample.x_support, y_fit, complexity=complexity_value)
+        except (ConvergenceError, OverflowError, TypeError, ValueError) as exc:
+            record["error"] = str(exc)
+            record["prediction_success"] = False
+            return record, None, fit_t0
+        return record, gen_state, fit_t0
+
+    def refine_extract_phase(
+        self,
+        sample: EvaluationSample,
+        record: dict[str, Any],
+        gen_state: Any | None,
+        fit_t0: float,
+        *,
+        wall_clock: bool = False,
+        refine_seed: int | None = None,
+    ) -> EvaluationResult:
+        """CPU refinement + extraction phase: refine the GenState, commit it, predict and read out.
+
+        MUST run on the commit thread in sample order: it commits the ``FitResult`` to model instance
+        state via ``_apply_fit_result`` and then reads it back through ``predict`` / ``get_expression``.
+        With ``prune_constant_budget == 0`` (every deployed eval config, and the overlap engine's hard
+        gate) it touches no GPU. ``wall_clock`` selects the ``fit_time`` semantics: ``True`` (serial)
+        records the wall-clock span since ``fit_t0`` (byte-identical to the pre-split ``fit()`` timing);
+        ``False`` (overlapped, where wall-clock spans overlap and are meaningless per problem) records
+        the well-defined component sum ``generation_time + refinement_time``. ``refine_seed`` (default
+        ``None`` = fresh OS entropy, the deployed behaviour) pins the per-candidate p0-noise seeds so a
+        quality-equivalence gate can drive serial and overlapped runs from identical candidates.
+        """
+        if gen_state is None:
+            # Generation-phase error already recorded on `record`.
+            return EvaluationResult(record)
+
+        try:
+            fit_result = self.model._fit_refine(gen_state, refine_seed=refine_seed)
         except (ConvergenceError, OverflowError, TypeError, ValueError) as exc:
             record["error"] = str(exc)
             record["prediction_success"] = False
             return EvaluationResult(record)
+
+        self.model._apply_fit_result(fit_result)
+
+        if self.candidate_store_dir is not None:
+            self._capture_candidate_ledger(record, gen_state, fit_result)
+
+        record["fit_time"] = (time.time() - fit_t0) if wall_clock else (fit_result.generation_time + fit_result.refinement_time)
+        record["generation_time"] = fit_result.generation_time
+        record["refinement_time"] = fit_result.refinement_time
+        record["prediction_success"] = True
 
         if not getattr(self.model, "_results", None):
             warnings.warn("Model produced no results. Filling nan.")
@@ -133,6 +211,48 @@ class FlashANSRAdapter(EvaluationModelAdapter):
         return EvaluationResult(record)
 
     # ------------------------------------------------------------------
+    def _capture_candidate_ledger(self, record: dict[str, Any], gen_state: Any, fit_result: Any) -> None:
+        """Stream this problem's FULL candidate ledger to the compact columnar store (save-all tier).
+
+        Joins the generation pool (``gen_state.raw_beams``/``log_probs``) with the refined results
+        (``fit_result.results``) and writes one compressed .npz per problem, keyed by the resume-stable
+        ``eval_row_index`` the data source stamped on the sample. Best-effort: any failure here warns and
+        is swallowed -- candidate capture must never abort an eval row. Runs only on the consumer thread
+        (single writer), so it is safe under the overlap engine too."""
+        try:
+            problem_id = record.get("eval_row_index")
+            if problem_id is None:
+                warnings.warn(
+                    "candidate_store_dir is set but the sample carries no 'eval_row_index'; skipping "
+                    "candidate capture for this problem (the data source must stamp it).",
+                    RuntimeWarning,
+                )
+                return
+            if self._candidate_store is None:
+                self._candidate_store = CandidateStoreWriter(
+                    self.candidate_store_dir, vocab_size=len(self.model.tokenizer)
+                )
+            if self._candidate_store.has_problem(int(problem_id)):
+                return  # already written (resume)
+
+            tokenizer = self.model.tokenizer
+
+            def _decode_expr(raw_beam: list[int]) -> list[str]:
+                expr_ids = tokenizer.extract_expression_from_beam(list(raw_beam))[0]
+                return tokenizer.decode(expr_ids, special_tokens="<constant>")
+
+            ledger = build_candidate_ledger(
+                gen_state.raw_beams,
+                gen_state.log_probs,
+                fit_result.results,
+                decode_expr=_decode_expr,
+                is_valid=self.model.simplipy_engine.is_valid,
+            )
+            self._candidate_store.write_problem(int(problem_id), **ledger)
+        except Exception as exc:  # noqa: BLE001 - capture is auxiliary; never break the eval row
+            warnings.warn(f"Candidate-ledger capture failed for this problem: {exc}", RuntimeWarning)
+
+    # ------------------------------------------------------------------
     def _resolve_complexity(self, metadata: dict[str, Any]) -> int | float | None:
         mode = self.complexity
         if isinstance(mode, (int, float)):
@@ -150,7 +270,9 @@ def _evaluate_refiner_baseline(model: Any, sample: EvaluationSample) -> Evaluati
     """Shared evaluation logic for refiner-backed baseline models."""
 
     record = sample.clone_metadata()
-    record["parsimony"] = getattr(model, "parsimony", None)
+    record["length_penalty"] = getattr(model, "length_penalty", None)
+    record["constants_penalty"] = getattr(model, "constants_penalty", None)
+    record["likelihood_penalty"] = getattr(model, "likelihood_penalty", None)
 
     y_fit = sample.y_support_noisy if sample.y_support_noisy is not None else sample.y_support
 
@@ -342,6 +464,7 @@ class E2EAdapter(EvaluationModelAdapter):
         max_number_bags: int = 10,
         n_trees_to_refine: int = 10,
         rescale: bool = True,
+        max_generated_output_len: int = 200,
         debug: bool = False,
     ) -> None:
         self.model_path = model_path
@@ -352,6 +475,7 @@ class E2EAdapter(EvaluationModelAdapter):
         self.max_number_bags = max_number_bags
         self.n_trees_to_refine = n_trees_to_refine
         self.rescale = rescale
+        self.max_generated_output_len = max_generated_output_len
         self.debug = debug
 
         self._estimator: Any | None = None
@@ -394,6 +518,12 @@ class E2EAdapter(EvaluationModelAdapter):
         elif hasattr(model, "module") and hasattr(model.module, "beam_size"):
             model.module.beam_size = self.candidates_per_bag
 
+        # Allow overriding generation length to keep chunking stable for large beam sizes.
+        if hasattr(model, "max_generated_output_len"):
+            model.max_generated_output_len = self.max_generated_output_len
+        elif hasattr(model, "module") and hasattr(model.module, "max_generated_output_len"):
+            model.module.max_generated_output_len = self.max_generated_output_len
+
         self._estimator = Estimator(
             model=model,
             max_input_points=self.max_input_points,
@@ -407,7 +537,9 @@ class E2EAdapter(EvaluationModelAdapter):
             raise RuntimeError("E2EAdapter.prepare must be called before evaluation")
 
         record = sample.clone_metadata()
-        record["parsimony"] = None
+        record["length_penalty"] = getattr(self._estimator, "length_penalty", None)
+        record["constants_penalty"] = getattr(self._estimator, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self._estimator, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_val = sample.x_validation.copy()
@@ -462,6 +594,7 @@ class E2EAdapter(EvaluationModelAdapter):
             predicted_expression_raw = str(predicted_tree.infix())
             canonical_infix = _canonicalize_e2e_infix(predicted_expression_raw)
             try:
+                import sympy as sp  # lazy: only the E2E baseline adapter needs sympy
                 sympy_expr = sp.parse_expr(canonical_infix)
                 predicted_expression = str(sympy_expr)
             except Exception:
@@ -535,7 +668,9 @@ class NeSymReSAdapter(EvaluationModelAdapter):
 
     def evaluate_sample(self, sample: EvaluationSample) -> EvaluationResult:
         record = sample.clone_metadata()
-        record["parsimony"] = getattr(self.model, "parsimony", None)
+        record["length_penalty"] = getattr(self.model, "length_penalty", None)
+        record["constants_penalty"] = getattr(self.model, "constants_penalty", None)
+        record["likelihood_penalty"] = getattr(self.model, "likelihood_penalty", None)
 
         X_support = sample.x_support.copy()
         X_validation = sample.x_validation.copy()
@@ -766,6 +901,7 @@ def _convert_constants(constants: Any) -> list[float] | Any:
 
 
 def _evaluate_symbolic_expression(predicted_expr: Any, X_support: np.ndarray, X_val: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    from sympy import lambdify  # lazy: only the NeSymReS baseline adapter needs sympy
     var_symbols = [f"x_{idx + 1}" for idx in range(X_support.shape[1])]
     evaluate_expression = lambdify(var_symbols, predicted_expr, "numpy")
     y_pred = np.asarray(evaluate_expression(*X_support.T), dtype=float).reshape(-1, 1)

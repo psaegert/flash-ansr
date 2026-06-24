@@ -182,6 +182,23 @@ class BatchFormatter:
                 for c in batch["complexity"]
             ]
 
+        for key in ("fisher_metric", "curvature_metric"):
+            if key not in batch:
+                continue
+            if isinstance(batch[key], torch.Tensor):
+                batch[key] = batch[key].to(device=device, dtype=torch.float32)
+            else:
+                batch[key] = torch.tensor(batch[key], device=device, dtype=torch.float32)
+
+        # Optional condition (CFG): per-example boolean (True = conditioned). Arrives as a list of bools
+        # from the worker metadata expansion; tensorize to shape (B,) WITHOUT padding (it is per-example,
+        # not per-token/per-support). Absent -> the model defaults to all-conditioned (condition_mask=None).
+        if "condition_mask" in batch:
+            condition_mask = batch["condition_mask"]
+            if not isinstance(condition_mask, torch.Tensor):
+                condition_mask = torch.tensor(condition_mask, dtype=torch.bool)
+            batch["condition_mask"] = condition_mask.to(device=device, dtype=torch.bool)
+
         batch["labels"] = batch["input_ids"].clone()[..., 1:]
 
         batch["expression_ids"] = []

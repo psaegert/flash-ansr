@@ -252,9 +252,9 @@ def monitor_and_kill_if_idle(
     process: subprocess.Popen,
     *,
     cpu_threshold: float = 1000.0,
-    idle_duration_minutes: int = 5,
-    poll_interval_seconds: float = 30.0,
-    termination_grace_period: float = 5.0,
+    idle_duration_minutes: int = 2,
+    poll_interval_seconds: float = 10.0,
+    termination_grace_period: float = 3.0,
 ) -> int:
     """
     Monitors a process and its children. If the combined CPU usage is below
@@ -391,18 +391,18 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log-file", default=LOG_FILE, help="Where to write watchdog logs.")
     parser.add_argument("--cpu-threshold", type=float, default=1000.0, help="CPU% threshold before declaring idle.")
-    parser.add_argument("--idle-minutes", type=int, default=5, help="Minutes below threshold before restart.")
-    parser.add_argument("--poll-seconds", type=float, default=30.0, help="Seconds between CPU checks.")
-    parser.add_argument("--grace-period", type=float, default=5.0, help="Seconds to wait after SIGTERM before SIGKILL.")
-    parser.add_argument("--restart-delay", type=float, default=10.0, help="Seconds to sleep before restarting after failure.")
-    parser.add_argument("--wait-timeout", type=int, default=60, help="Timeout while waiting for lingering processes to exit.")
+    parser.add_argument("--idle-minutes", type=int, default=2, help="Minutes below threshold before restart.")
+    parser.add_argument("--poll-seconds", type=float, default=10.0, help="Seconds between CPU checks.")
+    parser.add_argument("--grace-period", type=float, default=3.0, help="Seconds to wait after SIGTERM before SIGKILL.")
+    parser.add_argument("--restart-delay", type=float, default=3.0, help="Seconds to sleep before restarting after failure.")
+    parser.add_argument("--wait-timeout", type=int, default=30, help="Timeout while waiting for lingering processes to exit.")
     parser.add_argument(
         "--max-force-attempts",
         type=int,
         default=3,
         help="Number of forced cleanup attempts before aborting.",
     )
-    parser.add_argument("--retry-sleep", type=float, default=5.0, help="Delay between forced cleanup attempts.")
+    parser.add_argument("--retry-sleep", type=float, default=2.0, help="Delay between forced cleanup attempts.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Pass -v through to flash_ansr.")
     parser.add_argument(
         "extra_args",
