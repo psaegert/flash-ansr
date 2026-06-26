@@ -1,6 +1,5 @@
 """Token-level helpers for manipulating prefix expressions."""
 import re
-from copy import deepcopy
 from typing import Any
 
 import numpy as np
@@ -29,21 +28,6 @@ def substitute_constants(
 def apply_variable_mapping(prefix_expression: list[str], variable_mapping: dict[str, str]) -> list[str]:
     """Return a new prefix expression with variables remapped via ``variable_mapping``."""
     return [variable_mapping.get(token, token) for token in prefix_expression]
-
-
-def numbers_to_num(prefix_expression: list[str], inplace: bool = False) -> list[str]:
-    """Replace numeric literals in ``prefix_expression`` with ``'<constant>'``."""
-    modified_prefix_expression = prefix_expression if inplace else prefix_expression.copy()
-
-    for i, token in enumerate(prefix_expression):
-        try:
-            float(token)
-        except ValueError:
-            modified_prefix_expression[i] = token
-        else:
-            modified_prefix_expression[i] = "<constant>"
-
-    return modified_prefix_expression
 
 
 def identify_constants(
@@ -86,43 +70,3 @@ def flatten_nested_list(nested_list: list[Any] | Any, reverse: bool = False) -> 
     if reverse:
         flat_list.reverse()
     return flat_list
-
-
-def remap_expression(
-    source_expression: list[str],
-    dummy_variables: list[str],
-    variable_mapping: dict[str, str] | None = None,
-) -> tuple[list[str], dict[str, str]]:
-    """Rename dummy variables consistently within ``source_expression``."""
-    source_expression = deepcopy(source_expression)
-    if variable_mapping is None:
-        variable_mapping = {}
-        for token in source_expression:
-            if token in dummy_variables and token not in variable_mapping:
-                variable_mapping[token] = f"_{len(variable_mapping)}"
-
-    for i, token in enumerate(source_expression):
-        if token in dummy_variables:
-            source_expression[i] = variable_mapping[token]
-
-    return source_expression, variable_mapping
-
-
-def deduplicate_rules(
-    rules_list: list[tuple[tuple[str, ...], tuple[str, ...]]],
-    dummy_variables: list[str],
-) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
-    """Collapse equivalent rewrite rules, keeping the shortest replacement."""
-    deduplicated_rules: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for rule in rules_list:
-        remapped_source, variable_mapping = remap_expression(list(rule[0]), dummy_variables=dummy_variables)
-        remapped_target, _ = remap_expression(list(rule[1]), dummy_variables, variable_mapping)
-
-        remapped_source_key = tuple(remapped_source)
-        remapped_target_value = tuple(remapped_target)
-
-        existing_replacement = deduplicated_rules.get(remapped_source_key)
-        if existing_replacement is None or len(remapped_target_value) < len(existing_replacement):
-            deduplicated_rules[remapped_source_key] = remapped_target_value
-
-    return list(deduplicated_rules.items())

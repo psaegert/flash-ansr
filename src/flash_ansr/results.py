@@ -10,29 +10,18 @@ import numpy as np
 import pandas as pd
 
 from flash_ansr.refine import ConvergenceError, Refiner
+from flash_ansr.scoring import count_constants, is_constant_token
 from flash_ansr.utils.paths import substitute_root_path
 
 RESULTS_FORMAT_VERSION = 1
 
 
 def _is_constant_token(token: str) -> bool:
-    if token == '<constant>':
-        return True
-    if token.startswith('C_') and token[2:].isdigit():
-        return True
-    if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
-        return True
-    try:
-        float(token)
-        return True
-    except ValueError:
-        return False
+    return is_constant_token(token)
 
 
 def _count_constants(expression: Iterable[str] | None) -> int:
-    if expression is None:
-        return 0
-    return sum(1 for token in expression if _is_constant_token(str(token)))
+    return count_constants(expression)
 
 
 def compile_results_table(

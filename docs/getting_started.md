@@ -58,20 +58,16 @@ y_pred = model.predict(X)
 Find more details in the [API Reference](api.md).
 
 
-## One-command evaluation
+## Evaluation
+As of v0.6, evaluation, baseline comparisons, and benchmarking moved out of flash-ansr into the standalone `srbf` (Symbolic Regression Benchmark Framework) package.
+
 ```bash
-flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-120M_fastsrb.yaml -v
+pip install srbf
 ```
-Produces a pickle under `results/evaluation/...` with entries like:
 
-- `predicted_expression`
-- `predicted_log_prob`
-- `y_pred`
-- `...`
-
-For more details, see [Evaluation](evaluation.md).
+See the [srbf repository](https://github.com/psaegert/srbf) for usage.
 
 ## Next steps
 - See [Concepts & Architecture](concepts.md) for how the pieces fit together.
 - For training your own checkpoints, jump to [Training](training.md).
-- For baseline comparisons and sweeps, read [Evaluation](evaluation.md).
+- For baseline comparisons and sweeps, see the [srbf repository](https://github.com/psaegert/srbf) (evaluation moved to the standalone `srbf` package in v0.6).

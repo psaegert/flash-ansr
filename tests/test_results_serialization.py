@@ -3,8 +3,6 @@ import pytest
 from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
-from flash_ansr.expressions import SkeletonPool
-from flash_ansr.baselines.skeleton_pool_model import SkeletonPoolModel
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -108,61 +106,6 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     assert entry["refiner"] is None
     assert entry["function"] is None
     assert entry["fits"] == [(np.array([3.0]), None, 0.0)]
-
-
-def test_skeleton_pool_model_save_load_roundtrip(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
-    # Build a minimal deterministic pool with one linear skeleton a*x + b.
-    skeletons = {('+', '*', '<constant>', 'x1', '<constant>')}
-    sample_strategy = {"max_operators": 2, "independent_dimensions": True}
-    literal_prior = {"name": "normal", "kwargs": {"loc": 0, "scale": 1}}
-    variables = ["x1"]
-    support_sampler_config = {
-        "support_prior": {"name": "uniform", "kwargs": {"min_value": -2, "max_value": 2}},
-        "n_support_prior": {"name": "uniform", "kwargs": {"low": 4, "high": 4, "min_value": 4, "max_value": 4}},
-    }
-
-    pool = SkeletonPool.from_dict(
-        skeletons=skeletons,
-        simplipy_engine=simplipy_engine,
-        sample_strategy=sample_strategy,
-        literal_prior=literal_prior,
-        variables=variables,
-        support_sampler_config=support_sampler_config,
-        operator_weights={"+": 1.0, "*": 1.0},
-    )
-
-    model = SkeletonPoolModel(
-        simplipy_engine=simplipy_engine,
-        skeleton_pool=pool,
-        samples=1,
-        seed=0,
-        n_restarts=4,
-        length_penalty=0.0,
-        constants_penalty=0.0,
-        likelihood_penalty=0.0,
-    )
-
-    x = np.linspace(-2.0, 2.0, 20, dtype=float).reshape(-1, 1)
-    y = 2.0 * x + 1.0
-
-    model.fit(x, y)
-
-    val = np.array([[-1.5], [0.0], [1.5]], dtype=float)
-    preds_before = model.predict(val)
-
-    path = tmp_path / "roundtrip.pkl"
-    model.save_results(path)
-
-    reloaded = SkeletonPoolModel(
-        simplipy_engine=simplipy_engine,
-        skeleton_pool=pool,
-        samples=0,
-    )
-    reloaded.load_results(path)
-
-    preds_after = reloaded.predict(val)
-
-    np.testing.assert_allclose(preds_before, preds_after, rtol=1e-6, atol=1e-8)
 
 
 def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:

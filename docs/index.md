@@ -5,7 +5,7 @@ Flash Amortized Neural Symbolic Regression combines a SetTransformer encoder, Tr
 - **New here?** Start with [Getting Started](getting_started.md).
 - **How does it work?** Read [Concepts & Architecture](concepts.md).
 - **Train or finetune?** See [Training](training.md).
-- **Benchmarks/baselines?** See [Evaluation](evaluation.md).
+- **Benchmarks/baselines?** Evaluation, baselines, and benchmarking moved to the standalone `srbf` package in v0.6 (`pip install srbf`); see https://github.com/psaegert/srbf.
 - **API details?** Browse [API Reference](api.md).
 - **Contributing?** Check [Contributing](contributing.md) and [FAQ](faq.md).
 
@@ -56,7 +56,7 @@ y_pred = model.predict(X)
 
 ## Serving these docs locally
 ```bash
-pip install mkdocs mkdocs-material mkdocs-autorefs
+pip install -r docs/requirements.txt
 mkdocs serve
 ```
 Visit http://127.0.0.1:8000.

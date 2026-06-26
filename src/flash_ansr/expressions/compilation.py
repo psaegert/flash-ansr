@@ -1,5 +1,4 @@
 """Helpers for compiling and evaluating expression programs."""
-import re
 import time
 from typing import Callable
 
@@ -15,15 +14,6 @@ def codify(code_string: str, variables: list[str] | None = None) -> CodeType:
     func_string = f"lambda {', '.join(variables)}: {code_string}"
     filename = f"<lambdifygenerated-{time.time_ns()}"
     return compile(func_string, filename, "eval")
-
-
-def get_used_modules(infix_expression: str) -> list[str]:
-    """Return the top-level modules referenced by dotted calls in ``infix_expression``."""
-    pattern = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+)\(")
-    matches = pattern.findall(infix_expression)
-    modules_set = {match.split(".")[0] for match in matches}
-    modules_set.update(["numpy"])
-    return list(modules_set)
 
 
 def safe_f(f: Callable, X: np.ndarray, constants: np.ndarray | None = None) -> np.ndarray:

@@ -357,7 +357,12 @@ class FlashANSRModel(nn.Module):
 
     def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None, condition_mask: torch.Tensor | None = None, past_key_values: list | None = None, use_cache: bool = False) -> torch.Tensor | tuple[torch.Tensor, list]:
         if memory is not None:
-            self.memory = memory
+            # Never register a passed nn.Parameter (e.g. an optional-condition model's `null_memory`)
+            # as the 'memory' attribute: nn.Module.__setattr__ would move it into `_parameters` and the
+            # next plain-tensor forward would raise. A detached view keeps the cross-attention math
+            # identical (inference reads memory read-only; the train-time null routing uses torch.where
+            # on `null_memory` directly, never this assignment).
+            self.memory = memory.detach() if isinstance(memory, nn.Parameter) else memory
         elif data is not None:
             self.memory = self._create_memory(data, data_attn_mask)
         elif self.memory is None:
@@ -964,6 +969,7 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
         memory: torch.Tensor | None = None,
+        guidance_weight: float | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
 
         # Static-shape, position-indexed-KV decode (Stage 1b): route to the chunk-major static loop.
@@ -972,6 +978,39 @@ class FlashANSRModel(nn.Module):
         # Direct callers needing the dynamic path's activation hooks (recorder/interventions) pass False.
         # The dynamic path below is byte-unchanged when the resolved value is False.
         static_decode = self._resolve_static_decode(static_decode)
+
+        # Classifier-free guidance (optional-condition models only). The guidance weight w combines the
+        # conditioned next-token logits (real (X, y) encoder memory) with the unconditioned logits (the
+        # learned `null_memory`):  guided = uncond + w * (cond - uncond).
+        #   w == 1 -> pure conditioned decode (byte-identical to the plain path; the cond fast-path);
+        #   w == 0 -> pure unconditional / prior decode (substitute null_memory; the null fast-path);
+        #   w  > 1 -> amplify the data signal; 0 < w < 1 -> interpolate toward the prior.
+        # The general (w not in {0, 1}) path runs a SECOND forward per step and is not KV-cache / static
+        # compatible yet, so it forces the dynamic, cache-free loop. The w in {0, 1} fast-paths keep the
+        # static / cache path and give the exact correctness floors.
+        guided = False
+        uncond_memory: torch.Tensor | None = None
+        if guidance_weight is not None:
+            if not self.optional_condition:
+                raise ValueError(
+                    "guidance_weight was provided but this model has no `null_memory` "
+                    "(set optional_condition=True in the model config to enable guided decoding)."
+                )
+            guidance_weight = float(guidance_weight)
+            # `.detach()` is load-bearing: `null_memory` is an nn.Parameter and `.to()` returns it
+            # unchanged when already on the target device, so assigning it to `self.memory` inside
+            # `forward` would register 'memory' as a Parameter and poison the next plain-tensor forward.
+            if guidance_weight == 0.0:
+                # Pure unconditional / prior decode: substitute the learned null_memory, decode plainly.
+                memory = self.null_memory.detach().to(device=data.device)
+            elif guidance_weight == 1.0:
+                pass  # Pure conditioned decode == the plain path; nothing to substitute.
+            else:
+                guided = True
+                static_decode = False  # the two-forward combine is dynamic + cache-free
+                use_cache = False
+                uncond_memory = self.null_memory.detach().to(device=data.device)
+
         if static_decode:
             return self._sample_top_kp_static(
                 data, choices=choices, top_k=top_k, top_p=top_p, max_len=max_len,
@@ -1071,7 +1110,23 @@ class FlashANSRModel(nn.Module):
 
                     next_token_logits = logits[:, -1, :]
 
+                    # Recorded candidate score = the CONDITIONED model log-likelihood, captured BEFORE
+                    # guidance / top_k / temperature / top_p. The sampler invariant is that `original_scores`
+                    # excludes every sampling-shaping transform; CFG is one such transform (it steers WHICH
+                    # tokens are drawn), so it must not contaminate the persisted log-prob that feeds candidate
+                    # ranking + the save-all-raw pipeline -- and for w > 1 the guided logits are not a
+                    # normalized likelihood anyway.
                     original_scores = torch.log_softmax(next_token_logits, dim=-1)
+
+                    if guided:
+                        # Second (unconditional) forward on the SAME partial sequences, with null_memory,
+                        # combined BEFORE the top_k/top_p/temperature shaping. use_cache is False here, so
+                        # both forwards recompute the full prefix and stay aligned step-for-step. This shapes
+                        # only the SAMPLING distribution; `original_scores` above stays the conditioned score.
+                        logits_uncond = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=uncond_memory, use_cache=False)
+                        assert isinstance(logits_uncond, torch.Tensor)  # use_cache=False -> Tensor (narrow the union for mypy)
+                        next_token_uncond = logits_uncond[:, -1, :]
+                        next_token_logits = next_token_uncond + guidance_weight * (next_token_logits - next_token_uncond)
 
                     if top_k > 0:
                         top_k_val = min(top_k, next_token_logits.size(-1))

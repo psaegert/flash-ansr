@@ -15,7 +15,9 @@ from flash_ansr.utils.generation import (
     create_generation_config,
 )
 from flash_ansr.utils.paths import (
+    ROOT_ENV_VAR,
     get_path,
+    get_root,
     normalize_path_preserve_leading_dot,
     substitute_root_path,
 )

@@ -1,5 +1,4 @@
-"""Structural helpers for reasoning about expression trees and basic number theory."""
-import math
+"""Structural helpers for reasoning about expression trees."""
 
 
 def generate_ubi_dist(
@@ -23,10 +22,3 @@ def generate_ubi_dist(
     assert all(len(D[i]) >= len(D[i + 1]) for i in range(len(D) - 1))
     D = [[D[j][i] for j in range(len(D)) if i < len(D[j])] for i in range(max(len(x) for x in D))]
     return D
-
-
-def is_prime(n: int) -> bool:
-    """Return ``True`` if ``n`` is a prime number."""
-    if n % 2 == 0 and n > 2:
-        return False
-    return all(n % i for i in range(3, int(math.sqrt(n)) + 1, 2))

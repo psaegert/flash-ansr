@@ -16,6 +16,8 @@
 
 </div>
 
+Flash-ANSR is a library for **amortized neural symbolic regression**: load a pretrained model, call `fit(X, y)`, and recover a symbolic expression for your tabular data, or train your own model. It is built for fast, ready-to-use inference.
+
 # Publications
 - Saegert & Köthe 2026, _Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression_ (preprint, under review) [https://arxiv.org/abs/2602.08885](https://arxiv.org/abs/2602.08885)
 
@@ -69,6 +71,8 @@ y_pred = model.predict(X)
 ```
 
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+
+**Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/) and browse the pretrained [model collection on Hugging Face](https://huggingface.co/models?search=flash-ansr-v23.0).
 
 # Inference speed
 
@@ -131,6 +135,11 @@ simplification of on-the-fly generated training expressions.</p>
   </tr>
 </table>
 
+
+# Related projects
+
+- [**SimpliPy**](https://github.com/psaegert/simplipy): the expression simplification engine integrated into the Flash-ANSR training loop.
+- [**srbf**](https://github.com/psaegert/srbf): the companion symbolic-regression evaluation and benchmarking framework (engine, model adapters, benchmarks, metrics), developed alongside Flash-ANSR.
 
 # Citation
 ```bibtex

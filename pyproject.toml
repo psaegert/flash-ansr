@@ -2,14 +2,14 @@
 name = "flash_ansr"
 description = "Flash-ANSR: Fast Amortized Neural Symbolic Regression - Discover symbolic expressions from tabular data using SetTransformer and Transformer architectures"
 authors = [
-    {name = "Paul Saegert"},
+    {name = "Paul Saegert", email = "psaegert@proton.me"},
 ]
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.5.0"
+version = "0.6.0"
 license = "MIT"
-license-files = ["LICEN[CS]E*", "THIRD_PARTY_LICENSES*"]
+license-files = ["LICEN[CS]E*"]
 
 keywords = [
     "symbolic-regression",
@@ -22,7 +22,9 @@ keywords = [
     "expression-discovery",
     "equation-discovery",
     "tabular-data",
-    "mathematical-modeling"
+    "mathematical-modeling",
+    "amortized-inference",
+    "benchmarking"
 ]
 
 classifiers = [
@@ -42,9 +44,13 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 
     # Operating system
     "Operating System :: OS Independent",
+
+    # Typing
+    "Typing :: Typed",
 ]
 
 [project.urls]
@@ -52,7 +58,10 @@ Homepage = "https://github.com/psaegert/flash-ansr"
 Documentation = "https://flash-ansr.readthedocs.io/en/latest/"
 Repository = "https://github.com/psaegert/flash-ansr"
 Issues = "https://github.com/psaegert/flash-ansr/issues"
+Changelog = "https://github.com/psaegert/flash-ansr/blob/main/CHANGELOG.md"
 PyPI = "https://pypi.org/project/flash-ansr/"
+Paper = "https://arxiv.org/abs/2602.08885"
+"Benchmarks (srbf)" = "https://github.com/psaegert/srbf"
 "Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb"
 
 [project.scripts]
@@ -83,13 +92,13 @@ dev = [
     "mkdocs-get-deps",
     "mkdocs-material-extensions",
     "mkdocstrings-python",
-    "flash_ansr[baselines]"
 ]
 
-# Optional: required only to run the third-party baseline model adapters (E2E, NeSymReS) in
-# flash_ansr.eval. The flash-ansr product itself does NOT use sympy (it simplifies via simplipy).
-# In the planned srbf split this extra moves to that repo. See REPO_SPLIT_PLAN.md.
-baselines = [
+# Optional: enables the legacy ``simplify="sympy"`` simplification backend
+# (expressions/skeleton_pool.py, model/flash_ansr_model.py). The product default simplifies via
+# simplipy and needs no sympy; install flash-ansr[sympy] only to use the sympy path. The
+# baseline-model adapters (E2E, NeSymReS) that also used sympy moved to the `srbf` package in v0.6.
+sympy = [
     "sympy>=1.10",
 ]
 
@@ -105,7 +114,7 @@ exclude = ["flash_ansr.interp*"]
 
 [build-system]
 requires = [
-    "setuptools>=68",
+    "setuptools>=77",
     "wheel",
     "platformdirs==3.10.0",
 ]
@@ -133,7 +142,7 @@ no_implicit_optional = false
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 explicit_package_bases = true
-exclude = "(.venv|tests/|experimental/|src/flash_ansr/compat/nesymres.py)"
+exclude = "(.venv|tests/|experimental/)"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

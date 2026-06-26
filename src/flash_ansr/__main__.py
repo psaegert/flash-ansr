@@ -49,15 +49,6 @@ def main(argv: str = None) -> None:
     train_parser.add_argument('--resume-from', type=str, default=None, help='Path to a checkpoint directory to resume from')
     train_parser.add_argument('--resume-step', type=int, default=None, help='Override the inferred resume step when resuming')
 
-    evaluate_run_parser = subparsers.add_parser("evaluate-run", help="Run an evaluation from a unified config")
-    evaluate_run_parser.add_argument('-c', '--config', type=str, required=True, help='Path to the evaluation run config file')
-    evaluate_run_parser.add_argument('-n', '--limit', type=int, default=None, help='Override the sample limit specified in the config')
-    evaluate_run_parser.add_argument('-o', '--output-file', type=str, default=None, help='Override the output file path from the config')
-    evaluate_run_parser.add_argument('--save-every', type=int, default=None, help='Override periodic save frequency')
-    evaluate_run_parser.add_argument('--no-resume', action='store_true', help='Ignore previous results even if the output file exists')
-    evaluate_run_parser.add_argument('--experiment', type=str, default=None, help='Name of the experiment defined in the config to execute')
-    evaluate_run_parser.add_argument('-v', '--verbose', action='store_true', help='Print a progress bar')
-
     wandb_stats_parser = subparsers.add_parser("wandb-stats")
     wandb_stats_parser.add_argument('--project', type=str, default='neural-symbolic-regression', help='Name of the wandb project')
     wandb_stats_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
@@ -112,7 +103,7 @@ def main(argv: str = None) -> None:
                 print(f'Importing data from {args.input}')
             from simplipy import SimpliPyEngine
             from flash_ansr.expressions import SkeletonPool
-            from flash_ansr.compat import ParserFactory
+            from flash_ansr.convert_data import ParserFactory
             from flash_ansr.utils.config_io import load_config
             from flash_ansr.utils.paths import substitute_root_path
 
@@ -225,72 +216,6 @@ def main(argv: str = None) -> None:
                 resolve_paths=True)
 
             print(f"Saved model to {args.output_dir}")
-
-        case 'evaluate-run':
-            from flash_ansr.eval.run_config import build_evaluation_run, EvaluationRunPlan
-            from flash_ansr.utils.config_io import load_config
-            from flash_ansr.utils.paths import substitute_root_path
-
-            config_path = substitute_root_path(args.config)
-            if args.verbose:
-                print(f"Running evaluation plan from {config_path}")
-
-            raw_config = load_config(config_path)
-            experiment_map = raw_config.get("experiments") if isinstance(raw_config, dict) else None
-
-            from flash_ansr.eval.provenance import collect_provenance, format_provenance
-            base_prov = collect_provenance(config_path, None)
-            print(format_provenance(base_prov), flush=True)
-
-            def _execute_plan(plan: EvaluationRunPlan, experiment_name: str | None = None) -> None:
-                label = f"[{experiment_name}] " if experiment_name else ""
-                if plan.completed or plan.engine is None:
-                    if args.verbose:
-                        target = plan.total_limit or 'configured'
-                        print(f"{label}Evaluation already completed ({plan.existing_results}/{target}). Nothing to do.")
-                    return
-
-                plan.engine.run(
-                    limit=plan.remaining,
-                    save_every=plan.save_every,
-                    output_path=plan.output_path,
-                    verbose=args.verbose,
-                    progress=args.verbose,
-                    meta={**base_prov, "experiment": experiment_name},
-                )
-
-                if args.verbose:
-                    total = plan.engine.result_store.size
-                    destination = plan.output_path or 'memory'
-                    print(f"{label}Evaluation finished with {total} samples (saved to {destination}).")
-
-            if experiment_map and args.experiment is None:
-                experiment_names = list(experiment_map.keys())
-                if args.verbose:
-                    count = len(experiment_names)
-                    print(f"No --experiment provided; running all {count} experiments defined in config.")
-                for experiment_name in experiment_names:
-                    if args.verbose:
-                        print(f"--> {experiment_name}")
-                    plan = build_evaluation_run(
-                        config=config_path,
-                        limit_override=args.limit,
-                        output_override=args.output_file,
-                        save_every_override=args.save_every,
-                        resume=None if not args.no_resume else False,
-                        experiment=experiment_name,
-                    )
-                    _execute_plan(plan, experiment_name)
-            else:
-                plan = build_evaluation_run(
-                    config=config_path,
-                    limit_override=args.limit,
-                    output_override=args.output_file,
-                    save_every_override=args.save_every,
-                    resume=None if not args.no_resume else False,
-                    experiment=args.experiment,
-                )
-                _execute_plan(plan, args.experiment)
 
         case 'wandb-stats':
             print(f'Fetching stats from wandb project {args.project} and entity {args.entity}')
