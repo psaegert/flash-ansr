@@ -99,6 +99,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         'unique',
         'use_cache',
         'static_decode',
+        'guidance_weight',
     )
 
     method: Literal['softmax_sampling']
@@ -113,6 +114,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     unique: bool
     use_cache: bool
     static_decode: bool | None
+    guidance_weight: float | None
 
     def __init__(
         self,
@@ -128,6 +130,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         unique: bool = True,
         use_cache: bool = True,   # KV cache ON by default (quality-equivalent; the inference speed win)
         static_decode: bool | None = None,   # tri-state: None=deployed default for capable models, True/False explicit
+        guidance_weight: float | None = None,   # classifier-free guidance (optcond models only); None=plain conditioned decode
     ) -> None:
         self.method = 'softmax_sampling'
         self.choices = choices
@@ -141,6 +144,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.unique = unique
         self.use_cache = use_cache
         self.static_decode = static_decode
+        self.guidance_weight = guidance_weight
 
     def to_kwargs(self) -> dict[str, Any]:
         return {
@@ -155,6 +159,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
             'unique': self.unique,
             'use_cache': self.use_cache,
             'static_decode': self.static_decode,
+            'guidance_weight': self.guidance_weight,
         }
 
 

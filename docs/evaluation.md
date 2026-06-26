@@ -1,8 +1,10 @@
 # Evaluation
 
+> **Companion package:** the evaluation engine, model adapters, benchmarks, and metrics are also packaged as [**srbf**](https://github.com/psaegert/srbf), a standalone symbolic-regression evaluation framework developed alongside Flash-ANSR. The in-repo `flash_ansr evaluate-run` workflow below remains fully supported; reach for srbf when you want systematic benchmarking or to evaluate models beyond Flash-ANSR.
+
 ## Read this first
 - Quick run: `flash_ansr evaluate-run -c configs/evaluation/scaling/v23.0-20M_fastsrb.yaml --experiment flash_ansr_fastsrb_choices_00032 -v`.
-- Outputs: pickles with entries containing `expression`, `log_prob`, `fits` (per-dataset metrics), and optional `placeholder` entries when data generation fails but counts must stay aligned.
+- Outputs: pickles with one row per evaluated dataset, containing `expression`, `predicted_log_prob`, and flat per-dataset metric columns (`fvu_fit`/`fvu_val`, `numeric_recovery_fit`/`numeric_recovery_val`, `f1_score`, `symbolic_recovery`, ...), plus optional `placeholder` entries when data generation fails but counts must stay aligned.
 - Scope: shared engine covers FlashANSR, PySR, NeSymReS, SkeletonPool, BruteForce, and E2E baselines via a single YAML config.
 
 ## General workflow
@@ -63,7 +65,17 @@ wget -O "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml" \
   "https://raw.githubusercontent.com/viktmar/FastSRB/refs/heads/main/src/expressions.yaml"
 ```
 
-This writes `skeleton_pool.yaml` and `skeletons.pkl` under the specified output directory.
+This fetches the raw expression list only. To build the skeleton pool the evaluation consumes, run the one-time import step (or use `./scripts/import_test_sets.sh`):
+
+```sh
+flash_ansr import-data \
+  -i "{{ROOT}}/data/ansr-data/test_set/fastsrb/expressions.yaml" \
+  -p fastsrb -e dev_7-3 \
+  -b configs/test_set/skeleton_pool.yaml \
+  -o "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool" -v
+```
+
+This writes `skeleton_pool.yaml` and `skeletons.pkl` under the output directory.
 
 ### 1. Run evaluation
 

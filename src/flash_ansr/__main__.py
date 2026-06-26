@@ -112,7 +112,7 @@ def main(argv: str = None) -> None:
                 print(f'Importing data from {args.input}')
             from simplipy import SimpliPyEngine
             from flash_ansr.expressions import SkeletonPool
-            from flash_ansr.compat import ParserFactory
+            from flash_ansr.convert_data import ParserFactory
             from flash_ansr.utils.config_io import load_config
             from flash_ansr.utils.paths import substitute_root_path
 

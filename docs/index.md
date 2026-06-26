@@ -56,7 +56,7 @@ y_pred = model.predict(X)
 
 ## Serving these docs locally
 ```bash
-pip install mkdocs mkdocs-material mkdocs-autorefs
+pip install -r docs/requirements.txt
 mkdocs serve
 ```
 Visit http://127.0.0.1:8000.

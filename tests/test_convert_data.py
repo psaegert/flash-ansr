@@ -3,7 +3,7 @@ import pandas as pd
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.compat.convert_data import SOOSEParser, FeynmanParser, NguyenParser, FastSRBParser
+from flash_ansr.convert_data import SOOSEParser, FeynmanParser, NguyenParser, FastSRBParser
 from flash_ansr import SkeletonPool, get_path
 
 

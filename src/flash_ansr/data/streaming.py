@@ -13,7 +13,7 @@ from typing import Any, Literal
 import numpy as np
 
 from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
-from flash_ansr.expressions.token_ops import substitute_constants
+from simplipy.utils import substitude_constants as substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns

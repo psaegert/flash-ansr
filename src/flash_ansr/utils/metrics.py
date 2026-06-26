@@ -6,7 +6,7 @@ from typing import Any, Callable, Sequence
 import torch
 from torch.func import hessian, jacrev, vmap
 
-from flash_ansr.expressions.compilation import codify
+from simplipy.utils import codify
 
 
 def build_expression_callable(

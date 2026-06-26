@@ -1,4 +1,9 @@
-"""Utilities for sampling the FastSRB benchmark equations using SimpliPy."""
+"""Utilities for sampling the FastSRB benchmark equations using SimpliPy.
+
+Translated and adapted from the Julia FastSRB benchmarking code by Viktor Martinek
+(https://github.com/viktmar/FastSRB, arXiv:2508.14481), distributed under the MIT License.
+The full notice + citation is reproduced in ``THIRD_PARTY_LICENSES`` (FastSRB section).
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import yaml
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.compilation import codify
+from simplipy.utils import codify
 
 
 Number = Union[int, float]

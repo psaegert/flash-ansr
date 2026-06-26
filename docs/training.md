@@ -15,7 +15,7 @@
 
 ## Minimal runnable example
 ```bash
-./scripts/train.sh configs/test   # uses tiny fixtures; finishes quickly
+./scripts/train.sh test   # uses tiny fixtures; finishes quickly
 ```
 Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokenizer.yaml`, and `state_dict.pt`.
 
@@ -64,7 +64,7 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 - Training uses [automatic mixed precision (AMP)](https://docs.pytorch.org/docs/stable/amp.html) and [torch.compile](https://huggingface.co/docs/transformers/en/perf_torch_compile)
 
 ## Adding a new config
-- Copy an existing bundle (e.g., `configs/v23.0-60M/`).
+- Copy an existing bundle (e.g., `configs/v23.0-20M/`).
 - Update paths and tokenizer/operator choices; ensure special prompt tokens exist before enabling prompt features.
 - Prefer cloning configs instead of mutating in-place to keep saved YAMLs portable.
 

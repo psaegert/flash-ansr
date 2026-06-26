@@ -8,8 +8,8 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning, least_squares
 
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.compilation import codify
-from flash_ansr.expressions.token_ops import identify_constants, apply_variable_mapping
+from simplipy.utils import codify, explicit_constant_placeholders as identify_constants
+from flash_ansr.expressions.token_ops import apply_variable_mapping
 from flash_ansr.utils.tensor_ops import pad_input_set
 
 

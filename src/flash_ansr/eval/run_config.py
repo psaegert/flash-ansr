@@ -466,7 +466,12 @@ def _build_flash_ansr_adapter(config: Mapping[str, Any], context: Mapping[str, A
         device=adapter_device,
         complexity=complexity,
         refiner_workers=refiner_workers,
-        candidate_store_dir=config.get("candidate_store_dir"),
+        # substitute_root_path like every other path field (output/model_path/...); without it a
+        # {{ROOT}}-relative candidate_store_dir silently writes to a literal "{{ROOT}}/" dir (the capture
+        # is best-effort/error-swallowing). Production used an absolute SCRATCH path so never hit this.
+        candidate_store_dir=(
+            substitute_root_path(str(_csd)) if (_csd := config.get("candidate_store_dir")) is not None else None
+        ),
     )
 
 

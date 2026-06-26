@@ -11,24 +11,15 @@ from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.refine import ConvergenceError, Refiner
+from flash_ansr.scoring import count_constants, is_constant_token
 
 
 def _is_constant_token(token: str) -> bool:
-    if token == '<constant>':
-        return True
-    if token.startswith('C_') and token[2:].isdigit():
-        return True
-    if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
-        return True
-    try:
-        float(token)
-        return True
-    except ValueError:
-        return False
+    return is_constant_token(token)
 
 
 def _count_constants(tokens: list[str]) -> int:
-    return sum(1 for tok in tokens if _is_constant_token(tok))
+    return count_constants(tokens)
 
 
 def run_mcts_generation(

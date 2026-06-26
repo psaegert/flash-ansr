@@ -17,12 +17,12 @@ from simplipy.utils import explicit_constant_placeholders, numbers_to_constant
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.expressions.compilation import codify
+from simplipy.utils import codify
 from flash_ansr.expressions.prior_factory import build_prior_callable
 from flash_ansr.expressions.holdout import HoldoutManager
 from flash_ansr.expressions.skeleton_sampling import SkeletonSampler
 from flash_ansr.expressions.support_sampling import SupportSampler, SupportSamplingError
-from flash_ansr.expressions.token_ops import identify_constants, flatten_nested_list
+from flash_ansr.expressions.token_ops import flatten_nested_list
 
 
 class NoValidSampleFoundError(Exception):
@@ -352,7 +352,7 @@ class SkeletonPool:
         for skeleton in tqdm(self.skeletons, desc="Compiling Skeletons", disable=not verbose, smoothing=0.0):
             # Codify the Expression
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
-            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = explicit_constant_placeholders(executable_prefix_expression, inplace=True)
             code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.variables + constants)
 
@@ -401,7 +401,7 @@ class SkeletonPool:
 
         if code is None:
             executable_prefix_expression = self.simplipy_engine.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = explicit_constant_placeholders(executable_prefix_expression, inplace=True)
             code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, self.variables + constants)
 
@@ -508,7 +508,7 @@ class SkeletonPool:
         for skeleton in holdout_pool_obj.skeletons:
             no_constant_expression = holdout_pool_obj.get_structural_prototype(skeleton)
             executable_prefix_expression = holdout_pool_obj.simplipy_engine.operators_to_realizations(no_constant_expression)
-            prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+            prefix_expression_with_constants, constants = explicit_constant_placeholders(executable_prefix_expression, inplace=True)
             code_string = holdout_pool_obj.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
             code = codify(code_string, holdout_pool_obj.variables + constants)
             compiled_fn = holdout_pool_obj.simplipy_engine.code_to_lambda(code)
@@ -676,7 +676,7 @@ class SkeletonPool:
 
                 if tuple(skeleton) not in self.skeletons and len(skeleton) <= self.sample_strategy['max_length']:
                     executable_prefix_expression = self.simplipy_engine.operators_to_realizations(skeleton)
-                    prefix_expression_with_constants, constants = identify_constants(executable_prefix_expression, inplace=True)
+                    prefix_expression_with_constants, constants = explicit_constant_placeholders(executable_prefix_expression, inplace=True)
                     try:
                         code_string = self.simplipy_engine.prefix_to_infix(prefix_expression_with_constants, realization=True)
                     except ValueError:

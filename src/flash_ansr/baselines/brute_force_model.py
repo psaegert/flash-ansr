@@ -1,5 +1,4 @@
 import copy
-import math
 import os
 from collections import defaultdict
 from typing import Any, Generator, Literal, Sequence
@@ -13,6 +12,7 @@ from simplipy.utils import construct_expressions
 
 from flash_ansr.expressions import SkeletonPool
 from flash_ansr.refine import Refiner, ConvergenceError
+from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.utils.paths import substitute_root_path
 
 
@@ -110,33 +110,19 @@ class BruteForceModel(BaseEstimator):
 
     @staticmethod
     def _normalize_variance(variance: float) -> float:
-        if not np.isfinite(variance):
-            return BruteForceModel.FLOAT64_EPS
-        return max(float(variance), BruteForceModel.FLOAT64_EPS)
+        return normalize_variance(variance)
 
     @staticmethod
     def _compute_fvu(loss: float, sample_count: int, variance: float) -> float:
-        if sample_count <= 1:
-            return float(loss)
-        return float(loss) / BruteForceModel._normalize_variance(variance)
+        return compute_fvu(loss, sample_count, variance)
 
     @staticmethod
     def _is_constant_token(token: str) -> bool:
-        if token == '<constant>':
-            return True
-        if token.startswith('C_') and token[2:].isdigit():
-            return True
-        if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:
-            return True
-        try:
-            float(token)
-            return True
-        except ValueError:
-            return False
+        return is_constant_token(token)
 
     @classmethod
     def _count_constants(cls, expression: Sequence[str]) -> int:
-        return sum(1 for token in expression if cls._is_constant_token(token))
+        return count_constants(expression)
 
     @staticmethod
     def _score_from_fvu(
@@ -147,19 +133,9 @@ class BruteForceModel(BaseEstimator):
             length_penalty: float,
             constants_penalty: float,
             likelihood_penalty: float) -> float:
-        if not np.isfinite(fvu) or fvu <= 0:
-            safe_fvu = BruteForceModel.FLOAT64_EPS
-        else:
-            safe_fvu = max(float(fvu), BruteForceModel.FLOAT64_EPS)
-
-        likelihood_term = 0.0
-        if log_prob is not None and np.isfinite(log_prob):
-            likelihood_term = likelihood_penalty * (-float(log_prob))
-
-        return float(math.log10(safe_fvu)
-                     + length_penalty * complexity
-                     + constants_penalty * max(int(constant_count), 0)
-                     + likelihood_term)
+        return score_from_fvu(
+            fvu, complexity, constant_count, log_prob,
+            length_penalty, constants_penalty, likelihood_penalty)
 
     def _leaf_nodes(self) -> list[str]:
         leaves = list(self._pool.variables)

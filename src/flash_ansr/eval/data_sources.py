@@ -16,7 +16,7 @@ from flash_ansr.data import FlashANSRDataset, FlashANSRPreprocessor
 from flash_ansr.eval.core import EvaluationDataSource, EvaluationSample
 from flash_ansr.eval.sample_metadata import build_base_metadata
 from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
-from flash_ansr.expressions.token_ops import substitute_constants
+from simplipy.utils import substitude_constants as substitute_constants
 from flash_ansr.expressions.normalization import (
     normalize_expression,
     normalize_skeleton,

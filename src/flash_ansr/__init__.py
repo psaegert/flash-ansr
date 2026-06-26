@@ -18,6 +18,7 @@ from .utils import (
     MCTSGenerationConfig,
     create_generation_config,
     get_path,
+    get_root,
     load_config,
     save_config,
     substitute_root_path,

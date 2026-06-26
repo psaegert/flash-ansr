@@ -1,5 +1,4 @@
 from .evaluation import Evaluation
-from .evaluation_fastsrb import FastSRBEvaluation
 from .formatting import arrow_notation
 from .result_processing import (
     DEFAULT_NEGATIVES,

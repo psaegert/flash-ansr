@@ -8,7 +8,8 @@ import signal
 from typing import List, Tuple, Sequence
 
 DEFAULT_COMPAT_PYTHON_PATH = os.environ.get(
-    "FLASH_ANSR_COMPAT_PYTHON", "/home/psaegert/miniconda3/envs/flash-ansr-compat/bin/python3.13"
+    # Point this at the interpreter of the environment that has PySR/baseline deps installed.
+    "FLASH_ANSR_COMPAT_PYTHON", "python3"
 )
 LOG_FILE = os.environ.get("FLASH_ANSR_WATCHDOG_LOG", "./watchdog.log")
 
