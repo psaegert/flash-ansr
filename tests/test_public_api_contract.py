@@ -1,4 +1,4 @@
-"""flash-ansr <-> srbf public API contract test (REPO_SPLIT_PLAN.md §5).
+"""flash-ansr <-> srbf public API contract test.
 
 After the v0.6 repo split, ``srbf`` (the carved-out eval framework) imports a fixed set of
 symbols from ``flash-ansr`` and depends on their signatures staying stable. Today srbf lives in the
@@ -51,7 +51,7 @@ def _assert_has_params(obj, expected: set[str]) -> None:
 
 
 class TestScoringPrimitives:
-    """The unified candidate-scoring primitives (REPO_SPLIT_PLAN.md §2). srbf's baselines import
+    """The unified candidate-scoring primitives. srbf's baselines import
     these from ``flash_ansr.scoring`` (``baselines/skeleton_pool_model.py``, ``baselines/brute_force_model.py``)."""
 
     def test_importable(self):

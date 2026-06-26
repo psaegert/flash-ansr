@@ -1,7 +1,7 @@
 """Tests for the project-root path helpers, including the FLASH_ANSR_ROOT override.
 
 The override is the pre-split hook that lets a separate repo importing ``flash_ansr`` anchor asset
-lookups at its own tree (REPO_SPLIT_PLAN.md section 10). These tests pin both the override behaviour
+lookups at its own tree. These tests pin both the override behaviour
 and that the default (env unset) is unchanged for the 80+ existing get_path call sites.
 """
 import os

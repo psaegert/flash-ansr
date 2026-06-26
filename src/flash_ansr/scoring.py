@@ -6,7 +6,6 @@ also consumed by the comparison baselines and, after the planned repo split, by 
 public API. This module collapses the formerly-triplicated
 ``_compute_fvu`` / ``_normalize_variance`` / ``_score_from_fvu`` copies
 (``flash_ansr.py`` + ``baselines/{brute_force_model,skeleton_pool_model}.py``) onto one definition.
-See ``REPO_SPLIT_PLAN.md`` §2.
 
 Note on FVU: this is the *scalar-loss* form. The refiner supplies an already-reduced residual
 ``loss``, so :func:`compute_fvu` divides by the (epsilon-floored) target variance. The *array* form
@@ -76,8 +75,7 @@ def is_constant_token(token: str) -> bool:
     Recognises the ``<constant>`` placeholder, generated ``C_i`` symbols, a small set of named
     literals (signed/unsigned ``0``/``1``, ``np.pi``, ``np.e``, the float specials), and any token
     that parses as a Python ``float``. This is the constant count that feeds ``constants_penalty``
-    in :func:`score_from_fvu`, so it is owned here alongside the rest of the scoring path. See
-    ``REPO_SPLIT_PLAN.md`` §2.
+    in :func:`score_from_fvu`, so it is owned here alongside the rest of the scoring path.
     """
     if token == '<constant>':
         return True

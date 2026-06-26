@@ -1,4 +1,4 @@
-"""Behavioural-equivalence guard for the simplipy primitive migration (REPO_SPLIT_PLAN.md §2).
+"""Behavioural-equivalence guard for the simplipy primitive migration.
 
 Step-1 prep swapped flash-ansr's product code to import three expression/token primitives from
 simplipy instead of from its own (forked) copies:

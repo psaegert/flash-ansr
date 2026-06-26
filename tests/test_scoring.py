@@ -3,7 +3,7 @@
 These pin the exact numeric behaviour the inference candidate-scoring path relied on BEFORE the
 de-duplication (the values were taken from ``FlashANSR``'s original ``np.log10``-based
 implementation), so a regression in :mod:`flash_ansr.scoring` is caught here without importing the
-heavy product class. See ``REPO_SPLIT_PLAN.md`` §2.
+heavy product class.
 """
 import math
 
@@ -92,7 +92,7 @@ class TestScoreFromFvu:
 
 class TestIsConstantToken:
     """Pins the exact constant-token recognition the (formerly 5-way triplicated) scoring helper
-    relied on, now single-owned in flash_ansr.scoring. See REPO_SPLIT_PLAN.md §2."""
+    relied on, now single-owned in flash_ansr.scoring."""
 
     @pytest.mark.parametrize(
         "token",

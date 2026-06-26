@@ -6,8 +6,7 @@ import os
 #: by :func:`get_path` / :func:`substitute_root_path`). When set to a non-empty value, asset lookups
 #: resolve against it instead of the source-checkout root. This lets a separate repository that
 #: imports ``flash_ansr`` (e.g. the planned ``srbf`` / research repos) -- or any deployment whose
-#: assets live outside the installed package tree -- anchor lookups at its own tree. See
-#: REPO_SPLIT_PLAN.md section 10.
+#: assets live outside the installed package tree -- anchor lookups at its own tree.
 ROOT_ENV_VAR = "FLASH_ANSR_ROOT"
 
 #: Default project root for a source checkout: ``<repo>/``. This module lives at
