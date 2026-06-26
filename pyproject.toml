@@ -7,9 +7,9 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.5.0"
+version = "0.6.0"
 license = "MIT"
-license-files = ["LICEN[CS]E*", "THIRD_PARTY_LICENSES*"]
+license-files = ["LICEN[CS]E*"]
 
 keywords = [
     "symbolic-regression",
@@ -92,13 +92,13 @@ dev = [
     "mkdocs-get-deps",
     "mkdocs-material-extensions",
     "mkdocstrings-python",
-    "flash_ansr[baselines]"
 ]
 
-# Optional: required only to run the third-party baseline model adapters (E2E, NeSymReS) in
-# flash_ansr.eval. The flash-ansr product itself does NOT use sympy (it simplifies via simplipy).
-# In the planned srbf split this extra moves to that repo. See REPO_SPLIT_PLAN.md.
-baselines = [
+# Optional: enables the legacy ``simplify="sympy"`` simplification backend
+# (expressions/skeleton_pool.py, model/flash_ansr_model.py). The product default simplifies via
+# simplipy and needs no sympy; install flash-ansr[sympy] only to use the sympy path. The
+# baseline-model adapters (E2E, NeSymReS) that also used sympy moved to the `srbf` package in v0.6.
+sympy = [
     "sympy>=1.10",
 ]
 

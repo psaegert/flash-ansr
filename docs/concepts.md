@@ -11,10 +11,7 @@
 - **Beam search**: deterministic, width-limited search with simplified-expression deduplication of completed beams.
 - **MCTS**: tree search with learned policy/value signals; better exploration when local decisions are ambiguous (highly experimental).
 
-As baselines, we also implement:
-
-- **Prior sampling**: samples from operator priors without model guidance.
-- **Brute-force**: exhaustive search up to a certain expression size.
+Comparison baselines (such as prior sampling from operator priors without model guidance, and brute-force exhaustive search) moved out of flash-ansr in v0.6 into the standalone `srbf` package (Symbolic Regression Benchmark Framework: `pip install srbf`, https://github.com/psaegert/srbf). See the srbf repository for the available baselines and how to run them.
 
 ## Architecture (Training + Inference Workflow)
 - **Data synthesis**: During training, a `SkeletonPool` samples expressions, their constants, and data to use for training from a configured prior distribution.
@@ -23,7 +20,7 @@ As baselines, we also implement:
 - **Decoder**: The Transformer decoder autoregressively emits tokens for expressions in prefix order, conditioned on the encoder output and optional prompts via cross-attention.
 - **Refiner**: The Refiner class optimizes the constants of predicted skeletons using one of many available methods (e.g., LM, BFGS, Nelder-Mead).
 - **Orchestrator** The main `FlashANSR` class ties together preprocessing, decoding (with a chosen generation method), refinement, scoring, and output formatting for a user-friendly end-to-end experience.
-- **Configs**: YAML bundles (`model`, `tokenizer`, `dataset`, `train`, `evaluation run`) keep paths portable via `load_config(..., resolve_paths=True)`.
+- **Configs**: YAML bundles (`model`, `tokenizer`, `dataset`, `train`) keep paths portable via `load_config(..., resolve_paths=True)`. (Evaluation-run configs moved to the standalone `srbf` package in v0.6: `pip install srbf`, https://github.com/psaegert/srbf.)
 
 ### Training loop
 

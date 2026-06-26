@@ -37,9 +37,9 @@ SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_deco
 
 Also note the v0.5 rename: the candidate-selection penalty `parsimony` is now `length_penalty`.
 
-### Should I evaluate with `flash_ansr evaluate-run` or with srbf?
+### How do I evaluate a model and run benchmarks?
 
-Both work. The in-repo `flash_ansr evaluate-run` path is fully supported. The companion package [**srbf**](https://github.com/psaegert/srbf) packages the same evaluation engine, adapters, benchmarks, and metrics as a standalone framework; prefer it for systematic benchmarking or for evaluating models other than Flash-ANSR.
+As of v0.6, the evaluation engine, baseline adapters, benchmarks, and metrics have moved out of flash-ansr into the companion package [**srbf**](https://github.com/psaegert/srbf) (Symbolic Regression Benchmark Framework). Install it with `pip install srbf` and see the [srbf repository](https://github.com/psaegert/srbf) for usage. Flash-ANSR itself still provides the `FlashANSR` API (`.load`, `.fit`, `.predict`, `.compile_results`) and training, but systematic evaluation and benchmarking now live in srbf.
 
 ### Where do I report bugs or ask questions?
 

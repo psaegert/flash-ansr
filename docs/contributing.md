@@ -4,7 +4,7 @@
 - Code: `src/flash_ansr/`
 - Tests: `tests/`
 - Configs: `configs/`
-- Scripts: `scripts/` (training/eval helpers)
+- Scripts: `scripts/` (training helpers)
 
 ## Environment
 - Use the `flash-ansr` conda env; install extras from `requirements.txt`.
@@ -12,7 +12,7 @@
 - Large assets (models/data) are pulled via scripts or `flash_ansr install`.
 
 ## Quality checks
-- Tests: `./scripts/pytest.sh` (full suite). For a fast spot check: `pytest tests/test_baselines/test_skeleton_pool_model.py`.
+- Tests: `./scripts/pytest.sh` (full suite). For a fast spot check: `pytest tests/test_inference.py`. (Baseline tests moved to the `srbf` package in v0.6.)
 - Lint: `./scripts/pylint.sh` (respects repo config).
 - Formatting: follow existing style; stick to ASCII unless a file already uses Unicode.
 
@@ -21,12 +21,12 @@
 - Keep configs stable; when adding new ones, mirror relative paths used elsewhere and document them.
 - For decoding/refinement changes, run `tests/test_inference.py` and related decoding tests.
 - New dependencies go to `requirements.txt`; gate experimental imports.
-- Update docs when adding baselines, CLIs, or config fields.
+- Update docs when adding CLIs or config fields.
 
 ## Style and docs
 - Add succinct comments only for non-obvious logic; keep tensors float32 unless a precision module requires otherwise.
 - When adding dataloader fields, update `FlashANSRDataset.collate` to pad/stack consistently and document it.
-- Keep `README.md` lean; detailed usage belongs in `docs/` (API, training, evaluation, baselines).
+- Keep `README.md` lean; detailed usage belongs in `docs/` (API, training). Evaluation, baselines, and benchmarking moved to the `srbf` package in v0.6 (`pip install srbf`, https://github.com/psaegert/srbf).
 
 ## Releasing
 - Ensure checkpoints include `model.yaml`, `tokenizer.yaml`, and `state_dict.pt`.

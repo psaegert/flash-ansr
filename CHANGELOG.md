@@ -4,6 +4,43 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-26
+
+A scope-focused release: the evaluation framework, comparison baselines, and benchmarks are split
+out into a standalone companion package, [**srbf**](https://github.com/psaegert/srbf) (Symbolic
+Regression Benchmark Framework). `flash-ansr` is now the lean product: load a pretrained model,
+`fit(X, y)`, get an expression, or train your own. Use `srbf` for systematic benchmarking and to
+evaluate models beyond Flash-ANSR.
+
+### Breaking Changes
+- **Evaluation and baselines moved to `srbf`.** Install with `pip install srbf`. The following are no
+  longer importable from `flash_ansr` (a helpful redirect error points to srbf):
+  - `flash_ansr.Evaluation` -> `from srbf.eval import Evaluation`
+  - `flash_ansr.SkeletonPoolModel`, `flash_ansr.BruteForceModel` -> `from srbf.baselines import ...`
+  - the `flash_ansr.eval`, `flash_ansr.baselines`, and `flash_ansr.benchmarks` modules, and the
+    NeSymReS adapter `flash_ansr.compat.nesymres`.
+- **CLI:** the `flash_ansr evaluate-run` subcommand moved to `srbf`. All other subcommands stay
+  (`train`, `install`, `remove`, `generate-/filter-/split-skeleton-pool`, `import-data`,
+  `find-simplifications`, `benchmark`, `wandb-stats`).
+
+### Removed
+- Eval-only dependencies `editdistance` and `zss` are no longer required by the core package (they
+  move with `srbf`).
+- `THIRD_PARTY_LICENSES` (NeSymReS/FastSRB notices) moves to `srbf`; flash-ansr core vendors no
+  third-party code.
+
+### Added
+- Optional classifier-free guidance for optional-condition models: `guidance_weight` on
+  `FlashANSRModel.sample_top_kp` (`uncond + w * (cond - uncond)`). Inert by default
+  (`guidance_weight=None`/`1.0` is byte-identical to the standard decode path).
+- A public-API contract test (`tests/test_public_api_contract.py`) freezes the surface `srbf`
+  consumes, so a contract break cannot merge unnoticed.
+
+### Changed
+- The optional `[baselines]` extra (sympy, for the moved baseline adapters) is replaced by a
+  `[sympy]` extra that enables only the optional `simplify="sympy"` simplification backend. The
+  product default simplifies via `simplipy` and needs no sympy.
+
 ## [0.5.0] - 2026-06-24
 
 A performance-focused release: substantial inference-time speedups with quality-neutral defaults,
