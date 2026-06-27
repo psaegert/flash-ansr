@@ -17,6 +17,7 @@ from simplipy.utils import explicit_constant_placeholders, numbers_to_constant
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.sympy_timeout import _sympy_simplify_with_timeout
 from simplipy.utils import codify
 from flash_ansr.expressions.prior_factory import build_prior_callable
 from flash_ansr.expressions.holdout import HoldoutManager
@@ -27,76 +28,6 @@ from flash_ansr.expressions.token_ops import flatten_nested_list
 
 class NoValidSampleFoundError(Exception):
     pass
-
-
-def _sympy_simplify_call(expr_str: str) -> str:
-    """Run sympy.simplify (called in a thread to allow timeout)."""
-    from sympy import simplify as _sp_simplify, parse_expr as _sp_parse  # noqa: delayed import
-    expr = _sp_parse(expr_str)
-    result = _sp_simplify(expr, ratio=1)
-    return str(result)
-
-
-def _sympy_simplify_with_timeout(expr_str: str, timeout_seconds: float = 1.0) -> tuple[str, float] | None:
-    """Return (simplified_str, elapsed) or None on timeout / error.
-
-    Uses os.fork() so that hung SymPy calls can be killed via SIGKILL,
-    preventing zombie-thread accumulation that degrades performance.
-    """
-    import time
-    import signal
-    import select
-    import sympy  # noqa: F401 – ensure imported before fork
-
-    r_fd, w_fd = os.pipe()
-    start = time.time()
-    pid = os.fork()
-
-    if pid == 0:
-        # ── child process ──
-        os.close(r_fd)
-        try:
-            result = _sympy_simplify_call(expr_str)
-            os.write(w_fd, result.encode('utf-8'))
-        except Exception:
-            pass
-        finally:
-            os.close(w_fd)
-            os._exit(0)
-
-    # ── parent process ──
-    os.close(w_fd)
-
-    ready, _, _ = select.select([r_fd], [], [], timeout_seconds)
-    elapsed = time.time() - start
-
-    if ready:
-        chunks = []
-        while True:
-            chunk = os.read(r_fd, 4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        os.close(r_fd)
-        data = b''.join(chunks)
-        try:
-            os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
-        if data:
-            return (data.decode('utf-8'), elapsed)
-        return None
-    else:
-        os.close(r_fd)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
-        return None
 
 
 def _constantify_skeleton(skeleton: list[str]) -> list[str]:

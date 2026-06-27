@@ -4,6 +4,24 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-06-27
+
+A small maintenance release.
+
+### Changed
+- Default Weights & Biases logging mode for training is now `disabled` (CLI `--mode` and
+  `Trainer.train(..., wandb_mode=...)`). Training works out of the box without a W&B account or
+  network; pass `--mode online` (or `wandb_mode="online"`) to enable logging.
+
+### Internal
+- Moved the `simplify="sympy"` timeout helper to a dependency-light leaf module
+  (`flash_ansr.utils.sympy_timeout`); the model and skeleton pool now import it from there. No
+  behaviour change; this decouples the helper from the data/sampling module ahead of a future
+  package split.
+- The `simplify="sympy"` path now raises a clear, actionable `ImportError` (pointing at
+  `pip install flash-ansr[sympy]`) if `sympy` is ever unavailable. In practice `sympy` ships as a
+  transitive dependency of `torch`, so this is defensive only.
+
 ## [0.6.0] - 2026-06-26
 
 A scope-focused release: the evaluation framework, comparison baselines, and benchmarks are split

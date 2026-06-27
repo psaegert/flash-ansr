@@ -440,7 +440,7 @@ class Trainer:
             validate_interval: int | None = None,
             validate_size: int | None = None,
             validate_batch_size: int = 128,
-            wandb_mode: Literal['online', 'offline', 'disabled'] = 'online',
+            wandb_mode: Literal['online', 'offline', 'disabled'] = 'disabled',
             wandb_watch_log: Literal['gradients', 'parameters', 'all'] | None = None,
             wandb_watch_log_freq: int = 1000,
             preprocess_in_worker: bool | None = None,
@@ -476,8 +476,9 @@ class Trainer:
             Maximum number of validation samples, if limited.
         validate_batch_size : int, default=128
             Batch size to use during validation.
-        wandb_mode : {'online', 'offline', 'disabled'}, default='online'
-            W&B initialisation mode.
+        wandb_mode : {'online', 'offline', 'disabled'}, default='disabled'
+            W&B initialisation mode. Defaults to ``'disabled'`` so a fresh install trains without
+            requiring a W&B account or network; pass ``'online'`` to enable logging.
         wandb_watch_log : {'gradients', 'parameters', 'all'} or None, optional
             W&B ``watch`` setting controlling what to log.
         wandb_watch_log_freq : int, default=1000
