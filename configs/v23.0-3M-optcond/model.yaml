@@ -36,6 +36,6 @@ use_checkpointing: false
 # First-class optional condition (classifier-free guidance). When true, the model carries a learned
 # `null_memory` and routes UNCONDITIONED examples (per-example condition_mask=False, set by the data layer
 # via `unconditional_prob` in dataset_train.yaml) to it -- a data-driven, train/inference-symmetric mode,
-# NOT a train-time dropout. null_memory_init_seed selects the init for the >=2-seed PASS gate (PROPOSAL §3).
+# NOT a train-time dropout. null_memory_init_seed selects the init.
 optional_condition: true
 null_memory_init_seed: 0
