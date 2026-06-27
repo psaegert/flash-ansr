@@ -45,7 +45,7 @@ def main(argv: str = None) -> None:
     train_parser.add_argument('--project', type=str, default='neural-symbolic-regression', help='Name of the wandb project')
     train_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
     train_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
-    train_parser.add_argument('--mode', type=str, default='online', help='Mode for wandb logging')
+    train_parser.add_argument('--mode', type=str, default='disabled', help="Mode for wandb logging ('online', 'offline', or 'disabled'; default disabled — pass --mode online to log)")
     train_parser.add_argument('--resume-from', type=str, default=None, help='Path to a checkpoint directory to resume from')
     train_parser.add_argument('--resume-step', type=int, default=None, help='Override the inferred resume step when resuming')
 

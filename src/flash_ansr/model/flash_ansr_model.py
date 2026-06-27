@@ -18,7 +18,7 @@ from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.model.decoders.static_kv import StaticKVCache
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
-from flash_ansr.expressions.skeleton_pool import _sympy_simplify_with_timeout
+from flash_ansr.utils.sympy_timeout import _sympy_simplify_with_timeout
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
