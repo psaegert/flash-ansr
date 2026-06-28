@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from flash_ansr.expressions import SkeletonPool, NoValidSampleFoundError
+from symbolic_data import SkeletonPool, NoValidSampleFoundError
 from simplipy.utils import substitude_constants as substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
