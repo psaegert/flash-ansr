@@ -20,28 +20,35 @@
 Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokenizer.yaml`, and `state_dict.pt`.
 
 ## Helper scripts
-- `./scripts/import_test_sets.sh`: import benchmark skeletons once so training excludes evaluation holdouts.
-- `./scripts/generate_validation_set.sh <config>`: create held-out skeleton pools matching your bundle.
+- `./scripts/generate_validation_set.sh <config>`: create a held-out validation skeleton pool matching your bundle (wraps `symbolic_data.SkeletonPool`).
+- `./scripts/generate_test_set.sh <config>`: create a test-set skeleton pool from `configs/test_set/<config>/`.
+- `./scripts/import_test_sets.sh`: **pending symbolic-data 0.2; currently prints a notice and exits 1.** Once the data-layer ingest CLI ships it will build a holdout pool from a raw benchmark spec (so training excludes evaluation skeletons); see step 1 below for the interim.
 - `./scripts/train.sh <config>`: convenience wrapper to launch training with the bundle.
 
+> Pool generation moved out of flash-ansr in 0.7: the model package consumes skeleton pools and no longer ships a data CLI (the removed `generate-skeleton-pool` / `import-data` / `filter-skeleton-pool` / `split-skeleton-pool` subcommands). The pool/sampling API lives in [symbolic-data](https://github.com/psaegert/symbolic-data) (a flash-ansr dependency); a first-class `symbolic-data` CLI is planned for symbolic-data 0.2. The helper scripts and `configs/` bundles referenced here live in the repository, not the PyPI wheel; clone the repo to use them.
+
 ## Full training workflow
-1. **Import test sets**: Adjust and run `./scripts/import_test_sets.sh` to import test sets. The data generating processes during training will exclude these skeletons to ensure fair evaluation.
+1. **Import test sets** (training-time decontamination): training excludes the skeletons listed under `holdout_pools:` in your `skeleton_pool_*.yaml`, so the data-generating process never samples a benchmark test skeleton. Building that holdout pool from a raw benchmark spec (the old `import_test_sets.sh`) needs the data-ingest tooling that moved to [symbolic-data](https://github.com/psaegert/symbolic-data) and is **pending symbolic-data 0.2**: no interim command reproduces it (`generate_test_set.sh` samples *random* skeletons, not the benchmark equations). Until then: if you already have a benchmark holdout pool on disk, point `holdout_pools:` at it (this is what the shipped `configs/v23.*` bundles do); otherwise train with `holdout_pools: []`, which is fine for non-benchmark use, but note that benchmark eval numbers (e.g. FastSRB/Feynman) will be contaminated until you can decontaminate. (`symbolic_data.load_benchmark('fastsrb')` exposes the FastSRB benchmark for *evaluation* via srbf, not training-holdout exclusion.)
 2. **Configure skeleton pools and datasets**: Adjust the `skeleton_pool_*.yaml` and `dataset_*.yaml` files inside your chosen config bundle to set operator priors, expression depths, and data sampling strategies.
-3. **Prepare held out skeleton pools** (optional if reusing shipped ones):
-    ```bash
-    flash_ansr generate-skeleton-pool \
-    -c "./configs/my_model/skeleton_pool_val.yaml" \
-    -o "./data/ansr-data/my_model/skeleton_pool_val" \
-    -s 1000 -v  # 1000 skeletons for validation
+3. **Prepare held out skeleton pools** (optional if reusing shipped ones): generate a pool with the `symbolic-data` Python API, or use `./scripts/generate_validation_set.sh <config>`. Run from the project root so the relative paths resolve:
+    ```python
+    from symbolic_data import SkeletonPool
+
+    config = "./configs/my_model/skeleton_pool_val.yaml"
+    pool = SkeletonPool.from_config(config)
+    pool.create(size=1000, verbose=True)  # 1000 skeletons for validation
+    pool.save("./data/ansr-data/my_model/skeleton_pool_val", config=config)
     ```
 4. **Launch training**:
     ```bash
-    flash_ansr train
-    -c "./configs/my_model/train.yaml"
-    -o "./models/ansr-models/my_model"
-    -v
-    -ci 250000  # Checkpoint every 250k steps
-    -vi 10000  # Validate every 10k steps
+    # -ci/--checkpoint-interval: checkpoint every 250k steps
+    # -vi/--validate-interval: validate every 10k steps
+    flash_ansr train \
+    -c "./configs/my_model/train.yaml" \
+    -o "./models/ansr-models/my_model" \
+    -v \
+    -ci 250000 \
+    -vi 10000
     ```
 5. **Logging**: Enable/disable W&B logging via `wandb_mode` inside the config.
 6. **Resume**: Continue from any checkpoint directory using `--resume-from` (optionally `--resume-step` when the step cannot be inferred).
