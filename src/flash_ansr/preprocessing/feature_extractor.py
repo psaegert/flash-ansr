@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence, cast
 import numpy as np
 from simplipy import SimpliPyEngine
 
-from flash_ansr.expressions.skeleton_pool import NoValidSampleFoundError, SkeletonPool
+from symbolic_data import NoValidSampleFoundError, SkeletonPool
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing.schemas import PromptFeatures
 

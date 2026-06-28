@@ -11,7 +11,7 @@ from .model import (
     install_model,
     remove_model,
 )
-from .expressions import SkeletonPool, NoValidSampleFoundError
+from symbolic_data import SkeletonPool, NoValidSampleFoundError
 from .utils import (
     GenerationConfig,
     GenerationConfigBase,

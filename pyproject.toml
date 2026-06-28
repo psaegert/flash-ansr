@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.6.1"
+version = "0.7.0"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
