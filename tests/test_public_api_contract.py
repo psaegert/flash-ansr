@@ -96,10 +96,10 @@ class TestScoringPrimitives:
 
 class TestExpressionNormalization:
     """``normalize_skeleton`` / ``normalize_expression`` -- srbf's adapters + data sources import
-    these from ``flash_ansr.expressions.normalization`` (NOT re-exported from the expressions pkg)."""
+    these from ``simplipy`` (where expression-token normalization lives post-carve)."""
 
     def test_signatures(self):
-        from flash_ansr.expressions.normalization import normalize_expression, normalize_skeleton
+        from simplipy import normalize_expression, normalize_skeleton
 
         _assert_has_params(normalize_skeleton, {"tokens"})
         _assert_has_params(normalize_expression, {"tokens"})
@@ -219,11 +219,11 @@ class TestRefiner:
 
 
 class TestSkeletonPool:
-    """``SkeletonPool`` / ``NoValidSampleFoundError`` -- srbf's SkeletonPoolModel baseline
-    (``flash_ansr.expressions``)."""
+    """``SkeletonPool`` / ``NoValidSampleFoundError`` -- srbf's SkeletonPoolModel baseline imports
+    these from ``symbolic_data`` (the data layer owner post-carve)."""
 
     def test_importable(self):
-        from flash_ansr.expressions import NoValidSampleFoundError, SkeletonPool
+        from symbolic_data import NoValidSampleFoundError, SkeletonPool
 
         assert inspect.isclass(SkeletonPool)
         assert issubclass(NoValidSampleFoundError, Exception)

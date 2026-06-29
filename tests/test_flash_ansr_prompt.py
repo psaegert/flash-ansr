@@ -9,7 +9,7 @@ from flash_ansr import FlashANSR, BeamSearchConfig
 from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.preprocessing.pipeline import FlashANSRPreprocessor
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.expressions.skeleton_pool import SkeletonPool
+from flash_ansr import SkeletonPool
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "test"
 
