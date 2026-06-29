@@ -4,6 +4,22 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-29
+
+### Removed (breaking)
+- The deprecated `flash_ansr.expressions` shim package (introduced in 0.7.0) is removed. Import the
+  expression/data layer from `symbolic_data` instead (installed via `flash-ansr[train]`, or directly).
+  The top-level `flash_ansr.SkeletonPool` / `flash_ansr.NoValidSampleFoundError` re-exports are
+  unchanged. No `flash_ansr` code imported the shim; it existed only for external back-compat.
+
+## [0.7.0] - 2026-06-28
+
+### Changed (breaking)
+- The expression/data layer was carved out into the new `symbolic_data` package; `flash_ansr.expressions.*`
+  became deprecation shims (removed in 0.8.0) re-exporting from `symbolic_data`. `symbolic-data` is now a
+  runtime dependency. The standalone data CLI (`import-data` / pool create/split) was dropped; model
+  commands are unchanged.
+
 ## [0.6.1] - 2026-06-27
 
 A small maintenance release.
