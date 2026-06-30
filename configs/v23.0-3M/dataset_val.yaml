@@ -1,5 +1,5 @@
 source:
-  catalog: "{{ROOT}}/data/ansr-data/v23.x/skeleton_pool_val/"
+  catalog: "v23-val"
   sampling:
     n_support: prior
     n_validation: 0

@@ -1,7 +1,7 @@
 type: lample_charton
 simplipy_engine: 'dev_7-3'
 holdout_pools: [
-  "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/",]
+  "fastsrb",]
 
 sample_strategy:
   n_operator_distribution: "length_exponential"

@@ -1,5 +1,5 @@
 source:
-  catalog: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/"
+  catalog: "fastsrb"
   sampling:
     n_support: prior
     n_validation: 0

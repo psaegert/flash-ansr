@@ -126,18 +126,15 @@ class FlashANSRDataset:
         if isinstance(catalog_cfg, str):
             catalog_cfg = substitute_root_path(catalog_cfg)
 
-        # `source.catalog` may be: an inline generative-catalog dict; a DIRECTORY holding a saved
-        # generative catalog (a fixed validation pool -> load it into an instance, sampled via
-        # ProblemSource); or a catalog config YAML file (load into a dict).
+        # `source.catalog` may be: a curated NAME[@version] (resolved from HF), a catalog config path,
+        # an inline generative-catalog dict, or a DIRECTORY holding a saved generative catalog (a fixed
+        # validation pool). ProblemSource resolves names / paths / inline configs via build_catalog; only
+        # the saved-directory form is loaded into an instance first (build_catalog has no saved-dir loader).
         catalog_spec: Any
-        if isinstance(catalog_cfg, dict):
-            catalog_spec = catalog_cfg
-        elif isinstance(catalog_cfg, str) and os.path.isdir(catalog_cfg):
+        if isinstance(catalog_cfg, str) and os.path.isdir(catalog_cfg):
             catalog_spec = LampleChartonCatalog.load(catalog_cfg)[1]
-        elif isinstance(catalog_cfg, str):
-            catalog_spec = load_config(catalog_cfg)
         else:
-            raise ValueError(f"Invalid source catalog configuration: {catalog_cfg}")
+            catalog_spec = catalog_cfg
 
         source_obj = ProblemSource({"catalog": catalog_spec, "sampling": source_cfg.get("sampling", {})})
 
