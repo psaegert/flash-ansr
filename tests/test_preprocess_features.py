@@ -17,7 +17,7 @@ from flash_ansr.preprocessing.feature_extractor import (
     PromptFeatureExtractorConfig,
 )
 from flash_ansr.preprocessing.pipeline import FlashANSRPreprocessor
-from flash_ansr import SkeletonPool
+from flash_ansr import LampleChartonCatalog
 
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "test"
@@ -34,14 +34,14 @@ def tokenizer() -> Tokenizer:
 
 
 @pytest.fixture(scope="module")
-def skeleton_pool() -> SkeletonPool:
-    return SkeletonPool.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
+def skeleton_pool() -> LampleChartonCatalog:
+    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
 
 
 def test_extract_basic_prompt_features(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     random.seed(0)
     np.random.seed(0)
@@ -95,7 +95,7 @@ def test_extract_basic_prompt_features(
 def test_exclude_terms_skip_existing_terms(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     random.seed(1)
     np.random.seed(1)
@@ -141,7 +141,7 @@ def test_exclude_terms_skip_existing_terms(
 def test_include_terms_subset_of_allowed(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     random.seed(2)
     np.random.seed(2)
@@ -192,7 +192,7 @@ def test_include_terms_subset_of_allowed(
 def test_preprocessor_prompt_mask_alignment(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     random.seed(3)
     np.random.seed(3)
@@ -243,7 +243,7 @@ def test_preprocessor_prompt_mask_alignment(
 def test_preprocessor_prompt_mask_disabled(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
@@ -275,7 +275,7 @@ def test_preprocessor_prompt_mask_disabled(
 def test_serialize_prompt_prefix(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
@@ -315,7 +315,7 @@ def test_serialize_prompt_prefix(
 
 def test_serialize_prompt_prefix_without_prompt_tokens(
     simplipy_engine: SimpliPyEngine,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     tokenizer = Tokenizer(
         vocab=['+', 'x1'],
@@ -374,7 +374,7 @@ def test_is_section_enabled_probability_distribution() -> None:
 def test_extract_respects_section_enable_flags(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     random.seed(123)

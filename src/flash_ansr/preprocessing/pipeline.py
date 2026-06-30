@@ -8,7 +8,7 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 from simplipy import SimpliPyEngine
 
-from symbolic_data import SkeletonPool
+from symbolic_data import LampleChartonCatalog
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing.feature_extractor import (
     PromptFeatureExtractor,
@@ -65,7 +65,7 @@ class FlashANSRPreprocessor:
         self,
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
-        skeleton_pool: SkeletonPool | None = None,
+        skeleton_pool: LampleChartonCatalog | None = None,
         *,
         prompt_config: FlashASNRPreprocessorConfig | dict[str, Any] | None = None,
     ) -> None:
@@ -97,7 +97,7 @@ class FlashANSRPreprocessor:
         *,
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
-        skeleton_pool: SkeletonPool | None = None,
+        skeleton_pool: LampleChartonCatalog | None = None,
     ) -> "FlashANSRPreprocessor":
         config_ = load_config(config)
 

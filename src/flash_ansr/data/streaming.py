@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from symbolic_data import SkeletonPool, NoValidSampleFoundError
+from symbolic_data import LampleChartonCatalog, NoValidSampleFoundError
 from simplipy.utils import substitude_constants as substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
@@ -22,7 +22,7 @@ from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 @dataclass
 class WorkerConfig:
     """Configuration passed to worker processes generating samples."""
-    skeleton_pool: SkeletonPool
+    skeleton_pool: LampleChartonCatalog
     tokenizer: Tokenizer
     padding: Literal["random", "zero"]
     n_per_equation: int
@@ -40,7 +40,7 @@ class SharedMemoryWorkerPool:
     def __init__(
         self,
         *,
-        skeleton_pool: SkeletonPool,
+        skeleton_pool: LampleChartonCatalog,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
     ) -> None:

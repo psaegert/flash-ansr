@@ -9,7 +9,7 @@ from unittest import mock
 
 import torch
 
-from flash_ansr import SkeletonPool, get_path
+from flash_ansr import LampleChartonCatalog, get_path
 from flash_ansr.train import Trainer
 
 
@@ -18,7 +18,7 @@ class TestTrain(unittest.TestCase):
         self.val_skeleton_save_dir = get_path('data', 'test', 'skeleton_pool_val')
 
         # Create a skeleton pool
-        pool = SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
+        pool = LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
         pool.create(size=10)
         pool.save(
             self.val_skeleton_save_dir,

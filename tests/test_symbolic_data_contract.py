@@ -1,9 +1,11 @@
 """Contract test for the flash-ansr <-> symbolic-data seam.
 
 flash-ansr carved the expression/data layer into ``symbolic-data`` (0.7) and removed the
-deprecated ``flash_ansr.expressions`` shim (0.8). This freezes the remaining seam: flash-ansr
-re-exports the few symbols it needs from ``symbolic_data``, expression-token normalization lives
-in ``simplipy``, and ``FlashANSRDataset`` keeps its ``skeleton_pool`` constructor seam.
+deprecated ``flash_ansr.expressions`` shim (0.8). symbolic-data 0.6 replaced the ``SkeletonPool``
+with the catalog-based ``LampleChartonCatalog`` generator (0.9 adopts it). This freezes the
+remaining seam: flash-ansr re-exports the few symbols it needs from ``symbolic_data``,
+expression-token normalization lives in ``simplipy``, and ``FlashANSRDataset`` keeps its
+``skeleton_pool`` constructor seam.
 """
 import inspect
 
@@ -14,7 +16,7 @@ def test_top_level_reexports_symbolic_data():
     import flash_ansr
     import symbolic_data
 
-    assert flash_ansr.SkeletonPool is symbolic_data.SkeletonPool
+    assert flash_ansr.LampleChartonCatalog is symbolic_data.LampleChartonCatalog
     assert flash_ansr.NoValidSampleFoundError is symbolic_data.NoValidSampleFoundError
 
 

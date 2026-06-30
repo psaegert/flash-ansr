@@ -6,7 +6,7 @@ pyyaml
 scikit-learn>=1.0
 scipy>=1.7
 simplipy>=0.3.1
-symbolic-data
+symbolic-data>=0.6.0
 torch>=2.0
 torch_optimizer
 tqdm

@@ -218,14 +218,16 @@ class TestRefiner:
         _assert_has_params(Refiner.__init__, {"simplipy_engine", "n_variables"})
 
 
-class TestSkeletonPool:
-    """``SkeletonPool`` / ``NoValidSampleFoundError`` -- srbf's SkeletonPoolModel baseline imports
-    these from ``symbolic_data`` (the data layer owner post-carve)."""
+class TestGenerativeCatalog:
+    """``LampleChartonCatalog`` / ``NoValidSampleFoundError`` -- srbf's SkeletonPoolModel baseline +
+    flash-ansr training import the generative catalog from ``symbolic_data`` (the data-layer owner;
+    0.6 replaced ``SkeletonPool`` with the catalog-based ``LampleChartonCatalog``)."""
 
     def test_importable(self):
-        from symbolic_data import NoValidSampleFoundError, SkeletonPool
+        from symbolic_data import GenerativeCatalog, LampleChartonCatalog, NoValidSampleFoundError
 
-        assert inspect.isclass(SkeletonPool)
+        assert inspect.isclass(LampleChartonCatalog)
+        assert issubclass(LampleChartonCatalog, GenerativeCatalog)
         assert issubclass(NoValidSampleFoundError, Exception)
 
 
@@ -303,7 +305,7 @@ class TestPackageRootReExports:
             "FlashANSRDataset",
             "Refiner",
             "ConvergenceError",
-            "SkeletonPool",
+            "LampleChartonCatalog",
             "NoValidSampleFoundError",
             "GenerationConfig",
             "GenerationConfigBase",

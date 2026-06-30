@@ -8,12 +8,12 @@ from tqdm import tqdm
 from simplipy import SimpliPyEngine
 from simplipy.utils import codify, explicit_constant_placeholders as identify_constants, remap_expression
 
-from flash_ansr import SkeletonPool  # Parse expressions with SimpliPyEngine.parse_infix_expression
+from symbolic_data import LampleChartonCatalog  # Parse expressions with SimpliPyEngine.parse_infix_expression
 
 
 class TestSetParaser:
     @abstractmethod
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -23,14 +23,14 @@ class TestSetParaser:
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : SkeletonPool
+        base_skeleton_pool : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
-        SkeletonPool
+        LampleChartonCatalog
             The skeleton pool with the parsed expressions added.
         '''
 
@@ -73,7 +73,7 @@ def is_number(token: str) -> bool:
 
 
 class SOOSEParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -83,14 +83,14 @@ class SOOSEParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : SkeletonPool
+        base_skeleton_pool : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
-        SkeletonPool
+        LampleChartonCatalog
             The skeleton pool with the parsed expressions added.
         '''
         n_invalid_expressions = 0
@@ -137,7 +137,7 @@ class SOOSEParser(TestSetParaser):
 
 
 class FeynmanParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -147,14 +147,14 @@ class FeynmanParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : SkeletonPool
+        base_skeleton_pool : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
-        SkeletonPool
+        LampleChartonCatalog
             The skeleton pool with the parsed expressions added.
         '''
         n_invalid_expressions = 0
@@ -206,7 +206,7 @@ class FeynmanParser(TestSetParaser):
 
 
 class NguyenParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -216,14 +216,14 @@ class NguyenParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : SkeletonPool
+        base_skeleton_pool : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
-        SkeletonPool
+        LampleChartonCatalog
             The skeleton pool with the parsed expressions added.
         '''
         n_invalid_expressions = 0
@@ -273,7 +273,7 @@ class NguyenParser(TestSetParaser):
 
 
 class FastSRBParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: SkeletonPool, verbose: bool = False) -> SkeletonPool:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the FastSRB benchmark data and import it into the skeleton pool.
 
@@ -283,14 +283,14 @@ class FastSRBParser(TestSetParaser):
             The test set data containing the prepared equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : SkeletonPool
+        base_skeleton_pool : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
-        SkeletonPool
+        LampleChartonCatalog
             The skeleton pool with the parsed expressions added.
         '''
 

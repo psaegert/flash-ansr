@@ -4,7 +4,7 @@ import pandas as pd
 from simplipy import SimpliPyEngine
 
 from flash_ansr.convert_data import SOOSEParser, FeynmanParser, NguyenParser, FastSRBParser
-from flash_ansr import SkeletonPool, get_path
+from flash_ansr import LampleChartonCatalog, get_path
 
 
 class TestConvertData(unittest.TestCase):
@@ -20,9 +20,9 @@ class TestConvertData(unittest.TestCase):
         skeleton_pool = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, SkeletonPool)
+        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
 
     def test_import_test_data_feynman(self):
         df = pd.DataFrame({
@@ -37,9 +37,9 @@ class TestConvertData(unittest.TestCase):
         skeleton_pool = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, SkeletonPool)
+        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
 
     def test_import_test_data_nguyen(self):
         df = pd.DataFrame({
@@ -53,9 +53,9 @@ class TestConvertData(unittest.TestCase):
         skeleton_pool = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, SkeletonPool)
+        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
 
     def test_import_test_data_fastsrb(self):
         df = pd.DataFrame({
@@ -70,6 +70,6 @@ class TestConvertData(unittest.TestCase):
         skeleton_pool = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, SkeletonPool)
+        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)

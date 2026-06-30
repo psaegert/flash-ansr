@@ -9,7 +9,7 @@ from flash_ansr import FlashANSR, BeamSearchConfig
 from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.preprocessing.pipeline import FlashANSRPreprocessor
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr import SkeletonPool
+from flash_ansr import LampleChartonCatalog
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "test"
 
@@ -25,8 +25,8 @@ def tokenizer() -> Tokenizer:
 
 
 @pytest.fixture(scope="module")
-def skeleton_pool() -> SkeletonPool:
-    return SkeletonPool.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
+def skeleton_pool() -> LampleChartonCatalog:
+    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
 
 
 class _DummyModel:
@@ -130,7 +130,7 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     monkeypatch: pytest.MonkeyPatch,
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: SkeletonPool,
+    skeleton_pool: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,

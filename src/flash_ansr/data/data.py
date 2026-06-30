@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
-from symbolic_data import SkeletonPool
+from symbolic_data import LampleChartonCatalog
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.config_io import load_config, save_config
@@ -35,7 +35,7 @@ class FlashANSRDataset:
 
     Parameters
     ----------
-    skeleton_pool : SkeletonPool
+    skeleton_pool : LampleChartonCatalog
         Source of operator-only expression templates and sampling logic.
     tokenizer : Tokenizer
         Tokenizer used for expression serialization and padding.
@@ -48,7 +48,7 @@ class FlashANSRDataset:
 
     def __init__(
         self,
-        skeleton_pool: SkeletonPool,
+        skeleton_pool: LampleChartonCatalog,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
         preprocessor: FlashANSRPreprocessor | None = None,
@@ -121,9 +121,9 @@ class FlashANSRDataset:
             config_["skeleton_pool"] = substitute_root_path(config_["skeleton_pool"])
 
         if os.path.isfile(config_["skeleton_pool"]) or isinstance(config_["skeleton_pool"], dict):
-            skeleton_pool = SkeletonPool.from_config(config_["skeleton_pool"])
+            skeleton_pool = LampleChartonCatalog.from_config(config_["skeleton_pool"])
         elif os.path.isdir(config_["skeleton_pool"]):
-            skeleton_pool = SkeletonPool.load(config_["skeleton_pool"])[1]
+            skeleton_pool = LampleChartonCatalog.load(config_["skeleton_pool"])[1]
         else:
             raise ValueError(f"Invalid skeleton pool configuration: {config_['skeleton_pool']}")
 

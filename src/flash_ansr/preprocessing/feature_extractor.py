@@ -8,7 +8,7 @@ from typing import Iterable, Mapping, Sequence, cast
 import numpy as np
 from simplipy import SimpliPyEngine
 
-from symbolic_data import NoValidSampleFoundError, SkeletonPool
+from symbolic_data import NoValidSampleFoundError, LampleChartonCatalog
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing.schemas import PromptFeatures
 
@@ -476,14 +476,14 @@ class PromptFeatureExtractor:
         tokenizer: Tokenizer,
         config: PromptFeatureExtractorConfig | None = None,
         variables: list[str] | None = None,
-        skeleton_pool: SkeletonPool | None = None,
+        skeleton_pool: LampleChartonCatalog | None = None,
     ) -> None:
         self.engine = simplipy_engine
         self.tokenizer = tokenizer
         self.config = config or PromptFeatureExtractorConfig()
         self.variables = variables or self._infer_variables(tokenizer)
         if skeleton_pool is None:
-            raise ValueError("PromptFeatureExtractor now requires a SkeletonPool for random term generation.")
+            raise ValueError("PromptFeatureExtractor now requires a LampleChartonCatalog for random term generation.")
         self.skeleton_pool = skeleton_pool
 
         operator_arity = getattr(self.engine, "operator_arity_compat", None)

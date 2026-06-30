@@ -5,7 +5,7 @@ import shutil
 import torch
 from datasets import Dataset
 
-from flash_ansr import FlashANSRDataset, get_path, SkeletonPool
+from flash_ansr import FlashANSRDataset, get_path, LampleChartonCatalog
 
 
 class TestFlashANSRDataset(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestFlashANSRDataset(unittest.TestCase):
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_save_load(self):
-        pool = SkeletonPool.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
+        pool = LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
 
         pool.create(size=10)
 
