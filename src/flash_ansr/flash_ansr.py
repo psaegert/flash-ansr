@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 
-from simplipy import SimpliPyEngine
+from simplipy import SimpliPyEngine, normalize_skeleton
 
 from flash_ansr._refine_pool import RecoverableForkPool
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
@@ -32,6 +32,7 @@ from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.tensor_ops import pad_input_set
+from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -2051,6 +2052,106 @@ class FlashANSR(BaseEstimator):
             precision=precision,
             variable_mapping=self.variable_mapping if map_variables else None,
             **kwargs)
+
+    def infer(
+            self,
+            X: np.ndarray | torch.Tensor | pd.DataFrame,
+            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
+            variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
+            *,
+            X_val: np.ndarray | torch.Tensor | pd.DataFrame | None = None,
+            complexity: int | float | None = None,
+            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
+            refine_seed: int | None = None,
+            predict_val: bool = True,
+            top_k: int | None = None,
+            verbose: bool = False) -> InferenceResult:
+        """Run symbolic regression on ``(X, y)`` and return ALL candidates directly.
+
+        Unlike :meth:`fit` (which commits to ``self._results`` for later ``predict`` /
+        ``get_expression`` read-back), ``infer`` returns an :class:`~flash_ansr.inference.InferenceResult`:
+        the score-sorted refined :class:`~flash_ansr.inference.Candidate`s PLUS the full
+        :class:`~flash_ansr.inference.CandidateLedger` (the generation pool joined with the refined
+        survivors, classified FIT_OK / FIT_FAILED / INVALID). It writes NOTHING to instance state, so
+        it neither disturbs nor depends on ``self._results`` and is the building block of :meth:`run`.
+
+        ``y_pred`` / ``y_pred_val`` are computed only for the top ``top_k`` candidates (``top_k=None``
+        -> the best only): evaluating every candidate is O(candidates x n_support) and would blow up
+        RAM at high candidate counts. ``predict_val`` toggles the validation-set prediction.
+
+        Parameters
+        ----------
+        X, y : array-like
+            Support feature matrix and targets (the data to fit).
+        variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
+            Variable-name mapping (as in :meth:`fit`).
+        X_val : array-like, optional
+            Out-of-sample features for ``y_pred_val`` (validation predictions).
+        complexity, converge_error, refine_seed, verbose : optional
+            As in :meth:`fit`.
+        predict_val : bool, optional
+            Whether to compute validation predictions for the top candidates.
+        top_k : int or None, optional
+            Compute ``y_pred`` / ``y_pred_val`` for the top ``top_k`` candidates; ``None`` -> best only.
+
+        Returns
+        -------
+        InferenceResult
+            Score-sorted candidates + the full candidate ledger + generation / refinement times.
+        """
+        numpy_errors_before = np.geterr()
+        np.seterr(all=self.numpy_errors)
+        try:
+            gen_state = self._fit_generate(X, y, variable_names, complexity=complexity, verbose=verbose)
+            fit_result = self._fit_refine(gen_state, converge_error=converge_error, refine_seed=refine_seed, verbose=verbose)
+        finally:
+            np.seterr(**numpy_errors_before)
+
+        results = fit_result.results  # already score-sorted (best first) by _compile_results_pure
+
+        def _decode_expr(raw_beam: list[int]) -> list[str] | None:
+            expr_ids = self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0]
+            return self.tokenizer.decode(expr_ids, special_tokens='<constant>')
+
+        ledger = build_candidate_ledger(
+            gen_state.raw_beams, gen_state.log_probs, results,
+            decode_expr=_decode_expr, is_valid=self.simplipy_engine.is_valid,
+        )
+
+        n_pred = (1 if top_k is None else int(top_k)) if results else 0
+        X_support_p = pad_input_set(self._truncate_input(X), self.n_variables) if n_pred else None
+        X_val_p = (pad_input_set(self._truncate_input(X_val), self.n_variables)
+                   if (n_pred and predict_val and X_val is not None) else None)
+
+        candidates: list[Candidate] = []
+        for rank, r in enumerate(results):
+            refiner = r['refiner']
+            want_pred = rank < n_pred
+            expression_prefix = refiner.transform(expression=r['expression'], return_prefix=True, map_variables=False)
+            skeleton_prefix = normalize_skeleton(r['expression'])
+            candidates.append(Candidate(
+                raw_beam=list(r['raw_beam']),
+                expression=list(r['expression']),
+                expression_prefix=list(expression_prefix) if expression_prefix is not None else [],
+                skeleton_prefix=list(skeleton_prefix) if skeleton_prefix is not None else [],
+                constants=_best_constants(r),
+                log_prob=float(r.get('log_prob', float('nan'))),
+                score=float(r.get('score', float('nan'))),
+                fvu=float(r.get('fvu', float('nan'))),
+                complexity=int(r.get('complexity', len(r['expression']))),
+                constant_count=int(r.get('constant_count', 0)),
+                pruned_variant=bool(r.get('pruned_variant', False)),
+                y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
+                y_pred_val=(refiner.predict(X_val_p) if want_pred and X_val_p is not None else None),
+            ))
+
+        return InferenceResult(
+            candidates=candidates,
+            ledger=ledger,
+            generation_time=gen_state.generation_time,
+            refinement_time=fit_result.refinement_time,
+            variable_mapping=fit_result.variable_mapping,
+        )
 
     def save_results(self, path: str) -> None:
         """Persist fitted results (minus lambdas) for later reuse."""

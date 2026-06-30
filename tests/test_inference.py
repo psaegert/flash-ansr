@@ -70,6 +70,62 @@ class TestInference(unittest.TestCase):
             nsr.fit(self.x_tensor, self.y_tensor)
         return nsr
 
+    def test_infer_matches_fit_faithfully(self):
+        # infer() reuses _fit_generate/_fit_refine (minus _apply_fit_result) + adds the candidate
+        # ledger. Pin ONE generation (a captured GenState reused by both paths) so fit() and infer()
+        # refine identically, then assert: identical candidate set (expression, order, fvu), best
+        # y_pred == predict(nth_best_beam=0), the ledger covers the full generation pool, and infer()
+        # writes NOTHING to instance state (self._results unchanged).
+        from flash_ansr.inference import FIT_OK
+
+        # Run on CPU: the constant-pruning rescore (model.forward) is not bit-reproducible on CUDA,
+        # which would reorder the tail candidates and make a strict fit-vs-infer comparison flaky for
+        # reasons unrelated to infer(). CPU forward is deterministic, so fit() and infer() refining the
+        # SAME pinned GenState with the SAME refine_seed are bit-identical.
+        cpu = torch.device("cpu")
+        x = self.x_tensor.to(cpu)
+        y = self.y_tensor.to(cpu)
+        nsr = FlashANSR.load(
+            directory=self.model_dir,
+            generation_config=SoftmaxSamplingConfig(),
+            n_restarts=4,
+        ).to(cpu)
+
+        # Pin BOTH phases so fit() and infer() share one IDENTICAL FitResult. _fit_refine itself is
+        # nondeterministic run-to-run (it dedups to distinct expressions, and which raw_beam represents
+        # a duplicate -- and its seed -> fvu -- depends on parallel-completion order). Re-running it
+        # would test that nondeterminism, not infer()'s faithfulness. Pinning isolates the thing under
+        # test: that infer() builds the SAME candidate VIEW fit() commits, from the same FitResult.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            gen_state = nsr._fit_generate(x, y)
+            fit_result = nsr._fit_refine(gen_state, refine_seed=0)   # the ONE refinement both paths share
+            nsr._fit_generate = lambda *args, **kwargs: gen_state
+            nsr._fit_refine = lambda *args, **kwargs: fit_result
+
+            nsr.fit(x, y, refine_seed=0)                             # commits fit_result.results to _results
+            fit_pred = nsr.predict(x) if nsr._results else None
+            result = nsr.infer(x, y, refine_seed=0)                  # builds candidates from the SAME fit_result.results
+
+        ref = fit_result.results
+        # infer()'s candidates are exactly fit's results (same objects, same order): expression / fvu /
+        # score / constants must match element-for-element.
+        self.assertEqual([list(c.expression) for c in result.candidates], [list(r['expression']) for r in ref])
+        np.testing.assert_allclose([c.fvu for c in result.candidates], [float(r['fvu']) for r in ref], equal_nan=True, rtol=1e-9)
+        np.testing.assert_allclose([c.score for c in result.candidates], [float(r['score']) for r in ref], equal_nan=True, rtol=1e-9)
+
+        self.assertGreaterEqual(len(result.ledger), len(gen_state.raw_beams))     # ledger covers the gen pool
+        self.assertEqual(len(result.ledger.token_lists), len(result.ledger.fit_status))
+        self.assertEqual(any(s == FIT_OK for s in result.ledger.fit_status), bool(result.candidates))
+
+        if result.best is not None and fit_pred is not None:
+            self.assertEqual(result.best.expression, list(ref[0]['expression']))
+            fp = fit_pred.detach().cpu().numpy() if isinstance(fit_pred, torch.Tensor) else np.asarray(fit_pred)
+            np.testing.assert_allclose(np.asarray(result.best.y_pred).ravel(), fp.ravel(), rtol=1e-5, atol=1e-6)
+
+        # infer() did NOT call _apply_fit_result -> instance state is still exactly what fit() set
+        self.assertEqual([list(r['expression']) for r in nsr._results], [list(r['expression']) for r in ref])
+
     def _assert_valid_results(self, nsr: FlashANSR) -> None:
         self.assertFalse(nsr.results.empty, "Expected at least one candidate result")
         scores = nsr.results['score'].to_numpy(dtype=float, copy=True)
