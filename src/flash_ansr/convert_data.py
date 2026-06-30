@@ -15,7 +15,7 @@ class TestSetParaser:
     @abstractmethod
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
-        Parse the test set data and import it into the skeleton pool.
+        Parse the test set data and import it into the catalog.
 
         Parameters
         ----------
@@ -24,14 +24,14 @@ class TestSetParaser:
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_catalog : LampleChartonCatalog
-            An initial skeleton pool to add the parsed expressions to.
+            An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
         LampleChartonCatalog
-            The skeleton pool with the parsed expressions added.
+            The catalog with the parsed expressions added.
         '''
 
 
@@ -75,7 +75,7 @@ def is_number(token: str) -> bool:
 class SOOSEParser(TestSetParaser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
-        Parse the test set data and import it into the skeleton pool.
+        Parse the test set data and import it into the catalog.
 
         Parameters
         ----------
@@ -84,14 +84,14 @@ class SOOSEParser(TestSetParaser):
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_catalog : LampleChartonCatalog
-            An initial skeleton pool to add the parsed expressions to.
+            An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
         LampleChartonCatalog
-            The skeleton pool with the parsed expressions added.
+            The catalog with the parsed expressions added.
         '''
         n_invalid_expressions = 0
         n_too_many_variables = 0
@@ -114,7 +114,7 @@ class SOOSEParser(TestSetParaser):
 
             if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
@@ -139,7 +139,7 @@ class SOOSEParser(TestSetParaser):
 class FeynmanParser(TestSetParaser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
-        Parse the test set data and import it into the skeleton pool.
+        Parse the test set data and import it into the catalog.
 
         Parameters
         ----------
@@ -148,14 +148,14 @@ class FeynmanParser(TestSetParaser):
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_catalog : LampleChartonCatalog
-            An initial skeleton pool to add the parsed expressions to.
+            An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
         LampleChartonCatalog
-            The skeleton pool with the parsed expressions added.
+            The catalog with the parsed expressions added.
         '''
         n_invalid_expressions = 0
         n_too_many_variables = 0
@@ -183,7 +183,7 @@ class FeynmanParser(TestSetParaser):
 
             if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
@@ -208,7 +208,7 @@ class FeynmanParser(TestSetParaser):
 class NguyenParser(TestSetParaser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
-        Parse the test set data and import it into the skeleton pool.
+        Parse the test set data and import it into the catalog.
 
         Parameters
         ----------
@@ -217,14 +217,14 @@ class NguyenParser(TestSetParaser):
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_catalog : LampleChartonCatalog
-            An initial skeleton pool to add the parsed expressions to.
+            An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
         LampleChartonCatalog
-            The skeleton pool with the parsed expressions added.
+            The catalog with the parsed expressions added.
         '''
         n_invalid_expressions = 0
         n_too_many_variables = 0
@@ -250,7 +250,7 @@ class NguyenParser(TestSetParaser):
 
             if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
@@ -275,7 +275,7 @@ class NguyenParser(TestSetParaser):
 class FastSRBParser(TestSetParaser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
-        Parse the FastSRB benchmark data and import it into the skeleton pool.
+        Parse the FastSRB benchmark data and import it into the catalog.
 
         Parameters
         ----------
@@ -284,14 +284,14 @@ class FastSRBParser(TestSetParaser):
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
         base_catalog : LampleChartonCatalog
-            An initial skeleton pool to add the parsed expressions to.
+            An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
 
         Returns
         -------
         LampleChartonCatalog
-            The skeleton pool with the parsed expressions added.
+            The catalog with the parsed expressions added.
         '''
 
         n_invalid_expressions = 0
@@ -325,7 +325,7 @@ class FastSRBParser(TestSetParaser):
 
             if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f"\nExpression at index {idx} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}")
+                warnings.warn(f"\nExpression at index {idx} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}")
                 continue
 
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)

@@ -5,7 +5,7 @@ rank decode candidates (``flash_ansr.py`` / ``generation/mcts.py`` / ``results.p
 also consumed by the comparison baselines and, after the planned repo split, by ``srbf`` via the
 public API. This module collapses the formerly-triplicated
 ``_compute_fvu`` / ``_normalize_variance`` / ``_score_from_fvu`` copies
-(``flash_ansr.py`` + ``baselines/{brute_force_model,skeleton_pool_model}.py``) onto one definition.
+(``flash_ansr.py`` + the srbf comparison baselines) onto one definition.
 
 Note on FVU: this is the *scalar-loss* form. The refiner supplies an already-reduced residual
 ``loss``, so :func:`compute_fvu` divides by the (epsilon-floored) target variance. The *array* form

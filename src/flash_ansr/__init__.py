@@ -1,4 +1,10 @@
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
+
+try:
+    __version__ = _pkg_version("flash-ansr")
+except PackageNotFoundError:  # pragma: no cover - source tree without installed metadata
+    __version__ = "0.0.0+unknown"
 
 from .model import (
     ModelFactory,
@@ -37,17 +43,17 @@ from .preprocessing import FlashANSRPreprocessor
 # imports discoverable by raising a helpful, actionable error instead of a bare
 # ``ImportError`` / ``AttributeError``.
 _MOVED_TO_SRBF = {
-    "Evaluation": "srbf.eval",
-    "SkeletonPoolModel": "srbf.baselines",
-    "BruteForceModel": "srbf.baselines",
+    "Evaluation": ("srbf", "Benchmark"),
+    "SkeletonPoolModel": ("srbf.baselines", "LampleChartonModel"),
+    "BruteForceModel": ("srbf.baselines", "BruteForceModel"),
 }
 
 
 def __getattr__(name: str) -> Any:  # PEP 562
     if name in _MOVED_TO_SRBF:
-        module = _MOVED_TO_SRBF[name]
+        module, new_name = _MOVED_TO_SRBF[name]
         raise AttributeError(
-            f"`flash_ansr.{name}` moved to the `srbf` package in flash-ansr 0.6. "
-            f"Install it with `pip install srbf`, then use `from {module} import {name}`."
+            f"`flash_ansr.{name}` moved to the `srbf` package (now `{new_name}`). "
+            f"Install it with `pip install srbf`, then use `from {module} import {new_name}`."
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

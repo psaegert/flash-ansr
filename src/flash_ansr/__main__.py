@@ -7,8 +7,8 @@ def main(argv: str = None) -> None:
     parser = argparse.ArgumentParser(description='Neural Symbolic Regression')
     subparsers = parser.add_subparsers(dest='command_name', required=True)
 
-    # NOTE (flash-ansr 0.7): the skeleton-pool data CLI (generate / import / filter / split)
-    # moved out of flash-ansr — pool construction, ingestion and holdout now live in the
+    # NOTE (flash-ansr 0.7): the data-layer CLI (catalog generation / ingestion / holdout)
+    # moved out of flash-ansr — catalog construction, ingestion and decontamination now live in the
     # `symbolic-data` package (and its CLI). flash-ansr keeps the model-side commands below.
 
     train_parser = subparsers.add_parser("train")
