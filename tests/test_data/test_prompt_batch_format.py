@@ -6,9 +6,20 @@ from flash_ansr.data import FlashANSRDataset
 from flash_ansr.model.tokenizer import Tokenizer
 
 
-class _DummySkeletonPool:
+class _DummyCatalog:
     simplipy_engine = None
-    n_support_prior_config = {'kwargs': {'max_value': 4}}
+    variables = ['x1', 'x2', 'x3']
+
+
+class _DummySource:
+    """Minimal duck-typed ProblemSource for the collate-only seam.
+
+    The dataset stores it on the worker pool at construction; this test never
+    iterates/streams, so only the attributes touched by ``__init__`` are needed.
+    """
+    config = {'catalog': {'type': 'lample_charton'}, 'sampling': {'n_support': 'prior', 'n_validation': 0}}
+    max_n_support = 4
+    catalog = _DummyCatalog()
 
 
 def test_collate_preserves_prompt_metadata_alignment() -> None:
@@ -16,7 +27,7 @@ def test_collate_preserves_prompt_metadata_alignment() -> None:
         vocab=['x1', 'x2', 'x3'],
         special_tokens=['<pad>', '<bos>', '<eos>', '<prompt>', '</prompt>', '<expression>'],
     )
-    with FlashANSRDataset(skeleton_pool=_DummySkeletonPool(), tokenizer=tokenizer, padding='zero') as dataset:
+    with FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding='zero') as dataset:
 
         raw_batch = {
             'input_ids': [

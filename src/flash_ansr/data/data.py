@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
-from symbolic_data import LampleChartonCatalog
+from symbolic_data import ProblemSource
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.config_io import load_config, save_config
@@ -35,8 +35,9 @@ class FlashANSRDataset:
 
     Parameters
     ----------
-    skeleton_pool : LampleChartonCatalog
-        Source of operator-only expression templates and sampling logic.
+    source : ProblemSource
+        symbolic-data problem source streaming ready-to-use Problems (skeleton
+        + support points) from its underlying generative catalog.
     tokenizer : Tokenizer
         Tokenizer used for expression serialization and padding.
     padding : {"random", "zero"}
@@ -48,13 +49,13 @@ class FlashANSRDataset:
 
     def __init__(
         self,
-        skeleton_pool: LampleChartonCatalog,
+        source: ProblemSource,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
         preprocessor: FlashANSRPreprocessor | None = None,
         unconditional_prob: float = 0.0,
     ) -> None:
-        self.skeleton_pool = skeleton_pool
+        self.source = source
         self.tokenizer = tokenizer
         self.padding = padding
         self.preprocessor = preprocessor
@@ -66,7 +67,7 @@ class FlashANSRDataset:
 
         self._collator = BatchFormatter(tokenizer=tokenizer)
         self._stream = SharedMemoryWorkerPool(
-            skeleton_pool=skeleton_pool,
+            source=source,
             tokenizer=tokenizer,
             padding=padding,
         )
@@ -90,15 +91,17 @@ class FlashANSRDataset:
 
     @property
     def simplipy_engine(self) -> SimpliPyEngine:
-        return self.skeleton_pool.simplipy_engine
+        return self.source.catalog.simplipy_engine
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
         """Instantiate from a YAML/dict config.
 
         Paths are normalized via `load_config` and `substitute_root_path`. The
-        config may embed a skeleton pool definition or point to a directory
-        containing one.
+        config carries a `source:` block: `{catalog: <path-to-catalog-yaml OR
+        inline dict>, sampling: {...}}`. The catalog (a generative
+        `lample_charton` catalog) is loaded into a dict and handed to a
+        `ProblemSource`.
 
         Parameters
         ----------
@@ -115,17 +118,22 @@ class FlashANSRDataset:
         if "dataset" in config_.keys():
             config_ = config_["dataset"]
 
-        if isinstance(config, str) and isinstance(config_["skeleton_pool"], str):
-            if config_["skeleton_pool"].startswith('.'):  # pragma: no cover - config guard
-                config_["skeleton_pool"] = os.path.join(os.path.dirname(config), config_["skeleton_pool"])
-            config_["skeleton_pool"] = substitute_root_path(config_["skeleton_pool"])
+        source_cfg = config_["source"]
+        catalog_cfg = source_cfg["catalog"]
 
-        if os.path.isfile(config_["skeleton_pool"]) or isinstance(config_["skeleton_pool"], dict):
-            skeleton_pool = LampleChartonCatalog.from_config(config_["skeleton_pool"])
-        elif os.path.isdir(config_["skeleton_pool"]):
-            skeleton_pool = LampleChartonCatalog.load(config_["skeleton_pool"])[1]
+        if isinstance(config, str) and isinstance(catalog_cfg, str):
+            if catalog_cfg.startswith('.'):  # pragma: no cover - config guard
+                catalog_cfg = os.path.join(os.path.dirname(config), catalog_cfg)
+            catalog_cfg = substitute_root_path(catalog_cfg)
+
+        if isinstance(catalog_cfg, str):
+            catalog_dict = load_config(catalog_cfg)
+        elif isinstance(catalog_cfg, dict):
+            catalog_dict = catalog_cfg
         else:
-            raise ValueError(f"Invalid skeleton pool configuration: {config_['skeleton_pool']}")
+            raise ValueError(f"Invalid source catalog configuration: {catalog_cfg}")
+
+        source_obj = ProblemSource({"catalog": catalog_dict, "sampling": source_cfg.get("sampling", {})})
 
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
@@ -134,13 +142,13 @@ class FlashANSRDataset:
         if preprocessor_cfg is not None:
             preprocessor = FlashANSRPreprocessor.from_config(
                 preprocessor_cfg,
-                simplipy_engine=skeleton_pool.simplipy_engine,
+                simplipy_engine=source_obj.catalog.simplipy_engine,
                 tokenizer=tokenizer,
-                skeleton_pool=skeleton_pool,
+                skeleton_pool=source_obj.catalog,
             )
 
         return cls(
-            skeleton_pool=skeleton_pool,
+            source=source_obj,
             tokenizer=tokenizer,
             padding=config_["padding"],
             preprocessor=preprocessor,
@@ -259,7 +267,12 @@ class FlashANSRDataset:
         """
         disable_progress_bars()
         if size is None and steps is None:
-            size = len(self.skeleton_pool)
+            size = self.source.size_hint()
+            if size is None:
+                raise ValueError(
+                    "Cannot infer a dataset size from an unbounded ProblemSource. "
+                    "Pass an explicit `size` or `steps` to `compile()`."
+                )
 
         self.data = Dataset.from_list(
             list(
@@ -316,9 +329,9 @@ class FlashANSRDataset:
             if compiled_fn is None:
                 try:
                     compiled_fn = build_expression_callable(
-                        self.skeleton_pool.simplipy_engine,
+                        self.source.catalog.simplipy_engine,
                         expression_tokens,
-                        self.skeleton_pool.variables,
+                        self.source.catalog.variables,
                     )
                 except Exception:
                     compiled_fn = None

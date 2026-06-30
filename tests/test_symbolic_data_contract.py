@@ -36,7 +36,11 @@ def test_normalization_lives_in_simplipy():
 def test_flash_ansr_dataset_keeps_skeleton_pool_seam():
     from flash_ansr.data import FlashANSRDataset
 
-    assert "skeleton_pool" in inspect.signature(FlashANSRDataset.__init__).parameters
+    # The seam changed deliberately in 0.9: FlashANSRDataset now consumes a symbolic-data
+    # ProblemSource (`source=`) instead of reaching into a catalog's low-level samplers.
+    params = inspect.signature(FlashANSRDataset.__init__).parameters
+    assert "source" in params
+    assert "skeleton_pool" not in params
 
 
 def test_data_cli_dropped_model_cli_kept(capsys):

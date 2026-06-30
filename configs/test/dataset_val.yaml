@@ -1,4 +1,9 @@
-skeleton_pool: './skeleton_pool_val.yaml'
+source:
+  catalog: './catalog_val.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
 tokenizer: './tokenizer.yaml'
 padding: 'zero'
 preprocessor:

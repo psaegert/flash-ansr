@@ -1,8 +1,8 @@
 """Shared-memory streaming of procedurally generated training samples."""
 
+import copy
 import multiprocessing as mp
 import os
-import random
 import signal
 import warnings
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from symbolic_data import LampleChartonCatalog, NoValidSampleFoundError
+from symbolic_data import ProblemSource
 from simplipy.utils import substitude_constants as substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
@@ -22,7 +22,7 @@ from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 @dataclass
 class WorkerConfig:
     """Configuration passed to worker processes generating samples."""
-    skeleton_pool: LampleChartonCatalog
+    source_config: dict[str, Any]
     tokenizer: Tokenizer
     padding: Literal["random", "zero"]
     n_per_equation: int
@@ -40,11 +40,11 @@ class SharedMemoryWorkerPool:
     def __init__(
         self,
         *,
-        skeleton_pool: LampleChartonCatalog,
+        source: ProblemSource,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
     ) -> None:
-        self.skeleton_pool = skeleton_pool
+        self.source = source
         self.tokenizer = tokenizer
         self.padding = padding
 
@@ -88,7 +88,7 @@ class SharedMemoryWorkerPool:
         self.pool_size = self._num_workers * prefetch_factor
 
         if max_n_support is None:
-            max_n_support = self.skeleton_pool.support_sampler.configured_max_n_support
+            max_n_support = self.source.max_n_support
             if max_n_support is None:
                 raise ValueError(
                     "Support sampler configuration must define a maximum support size via "
@@ -97,7 +97,7 @@ class SharedMemoryWorkerPool:
 
         shm_configs: dict[str, dict[str, Any]] = {
             "x_tensors": {
-                "shape": (self.pool_size, batch_size, max_n_support, len(self.skeleton_pool.variables)),
+                "shape": (self.pool_size, batch_size, max_n_support, len(self.source.catalog.variables)),
                 "dtype": np.float32,
             },
             "y_tensors": {
@@ -137,8 +137,14 @@ class SharedMemoryWorkerPool:
         for idx in range(self.pool_size):
             self._available_slots_queue.put(idx)
 
+        # Each worker rebuilds its OWN ProblemSource from this config (with its own post-fork rng)
+        # for decorrelation; never pickle a live source. `problems_per_expression` carries the old
+        # `n_per_equation` grouping so consecutive problems share a skeleton when n_per_equation > 1.
+        source_config = copy.deepcopy(self.source.config)
+        source_config.setdefault("sampling", {})["problems_per_expression"] = n_per_equation
+
         worker_config = WorkerConfig(
-            skeleton_pool=self.skeleton_pool,
+            source_config=source_config,
             tokenizer=self.tokenizer,
             padding=self.padding,
             n_per_equation=n_per_equation,
@@ -235,19 +241,24 @@ def _producer_worker(
     worker_config: WorkerConfig,
 ) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    np.random.seed(os.getpid())
-    random.seed(os.getpid())
+    # One per-worker Generator created POST-fork: distinct streams per worker for decorrelation
+    # (replaces the old getpid()-based global np.random/random seeding).
+    worker_rng = np.random.default_rng()
 
-    skeleton_pool = worker_config.skeleton_pool
     tokenizer = worker_config.tokenizer
     padding = worker_config.padding
-    n_per_equation = worker_config.n_per_equation
     batch_size = worker_config.batch_size
     tokenizer_oov = worker_config.tokenizer_oov
     worker_preprocess = worker_config.worker_preprocess
     max_seq_len = worker_config.max_seq_len
     prompt_config = worker_config.preprocessor_prompt_config
     unconditional_prob = worker_config.unconditional_prob
+
+    # Each worker builds its own ProblemSource (and thus its own catalog/engine) from the picklable
+    # config, driven by this worker's rng. `catalog` is reused for the preprocessor + variables.
+    source = ProblemSource(worker_config.source_config, rng=worker_rng)
+    catalog = source.catalog
+    variables = catalog.variables
 
     bos_token_id = tokenizer["<bos>"]
     eos_token_id = tokenizer["<eos>"]
@@ -268,14 +279,20 @@ def _producer_worker(
     preprocessor: FlashANSRPreprocessor | None = None
     if worker_preprocess and prompt_config is not None:
         preprocessor = FlashANSRPreprocessor(
-            simplipy_engine=skeleton_pool.simplipy_engine,
+            simplipy_engine=catalog.simplipy_engine,
             tokenizer=tokenizer,
-            skeleton_pool=skeleton_pool,
+            skeleton_pool=catalog,
             prompt_config=prompt_config,
+            rng=worker_rng,
         )
 
     shms = {name: shared_memory.SharedMemory(name=cfg["name"]) for name, cfg in shm_configs.items()}
     pools = {name: np.ndarray(cfg["shape"], dtype=cfg["dtype"], buffer=shms[name].buf) for name, cfg in shm_configs.items()}
+
+    # One source iterator for the worker's lifetime: the source yields ready Problems (handling
+    # skeleton sampling + support sampling internally, with the per-sample support size drawn from
+    # the catalog's prior). Consecutive problems share a skeleton when problems_per_expression > 1.
+    problem_iter = iter(source)
 
     try:
         while True:
@@ -283,7 +300,9 @@ def _producer_worker(
             if job is None:
                 break
 
-            slot_idx, n_support = job
+            # The per-job n_support is IGNORED: the source config (`n_support: prior`) governs the
+            # per-sample support size. The slot index is the only field we consume here.
+            slot_idx, _ = job
 
             x_tensors_batch = pools["x_tensors"][slot_idx]
             y_tensors_batch = pools["y_tensors"][slot_idx]
@@ -296,104 +315,69 @@ def _producer_worker(
 
             i = 0
             while i < batch_size:
-                try:
-                    skeleton_hash, skeleton_code, skeleton_constants = skeleton_pool.sample_skeleton()
-                    skeleton = list(skeleton_hash)
-                except NoValidSampleFoundError:
+                problem = next(problem_iter)
+                if problem.is_placeholder:
                     continue
 
-                temp_samples = []
-                attempts = 0
-                max_total_attempts = n_per_equation * 20
+                x_support = problem.x_support
+                y_support = problem.y_support
+                skeleton = list(problem.skeleton)
+                literals = np.asarray(problem.constants, dtype=np.float32)
 
-                succeeded = True
-                n_to_generate = min(n_per_equation, batch_size - i)
+                mask_unused_variable_columns(
+                    arrays=(x_support,),
+                    variables=variables,
+                    skeleton_tokens=skeleton,
+                    padding=padding,
+                )
 
-                for _ in range(n_to_generate):
-                    sample_found = False
-                    while not sample_found:
-                        if attempts >= max_total_attempts:
-                            succeeded = False
-                            break
+                tokens_to_encode = list(skeleton)
+                if has_expression_wrappers:
+                    tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
 
-                        attempts += 1
-                        try:
-                            x_support, y_support, literals = skeleton_pool.sample_data(
-                                skeleton_code, len(skeleton_constants), n_support=n_support
-                            )
+                body_ids = tokenizer.encode(tokens_to_encode, oov=tokenizer_oov)
+                input_ids = [bos_token_id, *body_ids, eos_token_id]
+                if len(input_ids) > max_seq_len:
+                    input_ids = input_ids[:max_seq_len]
+                    input_ids[-1] = eos_token_id
 
-                            mask_unused_variable_columns(
-                                arrays=(x_support,),
-                                variables=skeleton_pool.variables,
-                                skeleton_tokens=skeleton,
-                                padding=padding,
-                            )
+                metadata = {
+                    "skeleton": skeleton,
+                    "skeleton_hash": tuple(skeleton),
+                    "expression": substitute_constants(skeleton, values=literals, inplace=False),
+                    "n_support": int(x_support.shape[0]),
+                }
+                # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
+                # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
+                # The key is emitted iff the feature is active, so condition_mask present <=> feature
+                # on -> existing runs (prob 0) are byte-identical and the model never sees a mask.
+                # Flows into the batch via `metadata_fields` (data.py) and routes to `null_memory`
+                # in the model when False. Per-worker RNG is seeded at worker start.
+                if unconditional_prob > 0.0:
+                    metadata["condition_mask"] = bool(worker_rng.random() >= unconditional_prob)
 
-                            tokens_to_encode = list(skeleton)
-                            if has_expression_wrappers:
-                                tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
+                x_tensors_batch[i, : x_support.shape[0], : x_support.shape[1]] = x_support
+                x_tensors_batch[i, x_support.shape[0]:, :] = 0
 
-                            body_ids = tokenizer.encode(tokens_to_encode, oov=tokenizer_oov)
-                            input_ids = [bos_token_id, *body_ids, eos_token_id]
-                            if len(input_ids) > max_seq_len:
-                                input_ids = input_ids[:max_seq_len]
-                                input_ids[-1] = eos_token_id
+                y_tensors_batch[i, : y_support.shape[0], : y_support.shape[1]] = y_support
+                y_tensors_batch[i, y_support.shape[0]:, :] = 0
 
-                            metadata = {
-                                "skeleton": skeleton,
-                                "skeleton_hash": skeleton_hash,
-                                "expression": substitute_constants(skeleton, values=literals, inplace=False),
-                                "n_support": int(x_support.shape[0]),
-                            }
-                            # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
-                            # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
-                            # The key is emitted iff the feature is active, so condition_mask present <=> feature
-                            # on -> existing runs (prob 0) are byte-identical and the model never sees a mask.
-                            # Flows into the batch via `metadata_fields` (data.py) and routes to `null_memory`
-                            # in the model when False. Per-worker RNG is seeded at worker start.
-                            if unconditional_prob > 0.0:
-                                metadata["condition_mask"] = bool(np.random.rand() >= unconditional_prob)
+                data_attn_mask_batch[i, : x_support.shape[0]] = 1
+                data_attn_mask_batch[i, x_support.shape[0]:] = 0
 
-                            temp_samples.append(
-                                {
-                                    "x": x_support,
-                                    "y": y_support,
-                                    "input_ids": input_ids,
-                                    "constants": literals,
-                                    "metadata": metadata,
-                                }
-                            )
-                            sample_found = True
-                        except NoValidSampleFoundError:
-                            continue
+                input_ids_batch[i, :] = tokenizer["<pad>"]
+                input_ids_batch[i, : len(input_ids)] = input_ids
 
-                    if not succeeded:
-                        break
+                constants_batch.append(literals)
+                metadata_batch.append(metadata)
+                if preprocessed_batch is not None and preprocessor is not None:
+                    instance = {
+                        "input_ids": list(input_ids),
+                        "skeletons": list(metadata.get("skeleton", [])),
+                    }
+                    preprocessed_batch.append(preprocessor._format_single(instance))
 
-                if succeeded:
-                    for sample in temp_samples:
-                        x_tensors_batch[i, : sample["x"].shape[0], : sample["x"].shape[1]] = sample["x"]
-                        x_tensors_batch[i, sample["x"].shape[0]:, :] = 0
-
-                        y_tensors_batch[i, : sample["y"].shape[0], : sample["y"].shape[1]] = sample["y"]
-                        y_tensors_batch[i, sample["y"].shape[0]:, :] = 0
-
-                        data_attn_mask_batch[i, : sample["x"].shape[0]] = 1
-                        data_attn_mask_batch[i, sample["x"].shape[0]:] = 0
-
-                        input_ids_batch[i, :] = tokenizer["<pad>"]
-                        input_ids_batch[i, : len(sample["input_ids"])] = sample["input_ids"]
-
-                        constants_batch.append(sample["constants"])
-                        metadata_batch.append(sample["metadata"])
-                        if preprocessed_batch is not None and preprocessor is not None:
-                            instance = {
-                                "input_ids": list(sample["input_ids"]),
-                                "skeletons": list(sample["metadata"].get("skeleton", [])),
-                            }
-                            preprocessed_batch.append(preprocessor._format_single(instance))
-
-                        i += 1
+                i += 1
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch

@@ -1,3 +1,4 @@
+type: lample_charton
 simplipy_engine: 'dev_7-3'
 holdout_pools: []
 

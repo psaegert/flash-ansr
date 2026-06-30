@@ -1,6 +1,5 @@
 import contextlib
 import datetime
-import shutil
 import unittest
 from collections import Counter
 from typing import Any
@@ -9,24 +8,13 @@ from unittest import mock
 
 import torch
 
-from flash_ansr import LampleChartonCatalog, get_path
+from flash_ansr import get_path
 from flash_ansr.train import Trainer
 
 
 class TestTrain(unittest.TestCase):
-    def setUp(self) -> None:
-        self.val_skeleton_save_dir = get_path('data', 'test', 'skeleton_pool_val')
-
-        # Create a skeleton pool
-        pool = LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
-        pool.create(size=10)
-        pool.save(
-            self.val_skeleton_save_dir,
-            config=get_path('configs', 'test', 'skeleton_pool_val.yaml'))
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.val_skeleton_save_dir)
-
+    # The datasets build their generative source directly from the migrated configs; no on-disk
+    # skeleton-pool scaffolding is needed any more.
     @mock.patch('wandb.init')
     @mock.patch('wandb.log')
     def test_train(self, mock_log, mock_init):

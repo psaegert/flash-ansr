@@ -5,27 +5,24 @@ import shutil
 import torch
 from datasets import Dataset
 
-from flash_ansr import FlashANSRDataset, get_path, LampleChartonCatalog
+from symbolic_data import ProblemSource, load_config
+
+from flash_ansr import FlashANSRDataset, get_path
+from flash_ansr.model.tokenizer import Tokenizer
 
 
 class TestFlashANSRDataset(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.mkdtemp()
-        self.save_dir = get_path('data', 'test', 'skeleton_pool', 'val')
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir, ignore_errors=True)
-        shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_save_load(self):
-        pool = LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_val.yaml'))
-
-        pool.create(size=10)
-
-        pool.save(
-            self.save_dir,
-            config=get_path('configs', 'test', 'skeleton_pool_val.yaml'))
-
+        # The dataset now resolves a generative `source.catalog` directly from the config; the old
+        # pool.create()/save() directory-load path is gone. This exercises the compiled-Dataset
+        # save -> load -> equality roundtrip (catalog-independent) plus that `load` re-resolves the
+        # NESTED `source.catalog` reference in the written `dataset.yaml`.
         test_config = get_path('configs', 'test', 'dataset_val.yaml')
         with FlashANSRDataset.from_config(test_config) as dataset:
             dataset.data = Dataset.from_dict({
@@ -59,10 +56,18 @@ class TestFlashANSRDataset(unittest.TestCase):
                 assert batch['x_tensors'].shape[0] == 13
 
     def test_collate_single(self):
-        with FlashANSRDataset.from_config(get_path('configs', 'test', 'dataset_val.yaml')) as dataset:
-            for batch in dataset.iterate(size=7, batch_size=None, n_support=3):
+        # The training config uses `n_support: prior` (variable support size). To pin a fixed support
+        # count for this column-occupancy assertion, build an inline fixed-count source instead.
+        catalog = load_config(get_path('configs', 'test', 'catalog_val.yaml'))
+        source = ProblemSource({
+            'catalog': catalog,
+            'sampling': {'n_support': 3, 'n_validation': 0, 'noise': 0.0},
+        })
+        tokenizer = Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml'))
+        with FlashANSRDataset(source=source, tokenizer=tokenizer, padding='zero') as dataset:
+            for batch in dataset.iterate(size=7, batch_size=None):
                 batch = dataset.collate(batch)
                 assert isinstance(batch['input_ids'], torch.Tensor)
                 print(batch['x_tensors'][0, :10, :10])
                 for i in range(batch['x_tensors'].shape[-1]):
-                    assert (batch['x_tensors'][0, :, i] != 0).sum() in [0, 3]  # 7 non-zero rows
+                    assert (batch['x_tensors'][0, :, i] != 0).sum() in [0, 3]  # 3 support rows
