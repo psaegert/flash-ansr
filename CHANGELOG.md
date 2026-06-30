@@ -4,6 +4,49 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-30
+
+This release completes the data-layer handover to `symbolic_data` and adds a first-class inference
+API that returns every candidate (and the fields a benchmark records) directly, so downstream
+consumers never scrape model internals.
+
+### Added
+- `FlashANSR.infer(X, y, ...) -> InferenceResult`: run symbolic regression on one problem and get the
+  results back directly, without `fit()`'s instance-state mutation. An `InferenceResult` carries the
+  score-sorted refined `Candidate`s plus a lean, columnar `CandidateLedger` (the FULL generation pool
+  joined with the refined survivors, each classified `FIT_OK` / `FIT_FAILED` / `INVALID`). New public
+  module `flash_ansr.inference` (`InferenceResult`, `Candidate`, `CandidateLedger`,
+  `build_candidate_ledger`, `FIT_OK`/`FIT_FAILED`/`INVALID`).
+- Each `Candidate` exposes everything a consumer records per prediction: `raw_beam`, `expression`
+  (skeleton tokens), `expression_prefix` (raw substituted prefix), `expression_infix` (the
+  variable-mapped infix string, identical to `get_expression(map_variables=True)`), `skeleton_prefix`,
+  `constants`, `log_prob`, `score`, `fvu`, `complexity`, `constant_count`, `pruned_variant`, and
+  opt-in `y_pred` / `y_pred_val` (computed for the top-k only, default best-only, to avoid OOM at high
+  candidate counts).
+
+### Changed (breaking)
+- The data/training path now consumes a `symbolic_data.ProblemSource` instead of a `SkeletonPool`.
+  `FlashANSRDataset(source=...)`; dataset configs use a `source:` block
+  (`source: {catalog: <path|dict>, sampling: {...}}`) in place of the old `skeleton_pool:` key.
+  The streaming worker builds a per-worker `ProblemSource` post-fork (each seeded from fresh entropy),
+  replacing the previous `os.getpid()`-derived global seeding.
+- Pool/catalog config files renamed `skeleton_pool*.yaml` -> `catalog*.yaml` (generative catalogs gain
+  a `type: lample_charton` line); the bundled `configs/v23.*` dataset configs are migrated accordingly.
+  Saved validation/benchmark pool directories continue to load (a saved catalog directory is read as a
+  fixed-skeleton source).
+- Preprocessing/conversion parameters renamed off the old term: `FlashANSRPreprocessor(catalog=...)`
+  (was `skeleton_pool=`), `convert_data` `base_catalog` (was `base_skeleton_pool`).
+- The prompt feature extractor takes an injected `numpy.random.Generator` (no module-global RNG).
+- Requires `symbolic-data>=0.7.2`.
+
+### Removed (breaking)
+- The top-level `flash_ansr.SkeletonPool` re-export is removed. The procedural generator now lives in
+  `symbolic_data` as `LampleChartonCatalog` (a `GenerativeCatalog`); import it from there
+  (`from symbolic_data import LampleChartonCatalog`). `flash_ansr.NoValidSampleFoundError` is still
+  re-exported from `symbolic_data`.
+- The bundled `configs/evaluation/` tree is removed; evaluation/benchmarking lives in the `srbf`
+  package, which consumes `FlashANSR.infer()` directly.
+
 ## [0.8.0] - 2026-06-29
 
 ### Removed (breaking)
