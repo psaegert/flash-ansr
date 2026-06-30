@@ -25,8 +25,8 @@ def tokenizer() -> Tokenizer:
 
 
 @pytest.fixture(scope="module")
-def skeleton_pool() -> LampleChartonCatalog:
-    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
+def catalog() -> LampleChartonCatalog:
+    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "catalog_test.yaml"))
 
 
 class _DummyModel:
@@ -130,12 +130,12 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     monkeypatch: pytest.MonkeyPatch,
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     model = _DummyModel(tokenizer=tokenizer, preprocessor=preprocessor)

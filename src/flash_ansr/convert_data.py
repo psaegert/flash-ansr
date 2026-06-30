@@ -13,7 +13,7 @@ from symbolic_data import LampleChartonCatalog  # Parse expressions with SimpliP
 
 class TestSetParaser:
     @abstractmethod
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -23,7 +23,7 @@ class TestSetParaser:
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : LampleChartonCatalog
+        base_catalog : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
@@ -73,7 +73,7 @@ def is_number(token: str) -> bool:
 
 
 class SOOSEParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -83,7 +83,7 @@ class SOOSEParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : LampleChartonCatalog
+        base_catalog : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
@@ -112,16 +112,16 @@ class SOOSEParser(TestSetParaser):
             found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
             prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
 
-            if len(mapping) > len(base_skeleton_pool.variables):
+            if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_skeleton_pool.variables + constants)
+            code = codify(code_string, base_catalog.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)
@@ -130,14 +130,14 @@ class SOOSEParser(TestSetParaser):
         print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
         print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
 
-        base_skeleton_pool.skeleton_codes = expression_dict
-        base_skeleton_pool.skeletons = list(expression_dict.keys())
+        base_catalog.skeleton_codes = expression_dict
+        base_catalog.skeletons = list(expression_dict.keys())
 
-        return base_skeleton_pool
+        return base_catalog
 
 
 class FeynmanParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -147,7 +147,7 @@ class FeynmanParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : LampleChartonCatalog
+        base_catalog : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
@@ -162,7 +162,7 @@ class FeynmanParser(TestSetParaser):
 
         expression_dict = {}
         for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Feynman Data', total=len(test_set_df), smoothing=0.0):
-            if row['# variables'] > len(base_skeleton_pool.variables):
+            if row['# variables'] > len(base_catalog.variables):
                 n_too_many_variables += 1
                 continue
 
@@ -181,16 +181,16 @@ class FeynmanParser(TestSetParaser):
             found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
             prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
 
-            if len(mapping) > len(base_skeleton_pool.variables):
+            if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_skeleton_pool.variables + constants)
+            code = codify(code_string, base_catalog.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)
@@ -199,14 +199,14 @@ class FeynmanParser(TestSetParaser):
         print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
         print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
 
-        base_skeleton_pool.skeleton_codes = expression_dict
-        base_skeleton_pool.skeletons = list(expression_dict.keys())
+        base_catalog.skeleton_codes = expression_dict
+        base_catalog.skeletons = list(expression_dict.keys())
 
-        return base_skeleton_pool
+        return base_catalog
 
 
 class NguyenParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the skeleton pool.
 
@@ -216,7 +216,7 @@ class NguyenParser(TestSetParaser):
             The test set data containing the equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : LampleChartonCatalog
+        base_catalog : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
@@ -248,16 +248,16 @@ class NguyenParser(TestSetParaser):
             found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
             prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
 
-            if len(mapping) > len(base_skeleton_pool.variables):
+            if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
                 continue
 
             # Codify
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_skeleton_pool.variables + constants)
+            code = codify(code_string, base_catalog.variables + constants)
 
             # Import
             expression_hash = tuple(prefix_expression)
@@ -266,14 +266,14 @@ class NguyenParser(TestSetParaser):
         print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
         print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
 
-        base_skeleton_pool.skeleton_codes = expression_dict
-        base_skeleton_pool.skeletons = list(expression_dict.keys())
+        base_catalog.skeleton_codes = expression_dict
+        base_catalog.skeletons = list(expression_dict.keys())
 
-        return base_skeleton_pool
+        return base_catalog
 
 
 class FastSRBParser(TestSetParaser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_skeleton_pool: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the FastSRB benchmark data and import it into the skeleton pool.
 
@@ -283,7 +283,7 @@ class FastSRBParser(TestSetParaser):
             The test set data containing the prepared equations to evaluate.
         simplipy_engine : SimpliPyEngine
             The expression space to use for parsing and simplifying the expressions.
-        base_skeleton_pool : LampleChartonCatalog
+        base_catalog : LampleChartonCatalog
             An initial skeleton pool to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
@@ -323,15 +323,15 @@ class FastSRBParser(TestSetParaser):
             found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
             prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix='x', enumeration_offset=1)
 
-            if len(mapping) > len(base_skeleton_pool.variables):
+            if len(mapping) > len(base_catalog.variables):
                 n_too_many_variables += 1
-                warnings.warn(f"\nExpression at index {idx} has too many variables for the skeleton pool. Expected at most {len(base_skeleton_pool.variables)} but got {len(mapping)} from mapping {mapping}")
+                warnings.warn(f"\nExpression at index {idx} has too many variables for the skeleton pool. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}")
                 continue
 
             prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
             prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
             code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_skeleton_pool.variables + constants)
+            code = codify(code_string, base_catalog.variables + constants)
 
             expression_hash = tuple(prefix_expression)
             expression_dict[expression_hash] = (code, constants)
@@ -341,7 +341,7 @@ class FastSRBParser(TestSetParaser):
         print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / denominator * 100:.2f}%)')
         print(f'Number of entries missing prepared expressions: {n_missing_prepared} ({n_missing_prepared / denominator * 100:.2f}%)')
 
-        base_skeleton_pool.skeleton_codes = expression_dict
-        base_skeleton_pool.skeletons = list(expression_dict.keys())
+        base_catalog.skeleton_codes = expression_dict
+        base_catalog.skeletons = list(expression_dict.keys())
 
-        return base_skeleton_pool
+        return base_catalog

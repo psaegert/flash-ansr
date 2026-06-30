@@ -1,3 +1,8 @@
-skeleton_pool: "{{ROOT}}/data/ansr-data/v23.x/skeleton_pool_val/"
+source:
+  catalog: "{{ROOT}}/data/ansr-data/v23.x/skeleton_pool_val/"
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
 tokenizer: './tokenizer.yaml'
 padding: 'zero'

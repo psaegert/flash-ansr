@@ -475,7 +475,7 @@ class PromptFeatureExtractor:
         tokenizer: Tokenizer,
         config: PromptFeatureExtractorConfig | None = None,
         variables: list[str] | None = None,
-        skeleton_pool: LampleChartonCatalog | None = None,
+        catalog: LampleChartonCatalog | None = None,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.engine = simplipy_engine
@@ -483,9 +483,9 @@ class PromptFeatureExtractor:
         self.config = config or PromptFeatureExtractorConfig()
         self._rng = rng if rng is not None else np.random.default_rng()
         self.variables = variables or self._infer_variables(tokenizer)
-        if skeleton_pool is None:
+        if catalog is None:
             raise ValueError("PromptFeatureExtractor now requires a LampleChartonCatalog for random term generation.")
-        self.skeleton_pool = skeleton_pool
+        self.catalog = catalog
 
         operator_arity = getattr(self.engine, "operator_arity_compat", None)
         if operator_arity is None:
@@ -626,7 +626,7 @@ class PromptFeatureExtractor:
         while len(generated) < count and attempts < max_attempts:
             attempts += 1
             desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
-            term = self._generate_term_via_skeleton_pool(
+            term = self._generate_term_via_catalog(
                 desired_length=desired_len,
                 min_length=min_len,
                 max_length=max_len,
@@ -700,7 +700,7 @@ class PromptFeatureExtractor:
         while len(exclusions) < count and attempts < max_attempts:
             attempts += 1
             desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
-            term = self._generate_term_via_skeleton_pool(
+            term = self._generate_term_via_catalog(
                 desired_length=desired_len,
                 min_length=min_len,
                 max_length=max_len,
@@ -715,7 +715,7 @@ class PromptFeatureExtractor:
 
         return exclusions
 
-    def _generate_term_via_skeleton_pool(
+    def _generate_term_via_catalog(
         self,
         *,
         desired_length: int,
@@ -729,7 +729,7 @@ class PromptFeatureExtractor:
         while attempts < max_attempts:
             attempts += 1
             try:
-                skeleton, _, _ = self.skeleton_pool.sample_skeleton(new=True, decontaminate=False, rng=self._rng)
+                skeleton, _, _ = self.catalog.sample_skeleton(new=True, decontaminate=False, rng=self._rng)
             except NoValidSampleFoundError:
                 continue
 

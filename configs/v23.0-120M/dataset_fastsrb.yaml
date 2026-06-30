@@ -1,3 +1,8 @@
-skeleton_pool: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/"
+source:
+  catalog: "{{ROOT}}/data/ansr-data/test_set/fastsrb/skeleton_pool/"
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
 tokenizer: './tokenizer.yaml'
 padding: 'zero'

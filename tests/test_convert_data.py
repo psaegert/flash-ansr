@@ -17,12 +17,12 @@ class TestConvertData(unittest.TestCase):
 
         parser = SOOSEParser()
 
-        skeleton_pool = parser.parse_data(
+        catalog = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
+        self.assertIsInstance(catalog, LampleChartonCatalog)
 
     def test_import_test_data_feynman(self):
         df = pd.DataFrame({
@@ -34,12 +34,12 @@ class TestConvertData(unittest.TestCase):
 
         parser = FeynmanParser()
 
-        skeleton_pool = parser.parse_data(
+        catalog = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
+        self.assertIsInstance(catalog, LampleChartonCatalog)
 
     def test_import_test_data_nguyen(self):
         df = pd.DataFrame({
@@ -50,12 +50,12 @@ class TestConvertData(unittest.TestCase):
 
         parser = NguyenParser()
 
-        skeleton_pool = parser.parse_data(
+        catalog = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
+        self.assertIsInstance(catalog, LampleChartonCatalog)
 
     def test_import_test_data_fastsrb(self):
         df = pd.DataFrame({
@@ -67,9 +67,9 @@ class TestConvertData(unittest.TestCase):
 
         parser = FastSRBParser()
 
-        skeleton_pool = parser.parse_data(
+        catalog = parser.parse_data(
             test_set_df=df,
             simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
-            base_skeleton_pool=LampleChartonCatalog.from_config(get_path('configs', 'test', 'skeleton_pool_test.yaml')))
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
-        self.assertIsInstance(skeleton_pool, LampleChartonCatalog)
+        self.assertIsInstance(catalog, LampleChartonCatalog)

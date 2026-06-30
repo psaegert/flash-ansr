@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
-from symbolic_data import ProblemSource
+from symbolic_data import LampleChartonCatalog, ProblemSource
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.config_io import load_config, save_config
@@ -121,19 +121,25 @@ class FlashANSRDataset:
         source_cfg = config_["source"]
         catalog_cfg = source_cfg["catalog"]
 
-        if isinstance(config, str) and isinstance(catalog_cfg, str):
-            if catalog_cfg.startswith('.'):  # pragma: no cover - config guard
-                catalog_cfg = os.path.join(os.path.dirname(config), catalog_cfg)
+        if isinstance(config, str) and isinstance(catalog_cfg, str) and catalog_cfg.startswith('.'):
+            catalog_cfg = os.path.join(os.path.dirname(config), catalog_cfg)  # pragma: no cover - config guard
+        if isinstance(catalog_cfg, str):
             catalog_cfg = substitute_root_path(catalog_cfg)
 
-        if isinstance(catalog_cfg, str):
-            catalog_dict = load_config(catalog_cfg)
-        elif isinstance(catalog_cfg, dict):
-            catalog_dict = catalog_cfg
+        # `source.catalog` may be: an inline generative-catalog dict; a DIRECTORY holding a saved
+        # generative catalog (a fixed validation pool -> load it into an instance, sampled via
+        # ProblemSource); or a catalog config YAML file (load into a dict).
+        catalog_spec: Any
+        if isinstance(catalog_cfg, dict):
+            catalog_spec = catalog_cfg
+        elif isinstance(catalog_cfg, str) and os.path.isdir(catalog_cfg):
+            catalog_spec = LampleChartonCatalog.load(catalog_cfg)[1]
+        elif isinstance(catalog_cfg, str):
+            catalog_spec = load_config(catalog_cfg)
         else:
             raise ValueError(f"Invalid source catalog configuration: {catalog_cfg}")
 
-        source_obj = ProblemSource({"catalog": catalog_dict, "sampling": source_cfg.get("sampling", {})})
+        source_obj = ProblemSource({"catalog": catalog_spec, "sampling": source_cfg.get("sampling", {})})
 
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
@@ -144,7 +150,7 @@ class FlashANSRDataset:
                 preprocessor_cfg,
                 simplipy_engine=source_obj.catalog.simplipy_engine,
                 tokenizer=tokenizer,
-                skeleton_pool=source_obj.catalog,
+                catalog=source_obj.catalog,
             )
 
         return cls(

@@ -281,7 +281,7 @@ def _producer_worker(
         preprocessor = FlashANSRPreprocessor(
             simplipy_engine=catalog.simplipy_engine,
             tokenizer=tokenizer,
-            skeleton_pool=catalog,
+            catalog=catalog,
             prompt_config=prompt_config,
             rng=worker_rng,
         )

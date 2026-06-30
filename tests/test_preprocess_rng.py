@@ -42,8 +42,8 @@ def tokenizer() -> Tokenizer:
 
 
 @pytest.fixture(scope="module")
-def skeleton_pool() -> LampleChartonCatalog:
-    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
+def catalog() -> LampleChartonCatalog:
+    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "catalog_test.yaml"))
 
 
 def _exercising_config() -> PromptFeatureExtractorConfig:
@@ -54,7 +54,7 @@ def _exercising_config() -> PromptFeatureExtractorConfig:
     - ``uniform_int`` distributions -> ``DistributionSpec.sample`` integer path
     - multiple actual terms -> the in-place shuffle (permutation) path
     - ``generated_terms`` >= 1 and ``exclude`` count >= 1 -> ``sample_skeleton(rng=...)``
-      + ``_generate_term_via_skeleton_pool`` shuffle + choice paths
+      + ``_generate_term_via_catalog`` shuffle + choice paths
     - include selection -> ``_select_term_by_length`` choice path
     """
     return PromptFeatureExtractorConfig(
@@ -112,14 +112,14 @@ EXPRESSIONS = [
 def _run_extractor_features(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
     seed: int,
 ) -> list[tuple]:
     extractor = PromptFeatureExtractor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         config=_exercising_config(),
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
         rng=np.random.default_rng(seed),
     )
 
@@ -141,19 +141,19 @@ def _run_extractor_features(
 def test_extractor_output_invariant_to_global_rng(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     # Run 1: clean global state.
     np.random.seed(0)
     random.seed(0)
-    first = _run_extractor_features(simplipy_engine, tokenizer, skeleton_pool, seed=123)
+    first = _run_extractor_features(simplipy_engine, tokenizer, catalog, seed=123)
 
     # Run 2: perturb BOTH global RNG states, fresh injected Generator with same seed.
     np.random.seed(999)
     random.seed(999)
     _ = [np.random.random() for _ in range(37)]  # advance global numpy state further
     _ = [random.random() for _ in range(37)]     # advance global stdlib state further
-    second = _run_extractor_features(simplipy_engine, tokenizer, skeleton_pool, seed=123)
+    second = _run_extractor_features(simplipy_engine, tokenizer, catalog, seed=123)
 
     # Identical output despite different global RNG states => no global RNG leak.
     assert first == second
@@ -164,14 +164,14 @@ def test_extractor_output_invariant_to_global_rng(
 def test_preprocessor_should_include_invariant_to_global_rng(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     # _should_include drives serialization-section inclusion via self._rng.random().
     def _collect(seed: int) -> list[tuple[bool, bool, bool, bool]]:
         preprocessor = FlashANSRPreprocessor(
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
-            skeleton_pool=skeleton_pool,
+            catalog=catalog,
             prompt_config={
                 'section_probs': {
                     'prompt': 0.5,

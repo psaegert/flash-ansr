@@ -34,14 +34,14 @@ def tokenizer() -> Tokenizer:
 
 
 @pytest.fixture(scope="module")
-def skeleton_pool() -> LampleChartonCatalog:
-    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "skeleton_pool_test.yaml"))
+def catalog() -> LampleChartonCatalog:
+    return LampleChartonCatalog.from_config(str(CONFIG_DIR / "catalog_test.yaml"))
 
 
 def test_extract_basic_prompt_features(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     random.seed(0)
     np.random.seed(0)
@@ -76,7 +76,7 @@ def test_extract_basic_prompt_features(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         config=config,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     expression = ['+', 'x1', 'x2']
@@ -95,7 +95,7 @@ def test_extract_basic_prompt_features(
 def test_exclude_terms_skip_existing_terms(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     random.seed(1)
     np.random.seed(1)
@@ -125,7 +125,7 @@ def test_exclude_terms_skip_existing_terms(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         config=config,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     expression = ['+', 'x1', 'x2']
@@ -141,7 +141,7 @@ def test_exclude_terms_skip_existing_terms(
 def test_include_terms_subset_of_allowed(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     random.seed(2)
     np.random.seed(2)
@@ -175,7 +175,7 @@ def test_include_terms_subset_of_allowed(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         config=config,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     expression = ['*', '+', 'x1', 'x2', 'x3']
@@ -192,7 +192,7 @@ def test_include_terms_subset_of_allowed(
 def test_preprocessor_prompt_mask_alignment(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     random.seed(3)
     np.random.seed(3)
@@ -200,7 +200,7 @@ def test_preprocessor_prompt_mask_alignment(
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
         prompt_config={
             'prompt_feature': {
                 'prompt_probability': 1.0,
@@ -243,12 +243,12 @@ def test_preprocessor_prompt_mask_alignment(
 def test_preprocessor_prompt_mask_disabled(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
         prompt_config={
             'section_probs': {
                 'prompt': 0.0,
@@ -275,12 +275,12 @@ def test_preprocessor_prompt_mask_disabled(
 def test_serialize_prompt_prefix(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     serialized = preprocessor.serialize_prompt_prefix(
@@ -315,7 +315,7 @@ def test_serialize_prompt_prefix(
 
 def test_serialize_prompt_prefix_without_prompt_tokens(
     simplipy_engine: SimpliPyEngine,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     tokenizer = Tokenizer(
         vocab=['+', 'x1'],
@@ -334,7 +334,7 @@ def test_serialize_prompt_prefix_without_prompt_tokens(
     preprocessor = FlashANSRPreprocessor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     serialized = preprocessor.serialize_prompt_prefix(
@@ -366,12 +366,12 @@ def test_serialize_prompt_prefix_without_prompt_tokens(
 def test_is_section_enabled_probability_distribution(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
 ) -> None:
     extractor = PromptFeatureExtractor(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
         rng=np.random.default_rng(42),
     )
     trials = 500
@@ -383,7 +383,7 @@ def test_is_section_enabled_probability_distribution(
 def test_extract_respects_section_enable_flags(
     simplipy_engine: SimpliPyEngine,
     tokenizer: Tokenizer,
-    skeleton_pool: LampleChartonCatalog,
+    catalog: LampleChartonCatalog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     random.seed(123)
@@ -418,7 +418,7 @@ def test_extract_respects_section_enable_flags(
         simplipy_engine=simplipy_engine,
         tokenizer=tokenizer,
         config=config,
-        skeleton_pool=skeleton_pool,
+        catalog=catalog,
     )
 
     decisions = iter([
@@ -451,7 +451,7 @@ def test_extract_respects_section_enable_flags(
         return [f"gen_{idx}_{i}" for i in range(length)]
 
     monkeypatch.setattr(PromptFeatureExtractor, "_is_section_enabled", staticmethod(fake_is_section_enabled))
-    monkeypatch.setattr(PromptFeatureExtractor, "_generate_term_via_skeleton_pool", fake_generate_term)
+    monkeypatch.setattr(PromptFeatureExtractor, "_generate_term_via_catalog", fake_generate_term)
 
     expression = ['+', 'x1', 'x2']
 

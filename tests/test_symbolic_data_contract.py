@@ -4,8 +4,8 @@ flash-ansr carved the expression/data layer into ``symbolic-data`` (0.7) and rem
 deprecated ``flash_ansr.expressions`` shim (0.8). symbolic-data 0.6 replaced the ``SkeletonPool``
 with the catalog-based ``LampleChartonCatalog`` generator (0.9 adopts it). This freezes the
 remaining seam: flash-ansr re-exports the few symbols it needs from ``symbolic_data``,
-expression-token normalization lives in ``simplipy``, and ``FlashANSRDataset`` keeps its
-``skeleton_pool`` constructor seam.
+expression-token normalization lives in ``simplipy``, and ``FlashANSRDataset`` consumes a
+``ProblemSource`` via its ``source`` constructor seam.
 """
 import inspect
 
@@ -33,7 +33,7 @@ def test_normalization_lives_in_simplipy():
     assert callable(simplipy.normalize_expression)
 
 
-def test_flash_ansr_dataset_keeps_skeleton_pool_seam():
+def test_flash_ansr_dataset_source_seam():
     from flash_ansr.data import FlashANSRDataset
 
     # The seam changed deliberately in 0.9: FlashANSRDataset now consumes a symbolic-data

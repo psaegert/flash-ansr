@@ -64,19 +64,19 @@ class FlashANSRPreprocessor:
         self,
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
-        skeleton_pool: LampleChartonCatalog | None = None,
+        catalog: LampleChartonCatalog | None = None,
         *,
         prompt_config: FlashASNRPreprocessorConfig | dict[str, Any] | None = None,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
-        self.skeleton_pool = skeleton_pool
+        self.catalog = catalog
         self._rng = rng if rng is not None else np.random.default_rng()
 
         self.prompt_config = FlashASNRPreprocessorConfig.from_dict(prompt_config)
         self._prompt_enabled = (
-            skeleton_pool is not None
+            catalog is not None
             and self.prompt_config.prompt_feature.prompt_probability > 0
         )
 
@@ -86,7 +86,7 @@ class FlashANSRPreprocessor:
                 simplipy_engine=simplipy_engine,
                 tokenizer=tokenizer,
                 config=self.prompt_config.prompt_feature,
-                skeleton_pool=skeleton_pool,
+                catalog=catalog,
                 rng=self._rng,
             )
 
@@ -99,7 +99,7 @@ class FlashANSRPreprocessor:
         *,
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
-        skeleton_pool: LampleChartonCatalog | None = None,
+        catalog: LampleChartonCatalog | None = None,
         rng: np.random.Generator | None = None,
     ) -> "FlashANSRPreprocessor":
         config_ = load_config(config)
@@ -115,7 +115,7 @@ class FlashANSRPreprocessor:
         return cls(
             simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
-            skeleton_pool=skeleton_pool,
+            catalog=catalog,
             prompt_config=prompt_cfg,
             rng=rng,
         )
