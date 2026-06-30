@@ -1,4 +1,4 @@
-"""Public inference result types for :meth:`FlashANSR.infer` / :meth:`FlashANSR.run`.
+"""Public inference result types for :meth:`FlashANSR.infer`.
 
 A single inference over one problem yields an :class:`InferenceResult`: the score-sorted refined
 :class:`Candidate`s (the ones that fitted), PLUS a :class:`CandidateLedger` -- the FULL generation
@@ -28,7 +28,8 @@ class Candidate:
 
     raw_beam: list[int]                 # full beam ids -- the dedup-unique candidate identity
     expression: list[str]               # decoded skeleton tokens (constants as placeholders)
-    expression_prefix: list[str]        # constants substituted (+ normalized): the predicted expression
+    expression_prefix: list[str]        # constants substituted, x1..xN vars, raw PREFIX tokens (simplipy.normalize_expression for canonical form)
+    expression_infix: str               # human-readable prediction: constants substituted, vars MAPPED, INFIX str (== get_expression(map_variables=True))
     skeleton_prefix: list[str]          # normalized skeleton (constants as placeholders)
     constants: list[float]              # best-fit constant values
     log_prob: float

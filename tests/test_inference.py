@@ -122,6 +122,11 @@ class TestInference(unittest.TestCase):
             self.assertEqual(result.best.expression, list(ref[0]['expression']))
             fp = fit_pred.detach().cpu().numpy() if isinstance(fit_pred, torch.Tensor) else np.asarray(fit_pred)
             np.testing.assert_allclose(np.asarray(result.best.y_pred).ravel(), fp.ravel(), rtol=1e-5, atol=1e-6)
+            # expression_infix is the variable-mapped infix string -- exactly the model's native
+            # get_expression(map_variables=True); this closes srbf's last model-derived record field.
+            self.assertEqual(result.best.expression_infix,
+                             nsr.get_expression(nth_best_beam=0, nth_best_constants=0, map_variables=True))
+            self.assertIsInstance(result.best.expression_infix, str)
 
         # infer() did NOT call _apply_fit_result -> instance state is still exactly what fit() set
         self.assertEqual([list(r['expression']) for r in nsr._results], [list(r['expression']) for r in ref])

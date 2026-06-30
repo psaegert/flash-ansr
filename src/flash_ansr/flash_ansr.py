@@ -2123,16 +2123,22 @@ class FlashANSR(BaseEstimator):
         X_val_p = (pad_input_set(self._truncate_input(X_val), self.n_variables)
                    if (n_pred and predict_val and X_val is not None) else None)
 
+        variable_mapping = fit_result.variable_mapping
         candidates: list[Candidate] = []
         for rank, r in enumerate(results):
             refiner = r['refiner']
             want_pred = rank < n_pred
-            expression_prefix = refiner.transform(expression=r['expression'], return_prefix=True, map_variables=False)
+            expression_prefix = refiner.transform(expression=r['expression'], return_prefix=True, variable_mapping=None)
+            # The variable-MAPPED INFIX string -- exactly get_expression(map_variables=True), but built from
+            # the local refiner (no self._results read). Engine-bound prefix->infix lives in the refiner, so
+            # a consumer cannot reproduce this without reaching into the model; expose it on the candidate.
+            expression_infix = refiner.transform(expression=r['expression'], return_prefix=False, variable_mapping=variable_mapping)
             skeleton_prefix = normalize_skeleton(r['expression'])
             candidates.append(Candidate(
                 raw_beam=list(r['raw_beam']),
                 expression=list(r['expression']),
                 expression_prefix=list(expression_prefix) if expression_prefix is not None else [],
+                expression_infix=str(expression_infix),
                 skeleton_prefix=list(skeleton_prefix) if skeleton_prefix is not None else [],
                 constants=_best_constants(r),
                 log_prob=float(r.get('log_prob', float('nan'))),
