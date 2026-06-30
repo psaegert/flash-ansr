@@ -336,8 +336,9 @@ class Refiner:
         p0_noise_kwargs = p0_noise_kwargs or {}
         optimizer_kwargs = optimizer_kwargs or {}
 
-        if p0 is None:
-            p0 = np.zeros(len(self.constants_symbols))
+        # Copy p0 so per-restart noise is never accumulated in place across restarts, and the
+        # caller-supplied array is never mutated (each restart starts from a fresh initial guess).
+        p0 = np.zeros(len(self.constants_symbols)) if p0 is None else np.array(p0, dtype=float)
 
         # Initial guess for the constants
         if isinstance(p0_noise, str):

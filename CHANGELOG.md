@@ -4,6 +4,19 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-07-01
+
+Post-release audit fixes (no API change).
+
+### Fixed
+- `FlashANSRDataset.compile()` now clones each batch out of the worker pool's shared memory
+  (`persistent=True`) before the pool shuts down, fixing a use-after-free: the materialized dataset
+  previously held tensors aliasing shared memory that was freed when the generator's `finally`
+  triggered shutdown.
+- `Refiner._fit` copies `p0` at entry, so per-restart refinement noise is no longer accumulated in
+  place across restarts (each restart starts from a fresh copy of the initial guess) and a
+  caller-supplied `p0` array is never mutated.
+
 ## [0.9.1] - 2026-06-30
 
 Terminology cleanup + the training data layer fully on `symbolic_data` catalogs by name.

@@ -285,6 +285,7 @@ class FlashANSRDataset:
                     batch_size=batch_size,
                     n_support=n_support,
                     verbose=verbose,
+                    persistent=True,  # clone tensors out of worker shared memory before shutdown frees it (avoids use-after-free)
                 )
             )
         )
