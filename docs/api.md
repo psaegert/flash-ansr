@@ -7,6 +7,7 @@
       members:
         - load
         - fit
+        - infer
         - predict
         - get_expression
         - save_results
@@ -15,6 +16,27 @@
       members_order: source
       filters:
         - "!^_"
+      show_root_toc_entry: false
+
+## Inference results
+The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refined candidates plus the full classified candidate ledger.
+
+### InferenceResult
+::: flash_ansr.inference.InferenceResult
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### Candidate
+::: flash_ansr.inference.Candidate
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### CandidateLedger
+::: flash_ansr.inference.CandidateLedger
+    options:
+      heading_level: 4
       show_root_toc_entry: false
 
 ## FlashANSRDataset

@@ -54,6 +54,8 @@ print(model.get_expression())
 y_pred = model.predict(X)
 ```
 
+To get every candidate in one call instead of reading back from the model, use `model.infer(X, y)`, which returns an `InferenceResult` (best `Candidate`, the score-sorted `candidates`, and the full `CandidateLedger`). See [Getting Started](getting_started.md).
+
 ## Serving these docs locally
 ```bash
 pip install -r docs/requirements.txt

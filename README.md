@@ -70,6 +70,16 @@ print(model.get_expression())
 y_pred = model.predict(X)
 ```
 
+**Get all candidates at once (`infer`):** instead of `fit` + read-back, call `model.infer(X, y)`, which returns an `InferenceResult` carrying the best `Candidate`, the score-sorted refined `candidates`, and the full `CandidateLedger` (the generation pool joined with the refined survivors, each classified `FIT_OK` / `FIT_FAILED` / `INVALID`).
+
+```python
+result = model.infer(X, y)
+print(result.best.expression_infix, result.best.fvu)  # best refined candidate
+for c in result.candidates:                            # score-sorted survivors
+    print(c.score, c.expression_infix)
+print(len(result.ledger))                              # all candidates considered
+```
+
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
 
 **Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/) and browse the pretrained [model collection on Hugging Face](https://huggingface.co/models?search=flash-ansr-v23.0).
@@ -166,7 +176,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.5.0},
+  version = {0.9.0},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
