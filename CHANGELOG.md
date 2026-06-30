@@ -4,6 +4,23 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-06-30
+
+Terminology cleanup + the training data layer fully on `symbolic_data` catalogs by name.
+
+### Changed
+- **Training data is referenced by catalog name.** Dataset/holdout configs point `source.catalog` /
+  `holdout_pools` at the HF catalogs `v23-val` / `fastsrb` (not local saved skeleton-pool dirs);
+  `FlashANSRDataset.from_config` resolves a name/path/inline ref via `ProblemSource` (a saved directory
+  is still loaded as before). Requires `symbolic-data>=0.9` (declarative-holdout support).
+- Purged the term "skeleton pool" from source + docs (`convert_data` runtime warnings/docstrings reworded
+  to "catalog"); fixed the `_MOVED_TO_SRBF` redirect (→ `srbf` / `Benchmark` / `LampleChartonModel`) and
+  stale module-path comments; documented the `infer()` → `InferenceResult`/`CandidateLedger` API.
+
+### Removed
+- Obsolete/broken data-generation scripts (`generate_test_set.sh`, `generate_validation_set.sh`,
+  `import_test_sets.sh`) that built the now-superseded saved skeleton-pool dirs.
+
 ## [0.9.0] - 2026-06-30
 
 This release completes the data-layer handover to `symbolic_data` and adds a first-class inference
