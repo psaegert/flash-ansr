@@ -55,6 +55,33 @@ class TestFlashANSRDataset(unittest.TestCase):
                 assert isinstance(batch['input_ids'], torch.Tensor)
                 assert batch['x_tensors'].shape[0] == 13
 
+    def test_from_config_loads_saved_catalog_directory(self):
+        # The production validation path: `source.catalog` is a saved generative-catalog DIRECTORY.
+        # from_config must load it into a fixed-skeleton catalog (via LampleChartonCatalog.load) and
+        # the dataset must stream problems whose skeletons all come from that loaded fixed set.
+        import numpy as np
+        from symbolic_data.generative import LampleChartonCatalog
+
+        cat_cfg = get_path('configs', 'test', 'catalog_train.yaml')
+        catalog = LampleChartonCatalog.from_config(cat_cfg)
+        catalog.create(4, rng=np.random.default_rng(0))
+        fixed = {tuple(s) for s in catalog.skeletons}
+        pool_dir = f"{self.temp_dir}/saved_pool"
+        catalog.save(pool_dir, config=cat_cfg)   # writes the catalog config + skeletons.pkl
+
+        dataset_cfg = {
+            "source": {"catalog": pool_dir,
+                       "sampling": {"n_support": "prior", "n_validation": 0, "noise": 0.0}},
+            "tokenizer": get_path('configs', 'test', 'tokenizer.yaml'),
+            "padding": "zero",
+        }
+        seen: list = []
+        with FlashANSRDataset.from_config(dataset_cfg) as dataset:
+            for batch in dataset.iterate(steps=2, batch_size=8):
+                seen.extend(batch["skeleton"])
+        assert seen
+        assert all(tuple(sk) in fixed for sk in seen)   # only the loaded fixed skeletons, none fresh
+
     def test_collate_single(self):
         # The training config uses `n_support: prior` (variable support size). To pin a fixed support
         # count for this column-occupancy assertion, build an inline fixed-count source instead.

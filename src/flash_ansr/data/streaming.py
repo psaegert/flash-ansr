@@ -1,6 +1,5 @@
 """Shared-memory streaming of procedurally generated training samples."""
 
-import copy
 import multiprocessing as mp
 import os
 import signal
@@ -140,8 +139,10 @@ class SharedMemoryWorkerPool:
         # Each worker rebuilds its OWN ProblemSource from this config (with its own post-fork rng)
         # for decorrelation; never pickle a live source. `problems_per_expression` carries the old
         # `n_per_equation` grouping so consecutive problems share a skeleton when n_per_equation > 1.
-        source_config = copy.deepcopy(self.source.config)
-        source_config.setdefault("sampling", {})["problems_per_expression"] = n_per_equation
+        # Shallow-copy the config + a fresh sampling sub-dict (do NOT deep-copy: a loaded validation
+        # catalog instance can live under "catalog" and is shared/pickled to workers, not copied here).
+        source_config = dict(self.source.config)
+        source_config["sampling"] = {**self.source.config.get("sampling", {}), "problems_per_expression": n_per_equation}
 
         worker_config = WorkerConfig(
             source_config=source_config,
