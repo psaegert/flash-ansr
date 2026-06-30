@@ -1,6 +1,5 @@
 """Prompt feature extraction and configuration helpers."""
 import math
-import random
 from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Iterable, Mapping, Sequence, cast
@@ -20,7 +19,7 @@ class DistributionSpec:
     name: str = "constant"
     params: Mapping[str, object] = field(default_factory=dict)
 
-    def sample(self) -> float:
+    def sample(self, rng: "np.random.Generator") -> float:
         name = self.name.lower()
         if name in {"constant", "deterministic"}:
             return self._get_float("value", 0.0)
@@ -29,24 +28,24 @@ class DistributionSpec:
             high = self._get_int("high", low)
             if high < low:
                 low, high = high, low
-            return float(np.random.randint(low, high + 1))
+            return float(int(rng.integers(low, high + 1)))
         if name in {"uniform", "uniform_float"}:
             low_value = self._get_float("low", 0.0)
             high_value = self._get_float("high", low_value)
             if high_value < low_value:
                 low_value, high_value = high_value, low_value
-            return float(np.random.uniform(low_value, high_value))
+            return float(rng.uniform(low_value, high_value))
         if name == "poisson":
             lam = max(0.0, self._get_float("lam", self._get_float("lambda", 0.0)))
-            return float(np.random.poisson(lam))
+            return float(rng.poisson(lam))
         if name == "geometric":
             p = self._get_float("p", 0.5)
             p = min(max(p, 1e-8), 1.0)
-            return float(np.random.geometric(p))
+            return float(rng.geometric(p))
         if name in {"normal", "gaussian"}:
             mean = self._get_float("mean", self._get_float("loc", 0.0))
             std = self._get_float("std", self._get_float("scale", 1.0))
-            return float(np.random.normal(mean, std))
+            return float(rng.normal(mean, std))
         if name == "triangular":
             left = self._get_float("left", self._get_float("low", 0.0))
             right = self._get_float("right", self._get_float("high", 1.0))
@@ -54,11 +53,11 @@ class DistributionSpec:
                 left, right = right, left
             mode_default = (left + right) / 2
             mode = self._get_float("mode", mode_default)
-            return float(np.random.triangular(left, mode, right))
+            return float(rng.triangular(left, mode, right))
         raise ValueError(f"Unsupported distribution '{self.name}'.")
 
-    def sample_int(self, *, minimum: int = 0, maximum: int | None = None) -> int:
-        value = int(round(self.sample()))
+    def sample_int(self, rng: "np.random.Generator", *, minimum: int = 0, maximum: int | None = None) -> int:
+        value = int(round(self.sample(rng)))
         if maximum is not None:
             if maximum < minimum:
                 minimum, maximum = maximum, minimum
@@ -477,10 +476,12 @@ class PromptFeatureExtractor:
         config: PromptFeatureExtractorConfig | None = None,
         variables: list[str] | None = None,
         skeleton_pool: LampleChartonCatalog | None = None,
+        rng: np.random.Generator | None = None,
     ) -> None:
         self.engine = simplipy_engine
         self.tokenizer = tokenizer
         self.config = config or PromptFeatureExtractorConfig()
+        self._rng = rng if rng is not None else np.random.default_rng()
         self.variables = variables or self._infer_variables(tokenizer)
         if skeleton_pool is None:
             raise ValueError("PromptFeatureExtractor now requires a LampleChartonCatalog for random term generation.")
@@ -526,13 +527,12 @@ class PromptFeatureExtractor:
             exclude_terms=exclude_terms,
         )
 
-    @staticmethod
-    def _is_section_enabled(probability: float) -> bool:
+    def _is_section_enabled(self, probability: float) -> bool:
         if probability <= 0:
             return False
         if probability >= 1:
             return True
-        return random.random() < probability
+        return self._rng.random() < probability
 
     def _parse_prefix_expression(self, tokens: Sequence[str], idx: int) -> tuple[_ExpressionNode, int]:
         if idx >= len(tokens):
@@ -567,7 +567,7 @@ class PromptFeatureExtractor:
         used_keys: set[tuple[str, ...]] = set()
         root_term: list[str] | None = list(subtrees[0]) if subtrees else None
 
-        total_requested = cfg.actual_terms.sample_int(minimum=0)
+        total_requested = cfg.actual_terms.sample_int(self._rng, minimum=0)
 
         if cfg.force_expression_term and root_term is not None:
             terms.append(root_term)
@@ -579,7 +579,7 @@ class PromptFeatureExtractor:
         candidate_subtrees = subtrees[1:] if root_term is not None else subtrees
 
         for _ in range(remaining):
-            desired_len = cfg.length.sample_int(minimum=min_len, maximum=max_len)
+            desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
             term = self._select_term_by_length(
                 candidate_subtrees,
                 desired_len,
@@ -599,7 +599,8 @@ class PromptFeatureExtractor:
             terms = [term for term in terms if term != root_term]
 
         if len(terms) > 1:
-            random.shuffle(terms)
+            perm = self._rng.permutation(len(terms))
+            terms[:] = [terms[i] for i in perm]
 
         return terms
 
@@ -613,7 +614,7 @@ class PromptFeatureExtractor:
             return []
 
         cfg = self.config.allowed_terms
-        count = cfg.generated_terms.sample_int(minimum=0)
+        count = cfg.generated_terms.sample_int(self._rng, minimum=0)
         if count <= 0:
             return []
 
@@ -624,7 +625,7 @@ class PromptFeatureExtractor:
         attempts = 0
         while len(generated) < count and attempts < max_attempts:
             attempts += 1
-            desired_len = cfg.length.sample_int(minimum=min_len, maximum=max_len)
+            desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
             term = self._generate_term_via_skeleton_pool(
                 desired_length=desired_len,
                 min_length=min_len,
@@ -651,14 +652,14 @@ class PromptFeatureExtractor:
             return []
 
         max_count = len(candidate_pool)
-        target = cfg.count.sample_int(minimum=0, maximum=max_count)
+        target = cfg.count.sample_int(self._rng, minimum=0, maximum=max_count)
         if target <= 0:
             return []
 
         selected: list[list[str]] = []
         used_keys: set[tuple[str, ...]] = set()
         for _ in range(target):
-            desired_len = cfg.length.sample_int(minimum=min_len, maximum=max_len)
+            desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
             term = self._select_term_by_length(
                 candidate_pool,
                 desired_len,
@@ -683,7 +684,7 @@ class PromptFeatureExtractor:
         if not self._is_section_enabled(cfg.probability):
             return []
 
-        count = cfg.count.sample_int(minimum=0)
+        count = cfg.count.sample_int(self._rng, minimum=0)
         if count <= 0:
             return []
 
@@ -698,7 +699,7 @@ class PromptFeatureExtractor:
         attempts = 0
         while len(exclusions) < count and attempts < max_attempts:
             attempts += 1
-            desired_len = cfg.length.sample_int(minimum=min_len, maximum=max_len)
+            desired_len = cfg.length.sample_int(self._rng, minimum=min_len, maximum=max_len)
             term = self._generate_term_via_skeleton_pool(
                 desired_length=desired_len,
                 min_length=min_len,
@@ -728,7 +729,7 @@ class PromptFeatureExtractor:
         while attempts < max_attempts:
             attempts += 1
             try:
-                skeleton, _, _ = self.skeleton_pool.sample_skeleton(new=True, decontaminate=False)
+                skeleton, _, _ = self.skeleton_pool.sample_skeleton(new=True, decontaminate=False, rng=self._rng)
             except NoValidSampleFoundError:
                 continue
 
@@ -745,7 +746,8 @@ class PromptFeatureExtractor:
             if not nodes:
                 continue
 
-            random.shuffle(nodes)
+            perm = self._rng.permutation(len(nodes))
+            nodes[:] = [nodes[i] for i in perm]
             eligible: list[list[str]] = []
             fallback_candidates: list[list[str]] = []
 
@@ -760,9 +762,9 @@ class PromptFeatureExtractor:
                     fallback_candidates.append(term)
 
             if eligible:
-                return list(random.choice(eligible))
+                return list(eligible[int(self._rng.integers(len(eligible)))])
             if fallback_candidates and fallback is None:
-                fallback = list(random.choice(fallback_candidates))
+                fallback = list(fallback_candidates[int(self._rng.integers(len(fallback_candidates)))])
 
         return fallback
 
@@ -777,8 +779,8 @@ class PromptFeatureExtractor:
         max_tokens = max(min_tokens, min(expression_length, max_tokens))
         return min_tokens, max_tokens
 
-    @staticmethod
     def _select_term_by_length(
+        self,
         candidates: Sequence[Sequence[str]],
         desired_length: int,
         min_length: int,
@@ -809,7 +811,7 @@ class PromptFeatureExtractor:
 
         preferred = [term for term in pool if len(term) <= desired_length]
         selection_pool = preferred if preferred else pool
-        choice = list(random.choice(selection_pool))
+        choice = list(selection_pool[int(self._rng.integers(len(selection_pool)))])
 
         if used_keys is not None:
             used_keys.add(tuple(choice))

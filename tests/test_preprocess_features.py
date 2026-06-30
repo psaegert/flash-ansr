@@ -363,11 +363,20 @@ def test_serialize_prompt_prefix_without_prompt_tokens(
     assert metadata['exclude_terms'] == []
 
 
-def test_is_section_enabled_probability_distribution() -> None:
-    random.seed(42)
+def test_is_section_enabled_probability_distribution(
+    simplipy_engine: SimpliPyEngine,
+    tokenizer: Tokenizer,
+    skeleton_pool: LampleChartonCatalog,
+) -> None:
+    extractor = PromptFeatureExtractor(
+        simplipy_engine=simplipy_engine,
+        tokenizer=tokenizer,
+        skeleton_pool=skeleton_pool,
+        rng=np.random.default_rng(42),
+    )
     trials = 500
     probability = 0.37
-    hits = sum(PromptFeatureExtractor._is_section_enabled(probability) for _ in range(trials))
+    hits = sum(extractor._is_section_enabled(probability) for _ in range(trials))
     assert hits / trials == pytest.approx(probability, abs=0.06)
 
 

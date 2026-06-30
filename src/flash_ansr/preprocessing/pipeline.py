@@ -1,7 +1,6 @@
 """Preprocessing pipeline responsible for prompt enrichment."""
 from __future__ import annotations  # necessary for type annotations
 
-import random
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -68,10 +67,12 @@ class FlashANSRPreprocessor:
         skeleton_pool: LampleChartonCatalog | None = None,
         *,
         prompt_config: FlashASNRPreprocessorConfig | dict[str, Any] | None = None,
+        rng: np.random.Generator | None = None,
     ) -> None:
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
         self.skeleton_pool = skeleton_pool
+        self._rng = rng if rng is not None else np.random.default_rng()
 
         self.prompt_config = FlashASNRPreprocessorConfig.from_dict(prompt_config)
         self._prompt_enabled = (
@@ -86,6 +87,7 @@ class FlashANSRPreprocessor:
                 tokenizer=tokenizer,
                 config=self.prompt_config.prompt_feature,
                 skeleton_pool=skeleton_pool,
+                rng=self._rng,
             )
 
         self._serializer = PromptSerializer(tokenizer)
@@ -98,6 +100,7 @@ class FlashANSRPreprocessor:
         simplipy_engine: SimpliPyEngine,
         tokenizer: Tokenizer,
         skeleton_pool: LampleChartonCatalog | None = None,
+        rng: np.random.Generator | None = None,
     ) -> "FlashANSRPreprocessor":
         config_ = load_config(config)
 
@@ -114,6 +117,7 @@ class FlashANSRPreprocessor:
             tokenizer=tokenizer,
             skeleton_pool=skeleton_pool,
             prompt_config=prompt_cfg,
+            rng=rng,
         )
 
     def format(self, batch: dict[str, Any]) -> dict[str, Any]:
@@ -227,7 +231,7 @@ class FlashANSRPreprocessor:
             return False
         if probability >= 1:
             return True
-        return random.random() < probability
+        return self._rng.random() < probability
 
     @staticmethod
     def _ensure_iterable_of_str(tokens: Iterable[Any]) -> Iterable[str]:
