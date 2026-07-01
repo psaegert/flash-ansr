@@ -4,6 +4,15 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-07-01
+
+### Fixed
+- **`infer()` no longer raises `ConvergenceError` when no beam converges.** It now returns an
+  `InferenceResult` with empty `candidates` and the FULL candidate ledger (every generated beam
+  classified `FIT_FAILED` / `INVALID`) -- honoring its documented contract exactly when the ledger is
+  most useful (total-failure diagnosis). `fit()` still raises on all-fail (its read-back contract is
+  unchanged); the behavior is threaded via a new internal `allow_empty` flag on `_compile_results_pure`.
+
 ## [0.9.2] - 2026-07-01
 
 Post-release audit fixes (no API change).

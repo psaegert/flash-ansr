@@ -11,6 +11,8 @@ from flash_ansr import (
     BeamSearchConfig,
     SoftmaxSamplingConfig,
     MCTSGenerationConfig,
+    ConvergenceError,
+    create_generation_config,
     get_path,
     install_model,
 )
@@ -69,6 +71,23 @@ class TestInference(unittest.TestCase):
             )
             nsr.fit(self.x_tensor, self.y_tensor)
         return nsr
+
+    def test_infer_returns_ledger_on_all_fail_but_fit_raises(self):
+        """ISSUE-009: on 0 converged beams, infer() returns the full ledger (empty candidates);
+        fit()'s read-back still raises. Exercised at the shared empty-results core."""
+        nsr = FlashANSR.load(
+            directory=self.model_dir,
+            generation_config=create_generation_config(
+                method="beam_search", beam_width=4, max_len=32, batch_size=4,
+                unique=True, limit_expansions=True, use_cache=True),
+            n_restarts=2,
+        ).to(self.device)
+        # fit's path (allow_empty=False) raises on empty; infer's path (allow_empty=True) returns empty.
+        with self.assertRaises(ConvergenceError):
+            nsr._compile_results_pure([], 0.0, 0.0, 0.0)
+        results, results_df = nsr._compile_results_pure([], 0.0, 0.0, 0.0, allow_empty=True)
+        self.assertEqual(results, [])
+        self.assertEqual(len(results_df), 0)
 
     def test_infer_matches_fit_faithfully(self):
         # infer() reuses _fit_generate/_fit_refine (minus _apply_fit_result) + adds the candidate

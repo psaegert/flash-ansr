@@ -1627,7 +1627,8 @@ class FlashANSR(BaseEstimator):
             *,
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             refine_seed: int | None = None,
-            verbose: bool = False) -> "FitResult":
+            verbose: bool = False,
+            allow_empty: bool = False) -> "FitResult":
         """CPU refinement phase of :meth:`fit`: build jobs, fit constants, prune, compile.
 
         Operates on LOCAL state and returns a FitResult; writes NOTHING to ``self``. With
@@ -1855,7 +1856,7 @@ class FlashANSR(BaseEstimator):
                     refinement_time += time.time() - _t_prune_ref
 
         sorted_results, results_df = self._compile_results_pure(
-            results, self.length_penalty, self.constants_penalty, self.likelihood_penalty)
+            results, self.length_penalty, self.constants_penalty, self.likelihood_penalty, allow_empty=allow_empty)
 
         return FitResult(
             results=sorted_results,
@@ -1923,15 +1924,21 @@ class FlashANSR(BaseEstimator):
             results: list[Any],
             length_penalty: float,
             constants_penalty: float,
-            likelihood_penalty: float) -> tuple[list[Any], "pd.DataFrame"]:
+            likelihood_penalty: float,
+            *,
+            allow_empty: bool = False) -> tuple[list[Any], "pd.DataFrame"]:
         """Pure core of :meth:`compile_results`: score + sort + build the DataFrame for a results
         list, returning ``(sorted_results, results_df)``.
 
         Reads ``self`` only for the read-only scoring helpers and config; writes NOTHING to ``self``,
         so the refinement phase (and the overlap engine) can compile a problem's results without
-        touching shared state. Raises ConvergenceError if ``results`` is empty.
+        touching shared state. Raises ConvergenceError if ``results`` is empty, UNLESS ``allow_empty``
+        (then returns ``([], empty_df)`` -- the path :meth:`infer` uses to still return its full
+        candidate ledger when no beam converged, rather than raising).
         """
         if not results:
+            if allow_empty:
+                return [], pd.DataFrame()
             raise ConvergenceError("The optimization did not converge for any beam")
 
         # Compute the new score for each result
@@ -2098,12 +2105,16 @@ class FlashANSR(BaseEstimator):
         -------
         InferenceResult
             Score-sorted candidates + the full candidate ledger + generation / refinement times.
+            If NO beam converges, ``candidates`` is empty and the ledger classifies every generated
+            beam FIT_FAILED / INVALID -- ``infer`` returns it rather than raising (unlike ``fit``).
         """
         numpy_errors_before = np.geterr()
         np.seterr(all=self.numpy_errors)
         try:
             gen_state = self._fit_generate(X, y, variable_names, complexity=complexity, verbose=verbose)
-            fit_result = self._fit_refine(gen_state, converge_error=converge_error, refine_seed=refine_seed, verbose=verbose)
+            # allow_empty=True: infer() returns the FULL candidate ledger (all FIT_FAILED/INVALID)
+            # even when no beam converged, per its contract, instead of raising ConvergenceError.
+            fit_result = self._fit_refine(gen_state, converge_error=converge_error, refine_seed=refine_seed, verbose=verbose, allow_empty=True)
         finally:
             np.seterr(**numpy_errors_before)
 
