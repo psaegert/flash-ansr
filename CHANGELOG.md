@@ -4,6 +4,17 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-07-01
+
+### Added
+- `Refiner.all_constants_values` public read-only property (the `(constants, covariance, loss)` fit
+  attempts, best-first), so downstream consumers (e.g. srbf baselines) no longer reach into the
+  private `_all_constants_values`.
+
+### Fixed
+- The `convert_data` benchmark parsers guard their percentage prints against an empty test set
+  (`/ max(len(test_set_df), 1)`), so converting an empty input no longer raises `ZeroDivisionError`.
+
 ## [0.9.4] - 2026-07-01
 
 Post-release audit cleanup + two robustness fixes.

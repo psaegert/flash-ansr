@@ -49,6 +49,13 @@ class Refiner:
 
         self._all_constants_values: list[tuple[np.ndarray, np.ndarray, float]] = []
 
+    @property
+    def all_constants_values(self) -> list[tuple[np.ndarray, np.ndarray, float]]:
+        """Public, read-only view of every fit attempt as ``(constants, covariance, loss)`` tuples,
+        best (lowest loss) first. Consumers (e.g. srbf baselines) read this instead of the private
+        ``_all_constants_values`` so the storage can change without breaking them."""
+        return self._all_constants_values
+
     def import_modules(self) -> None:
         '''
         Import the modules required for the expression

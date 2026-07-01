@@ -21,6 +21,19 @@ def test_transform_gracefully_handles_missing_constants() -> None:
     assert transformed[4] == '<constant>'
 
 
+def test_all_constants_values_public_property() -> None:
+    # B3: the public accessor mirrors the fit attempts (best-first (constants, cov, loss) tuples), so
+    # srbf baselines can read it instead of the private `_all_constants_values`.
+    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    refiner = Refiner(simplipy_engine=engine, n_variables=1)
+    assert refiner.all_constants_values == []
+    fits = [(np.array([0.5]), np.eye(1), 0.1), (np.array([1.0]), np.eye(1), 0.9)]
+    refiner._all_constants_values = fits
+    assert refiner.all_constants_values is refiner._all_constants_values
+    assert len(refiner.all_constants_values) == 2
+    assert float(refiner.all_constants_values[0][-1]) == 0.1   # best (lowest loss) first
+
+
 def test_fit_discards_mismatched_constants(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = SimpliPyEngine.load('dev_7-3', install=True)
     refiner = Refiner(simplipy_engine=engine, n_variables=1)

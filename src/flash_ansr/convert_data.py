@@ -127,8 +127,8 @@ class SOOSEParser(TestSetParaser):
             expression_hash = tuple(prefix_expression)
             expression_dict[expression_hash] = (code, constants)
 
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
+        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
+        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
 
         base_catalog.skeleton_codes = expression_dict
         base_catalog.skeletons = list(expression_dict.keys())
@@ -197,8 +197,8 @@ class FeynmanParser(TestSetParaser):
             expression_hash = tuple(prefix_expression)
             expression_dict[expression_hash] = (code, constants)
 
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
+        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
+        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
 
         base_catalog.skeleton_codes = expression_dict
         base_catalog.skeletons = list(expression_dict.keys())
@@ -264,8 +264,8 @@ class NguyenParser(TestSetParaser):
             expression_hash = tuple(prefix_expression)
             expression_dict[expression_hash] = (code, constants)
 
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / len(test_set_df) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / len(test_set_df) * 100:.2f}%)')
+        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
+        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
 
         base_catalog.skeleton_codes = expression_dict
         base_catalog.skeletons = list(expression_dict.keys())
