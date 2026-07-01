@@ -97,7 +97,7 @@ class SOOSEParser(TestSetParaser):
         n_too_many_variables = 0
 
         expression_dict = {}
-        for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOOSE Data', smoothing=0.0):
+        for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOSE Data', smoothing=0.0):
             # Parse and simplify
             prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
 
@@ -173,6 +173,7 @@ class FeynmanParser(TestSetParaser):
 
             # Check valid
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
+                n_invalid_expressions += 1
                 continue
 
             prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
@@ -314,7 +315,6 @@ class FastSRBParser(TestSetParaser):
                 continue
 
             if not simplipy_engine.is_valid(prefix_expression, verbose=True):
-                print(prepared_expression)
                 n_invalid_expressions += 1
                 continue
 

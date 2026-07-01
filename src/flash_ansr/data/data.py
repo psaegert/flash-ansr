@@ -45,6 +45,14 @@ class FlashANSRDataset:
     preprocessor : FlashANSRPreprocessor, optional
         Prompt-aware preprocessor; when provided, prompt metadata can be
         injected during sampling or in worker processes.
+
+    Notes
+    -----
+    This object owns a multiprocessing worker pool. Call `dataset.shutdown()`
+    when done, or use it as a context manager
+    (`with FlashANSRDataset(...) as dataset:`) so the pool is shut down
+    automatically. If neither is done, a warning is emitted at garbage
+    collection.
     """
 
     def __init__(
@@ -118,7 +126,13 @@ class FlashANSRDataset:
         if "dataset" in config_.keys():
             config_ = config_["dataset"]
 
+        for key in ("source", "tokenizer", "padding"):
+            if key not in config_:
+                raise ValueError(f"Dataset config is missing required key {key!r}.")
+
         source_cfg = config_["source"]
+        if "catalog" not in source_cfg:
+            raise ValueError("Dataset config `source` block is missing required key 'catalog'.")
         catalog_cfg = source_cfg["catalog"]
 
         if isinstance(config, str) and isinstance(catalog_cfg, str) and catalog_cfg.startswith('.'):
@@ -189,7 +203,7 @@ class FlashANSRDataset:
         directory = substitute_root_path(directory)
         os.makedirs(directory, exist_ok=True)
 
-        self.data.save_to_disk(dataset_path=os.path.join(directory, "dataset"), *args, **kwargs)
+        self.data.save_to_disk(os.path.join(directory, "dataset"), *args, **kwargs)
 
         if config is None:
             warnings.warn(
@@ -219,6 +233,12 @@ class FlashANSRDataset:
         -------
         tuple
             `(resolved_config, dataset)` with the dataset ready for iteration.
+
+        Notes
+        -----
+        Unlike `FlashANSR.load`, which returns the model object directly, this
+        method returns a `(config, dataset)` tuple. Unpack the result, e.g.
+        `config, dataset = FlashANSRDataset.load(directory)`.
         """
         config_path = os.path.join(directory, "dataset.yaml")
         resolved_directory = substitute_root_path(directory)

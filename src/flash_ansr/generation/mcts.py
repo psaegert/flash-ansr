@@ -11,11 +11,7 @@ from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.preprocessing import PromptPrefix
 from flash_ansr.refine import ConvergenceError, Refiner
-from flash_ansr.scoring import count_constants, is_constant_token
-
-
-def _is_constant_token(token: str) -> bool:
-    return is_constant_token(token)
+from flash_ansr.scoring import count_constants
 
 
 def _count_constants(tokens: list[str]) -> int:

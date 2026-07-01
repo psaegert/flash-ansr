@@ -33,9 +33,12 @@ class ModelFactory():
         if hasattr(nn, model):
             return getattr(nn, model)(*args, **kwargs)
 
-        # Try to import the layer from nsr.models.layers
-        nsr_models = importlib.import_module("flash_ansr.models")
-        if hasattr(nsr_models, model):
-            return getattr(nsr_models, model)(*args, **kwargs)
+        # Try to import the layer from an internal flash_ansr models registry, if present
+        try:
+            flash_ansr_models = importlib.import_module("flash_ansr.models")
+        except ModuleNotFoundError:
+            flash_ansr_models = None
+        if flash_ansr_models is not None and hasattr(flash_ansr_models, model):
+            return getattr(flash_ansr_models, model)(*args, **kwargs)
 
-        raise NotImplementedError(f"Layer {model} not found in torch.nn or nsr.models")
+        raise NotImplementedError(f"Layer {model} not found in torch.nn or flash_ansr.models")

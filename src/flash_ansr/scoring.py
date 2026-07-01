@@ -2,14 +2,14 @@
 
 These are owned by flash-ansr because the product needs them at *inference* time to score and
 rank decode candidates (``flash_ansr.py`` / ``generation/mcts.py`` / ``results.py``). They are
-also consumed by the comparison baselines and, after the planned repo split, by ``srbf`` via the
+also consumed by the comparison baselines and, after the repo split, by ``srbf`` via the
 public API. This module collapses the formerly-triplicated
 ``_compute_fvu`` / ``_normalize_variance`` / ``_score_from_fvu`` copies
 (``flash_ansr.py`` + the srbf comparison baselines) onto one definition.
 
 Note on FVU: this is the *scalar-loss* form. The refiner supplies an already-reduced residual
 ``loss``, so :func:`compute_fvu` divides by the (epsilon-floored) target variance. The *array* form
-``fvu(y_true, y_pred)`` lives in the evaluation metrics (``eval/metrics/numeric.py``) and is a
+``fvu(y_true, y_pred)`` lives in the ``srbf`` evaluation metrics and is a
 deliberately separate signature for a different call site: the two share the FVU *definition*
 (residual / total variance) but are not interchangeable functions.
 """

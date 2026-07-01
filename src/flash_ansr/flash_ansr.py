@@ -584,7 +584,20 @@ class FlashANSR(BaseEstimator):
         variants: list[list[str]] = []
         seen: set[tuple[str, ...]] = set()
 
-        for mask in range(1 << constant_count):
+        # The exhaustive 2**constant_count powerset (one full tree-prune per mask) is intractable for a
+        # high-constant beam (e.g. 20 constants -> ~1M prunes per beam x top_k beams). Below a threshold
+        # keep the exact powerset (behaviour-identical); above it fall back to a bounded, deterministic
+        # set covering the useful prunings (remove none, remove all, each single removal, each single
+        # keep) -- O(constant_count) instead of O(2**n).
+        _MAX_EXHAUSTIVE_PRUNE = 12
+        masks: Iterable[int]
+        if constant_count <= _MAX_EXHAUSTIVE_PRUNE:
+            masks = range(1 << constant_count)
+        else:
+            _full = (1 << constant_count) - 1
+            masks = [0, _full, *(1 << i for i in range(constant_count)), *(_full ^ (1 << i) for i in range(constant_count))]
+
+        for mask in masks:
             removal_ids = {idx for idx in range(constant_count) if mask & (1 << idx)}
             pruned_tree = self._prune_constants_from_tree(tree, removal_ids, counter=[0])
             if pruned_tree is None:
@@ -2052,6 +2065,9 @@ class FlashANSR(BaseEstimator):
         expression : list[str] or str
             Expression either as a token list or human-readable string.
         """
+        if len(self._results) == 0:
+            raise ValueError("The model has not been fitted yet. Please call the fit method first.")
+
         return self._results[nth_best_beam]['refiner'].transform(
             expression=self._results[nth_best_beam]['expression'],
             nth_best_constants=nth_best_constants,
@@ -2080,7 +2096,7 @@ class FlashANSR(BaseEstimator):
         the score-sorted refined :class:`~flash_ansr.inference.Candidate`s PLUS the full
         :class:`~flash_ansr.inference.CandidateLedger` (the generation pool joined with the refined
         survivors, classified FIT_OK / FIT_FAILED / INVALID). It writes NOTHING to instance state, so
-        it neither disturbs nor depends on ``self._results`` and is the building block of :meth:`run`.
+        it neither disturbs nor depends on ``self._results``.
 
         ``y_pred`` / ``y_pred_val`` are computed only for the top ``top_k`` candidates (``top_k=None``
         -> the best only): evaluating every candidate is O(candidates x n_support) and would blow up

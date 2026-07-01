@@ -4,6 +4,23 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-07-01
+
+Post-release audit cleanup + two robustness fixes.
+
+### Fixed
+- **`Refiner.fit` accepts a 1-D `y`** `(n,)` (coerced to `(n, 1)`) instead of raising an opaque
+  `IndexError`, matching `FlashANSR.fit`.
+- **Constant-pruning variant generation is bounded.** Above a threshold of constants the exhaustive
+  `2**constant_count` powerset (one tree-prune per mask) is replaced by a deterministic bounded set
+  (remove-none/all, each single removal/keep), so a high-constant beam can no longer blow up the
+  pruning path (reachable via `prune_constant_budget > 0`). Small expressions are unchanged.
+- Clear errors for missing dataset-config keys and for `get_expression()` on an unfitted model;
+  `FlashANSRDataset.save()` positional-arg forwarding fixed; `ModelFactory` no longer imports a
+  non-existent module; the Feynman parser now counts `n_invalid_expressions` and a stray debug
+  `print` was removed; `main(argv)` typed `Sequence[str]`; `to_dataframe` keeps `expression_infix`;
+  `FlashANSRPreprocessor.format` guards empty input; docstring fixes.
+
 ## [0.9.3] - 2026-07-01
 
 ### Fixed

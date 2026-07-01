@@ -132,6 +132,9 @@ class FlashANSRPreprocessor:
             instance = {key: self._select_batch_item(value, idx) for key, value in batch.items()}
             formatted_instances.append(self._format_single(instance))
 
+        if not formatted_instances:
+            return batch
+
         for key in formatted_instances[0].keys():
             batch[key] = [instance[key] for instance in formatted_instances]
 

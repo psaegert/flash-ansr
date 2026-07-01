@@ -76,7 +76,9 @@ class InferenceResult:
         import pandas as pd
         rows = [
             {
+                "expression_infix": c.expression_infix,
                 "expression_prefix": c.expression_prefix,
+                "skeleton_prefix": c.skeleton_prefix,
                 "constants": c.constants,
                 "log_prob": c.log_prob,
                 "score": c.score,

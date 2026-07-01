@@ -53,7 +53,12 @@ class Refiner:
         '''
         Import the modules required for the expression
         '''
-        # TODO: Check if this is necessary
+        # NOTE: Verified redundant for eval-name resolution and kept only as a defensive no-op.
+        # simplipy's code_to_lambda binds compiled expressions to simplipy.engine's module
+        # globals (FunctionType(code, globals()) inside engine.py), not to this module's
+        # globals(); and SimpliPyEngine.__init__ already imports self.modules into that
+        # namespace via its own import_modules(). Injecting them here therefore does not
+        # affect the lambdas. Removal candidate (gate behind refine/determinism tests).
         for module in self.simplipy_engine.modules:
             if module not in globals():
                 globals()[module] = importlib.import_module(module)
@@ -186,6 +191,11 @@ class Refiner:
         Refiner
             The refiner object
         '''
+        # Accept a 1-D y (n,) as well as (n, 1): the fit code indexes y[:, 0], so coerce to 2-D here
+        # (matches FlashANSR.fit, which accepts 1-D targets) instead of raising an opaque IndexError.
+        y = np.asarray(y)
+        if y.ndim == 1:
+            y = y.reshape(-1, 1)
         self._initialize_expression(expression, X.shape[1])
 
         def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> np.ndarray:

@@ -2,8 +2,10 @@ import datetime
 import argparse
 import sys
 
+from collections.abc import Sequence
 
-def main(argv: str = None) -> None:
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Neural Symbolic Regression')
     subparsers = parser.add_subparsers(dest='command_name', required=True)
 
