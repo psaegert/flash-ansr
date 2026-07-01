@@ -1,3 +1,9 @@
+"""Constant refinement: fitting the numeric constants of a proposed expression skeleton.
+
+The :class:`Refiner` takes an expression skeleton with constant placeholders and optimizes those
+constants against ``(X, y)`` data using SciPy least-squares / minimize backends, raising
+:class:`ConvergenceError` when no restart converges.
+"""
 import importlib
 from typing import Literal, Callable, Any
 import warnings
@@ -14,6 +20,7 @@ from flash_ansr.utils.tensor_ops import pad_input_set
 
 
 class ConvergenceError(Exception):
+    """Raised when constant refinement fails to converge for an expression (all restarts failed)."""
     pass
 
 

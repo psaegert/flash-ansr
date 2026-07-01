@@ -1,3 +1,4 @@
+"""The :class:`Tokenizer` mapping expression tokens to model vocabulary indices and back."""
 import re
 import warnings
 from typing import Iterator, Any, Literal
@@ -198,6 +199,30 @@ class Tokenizer:
         return iter(self.vocab)
 
     def extract_expression_from_beam(self, beam: list[int]) -> tuple[list[int], list[int], list[int]]:
+        '''
+        Split a decoded beam into the expression body and the surrounding tokens.
+
+        If the vocabulary defines ``<expression>`` / ``</expression>`` markers, the tokens between
+        them are returned as the body. Otherwise the body is everything except a leading ``<bos>``
+        and a trailing ``<eos>`` (and whatever follows it).
+
+        Parameters
+        ----------
+        beam : list[int]
+            The sequence of token indices produced by the decoder.
+
+        Returns
+        -------
+        tuple[list[int], list[int], list[int]]
+            A ``(expression, before, after)`` triple of token-index lists: the expression body,
+            the tokens preceding it and the tokens following it.
+
+        Raises
+        ------
+        ValueError
+            If the vocabulary defines ``<expression>`` markers but ``beam`` does not contain a
+            matching opening/closing pair.
+        '''
         start_token = self.token2idx.get('<expression>')
         end_token = self.token2idx.get('</expression>')
 
@@ -238,6 +263,35 @@ class Tokenizer:
         return beam[expr_start + 1:expr_end], before, after
 
     def constantify_expression(self, expression: list[int] | list[str], exact: bool = False) -> list[int] | list[str]:
+        '''
+        Rewrite integer-factor operators (``mult4``, ``div3`` ...) as explicit constant multiplications.
+
+        Each ``mult<n>`` / ``div<n>`` token is replaced by ``*`` followed by a constant: a
+        ``<constant>`` placeholder by default, or the literal integer factor when ``exact`` is True.
+        The input may be either a list of token indices or a list of token strings; the output uses
+        the same representation.
+
+        Parameters
+        ----------
+        expression : list[int] | list[str]
+            The expression as token indices or token strings.
+        exact : bool, optional
+            If True, emit the literal integer factor instead of a ``<constant>`` placeholder.
+            Only supported for string expressions. Defaults to False.
+
+        Returns
+        -------
+        list[int] | list[str]
+            The constantified expression in the same representation as the input.
+
+        Raises
+        ------
+        NotImplementedError
+            If ``exact`` is requested for an encoded (integer) expression.
+        ValueError
+            If ``expression`` is neither a list of integers nor a list of strings, or an ``exact``
+            factor token cannot be parsed.
+        '''
         # Replace mult4, div3 etc by multiplication with <constant>
 
         # Find out if the expression is encoded or not

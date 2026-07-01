@@ -1,3 +1,10 @@
+"""flash-ansr: Flash Amortized Neural Symbolic Regression.
+
+Public entry point re-exporting the estimator (:class:`FlashANSR`), the transformer model and its
+components (:class:`FlashANSRModel`, :class:`SetTransformer`, :class:`Tokenizer`, the pre-encoders),
+the training dataset (:class:`FlashANSRDataset`), the constant :class:`Refiner`, generation-config
+helpers and the model install/remove utilities.
+"""
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 

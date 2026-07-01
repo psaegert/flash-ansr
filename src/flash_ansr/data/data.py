@@ -1,3 +1,9 @@
+"""The :class:`FlashANSRDataset` training-data wrapper.
+
+Wraps a :class:`symbolic_data.ProblemSource` (backed by a catalog) so that on-the-fly sampled or
+pre-generated symbolic-regression problems can be tokenized, preprocessed and collated into the
+padded tensor batches consumed during training.
+"""
 import copy
 import os
 import time
@@ -99,6 +105,7 @@ class FlashANSRDataset:
 
     @property
     def simplipy_engine(self) -> SimpliPyEngine:
+        """The :class:`~simplipy.SimpliPyEngine` used by this dataset's underlying catalog."""
         return self.source.catalog.simplipy_engine
 
     @classmethod

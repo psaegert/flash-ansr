@@ -1,3 +1,4 @@
+"""Install and remove pretrained model snapshots from the Hugging Face Hub."""
 import shutil
 import os
 

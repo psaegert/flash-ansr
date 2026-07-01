@@ -22,6 +22,35 @@ class PromptSerializer:
         include_include_terms: bool,
         include_exclude_terms: bool,
     ) -> dict[str, Any]:
+        """Serialize a full training example (prompt plus expression) into token ids.
+
+        Emits ``<bos>``, an optional ``<prompt>`` block (complexity and the enabled term sections),
+        the ``<expression>`` body, and a trailing ``<eos>``.
+
+        Parameters
+        ----------
+        features : PromptFeatures
+            The extracted prompt features and the expression tokens to serialize.
+        include_complexity : bool
+            Whether to emit the complexity sub-section.
+        include_allowed_terms : bool
+            Whether to emit the allowed-terms sub-section (only if features has allowed terms).
+        include_include_terms : bool
+            Whether to emit the include-terms sub-section (only if features has include terms).
+        include_exclude_terms : bool
+            Whether to emit the exclude-terms sub-section (only if features has exclude terms).
+
+        Returns
+        -------
+        dict[str, Any]
+            A dict with ``complexity``, ``input_ids``, ``input_num``, ``prompt_mask`` and
+            ``prompt_metadata`` (the allowed / include / exclude term lists).
+
+        Raises
+        ------
+        KeyError
+            If any emitted token is missing from the tokenizer vocabulary.
+        """
         tokens: list[str] = []
         numeric_values: list[float] = []
         prompt_mask: list[bool] = []
@@ -83,6 +112,37 @@ class PromptSerializer:
         include_terms: Iterable[Sequence[Any]] | None = None,
         exclude_terms: Iterable[Sequence[Any]] | None = None,
     ) -> dict[str, Any]:
+        """Serialize a decoding prompt prefix (prompt block plus the opening ``<expression>``).
+
+        Builds the prefix used to condition generation: ``<bos>``, an optional ``<prompt>`` block
+        (emitted only when there is prompt content and all required prompt tokens exist in the
+        vocabulary), and a trailing ``<expression>`` opener. Missing vocabulary tokens are reported
+        rather than raised, and the prompt block is skipped when any of its tokens are absent.
+
+        Parameters
+        ----------
+        complexity : float or int, optional
+            Target expression complexity to encode, or ``None`` to omit it.
+        allowed_terms : Iterable[Sequence[Any]], optional
+            Allowed-term token sequences, or ``None``.
+        include_terms : Iterable[Sequence[Any]], optional
+            Required-term token sequences, or ``None``.
+        exclude_terms : Iterable[Sequence[Any]], optional
+            Forbidden-term token sequences, or ``None``.
+
+        Returns
+        -------
+        dict[str, Any]
+            A dict with ``input_ids``, ``input_num``, ``prompt_mask``, ``prompt_metadata``,
+            ``prompt_disabled`` (True when the prompt block was omitted) and ``missing_tokens``.
+
+        Raises
+        ------
+        KeyError
+            If a token that is emitted into ``input_ids`` is missing from the tokenizer vocabulary.
+        TypeError
+            If a term collection is passed as a raw string rather than a sequence of tokens.
+        """
         tokens: list[str] = ["<bos>"]
         numeric_values: list[float] = [np.nan]
         prompt_mask: list[bool] = [False]

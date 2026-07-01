@@ -20,6 +20,25 @@ class DistributionSpec:
     params: Mapping[str, object] = field(default_factory=dict)
 
     def sample(self, rng: "np.random.Generator") -> float:
+        """Draw a single sample from the described distribution.
+
+        Parameters
+        ----------
+        rng : np.random.Generator
+            Random generator used to draw the sample.
+
+        Returns
+        -------
+        float
+            A sampled value. Supported distribution names are ``constant``/``deterministic``,
+            ``uniform_int``/``randint``, ``uniform``/``uniform_float``, ``poisson``, ``geometric``,
+            ``normal``/``gaussian`` and ``triangular``.
+
+        Raises
+        ------
+        ValueError
+            If ``self.name`` does not match a supported distribution.
+        """
         name = self.name.lower()
         if name in {"constant", "deterministic"}:
             return self._get_float("value", 0.0)
@@ -57,6 +76,23 @@ class DistributionSpec:
         raise ValueError(f"Unsupported distribution '{self.name}'.")
 
     def sample_int(self, rng: "np.random.Generator", *, minimum: int = 0, maximum: int | None = None) -> int:
+        """Draw a sample, round it to the nearest integer, and clamp it to ``[minimum, maximum]``.
+
+        Parameters
+        ----------
+        rng : np.random.Generator
+            Random generator used to draw the sample.
+        minimum : int, optional
+            Lower bound applied to the rounded value. Defaults to 0.
+        maximum : int, optional
+            Upper bound applied to the rounded value. When ``None`` (default) no upper bound is
+            applied. If ``maximum < minimum`` the two bounds are swapped.
+
+        Returns
+        -------
+        int
+            The rounded, clamped integer sample.
+        """
         value = int(round(self.sample(rng)))
         if maximum is not None:
             if maximum < minimum:
@@ -66,10 +102,28 @@ class DistributionSpec:
 
     @staticmethod
     def constant(value: int | float) -> "DistributionSpec":
+        """Return a ``constant`` distribution that always samples ``value``."""
         return DistributionSpec(name="constant", params={"value": value})
 
     @staticmethod
     def from_range(range_like: Sequence[object]) -> "DistributionSpec":
+        """Build a ``uniform_int`` distribution from a ``(low, high)`` pair.
+
+        Parameters
+        ----------
+        range_like : Sequence[object]
+            A two-element sequence ``(low, high)``; entries are coerced to integers.
+
+        Returns
+        -------
+        DistributionSpec
+            A ``uniform_int`` distribution over the integer range ``[low, high]``.
+
+        Raises
+        ------
+        ValueError
+            If ``range_like`` does not contain exactly two entries.
+        """
         if len(range_like) != 2:
             raise ValueError("Range-like distributions require two entries (low, high).")
         low = DistributionSpec._coerce_int_value(range_like[0], 0)
@@ -81,6 +135,29 @@ class DistributionSpec:
         cls,
         data: "DistributionSpec" | Mapping[str, object] | Sequence[object] | int | float | str | None,
     ) -> "DistributionSpec":
+        """Coerce a polymorphic specification into a :class:`DistributionSpec`.
+
+        The input is dispatched by type: an existing :class:`DistributionSpec` is passed through,
+        ``None`` yields the default (constant) spec, an ``int``/``float`` becomes a constant, a
+        ``str`` becomes a named distribution with empty params, a non-string ``Sequence`` is treated
+        as a ``(low, high)`` range, and a ``Mapping`` is read via a ``name``/``distribution`` key, or
+        as a single ``{name: params}`` entry.
+
+        Parameters
+        ----------
+        data : DistributionSpec or Mapping or Sequence or int or float or str or None
+            The specification to normalize.
+
+        Returns
+        -------
+        DistributionSpec
+            The corresponding distribution specification.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` cannot be interpreted as a distribution specification.
+        """
         if isinstance(data, cls):
             return data
         if data is None:
@@ -177,6 +254,24 @@ class PromptSectionConfig:
         cls,
         data: "PromptSectionConfig" | Mapping[str, object] | None,
     ) -> "PromptSectionConfig":
+        """Build a :class:`PromptSectionConfig` from a mapping or an existing instance.
+
+        Parameters
+        ----------
+        data : PromptSectionConfig or Mapping or None
+            An existing instance (passed through), ``None`` (defaults), or a mapping with optional
+            ``probability`` and ``kwargs`` keys.
+
+        Returns
+        -------
+        PromptSectionConfig
+            The parsed section configuration, with defaults filled in for absent keys.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither ``None``, an instance, nor a mapping.
+        """
         if isinstance(data, cls):
             return data
         if data is None:
@@ -207,6 +302,19 @@ class ComplexitySectionConfig(PromptSectionConfig):
         cls,
         data: PromptSectionConfig | Mapping[str, object] | None,
     ) -> "ComplexitySectionConfig":
+        """Build a :class:`ComplexitySectionConfig` from a mapping or an existing instance.
+
+        Parameters
+        ----------
+        data : PromptSectionConfig or Mapping or None
+            An existing instance (passed through), ``None`` (defaults), or a mapping delegated to
+            :meth:`PromptSectionConfig.from_dict`.
+
+        Returns
+        -------
+        ComplexitySectionConfig
+            The parsed complexity-section configuration, with defaults filled in for absent keys.
+        """
         if isinstance(data, cls):
             return data
         if isinstance(data, PromptSectionConfig):
@@ -229,6 +337,28 @@ class AllowedTermsConfig(PromptSectionConfig):
         cls,
         data: PromptSectionConfig | Mapping[str, object] | None,
     ) -> "AllowedTermsConfig":
+        """Build an :class:`AllowedTermsConfig` from a mapping or an existing instance.
+
+        The ``actual_terms``, ``generated_terms`` and ``length`` keys are each parsed into a
+        :class:`DistributionSpec` via :meth:`DistributionSpec.from_dict`; scalar keys such as
+        ``min_length``, ``max_relative_length`` and ``force_expression_term`` are coerced to their
+        field types.
+
+        Parameters
+        ----------
+        data : PromptSectionConfig or Mapping or None
+            An existing instance (passed through), ``None`` (defaults), or a mapping of options.
+
+        Returns
+        -------
+        AllowedTermsConfig
+            The parsed allowed-terms configuration, with defaults filled in for absent keys.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither ``None``, an instance, nor a mapping.
+        """
         if isinstance(data, cls):
             return data
         if isinstance(data, PromptSectionConfig):
@@ -323,6 +453,28 @@ class PromptFeatureExtractorConfig:
         cls,
         data: "PromptFeatureExtractorConfig" | Mapping[str, object] | None,
     ) -> "PromptFeatureExtractorConfig":
+        """Build a :class:`PromptFeatureExtractorConfig` from a mapping or an existing instance.
+
+        Legacy mappings (containing keys such as ``max_cover_terms`` or ``*_range``) are routed
+        through the backward-compatible parser; otherwise each section (``complexity``,
+        ``allowed_terms``, ``include_terms``, ``exclude_terms``) is parsed by its own
+        ``from_dict``.
+
+        Parameters
+        ----------
+        data : PromptFeatureExtractorConfig or Mapping or None
+            An existing instance (passed through), ``None`` (defaults), or a mapping of options.
+
+        Returns
+        -------
+        PromptFeatureExtractorConfig
+            The parsed configuration, with defaults filled in for absent keys.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither ``None``, an instance, nor a mapping.
+        """
         if isinstance(data, cls):
             return data
         if data is None:
@@ -417,6 +569,19 @@ class PromptFeatureExtractorConfig:
         )
 
     def get_probability(self, section: str) -> float:
+        """Return the configured emission probability for a named prompt section.
+
+        Parameters
+        ----------
+        section : str
+            Section name (case-insensitive): ``prompt``, ``complexity``, ``allowed_terms``,
+            ``include_terms`` or ``exclude_terms``.
+
+        Returns
+        -------
+        float
+            The section's probability, or ``1.0`` for an unrecognised section name.
+        """
         section_lower = section.lower()
         if section_lower == "prompt":
             return self.prompt_probability
@@ -431,6 +596,20 @@ class PromptFeatureExtractorConfig:
         return 1.0
 
     def with_section_probabilities(self, overrides: Mapping[str, float]) -> "PromptFeatureExtractorConfig":
+        """Return a copy of this config with the given per-section probabilities overridden.
+
+        Parameters
+        ----------
+        overrides : Mapping[str, float]
+            Mapping of section name to probability. ``prompt`` maps to ``prompt_probability``;
+            ``complexity``, ``allowed_terms``, ``include_terms`` and ``exclude_terms`` (case-
+            insensitive) update the corresponding section's probability. Unknown keys are ignored.
+
+        Returns
+        -------
+        PromptFeatureExtractorConfig
+            A new configuration instance with the overrides applied (the original is unchanged).
+        """
         updated = self
         for key, value in overrides.items():
             if key == "prompt":
@@ -496,6 +675,29 @@ class PromptFeatureExtractor:
         self.operator_tokens = list(self.operator_arity.keys())
 
     def extract(self, expression_tokens: Sequence[str]) -> PromptFeatures:
+        """Derive prompt control features from a prefix-notation expression.
+
+        Parses the expression into a tree, samples allowed / included / excluded terms according to
+        the configured section probabilities and distributions, and packages them together with the
+        expression complexity.
+
+        Parameters
+        ----------
+        expression_tokens : Sequence[str]
+            The expression in prefix (Polish) notation.
+
+        Returns
+        -------
+        PromptFeatures
+            The extracted features: expression tokens, complexity, and sampled allowed / include /
+            exclude terms.
+
+        Raises
+        ------
+        ValueError
+            If ``expression_tokens`` is empty, or contains trailing tokens beyond a single valid
+            prefix expression.
+        """
         expression_list = list(expression_tokens)
         if not expression_list:
             raise ValueError("Expression tokens cannot be empty.")

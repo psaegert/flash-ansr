@@ -1,3 +1,4 @@
+"""Neural network components of FlashANSR: the model, tokenizer, encoders and decoders."""
 from .factory import ModelFactory
 from .flash_ansr_model import FlashANSRModel
 from .pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder

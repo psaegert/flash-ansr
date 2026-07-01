@@ -74,6 +74,7 @@ class BeamSearchConfig(GenerationConfigBase):
         self.use_cache = use_cache
 
     def to_kwargs(self) -> dict[str, Any]:
+        """Return the beam-search keyword arguments (``beam_width``, ``max_len``, ...)."""
         return {
             'beam_width': self.beam_width,
             'max_len': self.max_len,
@@ -147,6 +148,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.guidance_weight = guidance_weight
 
     def to_kwargs(self) -> dict[str, Any]:
+        """Return the softmax-sampling keyword arguments (``choices``, ``top_k``, ``top_p``, ...)."""
         return {
             'choices': self.choices,
             'top_k': self.top_k,
@@ -234,6 +236,7 @@ class MCTSGenerationConfig(GenerationConfigBase):
         self.completion_sort = completion_sort
 
     def to_kwargs(self) -> dict[str, Any]:
+        """Return the MCTS keyword arguments (``simulations``, ``uct_c``, ``max_depth``, ...)."""
         return {
             'beam_width': self.beam_width,
             'simulations': self.simulations,

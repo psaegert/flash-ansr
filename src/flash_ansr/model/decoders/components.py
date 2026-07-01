@@ -34,6 +34,13 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
 
     def forward(self, x: torch.Tensor, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return the cached ``(cos, sin)`` rotary tables truncated to ``seq_len``, cast to ``x``'s dtype.
+
+        Raises
+        ------
+        ValueError
+            If ``seq_len`` exceeds the configured ``max_seq_len``.
+        """
         if seq_len > self.max_seq_len:
             raise ValueError(f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}")
         cos_cached = self.cos_cached
@@ -47,6 +54,7 @@ class RotaryEmbedding(nn.Module):
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """Rotate the last dimension by half: return ``cat(-x2, x1)`` where ``x1``/``x2`` are its two halves."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
@@ -58,6 +66,24 @@ def apply_rotary_emb(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply rotary positional embeddings to the query and key tensors using the given ``cos``/``sin`` tables.
+
+    Parameters
+    ----------
+    xq : torch.Tensor
+        Query tensor to rotate.
+    xk : torch.Tensor
+        Key tensor to rotate.
+    cos : torch.Tensor
+        Cosine component of the rotary table, broadcastable to ``xq``/``xk``.
+    sin : torch.Tensor
+        Sine component of the rotary table, broadcastable to ``xq``/``xk``.
+
+    Returns
+    -------
+    Tuple[torch.Tensor, torch.Tensor]
+        The rotated query and key tensors, each cast back to its input dtype.
+    """
     xq_out = (xq * cos) + (rotate_half(xq) * sin)
     xk_out = (xk * cos) + (rotate_half(xk) * sin)
     return xq_out.type_as(xq), xk_out.type_as(xk)

@@ -1,8 +1,13 @@
+"""IEEE-754 bit-decomposition pre-encoders that expand float inputs into their sign/exponent/mantissa bits."""
 import torch
 from torch import nn
 
 
 def float32_to_ieee754_bits(x: torch.Tensor) -> torch.Tensor:
+    """Decompose IEEE-754 binary32 (single-precision) values into their 32 bits.
+
+    Output bit order is most-significant-first: ``[sign, exp[7:0], mantissa[22:0]]``.
+    """
     # reinterpret bits as int32
     i = x.view(torch.int32)
 
@@ -35,6 +40,11 @@ def float16_to_ieee754_bits(x: torch.Tensor) -> torch.Tensor:
 
 
 class IEEE75432PreEncoder(nn.Module):
+    """Pre-encoder that expands each of ``input_size`` features into its 32 IEEE-754 binary32 bits.
+
+    Bits are mapped from ``{0, 1}`` to ``{-1, +1}`` before being passed on to the encoder.
+    """
+
     def __init__(self, input_size: int) -> None:
         super().__init__()
         self.input_size = input_size
@@ -42,9 +52,11 @@ class IEEE75432PreEncoder(nn.Module):
 
     @property
     def output_size(self) -> int:
+        """Flattened output dimensionality: ``encoding_size * input_size`` (32 bits per feature)."""
         return self.encoding_size * self.input_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Expand ``x`` into its binary32 bits, mapped from ``{0, 1}`` to ``{-1, +1}``."""
         return (float32_to_ieee754_bits(x) - 0.5) * 2
 
 
@@ -62,7 +74,9 @@ class IEEE75416PreEncoder(nn.Module):
 
     @property
     def output_size(self) -> int:
+        """Flattened output dimensionality: ``encoding_size * input_size`` (16 bits per feature)."""
         return self.encoding_size * self.input_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Expand ``x`` into its binary16 bits, mapped from ``{0, 1}`` to ``{-1, +1}``."""
         return (float16_to_ieee754_bits(x) - 0.5) * 2

@@ -1,3 +1,4 @@
+"""Factory for constructing ``torch.nn`` (or ``flash_ansr.models``) modules by name."""
 import importlib
 from typing import Any
 

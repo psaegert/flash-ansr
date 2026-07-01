@@ -98,8 +98,28 @@ class TestSetParser:
 
 
 class ParserFactory:
+    '''Factory that maps a benchmark name to its :class:`TestSetParser` implementation.'''
+
     @staticmethod
     def get_parser(parser_name: str) -> TestSetParser:
+        '''
+        Return the parser instance for a named benchmark test set.
+
+        Parameters
+        ----------
+        parser_name : str
+            Benchmark identifier. One of ``'soose'``, ``'feynman'``, ``'nguyen'`` or ``'fastsrb'``.
+
+        Returns
+        -------
+        TestSetParser
+            A new parser instance for the requested benchmark.
+
+        Raises
+        ------
+        ValueError
+            If ``parser_name`` does not match a known benchmark.
+        '''
         match parser_name:
             case 'soose':
                 return SOOSEParser()

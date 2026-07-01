@@ -1,3 +1,4 @@
+"""The :class:`FlashANSRModel` transformer backbone and its decoding routines."""
 import heapq
 import os
 import warnings
@@ -56,6 +57,14 @@ _GUARD_OVERHEAD = 2.0
 
 
 class FlashANSRModel(nn.Module):
+    """Transformer backbone that maps ``(X, y)`` data to expression-token sequences.
+
+    Couples a :class:`~flash_ansr.model.encoders.SetTransformer` set encoder (fed by an IEEE-754
+    bit pre-encoder) with an autoregressive :class:`~flash_ansr.model.decoders.TransformerDecoder`,
+    and exposes the beam-search / top-k-p / MCTS decoding routines used to generate candidate
+    expression skeletons.
+    """
+
     def __init__(
         self,
         simplipy_engine: SimpliPyEngine,
@@ -192,10 +201,12 @@ class FlashANSRModel(nn.Module):
 
     @property
     def device(self) -> torch.device:
+        """The device on which the model's parameters currently reside."""
         return next(self.parameters()).device
 
     @property
     def n_params(self) -> int:
+        """The total number of trainable (``requires_grad``) parameters in the model."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     @property
@@ -277,6 +288,24 @@ class FlashANSRModel(nn.Module):
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRModel":
+        """Instantiate a model from a config dict or a path to a config file.
+
+        Parameters
+        ----------
+        config : dict[str, Any] or str
+            A configuration mapping, or a path to a YAML config file. A top-level ``"model"``
+            key is unwrapped if present.
+
+        Returns
+        -------
+        FlashANSRModel
+            The constructed model (with freshly initialised weights).
+
+        Raises
+        ------
+        KeyError
+            If the resolved config is missing any required constructor key.
+        """
         config_ = load_config(config)
 
         if "model" in config_.keys():
@@ -379,6 +408,38 @@ class FlashANSRModel(nn.Module):
         return memory
 
     def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None, condition_mask: torch.Tensor | None = None, past_key_values: list | None = None, use_cache: bool = False) -> torch.Tensor | tuple[torch.Tensor, list]:
+        """Compute next-token logits for ``input_tokens`` conditioned on the ``(X, y)`` support set.
+
+        Encoder memory is taken from ``memory`` if given, otherwise built from ``data`` (or reused
+        from a previous call). ``condition_mask`` enables classifier-free routing between the data
+        memory and the learned null memory on optional-condition models.
+
+        Parameters
+        ----------
+        input_tokens : torch.Tensor
+            The decoder input token indices.
+        data : torch.Tensor or None
+            The ``(X, y)`` support set to encode into memory; may be ``None`` when ``memory`` is
+            supplied or memory was set on a previous call.
+        input_num : torch.Tensor, optional
+            Numeric values aligned with ``input_tokens`` for the numeric embedding.
+        memory : torch.Tensor, optional
+            Precomputed encoder memory, bypassing re-encoding of ``data``.
+        data_attn_mask : torch.Tensor, optional
+            Attention mask over the support set when building memory.
+        condition_mask : torch.Tensor, optional
+            Per-example boolean mask selecting data memory (True) vs the learned null memory
+            (False); only valid on optional-condition models.
+        past_key_values : list, optional
+            Cached decoder key/value states for incremental decoding.
+        use_cache : bool, optional
+            If True, also return updated key/value caches. Defaults to False.
+
+        Returns
+        -------
+        torch.Tensor or tuple[torch.Tensor, list]
+            The next-token logits, or ``(logits, past_key_values)`` when ``use_cache`` is True.
+        """
         if memory is not None:
             # Never register a passed nn.Parameter (e.g. an optional-condition model's `null_memory`)
             # as the 'memory' attribute: nn.Module.__setattr__ would move it into `_parameters` and the
@@ -505,6 +566,41 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
+        """Decode candidate expressions from ``data`` with beam search.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The encoded ``(X, y)`` support set conditioning the decoder.
+        beam_width : int, optional
+            Number of beams kept at each expansion step. Defaults to 4.
+        max_len : int, optional
+            Maximum decoded sequence length (including the prompt prefix). Defaults to 100.
+        batch_size : int, optional
+            Number of beams scored per forward pass. Defaults to 128.
+        unique : bool, optional
+            Deduplicate completed sequences by their constantified skeleton. Defaults to True.
+        verbose : bool, optional
+            Show a progress bar over decoding steps. Defaults to False.
+        limit_expansions : bool, optional
+            Restrict expansions to grammar-valid continuations. Defaults to True.
+        use_cache : bool, optional
+            Reuse decoder key/value caches across steps. Defaults to False.
+        prompt_prefix : PromptPrefix, optional
+            Prompt prefix (e.g. feature hints) prepended before decoding.
+        initial_tokens : list[int], optional
+            Explicit initial token prefix to start decoding from.
+        input_num : list[float], optional
+            Numeric values aligned with ``initial_tokens`` for the numeric embedding.
+
+        Returns
+        -------
+        tuple[list[list[int]], list[float], list[bool]]
+            The decoded token sequences, their log-probabilities, and per-sequence completion
+            flags. A flag is ``True`` for sequences that terminated with ``<eos>`` and ``False``
+            for active-beam fallbacks appended when fewer than ``beam_width`` completed sequences
+            were found.
+        """
         device = data.device
 
         base_tokens, base_input_num = self._resolve_generation_prefix(
@@ -994,6 +1090,63 @@ class FlashANSRModel(nn.Module):
         memory: torch.Tensor | None = None,
         guidance_weight: float | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
+        """Decode candidate expressions from ``data`` by top-k / top-p (nucleus) sampling.
+
+        Draws ``choices`` samples per problem, optionally routing through the static-shape decode
+        path and classifier-free guidance. Post-processing extracts, simplifies, deduplicates and
+        sorts the sampled sequences unless ``return_raw`` short-circuits it.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            The encoded ``(X, y)`` support set conditioning the decoder.
+        choices : int, optional
+            Number of independent samples to draw per problem. Defaults to 10.
+        top_k : int, optional
+            Restrict sampling to the ``top_k`` most likely tokens (0 disables). Defaults to 0.
+        top_p : float, optional
+            Nucleus threshold: sample from the smallest set of tokens whose cumulative
+            probability exceeds ``top_p``. Defaults to 1.
+        max_len : int, optional
+            Maximum decoded sequence length. Defaults to 100.
+        batch_size : int, optional
+            Number of samples decoded per forward pass. Defaults to 128.
+        temperature : float, optional
+            Softmax temperature applied to the logits before sampling. Defaults to 1.0.
+        valid_only : bool, optional
+            Keep only grammar-valid completed sequences. Defaults to True.
+        simplify : bool or str, optional
+            Simplify decoded expressions during post-processing. Defaults to True.
+        unique : bool, optional
+            Deduplicate by constantified skeleton. Defaults to True.
+        verbose : bool, optional
+            Show a progress bar over decoding steps. Defaults to False.
+        use_cache : bool, optional
+            Reuse decoder key/value caches across steps. Defaults to False.
+        return_raw : bool, optional
+            Return the raw ``(sequences, scores)`` before post-processing. Defaults to False.
+        static_decode : bool or None, optional
+            Tri-state selector for the static-shape decode path. ``None`` uses the deployed
+            default for capable models; ``True``/``False`` force it on/off (an unsupported
+            ``True`` warns and falls back to dynamic). Defaults to ``None``.
+        prompt_prefix : PromptPrefix, optional
+            Prompt prefix prepended before decoding.
+        initial_tokens : list[int], optional
+            Explicit initial token prefix to start decoding from.
+        input_num : list[float], optional
+            Numeric values aligned with ``initial_tokens`` for the numeric embedding.
+        memory : torch.Tensor, optional
+            Precomputed encoder memory, bypassing re-encoding of ``data``.
+        guidance_weight : float, optional
+            Classifier-free guidance weight (optional-condition models only): ``1`` is a pure
+            conditioned decode, ``0`` a pure prior decode, ``>1`` amplifies the data signal.
+
+        Returns
+        -------
+        tuple
+            When ``return_raw`` is False, ``(sequences, scores, is_valid)`` after
+            post-processing; when ``return_raw`` is True, the raw ``(sequences, scores)``.
+        """
 
         # Static-shape, position-indexed-KV decode (Stage 1b): route to the chunk-major static loop.
         # `static_decode` is tri-state: None -> the deployed default for capable models, True/False explicit
@@ -1547,6 +1700,23 @@ class FlashANSRModel(nn.Module):
         return out
 
     def save(self, directory: str, config: dict[str, Any] | str | None = None, reference: str = 'relative', recursive: bool = True, errors: Literal['raise', 'warn', 'ignore'] = 'warn') -> None:
+        """Save the model's state dict (and optionally its config) to ``directory``.
+
+        Parameters
+        ----------
+        directory : str
+            Destination directory (created if missing). The weights are written to
+            ``state_dict.pt`` and, when ``config`` is given, the config to ``model.yaml``.
+        config : dict[str, Any] or str or None, optional
+            Config mapping or path to copy alongside the weights. If ``None``, no config is
+            written and ``errors`` governs the response.
+        reference : str, optional
+            How referenced sub-config paths are stored (``'relative'`` by default).
+        recursive : bool, optional
+            Recursively resolve and copy referenced configs. Defaults to True.
+        errors : {'raise', 'warn', 'ignore'}, optional
+            Behaviour when ``config`` is ``None``: raise, warn (default), or silently proceed.
+        """
 
         directory = substitute_root_path(directory)
 
@@ -1571,6 +1741,18 @@ class FlashANSRModel(nn.Module):
 
     @classmethod
     def load(cls, directory: str) -> tuple[dict[str, Any], "FlashANSRModel"]:
+        """Load a model and its config from a directory previously written by :meth:`save`.
+
+        Parameters
+        ----------
+        directory : str
+            Directory containing ``model.yaml`` and ``state_dict.pt``.
+
+        Returns
+        -------
+        tuple[dict[str, Any], FlashANSRModel]
+            The loaded config and the model with its weights restored.
+        """
         directory = substitute_root_path(directory)
 
         config_path = os.path.join(directory, 'model.yaml')

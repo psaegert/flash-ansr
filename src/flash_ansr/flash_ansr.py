@@ -1,3 +1,11 @@
+"""The :class:`FlashANSR` estimator: end-to-end amortized neural symbolic regression.
+
+This module wires the transformer backbone (:class:`~flash_ansr.model.FlashANSRModel`),
+tokenizer, prompt preprocessing, candidate generation (beam search / softmax sampling / MCTS)
+and the constant :class:`~flash_ansr.refine.Refiner` into a single scikit-learn-style estimator
+whose :meth:`FlashANSR.fit` / :meth:`FlashANSR.predict` / :meth:`FlashANSR.infer` methods recover
+closed-form expressions from ``(X, y)`` data.
+"""
 import os
 import copy
 import math

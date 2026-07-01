@@ -18,6 +18,11 @@ class SetEncoder(nn.Module):
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "SetEncoder":
+        """Instantiate an encoder from a config dict or a path to a config file.
+
+        A top-level ``"encoder"`` key is unwrapped if present, and the remaining mapping is
+        passed as keyword arguments to the constructor.
+        """
         config_ = load_config(config)
 
         if "encoder" in config_.keys():
@@ -75,4 +80,5 @@ class SetEncoder(nn.Module):
 
     @property
     def n_params(self) -> int:
+        """The total number of trainable (``requires_grad``) parameters in the encoder."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

@@ -30,6 +30,28 @@ class FlashANSRPreprocessorConfig:
         cls,
         data: "FlashANSRPreprocessorConfig" | dict[str, Any] | None,
     ) -> "FlashANSRPreprocessorConfig":
+        """Build a :class:`FlashANSRPreprocessorConfig` from a dict or an existing instance.
+
+        The ``prompt_feature`` entry is parsed into a :class:`PromptFeatureExtractorConfig` (a
+        string value is treated as a config path and loaded first). An optional ``section_probs``
+        mapping overrides individual section probabilities via
+        :meth:`PromptFeatureExtractorConfig.with_section_probabilities`.
+
+        Parameters
+        ----------
+        data : FlashANSRPreprocessorConfig or dict or None
+            An existing instance (passed through), ``None`` (defaults), or a dict of options.
+
+        Returns
+        -------
+        FlashANSRPreprocessorConfig
+            The parsed preprocessor configuration.
+
+        Raises
+        ------
+        TypeError
+            If ``data`` is neither ``None``, an instance, nor a dict.
+        """
         if isinstance(data, cls):
             return data
         if data is None:
@@ -102,6 +124,29 @@ class FlashANSRPreprocessor:
         catalog: LampleChartonCatalog | None = None,
         rng: np.random.Generator | None = None,
     ) -> "FlashANSRPreprocessor":
+        """Construct a preprocessor from a config plus the required runtime dependencies.
+
+        Parameters
+        ----------
+        config : dict[str, Any] or str or None
+            Config mapping or path to a config file. A top-level ``"preprocessor"`` key is
+            unwrapped, and its ``"prompt"`` section configures prompt enrichment. ``None`` or a
+            non-mapping config yields default (prompt-disabled) settings.
+        simplipy_engine : SimpliPyEngine
+            Engine used to manipulate and evaluate symbolic expressions.
+        tokenizer : Tokenizer
+            Tokenizer used to serialize prompts and expressions.
+        catalog : LampleChartonCatalog, optional
+            Catalog enabling prompt-feature extraction; prompts are only emitted when a catalog
+            is supplied and the configured prompt probability is positive.
+        rng : numpy.random.Generator, optional
+            Random generator driving stochastic prompt inclusion. Defaults to a fresh generator.
+
+        Returns
+        -------
+        FlashANSRPreprocessor
+            The configured preprocessor.
+        """
         config_ = load_config(config)
 
         if isinstance(config_, dict) and "preprocessor" in config_.keys():
@@ -121,6 +166,23 @@ class FlashANSRPreprocessor:
         )
 
     def format(self, batch: dict[str, Any]) -> dict[str, Any]:
+        """Format a batch instance-by-instance, optionally enriching it with prompt metadata.
+
+        Each instance in ``batch`` is formatted (adding ``input_num`` / ``prompt_mask`` /
+        ``prompt_metadata`` and, when enabled, a sampled prompt prefix), then the results are
+        re-stacked back into per-key lists.
+
+        Parameters
+        ----------
+        batch : dict[str, Any]
+            A batch mapping keys to per-instance sequences; must contain ``"input_ids"``.
+
+        Returns
+        -------
+        dict[str, Any]
+            The batch with formatted fields. Returned unchanged if ``"input_ids"`` is absent or
+            the batch is empty.
+        """
         input_ids = batch.get("input_ids")
         if input_ids is None:
             return batch
@@ -148,6 +210,28 @@ class FlashANSRPreprocessor:
         include_terms: Iterable[Sequence[Any]] | None = None,
         exclude_terms: Iterable[Sequence[Any]] | None = None,
     ) -> dict[str, Any]:
+        """Serialize an explicit prompt prefix constraining generation.
+
+        Builds the token prefix (starting from ``<bos>``) that encodes the requested constraints,
+        emitting the ``<prompt>`` block only when the tokenizer defines the needed special tokens.
+
+        Parameters
+        ----------
+        complexity : float or int, optional
+            Target expression complexity to encode in the prompt.
+        allowed_terms : iterable of sequences, optional
+            Terms the generated expression is restricted to.
+        include_terms : iterable of sequences, optional
+            Terms that must appear in the generated expression.
+        exclude_terms : iterable of sequences, optional
+            Terms that must not appear in the generated expression.
+
+        Returns
+        -------
+        dict[str, Any]
+            The serialized prefix with ``input_ids``, ``input_num``, ``prompt_mask`` and
+            ``prompt_metadata`` entries.
+        """
         return self._serializer.serialize_prompt_prefix(
             complexity=complexity,
             allowed_terms=allowed_terms,
