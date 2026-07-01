@@ -8,6 +8,28 @@ from flash_ansr import LampleChartonCatalog, get_path
 
 
 class TestConvertData(unittest.TestCase):
+    def test_unparseable_fails_loud_by_default(self):
+        # A malformed expression aborts the import (fail-loud) unless skip is opted into.
+        df = pd.DataFrame({'eq': ['x_1 +', 'x_1']})  # 'x_1 +' -> ValueError: missing operand
+        parser = SOOSEParser()
+        with self.assertRaises((ValueError, TypeError)):
+            parser.parse_data(
+                test_set_df=df,
+                simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+                base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
+
+    def test_unparseable_skipped_when_opted_in(self):
+        # skip_unparseable=True counts + skips the malformed row and imports the rest.
+        df = pd.DataFrame({'eq': ['x_1 +', 'x_1']})
+        parser = SOOSEParser()
+        catalog = parser.parse_data(
+            test_set_df=df,
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')),
+            skip_unparseable=True)
+        self.assertIsInstance(catalog, LampleChartonCatalog)
+        self.assertEqual(len(catalog.skeletons), 1)  # only the valid 'x_1' imported
+
     def test_import_test_data_soose(self):
         df = pd.DataFrame({
             'eq': [

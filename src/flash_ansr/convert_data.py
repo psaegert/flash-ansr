@@ -25,7 +25,7 @@ class _TooManyVariables(Exception):
 
 class TestSetParser:
     @abstractmethod
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False, *, skip_unparseable: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
 
@@ -39,6 +39,10 @@ class TestSetParser:
             An initial catalog to add the parsed expressions to.
         verbose : bool, optional
             Whether to print progress information, by default False
+        skip_unparseable : bool, optional
+            How to handle a malformed (unparseable) expression. ``False`` (default) is fail-loud: the
+            parse error propagates and aborts the import. ``True`` counts it in the invalid tally and
+            skips it (the lenient mode for known-noisy inputs, e.g. an external benchmark file).
 
         Returns
         -------
@@ -47,15 +51,23 @@ class TestSetParser:
         '''
 
     @staticmethod
-    def _process_expression(expression: str, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog) -> tuple[tuple[str, ...], tuple]:
+    def _process_expression(expression: str, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, *, skip_unparseable: bool = False) -> tuple[tuple[str, ...], tuple]:
         '''Shared per-expression pipeline: parse -> validate -> simplify -> canonicalize variables ->
-        codify. Returns ``(expression_hash, (code, constants))``; raises :class:`_InvalidExpression`
-        (unparseable or engine-invalid) or :class:`_TooManyVariables` so the caller can count + skip.
-        Identical across all parsers.'''
+        codify. Returns ``(expression_hash, (code, constants))``.
+
+        A parse failure (malformed input) is **fail-loud by default**: the underlying
+        ``ValueError`` / ``TypeError`` propagates and aborts the import, since malformed input in a
+        curated test set signals a data problem worth surfacing. Pass ``skip_unparseable=True`` to
+        instead count + skip it (raised as :class:`_InvalidExpression`). Engine-invalid (parsed but not
+        representable) and too-many-variable expressions are *always* count + skip filters
+        (:class:`_InvalidExpression` / :class:`_TooManyVariables`) -- they are the designed, reported
+        attrition of importing an external set into a specific catalog vocabulary, not errors.'''
         try:
             prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-        except (ValueError, TypeError):
-            raise _InvalidExpression()
+        except (ValueError, TypeError) as exc:
+            if skip_unparseable:
+                raise _InvalidExpression() from exc
+            raise
         if not simplipy_engine.is_valid(prefix_expression, verbose=True):
             raise _InvalidExpression()
         prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
@@ -123,7 +135,7 @@ def is_number(token: str) -> bool:
 
 
 class SOOSEParser(TestSetParser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False, *, skip_unparseable: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
 
@@ -149,7 +161,7 @@ class SOOSEParser(TestSetParser):
         expression_dict = {}
         for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOSE Data', smoothing=0.0):
             try:
-                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog, skip_unparseable=skip_unparseable)
             except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
@@ -164,7 +176,7 @@ class SOOSEParser(TestSetParser):
 
 
 class FeynmanParser(TestSetParser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False, *, skip_unparseable: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
 
@@ -198,7 +210,7 @@ class FeynmanParser(TestSetParser):
             expression = str(row['Formula'])
 
             try:
-                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog, skip_unparseable=skip_unparseable)
             except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
@@ -213,7 +225,7 @@ class FeynmanParser(TestSetParser):
 
 
 class NguyenParser(TestSetParser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False, *, skip_unparseable: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
 
@@ -242,7 +254,7 @@ class NguyenParser(TestSetParser):
             expression = str(row['Equation'])
 
             try:
-                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog, skip_unparseable=skip_unparseable)
             except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
@@ -257,7 +269,7 @@ class NguyenParser(TestSetParser):
 
 
 class FastSRBParser(TestSetParser):
-    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
+    def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False, *, skip_unparseable: bool = False) -> LampleChartonCatalog:
         '''
         Parse the FastSRB benchmark data and import it into the catalog.
 
@@ -294,7 +306,7 @@ class FastSRBParser(TestSetParser):
             prepared_expression = prepared_expression.replace('^', '**')
 
             try:
-                expression_hash, entry = self._process_expression(prepared_expression, simplipy_engine, base_catalog)
+                expression_hash, entry = self._process_expression(prepared_expression, simplipy_engine, base_catalog, skip_unparseable=skip_unparseable)
             except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue

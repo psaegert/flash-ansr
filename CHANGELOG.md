@@ -26,9 +26,13 @@ config errors, and a `convert_data` de-duplication. Re-pinned `symbolic-data>=0.
 ### Internal
 - De-duplicated the four `convert_data` test-set parsers (SOOSE / Feynman / Nguyen / FastSRB) onto a
   shared `TestSetParser._process_expression` / `_finalize` pipeline (~130 lines removed).
-  **Behavior note:** SOOSE / Feynman / Nguyen now treat an *unparseable* expression as invalid and
-  skip it (counted in the invalid tally), matching FastSRB, rather than raising and aborting the whole
-  conversion (fail-loud -> fail-skip). Inert on the clean curated sets; a hardening for malformed input.
+  **Behavior note:** all four parsers are now **fail-loud on an unparseable expression by default** --
+  a malformed input raises and aborts the import (a data problem in a curated set is worth surfacing).
+  Pass `parse_data(..., skip_unparseable=True)` for the lenient mode that counts + skips malformed rows
+  (e.g. a known-noisy external benchmark file). This unifies the previously-divergent behavior
+  (FastSRB used to skip parse errors silently; it now also fails loud by default). Engine-invalid
+  (parsed but not representable) and too-many-variable expressions remain the designed, *reported*
+  count + skip filters -- they are not errors.
 
 ## [0.9.5] - 2026-07-01
 
