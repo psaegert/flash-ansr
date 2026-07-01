@@ -148,7 +148,8 @@ consumers never scrape model internals.
 
 ### Removed (breaking)
 - The deprecated `flash_ansr.expressions` shim package (introduced in 0.7.0) is removed. Import the
-  expression/data layer from `symbolic_data` instead (installed via `flash-ansr[train]`, or directly).
+  expression/data layer from `symbolic_data` instead (installed automatically as a core dependency of
+  flash-ansr, or directly).
   The top-level `flash_ansr.SkeletonPool` / `flash_ansr.NoValidSampleFoundError` re-exports are
   unchanged. No `flash_ansr` code imported the shim; it existed only for external back-compat.
 
@@ -171,7 +172,7 @@ A small maintenance release.
 
 ### Internal
 - Moved the `simplify="sympy"` timeout helper to a dependency-light leaf module
-  (`flash_ansr.utils.sympy_timeout`); the model and skeleton pool now import it from there. No
+  (`flash_ansr.utils.sympy_timeout`); the model and the data/sampling module now import it from there. No
   behaviour change; this decouples the helper from the data/sampling module ahead of a future
   package split.
 - The `simplify="sympy"` path now raises a clear, actionable `ImportError` (pointing at
@@ -189,13 +190,16 @@ evaluate models beyond Flash-ANSR.
 ### Breaking Changes
 - **Evaluation and baselines moved to `srbf`.** Install with `pip install srbf`. The following are no
   longer importable from `flash_ansr` (a helpful redirect error points to srbf):
-  - `flash_ansr.Evaluation` -> `from srbf.eval import Evaluation`
+  - `flash_ansr.Evaluation` -> `from srbf import Benchmark` (the evaluation engine was subsequently
+    renamed to the top-level `srbf.Benchmark`)
   - `flash_ansr.SkeletonPoolModel`, `flash_ansr.BruteForceModel` -> `from srbf.baselines import ...`
   - the `flash_ansr.eval`, `flash_ansr.baselines`, and `flash_ansr.benchmarks` modules, and the
     NeSymReS adapter `flash_ansr.compat.nesymres`.
 - **CLI:** the `flash_ansr evaluate-run` subcommand moved to `srbf`. All other subcommands stay
   (`train`, `install`, `remove`, `generate-/filter-/split-skeleton-pool`, `import-data`,
-  `find-simplifications`, `benchmark`, `wandb-stats`).
+  `find-simplifications`, `benchmark`, `wandb-stats`). *(The standalone data CLI, including the
+  `generate-`/`filter-`/`split-skeleton-pool` and `import-data` commands, was later removed in 0.7.0;
+  the current CLI exposes only `train`, `install`, `remove`, `benchmark`, and `wandb-stats`.)*
 
 ### Removed
 - Eval-only dependencies `editdistance` and `zss` are no longer required by the core package (they

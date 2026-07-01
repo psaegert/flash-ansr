@@ -10,6 +10,8 @@ Flash Amortized Neural Symbolic Regression combines a SetTransformer encoder, Tr
 - **Contributing?** Check [Contributing](contributing.md) and [FAQ](faq.md).
 
 ## Quick inference
+Requires Python >= 3.12.
+
 ```bash
 pip install flash-ansr
 ```

@@ -21,6 +21,8 @@
 ## Inference results
 The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refined candidates plus the full classified candidate ledger.
 
+`InferenceResult.to_dataframe()` returns the refined survivors (the `FIT_OK` candidates in `result.candidates`) as a pandas DataFrame, one row per candidate; it does not include the full ledger.
+
 ### InferenceResult
 ::: flash_ansr.inference.InferenceResult
     options:
@@ -46,6 +48,8 @@ The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refine
       members:
         - from_config
         - iterate
+        - compile
+        - save
         - shutdown
       members_order: source
       filters:

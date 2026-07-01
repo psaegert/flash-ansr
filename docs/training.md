@@ -57,9 +57,10 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
     type: lample_charton
     # ... operator weights, priors ...
     holdout_pools:
-      - "./data/my_model/fastsrb_holdout"   # path to a saved catalog directory to exclude
+      - "v23-val"                            # a curated catalog NAME (resolved from the HF asset repo)
+      - "./data/my_model/fastsrb_holdout"    # ...or a path to a saved catalog directory to exclude
     ```
-    Each entry is a path to a saved catalog directory (or a `LampleChartonCatalog` instance when building in Python); the catalog caches those skeletons and drops any generated expression that matches one. Matching is structural and constant-agnostic, so a generated `x1..` skeleton is excluded if it matches a held-out benchmark expression's structure. Use `holdout_pools: []` (or omit it) for non-benchmark use; if you skip it, benchmark eval numbers (e.g. FastSRB / Feynman) may be contaminated. Build the holdout catalog with the `symbolic_data` API (see step 3) and save it to the directory you reference here.
+    Each entry is a curated catalog **name** (`v23-val`, `fastsrb`, ..., or a `name@version` resolved from the HF asset repo — the shipped bundles use names), a **path** to a saved catalog directory, or a `LampleChartonCatalog` instance when building in Python; the catalog caches those skeletons and drops any generated expression that matches one. Matching is structural and constant-agnostic, so a generated `x1..` skeleton is excluded if it matches a held-out benchmark expression's structure. Use `holdout_pools: []` (or omit it) for non-benchmark use; if you skip it, benchmark eval numbers (e.g. FastSRB / Feynman) may be contaminated. Build the holdout catalog with the `symbolic_data` API (see step 3) and save it to the directory you reference here.
 2. **Configure the catalog and dataset**: adjust `catalog_*.yaml` (operator priors, expression-length distribution, literal/support priors) and `dataset_*.yaml` (the `source:` block) inside your chosen bundle.
 3. **Prepare a held-out validation set** (optional if reusing a shipped one): build a fixed catalog with the `symbolic_data` Python API and save it to disk, then point `dataset_val.yaml`'s `source.catalog` at that directory. Run from the project root so relative paths resolve:
     ```python

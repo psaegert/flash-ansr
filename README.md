@@ -24,6 +24,8 @@ Flash-ANSR is a library for **amortized neural symbolic regression**: load a pre
 
 # Usage
 
+Requires Python >= 3.12.
+
 ```sh
 pip install flash-ansr
 ```
@@ -105,7 +107,7 @@ config = SoftmaxSamplingConfig(
 )
 ```
 
-Constant refinement runs in parallel; control it via `FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)`.
+Constant refinement runs in parallel; control it via `FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)`. By default (`refiner_workers=None`) the pool uses every available CPU core, which oversubscribes shared machines; pass an explicit integer to cap it (`0` disables multiprocessing).
 
 To reproduce v0.4.x inference behavior, opt out of the new defaults:
 
@@ -149,6 +151,7 @@ simplification of on-the-fly generated training expressions.</p>
 # Related projects
 
 - [**SimpliPy**](https://github.com/psaegert/simplipy): the expression simplification engine integrated into the Flash-ANSR training loop.
+- [**symbolic-data**](https://github.com/psaegert/symbolic-data): the model-agnostic symbolic-regression data layer (catalogs, `ProblemSource`, holdouts) that feeds Flash-ANSR training. It is an unconditional runtime dependency and the backbone of the training loop.
 - [**srbf**](https://github.com/psaegert/srbf): the companion symbolic-regression evaluation and benchmarking framework (engine, model adapters, benchmarks, metrics), developed alongside Flash-ANSR.
 
 # Citation
@@ -176,7 +179,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.9.0},
+  version = {0.10.0},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```

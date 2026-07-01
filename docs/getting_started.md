@@ -1,10 +1,12 @@
 # Getting Started
 
+Requires Python >= 3.12.
+
 ```bash
 pip install flash-ansr
 ```
 
-Check the installed version with `flash_ansr.__version__`.
+This also pulls in `symbolic-data` and `simplipy` automatically, so no manual sequencing is needed. Check the installed version with `flash_ansr.__version__`.
 
 ## Download a checkpoint
 ```bash
@@ -80,9 +82,14 @@ print(ledger.fit_status, ledger.fvu)     # per-candidate columns
 
 # Timing of the two phases
 print(result.generation_time, result.refinement_time)
+
+# A tabular view of the refined survivors (one row per candidate in result.candidates)
+df = result.to_dataframe()
 ```
 
-A `Candidate` carries `expression` (skeleton tokens), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants`, `score`, `log_prob`, `fvu`, `complexity`, and optional `y_pred` / `y_pred_val` (populated for the top `top_k` candidates). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
+A `Candidate` carries `expression` (skeleton tokens), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants`, `score`, `log_prob`, `fvu`, `complexity`, `constant_count`, `pruned_variant`, and optional `y_pred` / `y_pred_val` (populated for the top `top_k` candidates). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
+
+`result.to_dataframe()` returns a pandas DataFrame of the refined survivors (one row per candidate in `result.candidates`, i.e. `FIT_OK` fits), not the full ledger. To control which candidates get predictions, `infer` takes `top_k` (compute `y_pred` / `y_pred_val` for the top `top_k` candidates; `None` = the best only), `predict_val` (toggle validation-set prediction), and `X_val` (out-of-sample features for `y_pred_val`).
 
 Find more details in the [API Reference](api.md).
 
