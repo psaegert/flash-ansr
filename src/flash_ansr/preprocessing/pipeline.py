@@ -20,7 +20,7 @@ from flash_ansr.utils.numeric import merge_numeric_sequence
 
 
 @dataclass
-class FlashASNRPreprocessorConfig:
+class FlashANSRPreprocessorConfig:
     """Configuration describing how prompts are serialized."""
 
     prompt_feature: PromptFeatureExtractorConfig = field(default_factory=PromptFeatureExtractorConfig)
@@ -28,8 +28,8 @@ class FlashASNRPreprocessorConfig:
     @classmethod
     def from_dict(
         cls,
-        data: "FlashASNRPreprocessorConfig" | dict[str, Any] | None,
-    ) -> "FlashASNRPreprocessorConfig":
+        data: "FlashANSRPreprocessorConfig" | dict[str, Any] | None,
+    ) -> "FlashANSRPreprocessorConfig":
         if isinstance(data, cls):
             return data
         if data is None:
@@ -66,7 +66,7 @@ class FlashANSRPreprocessor:
         tokenizer: Tokenizer,
         catalog: LampleChartonCatalog | None = None,
         *,
-        prompt_config: FlashASNRPreprocessorConfig | dict[str, Any] | None = None,
+        prompt_config: FlashANSRPreprocessorConfig | dict[str, Any] | None = None,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.simplipy_engine = simplipy_engine
@@ -74,7 +74,7 @@ class FlashANSRPreprocessor:
         self.catalog = catalog
         self._rng = rng if rng is not None else np.random.default_rng()
 
-        self.prompt_config = FlashASNRPreprocessorConfig.from_dict(prompt_config)
+        self.prompt_config = FlashANSRPreprocessorConfig.from_dict(prompt_config)
         self._prompt_enabled = (
             catalog is not None
             and self.prompt_config.prompt_feature.prompt_probability > 0

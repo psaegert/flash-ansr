@@ -57,6 +57,22 @@ class TestConvertData(unittest.TestCase):
 
         self.assertIsInstance(catalog, LampleChartonCatalog)
 
+    def test_import_test_data_fastsrb_handles_missing_prepared(self):
+        # A None / empty 'prepared' cell must be counted as missing and skipped, not crash: the
+        # '^'->'**' replace now runs AFTER the None/empty check (previously it ran first -> AttributeError).
+        df = pd.DataFrame({'prepared': ['v1 * v2', None, '', 'sin(v1)']})
+
+        parser = FastSRBParser()
+
+        catalog = parser.parse_data(
+            test_set_df=df,
+            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
+
+        self.assertIsInstance(catalog, LampleChartonCatalog)
+        # Only the two non-empty expressions are imported; None and '' are skipped without error.
+        self.assertEqual(len(catalog.skeletons), 2)
+
     def test_import_test_data_fastsrb(self):
         df = pd.DataFrame({
             'prepared': [

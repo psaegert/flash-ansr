@@ -282,6 +282,29 @@ class FlashANSRModel(nn.Module):
         if "model" in config_.keys():
             config_ = config_["model"]
 
+        # Validate the required keys up front so a missing/renamed field yields one clear, actionable
+        # error instead of an opaque bare KeyError from deep inside the constructor call below. Keys
+        # read via .get(...) with a default (optional_condition, pre_encoder_bits, the *_norm_position
+        # and xsa/rope-optional flags, ...) are intentionally NOT required here.
+        required_keys = (
+            "simplipy_engine", "tokenizer", "pre_encoder_noise_scale",
+            "encoder_max_n_variables", "encoder_dim", "encoder_n_heads", "encoder_n_isab",
+            "encoder_n_sab", "encoder_n_inducing_points", "encoder_n_seeds", "encoder_ffn_hidden_dim",
+            "encoder_dropout", "encoder_attn_norm", "encoder_ffn_norm", "encoder_output_norm",
+            "decoder_input_dim", "decoder_model_dim", "decoder_n_layers", "decoder_n_heads",
+            "decoder_max_seq_len", "decoder_ffn_hidden_dim", "decoder_dropout",
+            "decoder_block_self_attn_norm", "decoder_block_cross_attn_norm", "decoder_block_ffn_norm",
+            "decoder_cross_attn_kv_norm", "decoder_output_norm", "decoder_use_rope_self_attn",
+            "decoder_use_rope_cross_attn", "use_checkpointing",
+        )
+        missing_keys = [key for key in required_keys if key not in config_]
+        if missing_keys:
+            raise KeyError(
+                f"FlashANSRModel config is missing required key(s): {missing_keys}. This usually means "
+                f"the model config is incomplete or from an incompatible flash-ansr version. "
+                f"Present keys: {sorted(config_.keys())}."
+            )
+
         if isinstance(config, str) and isinstance(config_["simplipy_engine"], str):
             if config_["simplipy_engine"].startswith('.'):
                 config_["simplipy_engine"] = os.path.join(os.path.dirname(config), config_["simplipy_engine"])

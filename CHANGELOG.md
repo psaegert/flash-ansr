@@ -4,6 +4,32 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-01
+
+Post-release audit round (deferred tiers C + D): fixes the two misspelled public class names, clearer
+config errors, and a `convert_data` de-duplication. Re-pinned `symbolic-data>=0.10`.
+
+### Changed
+- **BREAKING: fixed two misspelled public names, no alias.** `convert_data.TestSetParaser` ->
+  `TestSetParser` and `preprocessing.FlashASNRPreprocessorConfig` -> `FlashANSRPreprocessorConfig`.
+  Update imports; there is no deprecated alias.
+- **BREAKING (transitive): `symbolic-data>=0.10`.** `LampleChartonCatalog.load` now returns the
+  catalog object only; the flash-ansr data path is updated to match.
+- **`FlashANSRModel.from_config` validates required keys up front** and raises one clear `KeyError`
+  naming the missing key(s) and listing the keys present, instead of an opaque bare `KeyError` from
+  deep in the constructor on config drift.
+
+### Fixed
+- **`FastSRBParser`: a missing / `None` / empty `prepared` cell is counted as missing and skipped**
+  instead of raising `AttributeError` (the `^`->`**` replace previously ran before the None check).
+
+### Internal
+- De-duplicated the four `convert_data` test-set parsers (SOOSE / Feynman / Nguyen / FastSRB) onto a
+  shared `TestSetParser._process_expression` / `_finalize` pipeline (~130 lines removed).
+  **Behavior note:** SOOSE / Feynman / Nguyen now treat an *unparseable* expression as invalid and
+  skip it (counted in the invalid tally), matching FastSRB, rather than raising and aborting the whole
+  conversion (fail-loud -> fail-skip). Inert on the clean curated sets; a hardening for malformed input.
+
 ## [0.9.5] - 2026-07-01
 
 ### Added

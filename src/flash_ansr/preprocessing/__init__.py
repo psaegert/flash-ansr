@@ -1,5 +1,5 @@
 """Preprocessing utilities for FlashANSR."""
-from .pipeline import FlashANSRPreprocessor, FlashASNRPreprocessorConfig
+from .pipeline import FlashANSRPreprocessor, FlashANSRPreprocessorConfig
 from .feature_extractor import (
     AllowedTermsConfig,
     ComplexitySectionConfig,

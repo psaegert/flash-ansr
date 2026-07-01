@@ -146,7 +146,7 @@ class FlashANSRDataset:
         # the saved-directory form is loaded into an instance first (build_catalog has no saved-dir loader).
         catalog_spec: Any
         if isinstance(catalog_cfg, str) and os.path.isdir(catalog_cfg):
-            catalog_spec = LampleChartonCatalog.load(catalog_cfg)[1]
+            catalog_spec = LampleChartonCatalog.load(catalog_cfg)
         else:
             catalog_spec = catalog_cfg
 

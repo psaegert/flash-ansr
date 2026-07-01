@@ -11,7 +11,19 @@ from simplipy.utils import codify, explicit_constant_placeholders as identify_co
 from symbolic_data import LampleChartonCatalog  # Parse expressions with SimpliPyEngine.parse_infix_expression
 
 
-class TestSetParaser:
+class _InvalidExpression(Exception):
+    """A parsed expression failed the engine's validity check (skip + count as invalid)."""
+
+
+class _TooManyVariables(Exception):
+    """A parsed expression uses more variables than the catalog supports (skip + count)."""
+
+    def __init__(self, mapping: dict) -> None:
+        super().__init__()
+        self.mapping = mapping
+
+
+class TestSetParser:
     @abstractmethod
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
@@ -34,10 +46,48 @@ class TestSetParaser:
             The catalog with the parsed expressions added.
         '''
 
+    @staticmethod
+    def _process_expression(expression: str, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog) -> tuple[tuple[str, ...], tuple]:
+        '''Shared per-expression pipeline: parse -> validate -> simplify -> canonicalize variables ->
+        codify. Returns ``(expression_hash, (code, constants))``; raises :class:`_InvalidExpression`
+        (unparseable or engine-invalid) or :class:`_TooManyVariables` so the caller can count + skip.
+        Identical across all parsers.'''
+        try:
+            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
+        except (ValueError, TypeError):
+            raise _InvalidExpression()
+        if not simplipy_engine.is_valid(prefix_expression, verbose=True):
+            raise _InvalidExpression()
+        prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
+
+        found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
+        prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
+        if len(mapping) > len(base_catalog.variables):
+            raise _TooManyVariables(mapping)
+
+        prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
+        prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
+        code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
+        code = codify(code_string, base_catalog.variables + constants)
+        return tuple(prefix_expression), (code, constants)
+
+    @staticmethod
+    def _finalize(base_catalog: LampleChartonCatalog, expression_dict: dict, n_invalid: int, n_too_many: int, total: int, extra_lines: 'tuple[tuple[str, int], ...]' = ()) -> LampleChartonCatalog:
+        '''Shared reporting + import step: print the invalid / too-many-variable rates (plus any
+        parser-specific ``extra_lines`` of ``(description, count)``) and attach the parsed skeletons
+        to the catalog.'''
+        print(f'Number of invalid expressions: {n_invalid} ({n_invalid / max(total, 1) * 100:.2f}%)')
+        print(f'Number of expressions with too many variables: {n_too_many} ({n_too_many / max(total, 1) * 100:.2f}%)')
+        for description, count in extra_lines:
+            print(f'{description}: {count} ({count / max(total, 1) * 100:.2f}%)')
+        base_catalog.skeleton_codes = expression_dict
+        base_catalog.skeletons = list(expression_dict.keys())
+        return base_catalog
+
 
 class ParserFactory:
     @staticmethod
-    def get_parser(parser_name: str) -> TestSetParaser:
+    def get_parser(parser_name: str) -> TestSetParser:
         match parser_name:
             case 'soose':
                 return SOOSEParser()
@@ -72,7 +122,7 @@ def is_number(token: str) -> bool:
         return False
 
 
-class SOOSEParser(TestSetParaser):
+class SOOSEParser(TestSetParser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
@@ -98,45 +148,22 @@ class SOOSEParser(TestSetParaser):
 
         expression_dict = {}
         for expression in tqdm(test_set_df['eq'], disable=not verbose, desc='Parsing and Importing SOOSE Data', smoothing=0.0):
-            # Parse and simplify
-            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-
-            # Check valid
-            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
+            try:
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+            except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
-
-            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
-
-            # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
-            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
-
-            if len(mapping) > len(base_catalog.variables):
+            except _TooManyVariables as exc:
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(exc.mapping)} from mapping {exc.mapping}')
                 continue
 
-            # Codify
-            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
-            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_catalog.variables + constants)
+            expression_dict[expression_hash] = entry
 
-            # Import
-            expression_hash = tuple(prefix_expression)
-            expression_dict[expression_hash] = (code, constants)
-
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
-
-        base_catalog.skeleton_codes = expression_dict
-        base_catalog.skeletons = list(expression_dict.keys())
-
-        return base_catalog
+        return self._finalize(base_catalog, expression_dict, n_invalid_expressions, n_too_many_variables, len(test_set_df))
 
 
-class FeynmanParser(TestSetParaser):
+class FeynmanParser(TestSetParser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
@@ -162,51 +189,30 @@ class FeynmanParser(TestSetParaser):
 
         expression_dict = {}
         for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Feynman Data', total=len(test_set_df), smoothing=0.0):
+            # Cheap pre-guard: skip formulae whose declared variable count already exceeds the catalog,
+            # before paying for a parse (counted as too-many, no warning since we never parsed it).
             if row['# variables'] > len(base_catalog.variables):
                 n_too_many_variables += 1
                 continue
 
             expression = str(row['Formula'])
 
-            # Parse and simplify
-            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-
-            # Check valid
-            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
+            try:
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+            except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
-
-            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
-
-            # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
-            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
-
-            if len(mapping) > len(base_catalog.variables):
+            except _TooManyVariables as exc:
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(exc.mapping)} from mapping {exc.mapping}')
                 continue
 
-            # Codify
-            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
-            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_catalog.variables + constants)
+            expression_dict[expression_hash] = entry
 
-            # Import
-            expression_hash = tuple(prefix_expression)
-            expression_dict[expression_hash] = (code, constants)
-
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
-
-        base_catalog.skeleton_codes = expression_dict
-        base_catalog.skeletons = list(expression_dict.keys())
-
-        return base_catalog
+        return self._finalize(base_catalog, expression_dict, n_invalid_expressions, n_too_many_variables, len(test_set_df))
 
 
-class NguyenParser(TestSetParaser):
+class NguyenParser(TestSetParser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the test set data and import it into the catalog.
@@ -235,45 +241,22 @@ class NguyenParser(TestSetParaser):
         for _, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing Nguyen Data', total=len(test_set_df), smoothing=0.0):
             expression = str(row['Equation'])
 
-            # Parse and simplify
-            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
-
-            # Check valid
-            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
+            try:
+                expression_hash, entry = self._process_expression(expression, simplipy_engine, base_catalog)
+            except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
-
-            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
-
-            # Standardize variable names
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
-            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
-
-            if len(mapping) > len(base_catalog.variables):
+            except _TooManyVariables as exc:
                 n_too_many_variables += 1
-                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}')
+                warnings.warn(f'\nExpression {expression} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(exc.mapping)} from mapping {exc.mapping}')
                 continue
 
-            # Codify
-            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
-            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_catalog.variables + constants)
+            expression_dict[expression_hash] = entry
 
-            # Import
-            expression_hash = tuple(prefix_expression)
-            expression_dict[expression_hash] = (code, constants)
-
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / max(len(test_set_df), 1) * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / max(len(test_set_df), 1) * 100:.2f}%)')
-
-        base_catalog.skeleton_codes = expression_dict
-        base_catalog.skeletons = list(expression_dict.keys())
-
-        return base_catalog
+        return self._finalize(base_catalog, expression_dict, n_invalid_expressions, n_too_many_variables, len(test_set_df))
 
 
-class FastSRBParser(TestSetParaser):
+class FastSRBParser(TestSetParser):
     def parse_data(self, test_set_df: pd.DataFrame, simplipy_engine: SimpliPyEngine, base_catalog: LampleChartonCatalog, verbose: bool = False) -> LampleChartonCatalog:
         '''
         Parse the FastSRB benchmark data and import it into the catalog.
@@ -302,46 +285,27 @@ class FastSRBParser(TestSetParaser):
         expression_dict: dict[tuple[str, ...], tuple] = {}
 
         for idx, row in tqdm(test_set_df.iterrows(), disable=not verbose, desc='Parsing and Importing FastSRB Data', total=len(test_set_df), smoothing=0.0):
-            prepared_expression = row.get('prepared').replace('^', '**')
+            prepared_expression = row.get('prepared')
 
             if not isinstance(prepared_expression, str) or prepared_expression.strip() == '':
                 n_missing_prepared += 1
                 continue
 
+            prepared_expression = prepared_expression.replace('^', '**')
+
             try:
-                prefix_expression = simplipy_engine.parse(prepared_expression, mask_numbers=True)
-            except (ValueError, TypeError):
+                expression_hash, entry = self._process_expression(prepared_expression, simplipy_engine, base_catalog)
+            except _InvalidExpression:
                 n_invalid_expressions += 1
                 continue
-
-            if not simplipy_engine.is_valid(prefix_expression, verbose=True):
-                n_invalid_expressions += 1
-                continue
-
-            prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
-
-            found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
-            prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix='x', enumeration_offset=1)
-
-            if len(mapping) > len(base_catalog.variables):
+            except _TooManyVariables as exc:
                 n_too_many_variables += 1
-                warnings.warn(f"\nExpression at index {idx} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(mapping)} from mapping {mapping}")
+                warnings.warn(f"\nExpression at index {idx} has too many variables for the catalog. Expected at most {len(base_catalog.variables)} but got {len(exc.mapping)} from mapping {exc.mapping}")
                 continue
 
-            prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-            prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
-            code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
-            code = codify(code_string, base_catalog.variables + constants)
+            expression_dict[expression_hash] = entry
 
-            expression_hash = tuple(prefix_expression)
-            expression_dict[expression_hash] = (code, constants)
-
-        denominator = len(test_set_df) if len(test_set_df) > 0 else 1
-        print(f'Number of invalid expressions: {n_invalid_expressions} ({n_invalid_expressions / denominator * 100:.2f}%)')
-        print(f'Number of expressions with too many variables: {n_too_many_variables} ({n_too_many_variables / denominator * 100:.2f}%)')
-        print(f'Number of entries missing prepared expressions: {n_missing_prepared} ({n_missing_prepared / denominator * 100:.2f}%)')
-
-        base_catalog.skeleton_codes = expression_dict
-        base_catalog.skeletons = list(expression_dict.keys())
-
-        return base_catalog
+        return self._finalize(
+            base_catalog, expression_dict, n_invalid_expressions, n_too_many_variables, len(test_set_df),
+            extra_lines=(('Number of entries missing prepared expressions', n_missing_prepared),),
+        )
