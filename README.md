@@ -82,7 +82,7 @@ for c in result.candidates:                            # score-sorted survivors
 print(len(result.ledger))                              # all candidates considered
 ```
 
-Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb).
+Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/demo.ipynb).
 
 **Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/) and browse the pretrained [model collection on Hugging Face](https://huggingface.co/models?search=flash-ansr-v23.0).
 

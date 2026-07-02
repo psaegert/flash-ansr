@@ -62,7 +62,7 @@ Changelog = "https://github.com/psaegert/flash-ansr/blob/main/CHANGELOG.md"
 PyPI = "https://pypi.org/project/flash-ansr/"
 Paper = "https://arxiv.org/abs/2602.08885"
 "Benchmarks (srbf)" = "https://github.com/psaegert/srbf"
-"Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/experimental/demo.ipynb"
+"Demo Notebook" = "https://github.com/psaegert/flash-ansr/blob/main/demo.ipynb"
 
 [project.scripts]
 flash_ansr = "flash_ansr.__main__:main"
@@ -142,7 +142,7 @@ no_implicit_optional = false
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 explicit_package_bases = true
-exclude = "(.venv|tests/|experimental/)"
+exclude = "(.venv|tests/)"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
