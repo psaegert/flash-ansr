@@ -18,12 +18,91 @@ from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
 from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.model.decoders.static_kv import StaticKVCache
-from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep
+from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep, tree_stats
 from flash_ansr.utils.sympy_timeout import _sympy_simplify_with_timeout
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
 TerminalFunction: TypeAlias = Callable[[Tuple[int, ...]], bool]
+
+# Engagement counter for the static-decode path: incremented every time `_sample_top_kp_static` runs.
+# Gates read this to PROVE the static path actually engaged (vs `static_decode` silently failing to
+# propagate through generate()'s arms -> dynamic fallback, which would false-pass a quality/equality gate
+# as dynamic-vs-dynamic). This is the assertion gate_overlap.py enforces via `_overlap_supported()`.
+STATIC_DECODE_CALL_COUNT = 0
+
+# Global kill-switch for the deployed static-decode default (default ON, 2026-06-24). When True,
+# `static_decode=None` (the config/library default) resolves to static iff the model is capable AND the
+# decode is MULTI-chunk (the resolved static batch < choices) -- see `_resolve_static_decode`. Set False to
+# force the dynamic path everywhere. RATIONALE: the cross-GPU SPEED grid (consumer Turing/Ampere + datacenter
+# A100/H100/H200) showed static wins in the multi-chunk regime on EVERY measured card; the only losses are
+# single-chunk small-model cells, which the `batch < choices` predicate excludes by construction. So this one
+# runtime predicate replaces the old per-(scale,c) enable table + scale-class/c-band + hardware gate -- the
+# regime is computed from each card's own free VRAM, so it is hardware-general with no table to maintain.
+# (Was _DEPLOYED_STATIC_DEFAULT.) See PREREG_overlap_default_and_static_global.md + INFERENCE_SPEED_FINDINGS.md.
+_DEPLOYED_STATIC_ENABLED = True
+
+# The runtime spill-guard trips when a static-decode chunk's live ALLOCATED working set exceeds this
+# fraction of the card's physical memory. Set near the physical limit: the auto chunk size
+# (suggest_batch_size_dims) is already conservative (~0.7 of FREE), so this is a backstop for an explicit
+# oversized batch, not a second-guess of the cap. 0.9 of FREE passes the validated static b256 (~9.5 GB
+# transient of ~18.6 free) with margin and trips on a gross over-budget chunk.
+_VRAM_GUARD_FRACTION = 0.9
+
+# Per-row pad the spill-guard uses, DELIBERATELY LARGER than suggest_batch_size_dims's cap overhead (1.6)
+# so the guard is an INDEPENDENT backstop: a guard self-consistent with the cap could never catch a cap
+# under-estimate. At 2.0 the guard passes the validated static b256 but trips b384+ (the measured spill
+# onset) -- tighter than the cap, looser than reality, exactly a backstop.
+_GUARD_OVERHEAD = 2.0
+
+
+def canonicalize_beam(
+    tokenizer: Tokenizer,
+    simplipy_engine: SimpliPyEngine,
+    tokens: Tuple[int, ...],
+) -> Tuple[Tuple[int, ...], Optional[str]]:
+    """Canonical (simplify + constantify) key and the deploy-identical expression to refine.
+
+    Single source of truth shared by (a) the MCTS tree's dedup ``canonicalize_fn``, (b) the search
+    ``value_fn``'s refiner-cache key, and (c) ``mcts_decode``'s harvested beam -- so all three keys are
+    IDENTICAL and equal the ``tuple(raw_beam)`` that ``_fit_refine`` uses to look up the cached fit.
+
+    Returns ``(key, expression)`` where ``key`` is the constantified simplified beam (as a tuple) and
+    ``expression`` is the ``'<constant>'``-placeholder expression string that ``_fit_refine`` would refine
+    for that beam, or ``None`` when the sequence is unparseable / not a valid expression (the caller then
+    treats the completion as invalid). Keeping the key defined even for invalid sequences lets the tree
+    deduplicate them consistently.
+    """
+    seq0 = list(tokens)
+    try:
+        expression_tokens, before, after = tokenizer.extract_expression_from_beam(seq0)
+    except ValueError:
+        return tuple(tokenizer.constantify_expression(seq0)), None
+
+    decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
+    simplified_seq = seq0
+    if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
+        simplified_expression = simplipy_engine.simplify(decoded_expression, max_pattern_length=4)
+        simplified_seq = before + tokenizer.encode(simplified_expression) + after
+
+    canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
+    key = tuple(canonical_seq)
+
+    # The expression _fit_refine refines for this beam: extract+decode from the canonical seq, exactly as
+    # _fit_refine does (raw_beam == canonical_seq). This guarantees the search refines the byte-identical
+    # expression string, so the cached fit is a valid fit of what deployment fits.
+    try:
+        canon_expr_tokens, _, _ = tokenizer.extract_expression_from_beam(canonical_seq)
+    except ValueError:
+        return key, None
+    expression = tokenizer.decode(canon_expr_tokens, special_tokens='<constant>')
+    # Validity gate ONLY (matches the deploy refine gate `is_valid(beam_decoded)`); do NOT reject len<=1 --
+    # a bare single-variable expression (e.g. 'x15') is a legitimate, refinable candidate. The len>1 guard
+    # above governs only whether to SIMPLIFY, not validity.
+    if not simplipy_engine.is_valid(expression):
+        return key, None
+    return key, expression
+
 
 # Engagement counter for the static-decode path: incremented every time `_sample_top_kp_static` runs.
 # Gates read this to PROVE the static path actually engaged (vs `static_decode` silently failing to
@@ -928,6 +1007,8 @@ class FlashANSRModel(nn.Module):
         config: MCTSConfig,
         beam_width: int = 16,
         value_fn: Optional[ValueFunction] = None,
+        batched_value_fn: Optional[Callable[[list[Tuple[int, ...]]], list[tuple[float, Any]]]] = None,
+        async_hooks: Optional[Any] = None,
         terminal_fn: Optional[TerminalFunction] = None,
         invalid_sequence_fn: Optional[Callable[[Tuple[int, ...]], bool]] = None,
         completion_sort: str = "reward",
@@ -1001,6 +1082,112 @@ class FlashANSRModel(nn.Module):
         eos_token_id = self.tokenizer['<eos>']
         pad_token_id = self.tokenizer['<pad>'] if '<pad>' in self.tokenizer else None
 
+        def canonicalize_fn(tokens: Tuple[int, ...]) -> Tuple[int, ...]:
+            # Canonical dedup key MUST match the downstream refiner/selector key AND the value_fn cache key
+            # (all three via canonicalize_beam), so 'distinct' means distinct to the refiner.
+            return canonicalize_beam(self.tokenizer, self.simplipy_engine, tokens)[0]
+
+        # ---- leaf-parallel batched primitives (amortize the batch-1 forward overhead; config.batch_width>1) ----
+        rollout_cap = config.rollout_max_len or config.max_depth
+
+        def _batched_next_logprobs(token_lists: list[Tuple[int, ...]]) -> torch.Tensor:
+            # One batched forward over right-padded rows; gather each row's log-probs at ITS OWN last real
+            # position (NOT [:, -1, :]) -- RoPE is absolute-position and there is no key-pad mask, so a shorter
+            # row's last real token attends only to real tokens (causal mask excludes the trailing pads).
+            n = len(token_lists)
+            width = max(len(t) for t in token_lists)
+            pad = pad_token_id if pad_token_id is not None else 0
+            input_ids = torch.full((n, width), pad, device=device, dtype=torch.long)
+            last_pos = torch.empty(n, device=device, dtype=torch.long)
+            for r, t in enumerate(token_lists):
+                input_ids[r, :len(t)] = torch.tensor(t, device=device, dtype=torch.long)
+                last_pos[r] = len(t) - 1
+            innum = build_input_num_tensor(width)
+            if innum is not None:
+                innum = innum.expand(n, -1, -1)
+            logits = self.forward(input_ids, None, input_num=innum, memory=memory.expand(n, -1, -1))
+            assert isinstance(logits, torch.Tensor)
+            gathered = logits[torch.arange(n, device=device), last_pos, :]     # (n, vocab)
+            return torch.log_softmax(gathered, dim=-1)
+
+        def batched_policy_fn(token_lists: list[Tuple[int, ...]]) -> list[torch.Tensor]:
+            results: list[Optional[torch.Tensor]] = [None] * len(token_lists)
+            miss_i, miss_t = [], []
+            for i, t in enumerate(token_lists):
+                cached = policy_cache.get(t)
+                if cached is None:
+                    miss_i.append(i)
+                    miss_t.append(t)
+                else:
+                    results[i] = cached
+            if miss_t:
+                with torch.no_grad():
+                    lp = _batched_next_logprobs(miss_t)
+                for j, i in enumerate(miss_i):
+                    row = lp[j]
+                    policy_cache[miss_t[j]] = row      # keep the serial policy_cache coherent
+                    results[i] = row
+            return [r for r in results]  # type: ignore[misc]
+
+        def batched_rollout_fn(token_lists: list[Tuple[int, ...]]) -> list[tuple[Optional[Tuple[int, ...]], bool, float]]:
+            n = len(token_lists)
+            rows = [list(t)[:rollout_cap] for t in token_lists]
+            cur = [len(r) for r in rows]
+            logp_acc = [0.0] * n
+
+            def _is_term(tok_list: list[int]) -> bool:
+                return bool(tok_list) and (tok_list[-1] == eos_token_id or terminal_callable(tuple(tok_list)))
+
+            finished = [(_is_term(rows[i]) or cur[i] >= rollout_cap) for i in range(n)]
+            pad = pad_token_id if pad_token_id is not None else 0
+            seqs = torch.full((n, rollout_cap), pad, device=device, dtype=torch.long)
+            for i in range(n):
+                if cur[i] > 0:
+                    seqs[i, :cur[i]] = torch.tensor(rows[i][:cur[i]], device=device, dtype=torch.long)
+
+            temperature = config.temperature
+            while True:
+                active = [i for i in range(n) if not finished[i]]
+                if not active:
+                    break
+                width = max(cur[i] for i in active)
+                m = len(active)
+                active_t = torch.tensor(active, device=device)
+                innum = build_input_num_tensor(width)
+                if innum is not None:
+                    innum = innum.expand(m, -1, -1)
+                with torch.no_grad():
+                    logits = self.forward(seqs[active_t, :width], None, input_num=innum, memory=memory.expand(m, -1, -1))
+                    assert isinstance(logits, torch.Tensor)
+                    last = torch.tensor([cur[i] - 1 for i in active], device=device)
+                    gathered = logits[torch.arange(m, device=device), last, :]   # (m, vocab)
+                    if pad_token_id is not None:
+                        gathered[:, pad_token_id] = float('-inf')
+                    probs = torch.softmax(gathered / temperature, dim=-1)         # temp only affects sampling
+                    nxt = torch.multinomial(probs, num_samples=1).squeeze(1)      # (m,)
+                    logp = torch.log_softmax(gathered, dim=-1).gather(1, nxt.unsqueeze(1)).squeeze(1)  # untempered lp
+                    write_pos = torch.tensor([cur[i] for i in active], device=device)
+                    seqs[active_t, write_pos] = nxt
+                nxt_list = nxt.tolist()
+                logp_list = logp.tolist()
+                for k, i in enumerate(active):
+                    tok = nxt_list[k]
+                    rows[i].append(tok)
+                    logp_acc[i] += logp_list[k]
+                    cur[i] += 1
+                    if tok == eos_token_id or cur[i] >= rollout_cap or terminal_callable(tuple(rows[i])):
+                        finished[i] = True
+
+            out: list[tuple[Optional[Tuple[int, ...]], bool, float]] = []
+            for i in range(n):
+                toks = tuple(rows[i])
+                out.append((toks, _is_term(rows[i]), logp_acc[i]))
+            return out
+
+        # The batched rollout does not apply invalid_sequence_fn per token, so only enable batching when it is
+        # unset (the deployed path). Otherwise the search falls back to the serial loop (batch_width ignored).
+        _batchable = invalid_sequence_fn is None
+
         mcts = MonteCarloTreeSearch(
             policy_fn=policy_fn,
             value_fn=value_callable,
@@ -1009,15 +1196,26 @@ class FlashANSRModel(nn.Module):
             eos_token_id=eos_token_id,
             pad_token_id=pad_token_id,
             invalid_sequence_fn=invalid_sequence_fn,
+            canonicalize_fn=canonicalize_fn,
+            batched_policy_fn=batched_policy_fn if _batchable else None,
+            batched_rollout_fn=batched_rollout_fn if _batchable else None,
+            batched_value_fn=batched_value_fn if _batchable else None,
+            async_hooks=async_hooks if _batchable else None,
         )
 
         with torch.no_grad():
-            mcts.run(
+            root = mcts.run(
                 base_tokens,
                 initial_state=None,
                 progress=verbose,
                 progress_desc=f"MCTS decode ({config.simulations} sims)",
             )
+
+        # Stash cheap tree-balance diagnostics for inspection (self._mcts_last_tree_stats); see tree_stats.
+        try:
+            self._mcts_last_tree_stats = tree_stats(root, config.uct_c)
+        except Exception:
+            self._mcts_last_tree_stats = {}
 
         completions = mcts.get_top_completions(limit=beam_width, by=completion_sort)
 
@@ -1039,27 +1237,22 @@ class FlashANSRModel(nn.Module):
         seen_sequences: set[tuple[int, ...]] = set()
 
         for tokens, reward, log_prob in completions:
-            seq = list(tokens)
-            simplified_seq = seq
+            # Canonicalize via the shared helper so the harvested beam == the tree dedup key == the value_fn
+            # refiner-cache key == the tuple(raw_beam) _fit_refine looks up. The core already deduped by this
+            # key, so seen_sequences is an idempotent safety net.
+            sequence_key, expression = canonicalize_beam(self.tokenizer, self.simplipy_engine, tokens)
 
-            try:
-                expression_tokens, before, after = self.tokenizer.extract_expression_from_beam(seq)
-            except ValueError:
-                expression_tokens = None
-            else:
-                decoded_expression = self.tokenizer.decode(expression_tokens, special_tokens='<constant>')
-                if self.simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
-                    simplified_expression = self.simplipy_engine.simplify(decoded_expression, max_pattern_length=4)
-                    simplified_seq = before + self.tokenizer.encode(simplified_expression) + after
-
-            constantified = self.tokenizer.constantify_expression(simplified_seq)
-            sequence_key = tuple(constantified)  # type: ignore[arg-type]
+            # Skip unparseable/invalid beams (expression is None) -- e.g. the empty-completions fallback below,
+            # which can be a bare prompt+eos with no </expression>. Harvesting it would crash _fit_refine's
+            # extract_expression_from_beam; degrading to empty candidates (recovery=0) is the honest outcome.
+            if expression is None:
+                continue
 
             if sequence_key in seen_sequences:
                 continue
 
             seen_sequences.add(sequence_key)
-            sequences.append(constantified)  # type: ignore[arg-type]
+            sequences.append(list(sequence_key))
             log_probs.append(float(log_prob))
             rewards.append(float(reward))
 

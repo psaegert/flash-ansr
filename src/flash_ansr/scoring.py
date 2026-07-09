@@ -24,20 +24,43 @@ FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
 
 
 def normalize_variance(variance: float) -> float:
-    """Return ``variance`` floored at :data:`FLOAT64_EPS` (also for non-finite input)."""
+    """DEPRECATED. Floor ``variance`` at an absolute :data:`FLOAT64_EPS`.
+
+    No longer used by :func:`compute_fvu`: an absolute floor breaks FVU scale-invariance and, for
+    tiny-magnitude targets (``var(y) < FLOAT64_EPS``), spuriously rates any candidate as near-perfect
+    (the constant-candidate mis-selection bug). Retained only for backward-compatible imports; do not
+    use it to normalize an FVU.
+    """
     if not np.isfinite(variance):
         return FLOAT64_EPS
     return max(float(variance), FLOAT64_EPS)
 
 
 def compute_fvu(loss: float, sample_count: int, variance: float) -> float:
-    """Fraction of Variance Unexplained from a precomputed residual ``loss``.
+    """Scale-invariant Fraction of Variance Unexplained = ``loss / variance`` (== SS_res / SS_tot).
 
-    With a single sample the target variance is undefined, so the raw ``loss`` is returned.
+    Mirrors :func:`flash_ansr.eval.metrics.numeric.fvu` on the reduced ``(loss, variance)`` inputs so
+    the selection-score FVU agrees with the evaluation FVU. There is deliberately **no absolute
+    variance floor**: an absolute floor breaks scale-invariance and, for tiny-magnitude targets
+    (``var(y) < FLOAT64_EPS``), would spuriously rate any candidate as near-perfect.
+
+    Edge cases (matching ``numeric.fvu``'s ``safe_divide`` semantics):
+    - ``sample_count <= 1``: variance undefined -> return the raw ``loss``.
+    - non-finite ``loss`` or ``variance`` -> ``+inf`` (worst; a diverged/invalid fit).
+    - ``variance == 0`` (constant/degenerate target): perfect iff residual is exactly zero, else ``+inf``.
+      (The signature lacks the target scale, so only an EXACT-zero residual can be deemed perfect; any
+      absolute near-zero tolerance would reintroduce the scale-dependence this fix removes.)
+    - otherwise -> ``loss / variance``.
     """
     if sample_count <= 1:
         return float(loss)
-    return float(loss) / normalize_variance(variance)
+    loss = float(loss)
+    variance = float(variance)
+    if not np.isfinite(loss) or not np.isfinite(variance):
+        return float('inf')
+    if variance <= 0.0:
+        return 0.0 if loss == 0.0 else float('inf')
+    return loss / variance
 
 
 def score_from_fvu(
@@ -50,12 +73,15 @@ def score_from_fvu(
         likelihood_penalty: float) -> float:
     """Parsimony-penalised selection score ``log10(FVU) + structural penalties`` (lower is better).
 
-    ``fvu`` is floored at :data:`FLOAT64_EPS` so a perfect fit does not send the score to ``-inf``;
-    a non-finite or non-positive FVU is treated as the floor. ``log_prob`` contributes
-    ``likelihood_penalty * (-log_prob)`` when finite, and nothing otherwise.
+    A genuine perfect fit (``fvu == 0``) is floored at :data:`FLOAT64_EPS` so it gets the best FINITE
+    score (not ``-inf``). A non-finite or negative FVU is a diverged/invalid candidate and maps to the
+    WORST score (``+inf``), NOT the best -- otherwise an invalid candidate would out-rank real fits
+    (a ranking inversion). ``log_prob`` contributes ``likelihood_penalty * (-log_prob)`` when finite.
     """
-    if not np.isfinite(fvu) or fvu <= 0:
+    if fvu == 0.0:
         safe_fvu = FLOAT64_EPS
+    elif not np.isfinite(fvu) or fvu < 0.0:
+        return float('inf')
     else:
         safe_fvu = max(float(fvu), FLOAT64_EPS)
 

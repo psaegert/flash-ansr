@@ -44,8 +44,18 @@ class TestComputeFvu:
         assert compute_fvu(0.5, 1, 2.0) == 0.5
         assert compute_fvu(0.5, 0, 2.0) == 0.5
 
-    def test_zero_variance_floored(self):
-        assert compute_fvu(0.5, 10, 0.0) == pytest.approx(0.5 / FLOAT64_EPS)
+    def test_zero_variance_constant_target(self):
+        # var==0 is a constant/degenerate target: perfect iff the residual is exactly zero, else +inf.
+        # (Was the absolute-floor bug: loss/FLOAT64_EPS. Now matches numeric.fvu's safe_divide semantics.)
+        assert compute_fvu(0.0, 10, 0.0) == 0.0
+        assert compute_fvu(0.5, 10, 0.0) == np.inf
+
+    def test_non_finite_inputs_are_worst(self):
+        # a diverged/invalid fit -> +inf (worst), never a spuriously-small fvu
+        assert compute_fvu(np.nan, 10, 2.0) == np.inf
+        assert compute_fvu(np.inf, 10, 2.0) == np.inf
+        assert compute_fvu(0.5, 10, np.nan) == np.inf
+        assert compute_fvu(0.5, 10, np.inf) == np.inf
 
     def test_perfect_fit_zero_loss(self):
         assert compute_fvu(0.0, 10, 2.0) == 0.0
@@ -72,12 +82,17 @@ class TestScoreFromFvu:
     def test_non_finite_or_missing_log_prob_contributes_nothing(self, lp):
         assert score_from_fvu(0.01, 0, 0, lp, 0.0, 0.0, 0.5) == pytest.approx(-2.0)
 
-    @pytest.mark.parametrize("bad_fvu", [0.0, -1.0, np.inf, -np.inf, np.nan])
-    def test_non_positive_or_non_finite_fvu_uses_floor(self, bad_fvu):
-        # falls back to log10(FLOAT64_EPS); must stay finite (no -inf perfect-fit collapse)
+    def test_perfect_fvu_zero_uses_floor(self):
+        # a GENUINE perfect fit (fvu==0) gets the BEST finite score (floored to log10(eps), not -inf)
         expected = float(np.log10(FLOAT64_EPS))
-        assert score_from_fvu(bad_fvu, 0, 0, None, 0.0, 0.0, 0.0) == pytest.approx(expected)
-        assert math.isfinite(score_from_fvu(bad_fvu, 0, 0, None, 0.0, 0.0, 0.0))
+        assert score_from_fvu(0.0, 0, 0, None, 0.0, 0.0, 0.0) == pytest.approx(expected)
+        assert math.isfinite(score_from_fvu(0.0, 0, 0, None, 0.0, 0.0, 0.0))
+
+    @pytest.mark.parametrize("bad_fvu", [-1.0, np.inf, -np.inf, np.nan])
+    def test_non_finite_or_negative_fvu_is_worst(self, bad_fvu):
+        # a diverged/invalid candidate (non-finite or negative fvu) -> WORST score (+inf), NOT best,
+        # so it can never out-rank a real fit (ranking-inversion guard; was floored to the best score).
+        assert score_from_fvu(bad_fvu, 0, 0, None, 0.0, 0.0, 0.0) == np.inf
 
     def test_tiny_positive_fvu_floored(self):
         # fvu below the floor is lifted to the floor

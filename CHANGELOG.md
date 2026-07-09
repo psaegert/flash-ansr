@@ -4,6 +4,46 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-07-10
+
+Research-to-production upstream: corrected candidate scoring (scale-invariant FVU + ranking fix) and the
+rewritten Monte-Carlo tree-search decoder (batched + asynchronous overlapped refinement). Softmax sampling
+remains the recommended decode method; benchmarked at deployed scale, MCTS matches its recovery but costs
+more wall-clock and refiner calls -- it ships as a correct, fully-supported alternative.
+
+### Changed
+- **BREAKING (scoring semantics): scale-invariant `compute_fvu`.** The absolute `FLOAT64_EPS` variance
+  floor is gone: FVU = `loss / variance` with explicit edge cases (`sample_count <= 1` -> raw loss;
+  non-finite loss/variance -> `+inf`; zero variance -> `0.0` iff the residual is exactly zero else
+  `+inf`). The old floor spuriously rated ANY candidate near-perfect on tiny-magnitude targets (the
+  constant-candidate mis-selection bug). `normalize_variance` is DEPRECATED (retained for imports only).
+- **BREAKING (ranking): `score_from_fvu` treats a non-finite or negative FVU as the WORST score
+  (`+inf`), not the best.** Previously a diverged/invalid candidate mapped to the floor (best finite
+  score) and could out-rank real fits. A genuine perfect fit (`fvu == 0.0`) still gets the best finite
+  score via the floor.
+- **Selection variance now uses `ddof=0`** (`y.var(unbiased=False)`), matching the evaluation-side FVU
+  definition so selection and evaluation agree.
+- **MCTS decoder rewritten** (`decoding/mcts.py`, `generation/mcts.py`): value-guided best-first search
+  (max-backup PUCT) whose value function is a full constant-refinement per distinct canonical candidate;
+  refine-budget-driven stopping; canonical (simplify+constantify) dedup shared with the refiner cache so
+  each candidate is refined exactly once (search fits are reused at deploy time). `invalid_penalty`
+  default corrected `1e6 -> 1.0` (the old magnitude poisoned mean-backup).
+- **MCTS batched + asynchronous execution:** leaf-parallel batched policy/rollout forwards
+  (`batch_width`), and an opt-in overlapped event loop (`async_search`, `inflight`, `gpu_batch`) that
+  runs GPU generation concurrently with pool refinement via non-blocking futures.
+
+### Added
+- `RecoverableForkPool.submit()`: non-blocking single-job submission returning a `Future` (pure
+  pass-through; never re-forks -- the async decode path's transport).
+- `MCTSGenerationConfig`: `refine_budget`, `max_rollouts`, `batch_width`, `async_search`, `inflight`,
+  `gpu_batch`, `backup`, `value_objective`, `fpu_reduction`, `renormalize_prior`,
+  `reward_log_fvu_hi/lo`, `rollout_resample_retries` (validated; full `to_kwargs` round-trip).
+- High-constant beams: candidate pruning falls back to a bounded deterministic mask set above
+  12 constants instead of the exhaustive `2**n` powerset (from 0.10.x-era production hardening).
+- Tests: `test_mcts_async.py` (byte-identity of the async loop vs the synchronous search at
+  `inflight=1`, budget exactness, virtual-loss accounting, order-invariance); scoring regression tests
+  for the scale-invariance + ranking fixes; MCTS config-surface contract tests.
+
 ## [0.10.0] - 2026-07-01
 
 Post-release audit round (deferred tiers C + D): fixes the two misspelled public class names, clearer

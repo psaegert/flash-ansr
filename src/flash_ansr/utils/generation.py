@@ -171,14 +171,27 @@ class MCTSGenerationConfig(GenerationConfigBase):
     __slots__ = (
         'beam_width',
         'simulations',
+        'max_rollouts',
+        'refine_budget',
+        'batch_width',
+        'async_search',
+        'inflight',
+        'gpu_batch',
         'uct_c',
         'expansion_top_k',
         'max_depth',
         'rollout_max_len',
         'rollout_policy',
         'temperature',
+        'rollout_resample_retries',
         'dirichlet_alpha',
         'dirichlet_epsilon',
+        'backup',
+        'fpu_reduction',
+        'renormalize_prior',
+        'reward_log_fvu_hi',
+        'reward_log_fvu_lo',
+        'value_objective',
         'invalid_penalty',
         'min_visits_before_expansion',
         'reward_transform',
@@ -188,14 +201,27 @@ class MCTSGenerationConfig(GenerationConfigBase):
     method: Literal['mcts']
     beam_width: int
     simulations: int
+    max_rollouts: int | None
+    refine_budget: int | None
+    batch_width: int
+    async_search: bool
+    inflight: int
+    gpu_batch: int | None
     uct_c: float
     expansion_top_k: int
     max_depth: int
     rollout_max_len: int | None
     rollout_policy: str
     temperature: float
+    rollout_resample_retries: int
     dirichlet_alpha: float | None
     dirichlet_epsilon: float
+    backup: str
+    fpu_reduction: float
+    renormalize_prior: bool
+    reward_log_fvu_hi: float
+    reward_log_fvu_lo: float
+    value_objective: str
     invalid_penalty: float
     min_visits_before_expansion: int
     reward_transform: Callable[[float], float] | None
@@ -206,15 +232,28 @@ class MCTSGenerationConfig(GenerationConfigBase):
         *,
         beam_width: int = 16,
         simulations: int = 256,
+        max_rollouts: int | None = None,
+        refine_budget: int | None = None,
+        batch_width: int = 32,
+        async_search: bool = False,
+        inflight: int = 128,
+        gpu_batch: int | None = None,
         uct_c: float = 1.4,
         expansion_top_k: int = 32,
         max_depth: int = 64,
         rollout_max_len: int | None = None,
         rollout_policy: str = 'sample',
         temperature: float = 1.0,
+        rollout_resample_retries: int = 8,
         dirichlet_alpha: float | None = None,
         dirichlet_epsilon: float = 0.25,
-        invalid_penalty: float = 1e6,
+        backup: str = 'max',
+        fpu_reduction: float = 0.0,
+        renormalize_prior: bool = True,
+        reward_log_fvu_hi: float = 0.0,
+        reward_log_fvu_lo: float = -8.0,
+        value_objective: str = 'score',
+        invalid_penalty: float = 1.0,
         min_visits_before_expansion: int = 1,
         reward_transform: Callable[[float], float] | None = None,
         completion_sort: str = 'reward',
@@ -222,32 +261,65 @@ class MCTSGenerationConfig(GenerationConfigBase):
         self.method = 'mcts'
         self.beam_width = beam_width
         self.simulations = simulations
+        self.max_rollouts = max_rollouts
+        self.refine_budget = refine_budget
+        self.batch_width = batch_width
+        self.async_search = async_search
+        self.inflight = inflight
+        self.gpu_batch = gpu_batch
         self.uct_c = uct_c
         self.expansion_top_k = expansion_top_k
         self.max_depth = max_depth
         self.rollout_max_len = rollout_max_len
         self.rollout_policy = rollout_policy
         self.temperature = temperature
+        self.rollout_resample_retries = rollout_resample_retries
         self.dirichlet_alpha = dirichlet_alpha
         self.dirichlet_epsilon = dirichlet_epsilon
+        self.backup = backup
+        self.fpu_reduction = fpu_reduction
+        self.renormalize_prior = renormalize_prior
+        self.reward_log_fvu_hi = reward_log_fvu_hi
+        self.reward_log_fvu_lo = reward_log_fvu_lo
+        self.value_objective = value_objective
         self.invalid_penalty = invalid_penalty
         self.min_visits_before_expansion = min_visits_before_expansion
         self.reward_transform = reward_transform
         self.completion_sort = completion_sort
+
+        if completion_sort not in ('reward', 'log_prob'):
+            raise ValueError("completion_sort must be either 'reward' or 'log_prob'")
+        if backup not in ('max', 'mean'):
+            raise ValueError("backup must be either 'max' or 'mean'")
+        if rollout_policy not in ('sample', 'greedy'):
+            raise ValueError("rollout_policy must be either 'sample' or 'greedy'")
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return the MCTS keyword arguments (``simulations``, ``uct_c``, ``max_depth``, ...)."""
         return {
             'beam_width': self.beam_width,
             'simulations': self.simulations,
+            'max_rollouts': self.max_rollouts,
+            'refine_budget': self.refine_budget,
+            'batch_width': self.batch_width,
+            'async_search': self.async_search,
+            'inflight': self.inflight,
+            'gpu_batch': self.gpu_batch,
             'uct_c': self.uct_c,
             'expansion_top_k': self.expansion_top_k,
             'max_depth': self.max_depth,
             'rollout_max_len': self.rollout_max_len,
             'rollout_policy': self.rollout_policy,
             'temperature': self.temperature,
+            'rollout_resample_retries': self.rollout_resample_retries,
             'dirichlet_alpha': self.dirichlet_alpha,
             'dirichlet_epsilon': self.dirichlet_epsilon,
+            'backup': self.backup,
+            'fpu_reduction': self.fpu_reduction,
+            'renormalize_prior': self.renormalize_prior,
+            'reward_log_fvu_hi': self.reward_log_fvu_hi,
+            'reward_log_fvu_lo': self.reward_log_fvu_lo,
+            'value_objective': self.value_objective,
             'invalid_penalty': self.invalid_penalty,
             'min_visits_before_expansion': self.min_visits_before_expansion,
             'reward_transform': self.reward_transform,

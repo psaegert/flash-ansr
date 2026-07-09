@@ -33,7 +33,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import signal
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Callable, Iterable
 
@@ -170,6 +170,19 @@ class RecoverableForkPool:
                     self._recreate(kill=killed)
                     raise
                 self._recreate(kill=killed)
+
+    def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
+        """Non-blocking single-job submission returning a ``Future`` (for the overlapped async MCTS loop).
+
+        Unlike :meth:`map_ordered`, this is a PURE PASS-THROUGH that NEVER recreates the pool: a single Future
+        owns no batch to atomically retry, and a re-fork after CUDA is the forbidden hazard the persistent pool
+        exists to prevent. A worker death surfaces at ``future.result()`` as :class:`BrokenProcessPool`; the
+        caller (the async reap) catches it and degrades to serial in-process refinement for the rest of the run.
+        The closed-pool guard prevents a ``NoneType.submit`` after a break/shutdown.
+        """
+        if self._closed or self._pool is None:
+            raise RuntimeError("RecoverableForkPool is shut down")
+        return self._pool.submit(fn, *args, **kwargs)
 
     def shutdown(self) -> None:
         if self._closed:

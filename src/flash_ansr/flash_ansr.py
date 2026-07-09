@@ -15,7 +15,7 @@ import numbers
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Tuple, Sequence, TypeVar, cast
 import warnings
@@ -291,6 +291,7 @@ class GenState:
     variable_mapping: dict
     complexity: Any
     generation_time: float
+    mcts_cache: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1016,15 +1017,28 @@ class FlashANSR(BaseEstimator):
 
         return MCTSConfig(
             simulations=getattr(cfg, 'simulations', 256),
+            max_rollouts=getattr(cfg, 'max_rollouts', None),
+            refine_budget=getattr(cfg, 'refine_budget', None),
+            batch_width=getattr(cfg, 'batch_width', 1),
+            async_search=getattr(cfg, 'async_search', False),
+            inflight=getattr(cfg, 'inflight', 128),
+            gpu_batch=getattr(cfg, 'gpu_batch', None),
             uct_c=getattr(cfg, 'uct_c', 1.4),
             expansion_top_k=getattr(cfg, 'expansion_top_k', 32),
             max_depth=getattr(cfg, 'max_depth', getattr(cfg, 'max_len', 64)),
             rollout_max_len=getattr(cfg, 'rollout_max_len', None),
             rollout_policy=getattr(cfg, 'rollout_policy', 'sample'),
             temperature=getattr(cfg, 'temperature', 1.0),
+            rollout_resample_retries=getattr(cfg, 'rollout_resample_retries', 8),
             dirichlet_alpha=getattr(cfg, 'dirichlet_alpha', None),
             dirichlet_epsilon=getattr(cfg, 'dirichlet_epsilon', 0.25),
-            invalid_penalty=getattr(cfg, 'invalid_penalty', 1e6),
+            backup=getattr(cfg, 'backup', 'max'),
+            fpu_reduction=getattr(cfg, 'fpu_reduction', 0.0),
+            renormalize_prior=getattr(cfg, 'renormalize_prior', True),
+            reward_log_fvu_hi=getattr(cfg, 'reward_log_fvu_hi', 0.0),
+            reward_log_fvu_lo=getattr(cfg, 'reward_log_fvu_lo', -8.0),
+            value_objective=getattr(cfg, 'value_objective', 'score'),
+            invalid_penalty=getattr(cfg, 'invalid_penalty', 1.0),
             min_visits_before_expansion=getattr(cfg, 'min_visits_before_expansion', 1),
             reward_transform=reward_transform,
         )
@@ -1342,6 +1356,67 @@ class FlashANSR(BaseEstimator):
                 completion_sort = generation_kwargs.get('completion_sort', 'reward')
                 beam_width = generation_kwargs.get('beam_width', 16)
 
+                # Parallel refine for the batched MCTS search: dispatch a batch's distinct new-canonical refines
+                # to the persistent PRE-CUDA fork pool (recover=False, CUDA-tainted caller -- same contract as
+                # _fit_refine). Only available when the pool is enabled (load(persistent_refine_pool=True)); else
+                # None -> the search refines serially. Reuses _refine_candidate_worker for identical fits.
+                parallel_refine_fn = None
+                parallel_submit_fn = None
+
+                def _mcts_payload(expr: Any, seed: int | None, X: np.ndarray, y: np.ndarray, y_variance: float) -> dict[str, Any]:
+                    return {
+                        'expression': expr, 'X': X, 'y': y, 'seed': seed,
+                        'n_variables': self.n_variables, 'n_restarts': self.n_restarts,
+                        'method': self.refiner_method, 'p0_noise': self.refiner_p0_noise,
+                        'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                        'converge_error': 'ignore', 'numpy_errors': self.numpy_errors,
+                        'y_variance': y_variance, 'length_penalty': self.length_penalty,
+                        'constants_penalty': self.constants_penalty, 'likelihood_penalty': self.likelihood_penalty,
+                        'log_prob': None, 'constant_count': 0, 'complexity': None, 'metadata_snapshot': None,
+                        'raw_beam': [], 'beam': expr, 'raw_beam_decoded': '',
+                    }
+
+                # Serial in-process refine of ONE expression -> unwrapped result_dict (schema-identical to the
+                # pool worker; supplies the engine since worker globals are absent here). Used by the async
+                # loop's pool-broken degrade AND whenever the pool is unavailable. Always available (no pool).
+                def _mcts_serial_refine(expr: Any, seed: int | None, X: np.ndarray, y: np.ndarray, y_variance: float) -> Any:
+                    return _refine_candidate_worker({**_mcts_payload(expr, seed, X, y, y_variance),
+                                                     'simplipy_engine': self.simplipy_engine})[0]
+
+                if self._refine_pool is not None:
+                    _pool = self._refine_pool
+
+                    def _mcts_parallel_refine(exprs: list, seeds: list, X: np.ndarray, y: np.ndarray, y_variance: float) -> list:
+                        payloads = [_mcts_payload(expr, seed, X, y, y_variance) for expr, seed in zip(exprs, seeds)]
+                        # Fork-pool path with the SAME graceful-degradation contract as _fit_refine: on a
+                        # worker death, recover=False re-raises (never re-forks after CUDA); catch it, dispose
+                        # the poisoned pool, and refine serially in-process for the rest of the run. Under
+                        # overlap mode a live GPU producer shares the pool -> must re-raise, not close it.
+                        if self._refine_pool is not None:
+                            mw = max(1, self.refiner_workers)
+                            chunksize = max(1, len(payloads) // (mw * 8))
+                            try:
+                                outcomes = _pool.map_ordered(
+                                    _refine_candidate_worker, payloads, chunksize=chunksize, recover=False)
+                                return [outcome for outcome, _warning in outcomes]
+                            except BrokenProcessPool:
+                                if self._overlap_mode:
+                                    raise
+                                warnings.warn("MCTS refine pool broke (worker death); disabling it and "
+                                              "refining serially for the rest of this run.")
+                                self.close()
+                        # serial in-process fallback (pool disabled/broken): reuse the same worker so the
+                        # fits/schema are identical; supply the engine since worker globals are unavailable here.
+                        return [_refine_candidate_worker({**pl, 'simplipy_engine': self.simplipy_engine})[0]
+                                for pl in payloads]
+                    parallel_refine_fn = _mcts_parallel_refine
+
+                    # Async (overlapped) single-job submit -> Future. result() = (result_dict, warning). recover
+                    # is caller-side: submit never re-forks; on a break the async reap degrades to _mcts_serial_refine.
+                    def _mcts_parallel_submit(expr: Any, seed: int | None, X: np.ndarray, y: np.ndarray, y_variance: float) -> Any:
+                        return _pool.submit(_refine_candidate_worker, _mcts_payload(expr, seed, X, y, y_variance))
+                    parallel_submit_fn = _mcts_parallel_submit
+
                 beams, log_probs, completed, rewards, refiner_cache = run_mcts_generation(
                     transformer=self.flash_ansr_model,
                     tokenizer=self.tokenizer,
@@ -1363,6 +1438,9 @@ class FlashANSR(BaseEstimator):
                     float64_eps=self.FLOAT64_EPS,
                     prompt_prefix=effective_prompt,
                     verbose=verbose,
+                    parallel_refine_fn=parallel_refine_fn,
+                    parallel_submit_fn=parallel_submit_fn,
+                    serial_refine_fn=_mcts_serial_refine,
                 )
 
                 self._mcts_cache = refiner_cache
@@ -1427,6 +1505,75 @@ class FlashANSR(BaseEstimator):
         }
 
         return entry
+
+    def _result_entry_from_cached_fit(
+            self,
+            *,
+            cached: dict[str, Any],
+            raw_beam: list[int],
+            raw_beam_decoded: str,
+            beam: list[int],
+            expression: list[str],
+            log_prob: float,
+            constant_count: int,
+            input_dim: int,
+            sample_count: int,
+            y_variance: float,
+            requested_complexity: int | float | None,
+            metadata_snapshot: Any) -> Result | None:
+        """Build a refinement Result from an MCTS search-time fit, skipping a second refine (M4).
+
+        Reuses the fitted constants (``cached['fits']``) the search already computed for this exact canonical
+        beam; fvu and score are RECOMPUTED here from the fit loss and the deployment penalties, so the entry is
+        identical to what ``_refine_candidate_worker`` + ``_create_result_entry`` would produce for a fresh
+        refine of the same beam. Returns ``None`` if the cached fit cannot be reconstructed (caller then
+        refines normally).
+        """
+        fits = cached.get('fits')
+        if not fits:
+            return None
+
+        # Serialize the cached refiner constants EXACTLY as _refine_candidate_worker does.
+        serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+        for constants, constants_cov, fit_loss in fits:
+            if constants_cov is None or getattr(constants_cov, 'size', 0) == 0:
+                cov_payload: np.ndarray | None = None
+            else:
+                cov_payload = np.asarray(constants_cov)
+            serialized_fits.append((np.asarray(constants), cov_payload, float(fit_loss)))
+
+        loss = float(fits[0][-1])
+        fvu = self._compute_fvu(loss, sample_count, y_variance)
+        if not np.isfinite(fvu):
+            return None
+
+        score = self._score_from_fvu(
+            fvu,
+            len(expression),
+            constant_count,
+            log_prob,
+            self.length_penalty,
+            self.constants_penalty,
+            self.likelihood_penalty,
+        )
+
+        payload: dict[str, Any] = {
+            'log_prob': log_prob,
+            'fvu': fvu,
+            'score': score,
+            'expression': expression,
+            'constant_count': constant_count,
+            'complexity': len(expression),
+            'requested_complexity': requested_complexity,
+            'raw_beam': raw_beam,
+            'beam': beam,
+            'raw_beam_decoded': raw_beam_decoded,
+            'fits': serialized_fits,
+            'valid_fit': True,
+            'prompt_metadata': metadata_snapshot,
+            'pruned_variant': False,
+        }
+        return self._create_result_entry(payload=payload, input_dim=input_dim)
 
     def fit(
             self,
@@ -1587,12 +1734,13 @@ class FlashANSR(BaseEstimator):
 
             sample_count = y.shape[0]
             if sample_count <= 1:
-                # Torch warns when computing an unbiased variance with a single sample.
-                # Skip the reduction entirely so downstream scoring quietly falls back
-                # to the residual loss via ``_compute_fvu``.
+                # Variance is undefined for a single sample; skip the reduction so downstream scoring
+                # quietly falls back to the residual loss via ``_compute_fvu``.
                 y_variance = float('nan')
             else:
-                y_variance = y.var(dim=0).item()
+                # ddof=0 (biased) to match the residual loss mean(diff**2) and the eval metric
+                # numeric.fvu, so the selection FVU equals the evaluation FVU exactly.
+                y_variance = y.var(dim=0, unbiased=False).item()
 
             X = pad_input_set(X, self.n_variables)
 
@@ -1640,6 +1788,10 @@ class FlashANSR(BaseEstimator):
             variable_mapping=variable_mapping,
             complexity=complexity,
             generation_time=generation_time,
+            # Snapshot the MCTS refiner cache into the LOCAL GenState so _fit_refine never reads self
+            # (overlap safety: generation for problem N+1 rebinds self._mcts_cache while problem N refines).
+            # generate() rebinds self._mcts_cache to a fresh dict each call, so holding this reference is safe.
+            mcts_cache=self._mcts_cache,
         )
 
     def _fit_refine(
@@ -1667,6 +1819,7 @@ class FlashANSR(BaseEstimator):
         raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
         beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
+        sample_count = int(gs.y_np.shape[0])
         refinement_jobs: list[dict[str, Any]] = []
         beam_iterator = zip(gs.raw_beams, raw_beams_decoded, beams, beams_decoded, gs.log_probs)
         for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
@@ -1674,6 +1827,31 @@ class FlashANSR(BaseEstimator):
                 continue
 
             constant_count = self._count_constants(beam_decoded)
+
+            # MCTS cache reuse (M4): the search already refined this exact canonical beam
+            # (tuple(raw_beam) == the value_fn refiner-cache key), so reuse that fit instead of refining a
+            # second time. A MISS (constant-pruning variants, non-mcts methods with an empty cache, or any
+            # key drift) falls through to a normal refine job -- correct, just not accelerated.
+            cached = gs.mcts_cache.get(tuple(raw_beam)) if gs.mcts_cache else None
+            if cached is not None:
+                cached_entry = self._result_entry_from_cached_fit(
+                    cached=cached,
+                    raw_beam=raw_beam,
+                    raw_beam_decoded=raw_beam_decoded,
+                    beam=beam,
+                    expression=beam_decoded,
+                    log_prob=log_prob,
+                    constant_count=constant_count,
+                    input_dim=input_dim,
+                    sample_count=sample_count,
+                    y_variance=gs.y_variance,
+                    requested_complexity=gs.complexity,
+                    metadata_snapshot=gs.metadata_snapshot,
+                )
+                if cached_entry is not None:
+                    results.append(cached_entry)
+                    continue
+                # cache hit but reconstruction failed -> fall through to a fresh refine
 
             job: dict[str, Any] = {
                 'raw_beam': raw_beam,
