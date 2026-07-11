@@ -269,7 +269,7 @@ def _persistent_pool_init(engine: Any) -> None:
 
 def _simplify_pool_worker(raw_expr: tuple) -> tuple:
     """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial)."""
-    return tuple(_SIMPLIFY_ENGINE.simplify(list(raw_expr), max_pattern_length=4))
+    return tuple(_SIMPLIFY_ENGINE.simplify(list(raw_expr), max_pattern_length=None))
 
 
 @dataclass
@@ -1997,7 +1997,7 @@ class FlashANSR(BaseEstimator):
                             if variant_key in seen_expressions:
                                 continue
 
-                            simplified_variant = self.simplipy_engine.simplify(list(variant), max_pattern_length=4)
+                            simplified_variant = self.simplipy_engine.simplify(list(variant), max_pattern_length=None)
                             if not self.simplipy_engine.is_valid(simplified_variant):
                                 continue
 
