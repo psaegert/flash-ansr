@@ -158,12 +158,21 @@ class FlashANSRModel(nn.Module):
 
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
+
+        encoder_mask_query_norms: bool = False,
+        sanitize_input_num: bool = False,
     ) -> None:
         super().__init__()
 
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
         self.encoder_max_n_variables = encoder_max_n_variables
+        # Zero the numeric-token embedding inputs at positions whose input_num is NaN (i.e. no
+        # numeric payload). NaN must be detected on the RAW values: the IEEE-754 bit pre-encoder
+        # maps NaN to a valid ±1 bit pattern, so isnan on the pre-encodings never fires. Legacy
+        # models (flag False) were trained WITH the NaN-pattern embedding at every non-constant
+        # position and must keep receiving it.
+        self.sanitize_input_num = sanitize_input_num
 
         if pre_encoder_bits == 32:
             pre_encoder_cls = IEEE75432PreEncoder
@@ -194,7 +203,8 @@ class FlashANSRModel(nn.Module):
             ffn_norm=encoder_ffn_norm,
             output_norm=encoder_output_norm,
             norm_position=encoder_block_norm_position,
-            use_checkpointing=use_checkpointing
+            use_checkpointing=use_checkpointing,
+            mask_query_norms=encoder_mask_query_norms,
         )
 
         if self.encoder.output_dim != decoder_model_dim:
@@ -433,6 +443,9 @@ class FlashANSRModel(nn.Module):
 
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
+
+            encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
+            sanitize_input_num=config_.get("sanitize_input_num", False),
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -521,10 +534,21 @@ class FlashANSRModel(nn.Module):
         # We need to pass the numeric embeddings to it.
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
-            input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
             if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
                 numeric_embeddings = numeric_embeddings.squeeze(-2)
+            if self.sanitize_input_num:
+                # NaN marks "no numeric payload at this position". Detect it on the RAW values:
+                # the bit pre-encoder maps NaN to a valid ±1 pattern, so checking the
+                # pre-encodings (as legacy code did) can never fire. Zero the embedding OUTPUT
+                # (not the input bits): numeric_embedding has a bias, so a zeroed bit-vector
+                # would still inject a learned constant. Legacy models keep the NaN-pattern
+                # embedding they were trained with (flag defaults to False).
+                payload_mask = ~torch.isnan(input_num)
+                if payload_mask.dim() == numeric_embeddings.dim():
+                    numeric_embeddings = numeric_embeddings * payload_mask
+                else:
+                    numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
         else:
             numeric_embeddings = None
 
@@ -563,10 +587,16 @@ class FlashANSRModel(nn.Module):
         self.memory = memory
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
-            input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
             if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
                 numeric_embeddings = numeric_embeddings.squeeze(-2)
+            if self.sanitize_input_num:
+                # See forward(): zero the embedding OUTPUT at NaN (no-payload) positions.
+                payload_mask = ~torch.isnan(input_num)
+                if payload_mask.dim() == numeric_embeddings.dim():
+                    numeric_embeddings = numeric_embeddings * payload_mask
+                else:
+                    numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
         else:
             numeric_embeddings = None
 
