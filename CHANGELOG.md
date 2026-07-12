@@ -4,6 +4,32 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`encoder_mask_query_norms` model flag (default `False`)**: threads the support-set padding mask
+  into the ISAB self-refinement blocks' query/residual-stream SetNorms (`norm_q`/`norm_ffn`) and zeroes
+  sub-layer outputs on padded query rows. Legacy (default) behavior computes those shared set statistics
+  over the zero-padding too, which understates the set RMS by `sqrt(n_valid/set_len)` — inflating valid
+  rows by up to 32x for a 1-point support set padded to 1024 during training — and, for small sets, lets
+  projection-bias "garbage" rows dominate the `norm_ffn` statistic. With the flag enabled, a sample's
+  encoding is invariant to padding length (tested). Existing checkpoints were trained with the legacy
+  semantics and load/run bit-identically under the default.
+- **`sanitize_input_num` model flag (default `False`)**: zeroes the numeric-token bit encodings at
+  positions whose `input_num` is NaN (no numeric payload). The previous guard checked `isnan` on the
+  IEEE-754 *bit encodings* — which are ±1 for any input, including NaN — and therefore never fired
+  (dead code, removed); non-constant positions received a learned NaN-bit-pattern embedding instead of
+  zero. Legacy models keep that behavior under the default.
+
+### Fixed
+- **Encoder padding masks are coerced to `bool` (with a warning) at the `SetTransformer` entry.**
+  `scaled_dot_product_attention` interprets float masks as *additive logit biases*, so a float 0/1
+  padding mask silently masked nothing. The standard pipeline (`FlashANSRDataset.collate`) already
+  passes bool masks and is unaffected; direct callers passing float masks were silently unprotected.
+- **Trainer raises on gradient-accumulation remainder.** `_train_step` split micro-batches with an
+  integer division that silently dropped `batch_size % gradient_accumulation_steps` samples from every
+  step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
+
 ## [0.11.0] - 2026-07-10
 
 Research-to-production upstream: corrected candidate scoring (scale-invariant FVU + ranking fix) and the
