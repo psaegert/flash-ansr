@@ -70,7 +70,7 @@ class TestSetParser:
             raise
         if not simplipy_engine.is_valid(prefix_expression, verbose=True):
             raise _InvalidExpression()
-        prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=4)
+        prefix_expression = simplipy_engine.simplify(prefix_expression, max_pattern_length=None)
 
         found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
         prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
