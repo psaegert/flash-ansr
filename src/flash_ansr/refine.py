@@ -248,8 +248,12 @@ class Refiner:
 
             constants_values = np.array([])
             constants_cov = np.array([])
+            # R1: score on the rows inside the contract's domain (finite X and y) -- the same mask
+            # the optimizer fits under. Identical on finite data; a nonfinite row is outside R^n
+            # and may neither fit nor convict a fit.
+            _r1 = np.all(np.isfinite(y), axis=-1) & np.all(np.isfinite(X), axis=-1)
             try:
-                diff = pred_function(X) - y[:, 0]
+                diff = pred_function(X[_r1]) - y[_r1, 0]
                 if np.isnan(diff).any():
                     self.loss = np.nan
                 else:
@@ -263,6 +267,7 @@ class Refiner:
 
         self._all_constants_values = []
         self.valid_fit = False
+        _r1 = np.all(np.isfinite(y), axis=-1) & np.all(np.isfinite(X), axis=-1)
 
         for _ in range(n_restarts):
             try:
@@ -272,7 +277,7 @@ class Refiner:
                 continue
 
             try:
-                diff = pred_function(X, *constants) - y[:, 0]
+                diff = pred_function(X[_r1], *constants) - y[_r1, 0]
                 if np.isnan(diff).any():
                     loss = np.nan
                 else:
@@ -417,7 +422,11 @@ class Refiner:
 
         # Minimize the objective function
         try:
-            valid_mask = np.all(np.isfinite(y), axis=-1)
+            # R1 (SIMPLIFICATION_CONTRACT_v2 §3): variables range over R -- nan is never an INPUT.
+            # Masking on y alone left X unvalidated (the contract's named unmet obligation): a
+            # nonfinite X row is a row outside the domain the rules are certified on, and it must
+            # be excluded at the boundary rather than poison the fit. No-op on finite data.
+            valid_mask = np.all(np.isfinite(y), axis=-1) & np.all(np.isfinite(X), axis=-1)
             X_valid = X[valid_mask]
             y_valid = y[valid_mask]
 
