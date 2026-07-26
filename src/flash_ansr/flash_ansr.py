@@ -268,8 +268,11 @@ def _persistent_pool_init(engine: Any) -> None:
 
 
 def _simplify_pool_worker(raw_expr: tuple) -> tuple:
-    """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial)."""
-    return tuple(_SIMPLIFY_ENGINE.simplify(list(raw_expr), max_pattern_length=None))
+    """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial).
+    simplipy.simplify is the equivalence loop only; mask() relabels any emitted literals to
+    <constant> for the model's vocabulary (matching the pre-carve-out masked output)."""
+    return tuple(_SIMPLIFY_ENGINE.mask(
+        _SIMPLIFY_ENGINE.simplify(list(raw_expr))))
 
 
 @dataclass
@@ -1686,6 +1689,18 @@ class FlashANSR(BaseEstimator):
         elif y.shape[-1] != 1:
             raise ValueError("The target data must have a single output dimension")
 
+        # R1 (simplipy SIMPLIFICATION_CONTRACT_v2 §3): variables range over R -- nan/inf are never
+        # INPUTS. Every simplification rule is certified under that assumption, and an embedded
+        # nonfinite input silently changes what a rewrite means (`x0 + (x1 - x1)` with a nan x1
+        # column is nan unsimplified but x0 simplified). Fail loudly at the boundary instead.
+        _X_arr = X.to_numpy() if isinstance(X, pd.DataFrame) else (
+            X.detach().cpu().numpy() if isinstance(X, torch.Tensor) else np.asarray(X))
+        if not np.all(np.isfinite(_X_arr)):
+            n_bad = int(np.sum(~np.all(np.isfinite(_X_arr), axis=-1)))
+            raise ValueError(
+                f"X contains non-finite values in {n_bad} row(s). Variables range over the reals "
+                f"(contract R1): drop or impute non-finite rows before calling fit().")
+
         X = self._truncate_input(X)
 
         # Default: No mapping
@@ -1997,7 +2012,8 @@ class FlashANSR(BaseEstimator):
                             if variant_key in seen_expressions:
                                 continue
 
-                            simplified_variant = self.simplipy_engine.simplify(list(variant), max_pattern_length=None)
+                            simplified_variant = self.simplipy_engine.mask(
+                                self.simplipy_engine.simplify(list(variant)))
                             if not self.simplipy_engine.is_valid(simplified_variant):
                                 continue
 

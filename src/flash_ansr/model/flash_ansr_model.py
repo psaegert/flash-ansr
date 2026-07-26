@@ -82,7 +82,8 @@ def canonicalize_beam(
     decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
     simplified_seq = seq0
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
-        simplified_expression = simplipy_engine.simplify(decoded_expression, max_pattern_length=None)
+        simplified_expression = simplipy_engine.mask(
+            simplipy_engine.simplify(decoded_expression))
         simplified_seq = before + tokenizer.encode(simplified_expression) + after
 
     canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
@@ -884,7 +885,8 @@ class FlashANSRModel(nn.Module):
                                         continue
 
                                     simplified_tokens = self.tokenizer.encode(
-                                        self.simplipy_engine.simplify(candidate_expression_decoded, max_pattern_length=None)
+                                        self.simplipy_engine.mask(
+                                            self.simplipy_engine.simplify(candidate_expression_decoded))
                                     )
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
@@ -1827,7 +1829,8 @@ class FlashANSRModel(nn.Module):
                     if simplify_map is not None and raw_key in simplify_map:
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
-                        expression = self.simplipy_engine.simplify(expression, max_pattern_length=None)
+                        expression = self.simplipy_engine.mask(
+                            self.simplipy_engine.simplify(expression))
                 elif simplify == 'sympy':
                     try:
                         from simplipy.utils import numbers_to_constant

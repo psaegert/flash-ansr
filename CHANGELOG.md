@@ -4,6 +4,26 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-07-26
+
+Compatibility release for simplipy 0.10 (the certificate-algebra engine) and symbolic-data 0.13,
+plus a fit-boundary correctness fix. Skeleton canonicalization changes with the new engine
+semantics, so candidate keys and selection outcomes can shift slightly vs 0.11.0 -- do not pool
+0.11-era result pickles with 0.12-era ones.
+
+### Changed
+- **simplipy >= 0.10 lockstep.** Masking (numeric literals -> `<constant>`) is a separate,
+  terminal `engine.mask()` step since simplipy 0.9 -- all six deployed canonicalization sites now
+  call `mask(simplify(...))` explicitly, and the removed `max_pattern_length` keyword is gone
+  from every call (rule application is always unrestricted). Requirements pin `simplipy>=0.10`
+  and `symbolic-data>=0.13` (older flash-ansr versions break against simplipy >= 0.10: the
+  removed keyword raises `TypeError` in the decode path).
+
+### Fixed
+- **Refiner scores on the fitted domain (R1).** Candidate scoring masked non-finite rows on `y`
+  only; a non-finite `X` row is outside the domain the simplification rules are certified on and
+  now excludes the row at the fit boundary as well (no-op on finite data).
+
 ## [0.11.0] - 2026-07-10
 
 Research-to-production upstream: corrected candidate scoring (scale-invariant FVU + ranking fix) and the
