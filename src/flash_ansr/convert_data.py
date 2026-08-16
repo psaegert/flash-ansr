@@ -81,7 +81,7 @@ class TestSetParser:
             raise _TooManyVariables(mapping)
 
         prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-        prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
+        prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True, convert_numbers_to_constant=True)
         code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
         code = codify(code_string, base_catalog.variables + constants)
         return tuple(prefix_expression), (code, constants)

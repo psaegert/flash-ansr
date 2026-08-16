@@ -12,7 +12,7 @@ from typing import Any, Literal
 import numpy as np
 
 from symbolic_data import ProblemSource
-from simplipy.utils import substitude_constants as substitute_constants
+from simplipy.utils import substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
