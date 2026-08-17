@@ -16,7 +16,7 @@ CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs" / "test"
 
 @pytest.fixture(scope="module")
 def simplipy_engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load("dev_7-3", install=True)
+    return SimpliPyEngine.load("acj-4-3", install=True)
 
 
 @pytest.fixture(scope="module")

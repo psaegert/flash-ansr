@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from simplipy import SimpliPyEngine
 
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -11,11 +11,13 @@ from flash_ansr.results import (
     serialize_results_payload,
 )
 
+from test_inference import install_model_for_released_simplipy
+
 
 @pytest.fixture(scope="module")
 def simplipy_engine() -> SimpliPyEngine:
-    # Use the small dev config that tests already rely on.
-    return SimpliPyEngine.load("dev_7-3", install=True)
+    # The generation-2 engine released simplipy (>= 0.12) can actually load.
+    return SimpliPyEngine.load("acj-4-3", install=True)
 
 
 def _make_result_entry(expr: list[str]) -> dict:
@@ -110,8 +112,7 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
 
 def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
     model_repo = "psaegert/flash-ansr-v23.0-3M"
-    install_model(model_repo)
-    model_dir = get_path("models", model_repo)
+    model_dir = install_model_for_released_simplipy(model_repo)
 
     generation_config = SoftmaxSamplingConfig(
         choices=16,

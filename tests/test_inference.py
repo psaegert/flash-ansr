@@ -22,11 +22,36 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL = "psaegert/flash-ansr-v23.0-3M"
 
 
+def install_model_for_released_simplipy(model: str) -> str:
+    """Install the published model snapshot and repoint OUR LOCAL COPY at a gen-2 engine.
+
+    The published v23.0 bundles pin ``simplipy_engine: dev_7-3`` -- a generation-1
+    artifact that every released simplipy >= 0.12 refuses to load
+    (IncompatibleArtifactError). The repo on the Hub is the historical record of what
+    the model trained with and stays untouched; this swaps the engine reference in the
+    downloaded copy for ``acj-4-3`` (generation 2) so the model can run under released
+    simplipy. Test fixture indirection only: acj-4-3 has a different ruleset and a
+    reduced operator vocabulary (no ``pow2``/``mult2``/... hyper-operators), so beams
+    that use retired operators are treated as invalid rather than simplified.
+    """
+    import yaml
+
+    install_model(model)
+    model_dir = get_path('models', model)
+    model_yaml = os.path.join(model_dir, 'model.yaml')
+    with open(model_yaml) as f:
+        config = yaml.safe_load(f)
+    if config.get('simplipy_engine') == 'dev_7-3':
+        config['simplipy_engine'] = 'acj-4-3'
+        with open(model_yaml, 'w') as f:
+            yaml.safe_dump(config, f, sort_keys=False)
+    return model_dir
+
+
 class TestInference(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        install_model(MODEL)
-        cls.model_dir = get_path('models', MODEL)
+        cls.model_dir = install_model_for_released_simplipy(MODEL)
         assert os.path.exists(cls.model_dir), "Pretrained model should be available after installation"
 
         cls.device = device
