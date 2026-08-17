@@ -76,6 +76,7 @@ class FlashANSRDataset:
         preprocessor: FlashANSRPreprocessor | None = None,
         unconditional_prob: float = 0.0,
         constant_representation: str = CONSTANT_REPRESENTATION_V23,
+        condition_dropout: float | None = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -84,7 +85,24 @@ class FlashANSRDataset:
         # Fraction of generated examples emitted UNCONDITIONED (no condition) -> first-class optional
         # condition (CFG). 0.0 = every example conditioned (original behavior). Set only on the TRAIN
         # dataset; keep 0.0 on val so validation CE stays a pure conditioned metric.
-        self.unconditional_prob = float(unconditional_prob)
+        #
+        # `condition_dropout` is the v24 canonical name for the same probability (owner ruling:
+        # "10% condition dropout ... the model has to learn to predict unconditionally"). In this
+        # cross-attention architecture a dropped instance routes to the model's learned null_memory
+        # (see streaming.draw_condition_mask); under the planned v24 self-attn-only decoder it
+        # becomes span omission -- the data tokens omitted from the sequence -- the cleaner
+        # formulation. Both spellings accepted; giving both with different values is an error.
+        if condition_dropout is not None:
+            condition_dropout = float(condition_dropout)
+            if unconditional_prob and float(unconditional_prob) != condition_dropout:
+                raise ValueError(
+                    f"Conflicting condition_dropout={condition_dropout} and "
+                    f"unconditional_prob={unconditional_prob}: give one (they name the same "
+                    f"per-instance dropout probability)."
+                )
+            self.unconditional_prob = condition_dropout
+        else:
+            self.unconditional_prob = float(unconditional_prob)
         # v24 constants representation gate: 'v23' (default) keeps serialization byte-identical to
         # current behavior; 'ieee754_mixed' serializes constants per-constant 50/50 as expanded
         # <ieee754> bit spans or compact <float> tokens (see flash_ansr.data.serialization).
@@ -133,6 +151,11 @@ class FlashANSRDataset:
     def simplipy_engine(self) -> SimpliPyEngine:
         """The :class:`~simplipy.SimpliPyEngine` used by this dataset's underlying catalog."""
         return self.source.catalog.simplipy_engine
+
+    @property
+    def condition_dropout(self) -> float:
+        """The per-instance condition-dropout probability (v24 name for ``unconditional_prob``)."""
+        return self.unconditional_prob
 
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRDataset":
@@ -204,6 +227,8 @@ class FlashANSRDataset:
             preprocessor=preprocessor,
             unconditional_prob=config_.get("unconditional_prob", 0.0),
             constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_V23),
+            # v24 canonical key for the same probability; the constructor rejects a conflict.
+            condition_dropout=config_.get("condition_dropout"),
         )
 
     def save(

@@ -25,6 +25,23 @@ from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
+def draw_condition_mask(rng: np.random.Generator, condition_dropout: float) -> bool:
+    """One per-instance condition-dropout draw (owner ruling: 10% condition dropout).
+
+    Returns ``True`` (conditioned: keep the (X, y) data) with probability
+    ``1 - condition_dropout`` and ``False`` (dropped: the model must predict
+    unconditionally) with probability ``condition_dropout``. In the current
+    cross-attention architecture a ``False`` routes the example to the learned
+    ``null_memory`` (see FlashANSRModel.forward's condition_mask); under the planned
+    v24 self-attn-only decoder this becomes SPAN OMISSION -- the data tokens are
+    literally omitted from the sequence -- the cleaner formulation of the same ruling.
+
+    Extracted as a seam so the draw is unit-testable with a seeded ``rng`` (rate and
+    determinism); the streaming worker drives it with its per-worker post-fork rng.
+    """
+    return bool(rng.random() >= condition_dropout)
+
+
 @dataclass
 class WorkerConfig:
     """Configuration passed to worker processes generating samples."""
@@ -398,7 +415,7 @@ def _producer_worker(
                 # Flows into the batch via `metadata_fields` (data.py) and routes to `null_memory`
                 # in the model when False. Per-worker RNG is seeded at worker start.
                 if unconditional_prob > 0.0:
-                    metadata["condition_mask"] = bool(worker_rng.random() >= unconditional_prob)
+                    metadata["condition_mask"] = draw_condition_mask(worker_rng, unconditional_prob)
 
                 # Mixed representation only (key present <=> feature on, like condition_mask):
                 # the per-token numeric channel computed during serialization. Merged over the
