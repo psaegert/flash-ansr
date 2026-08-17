@@ -39,7 +39,7 @@ from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, 
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import desugar_gen1_operators, has_retired_operators, simplify_and_mask
+from flash_ansr.utils.skeleton import simplify_and_mask
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -1832,19 +1832,13 @@ class FlashANSR(BaseEstimator):
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
         raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
-        # Desugar generation-1 sugar operators so raw-kept beams (valid_only=False paths that
-        # bypass the decode-time desugar) still refine under a generation-2 engine.
-        beams_decoded = [
-            desugar_gen1_operators(self.simplipy_engine, self.tokenizer.decode(beam, special_tokens='<constant>'))
-            for beam in beams]
+        beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
         sample_count = int(gs.y_np.shape[0])
         refinement_jobs: list[dict[str, Any]] = []
         beam_iterator = zip(gs.raw_beams, raw_beams_decoded, beams, beams_decoded, gs.log_probs)
         for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
-            # Retired generation-1 tokens in leaf position pass is_valid as "variables" but
-            # NameError inside the fitted lambda -- never submit them to the refine pool.
-            if not self.simplipy_engine.is_valid(beam_decoded) or has_retired_operators(beam_decoded):
+            if not self.simplipy_engine.is_valid(beam_decoded):
                 continue
 
             constant_count = self._count_constants(beam_decoded)

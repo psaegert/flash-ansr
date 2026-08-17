@@ -16,7 +16,6 @@ from simplipy import SimpliPyEngine
 
 from simplipy.utils import codify, explicit_constant_placeholders as identify_constants
 from symbolic_data.token_ops import apply_variable_mapping
-from flash_ansr.utils.skeleton import has_retired_operators
 from flash_ansr.utils.tensor_ops import pad_input_set
 
 
@@ -84,13 +83,6 @@ class Refiner:
         '''
         if not self.simplipy_engine.is_valid(expression, verbose=True):
             raise ValueError("The expression is not valid")
-        # Defense in depth behind the beam gates: a retired generation-1 token in leaf
-        # position reads as a "variable" to is_valid but is unbindable in the compiled
-        # lambda -- fail here with a clear error instead of a NameError inside scipy.
-        if has_retired_operators(expression):
-            raise ValueError(
-                "The expression contains retired generation-1 operator tokens "
-                f"(unsupported by this engine): {expression}")
 
         self.input_expression = expression
         self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
