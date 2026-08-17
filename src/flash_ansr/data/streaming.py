@@ -260,6 +260,7 @@ def _producer_worker(
     # config, driven by this worker's rng. `catalog` is reused for the preprocessor + variables.
     source = ProblemSource(worker_config.source_config, rng=worker_rng)
     catalog = source.catalog
+    simplipy_engine = catalog.simplipy_engine
     variables = catalog.variables
 
     bos_token_id = tokenizer["<bos>"]
@@ -281,7 +282,7 @@ def _producer_worker(
     preprocessor: FlashANSRPreprocessor | None = None
     if worker_preprocess and prompt_config is not None:
         preprocessor = FlashANSRPreprocessor(
-            simplipy_engine=catalog.simplipy_engine,
+            simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
             catalog=catalog,
             prompt_config=prompt_config,
@@ -335,7 +336,7 @@ def _producer_worker(
                 expression = substitute_constants(
                     list(problem.skeleton), values=list(problem.constants), inplace=False)
                 skeleton, literal_values = mask_literals_positional(
-                    catalog.simplipy_engine, expression)
+                    simplipy_engine, expression)
                 literals = np.asarray(literal_values, dtype=np.float32)
 
                 mask_unused_variable_columns(
