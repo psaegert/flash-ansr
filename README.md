@@ -19,7 +19,7 @@
 Flash-ANSR is a library for **amortized neural symbolic regression**: load a pretrained model, call `fit(X, y)`, and recover a symbolic expression for your tabular data, or train your own model. It is built for fast, ready-to-use inference.
 
 # Publications
-- Saegert & Köthe 2026, _Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression_ (preprint, under review) [https://arxiv.org/abs/2602.08885](https://arxiv.org/abs/2602.08885)
+- Saegert & Köthe 2026, _Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression_ (ICML 2026) [https://arxiv.org/abs/2602.08885](https://arxiv.org/abs/2602.08885)
 
 
 # Usage
@@ -156,9 +156,10 @@ simplification of on-the-fly generated training expressions.</p>
 
 # Citation
 ```bibtex
-@misc{saegert2026breakingsimplificationbottleneckamortized,
+@inproceedings{saegert2026breakingsimplificationbottleneckamortized,
   title   = {Breaking the Simplification Bottleneck in Amortized Neural Symbolic Regression},
   author  = {Paul Saegert and Ullrich Köthe},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
   year    = {2026},
   eprint  = {2602.08885},
   archivePrefix =  {arXiv},
@@ -179,7 +180,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.10.0},
+  version = {0.12.1},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```
