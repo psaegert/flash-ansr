@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import mask_all_literals, simplify_and_mask
+from flash_ansr.utils.skeleton import desugar_gen1_operators, has_retired_operators, mask_all_literals, simplify_and_mask
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -80,11 +80,17 @@ def canonicalize_beam(
     except ValueError:
         return tuple(tokenizer.constantify_expression(seq0)), None
 
-    decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
+    decoded_expression = desugar_gen1_operators(
+        simplipy_engine, tokenizer.decode(expression_tokens, special_tokens='<constant>'))
     simplified_seq = seq0
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
         simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
-        simplified_seq = before + tokenizer.encode(simplified_expression) + after
+        try:
+            simplified_seq = before + tokenizer.encode(simplified_expression) + after
+        except KeyError:
+            # Simplification produced a token outside the model vocabulary (e.g. `rootn`
+            # from a desugared odd root) -- keep the raw sequence as the dedup key.
+            simplified_seq = seq0
 
     canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
     key = tuple(canonical_seq)
@@ -96,11 +102,13 @@ def canonicalize_beam(
         canon_expr_tokens, _, _ = tokenizer.extract_expression_from_beam(canonical_seq)
     except ValueError:
         return key, None
-    expression = tokenizer.decode(canon_expr_tokens, special_tokens='<constant>')
+    expression = desugar_gen1_operators(
+        simplipy_engine, tokenizer.decode(canon_expr_tokens, special_tokens='<constant>'))
     # Validity gate ONLY (matches the deploy refine gate `is_valid(beam_decoded)`); do NOT reject len<=1 --
     # a bare single-variable expression (e.g. 'x15') is a legitimate, refinable candidate. The len>1 guard
-    # above governs only whether to SIMPLIFY, not validity.
-    if not simplipy_engine.is_valid(expression):
+    # above governs only whether to SIMPLIFY, not validity. Retired generation-1 tokens in leaf position
+    # pass is_valid as "variables" but NameError inside the fitted lambda -- reject them like the deploy gate.
+    if not simplipy_engine.is_valid(expression) or has_retired_operators(expression):
         return key, None
     return key, expression
 
@@ -878,15 +886,22 @@ class FlashANSRModel(nn.Module):
 
                                 tentative_simplified_tuple = simplify_cache.get(expr_key)
                                 if tentative_simplified_tuple is None:
-                                    candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
+                                    candidate_expression_decoded = desugar_gen1_operators(
+                                        self.simplipy_engine,
+                                        self.tokenizer.decode(candidate_expression, special_tokens='<constant>'))
 
                                     if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
                                         n_pruned += 1
                                         continue
 
-                                    simplified_tokens = self.tokenizer.encode(
-                                        simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
-                                    )
+                                    try:
+                                        simplified_tokens = self.tokenizer.encode(
+                                            simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
+                                        )
+                                    except KeyError:
+                                        # out-of-vocabulary simplified form (e.g. `rootn`)
+                                        n_pruned += 1
+                                        continue
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
                                 else:
@@ -1820,7 +1835,9 @@ class FlashANSRModel(nn.Module):
                 continue
 
             encoded_expression = self.tokenizer.constantify_expression(encoded_expression)
-            expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
+            expression = desugar_gen1_operators(
+                self.simplipy_engine,
+                self.tokenizer.decode(encoded_expression, special_tokens='<constant>'))
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 if simplify is True:
@@ -1890,7 +1907,11 @@ class FlashANSRModel(nn.Module):
             except (ValueError, IndexError):
                 continue
             enc = self.tokenizer.constantify_expression(enc)
-            expression = self.tokenizer.decode(enc, special_tokens='<constant>')
+            # Same desugar as the simplify() call site: these lists are the MAP KEYS into
+            # the parallel-simplify results, so the spelling must match byte-for-byte.
+            expression = desugar_gen1_operators(
+                self.simplipy_engine,
+                self.tokenizer.decode(enc, special_tokens='<constant>'))
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 out.append(expression)
         return out

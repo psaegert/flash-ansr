@@ -19,9 +19,85 @@ import math
 from typing import TYPE_CHECKING, cast
 
 from simplipy import masking
+from simplipy.compat import RETIRED_OPERATOR_TOKENS
 
 if TYPE_CHECKING:
     from simplipy import SimpliPyEngine
+
+
+def has_retired_operators(expression: list[str]) -> bool:
+    """True when ``expression`` contains a generation-1 hyper-operator token.
+
+    The generation-2 vocabulary retires ``pow2``/``mult2``/``div2``/... . A retired token
+    in OPERATOR position fails ``is_valid`` (arity mismatch), but in LEAF position the
+    engine reads it as a VARIABLE, so a beam like ``['*', 'pow3', 'x1']`` validates and
+    then NameErrors inside the fitted lambda. Beams from generation-1-era model
+    vocabularies must therefore be rejected explicitly.
+    """
+    return any(token in RETIRED_OPERATOR_TOKENS for token in expression)
+
+
+#: Exact generation-2 spellings of the generation-1 unary sugar operators:
+#: ``token: (tokens_before_operand, tokens_after_operand)``. Every entry is definitional
+#: (``pow2 x`` IS ``pow x 2``); the odd real roots map to ``rootn`` (defined on x < 0),
+#: matching their generation-1 real-root semantics.
+_GEN1_SUGAR: dict[str, tuple[list[str], list[str]]] = {
+    'pow2': (['pow'], ['2']),
+    'pow3': (['pow'], ['3']),
+    'pow4': (['pow'], ['4']),
+    'pow5': (['pow'], ['5']),
+    'pow1_2': (['pow'], ['0.5']),
+    'pow1_4': (['pow'], ['0.25']),
+    'pow1_3': (['rootn'], ['3']),
+    'pow1_5': (['rootn'], ['5']),
+    'pow1': ([], []),
+    'pow_1': (['inv'], []),
+    'mult2': (['*', '2'], []),
+    'mult3': (['*', '3'], []),
+    'mult4': (['*', '4'], []),
+    'mult5': (['*', '5'], []),
+    'div2': (['/'], ['2']),
+    'div3': (['/'], ['3']),
+    'div4': (['/'], ['4']),
+    'div5': (['/'], ['5']),
+}
+
+
+def desugar_gen1_operators(engine: "SimpliPyEngine", expression: list[str]) -> list[str]:
+    """Rewrite generation-1 unary sugar operators into their generation-2 spellings.
+
+    The published flash-ansr models (v23.x) were trained on the generation-1 vocabulary
+    and emit ``pow2``/``mult2``/... tokens, which generation-2 engines retire outright.
+    Each such operator is definitional sugar (``pow2 x == pow x 2``), so translating the
+    decoded beam is exact -- this is what lets a generation-1-era model run on a released
+    (>= 0.12) simplipy at all. Non-well-formed sequences (model garbage that a validity
+    gate rejects later anyway) are returned unchanged.
+    """
+    if not any(token in _GEN1_SUGAR for token in expression):
+        return list(expression)
+
+    arity = getattr(engine, 'operator_arity_compat', engine.operator_arity)
+
+    def rewrite(index: int) -> tuple[list[str], int]:
+        token = expression[index]
+        if token in _GEN1_SUGAR:
+            before, after = _GEN1_SUGAR[token]
+            inner, next_index = rewrite(index + 1)
+            return before + inner + after, next_index
+        out = [token]
+        next_index = index + 1
+        for _ in range(arity.get(token, 0)):
+            operand, next_index = rewrite(next_index)
+            out.extend(operand)
+        return out, next_index
+
+    try:
+        result, end = rewrite(0)
+    except (IndexError, RecursionError):
+        return list(expression)
+    if end != len(expression):
+        return list(expression)
+    return result
 
 
 def mask_all_literals(engine: "SimpliPyEngine", expression: list[str]) -> list[str]:
