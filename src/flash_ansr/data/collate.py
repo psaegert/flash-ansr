@@ -8,6 +8,52 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.numeric import build_numeric_sequences, merge_numeric_sequence
 
 
+def mask_float_targets(
+    labels: torch.Tensor,
+    input_ids: torch.Tensor,
+    float_token_id: int,
+    ignore_index: int,
+) -> torch.Tensor:
+    """Mask the CE terms whose TARGET token is ``<float>``, wherever they occur.
+
+    The model must never be trained to emit ``<float>``: in prompt spans it carries a prompt
+    value (already prompt-masked), and under the v24 ``ieee754_mixed`` representation it is the
+    compact-constant form that only ever enters a sequence by pipeline compaction, never by
+    model emission. The mask is keyed on the SHIFTED inputs (``input_ids[..., 1:]``), the same
+    shifted-label discipline as the prompt mask: ``labels[p]`` is the target of position ``p``
+    (= input token ``p + 1``), so exactly the terms whose target is ``<float>`` are masked --
+    not the terms at the ``<float>`` position itself (the classic off-by-one).
+
+    Parameters
+    ----------
+    labels : torch.Tensor
+        The (possibly already prompt-masked) label tensor, modified in place.
+    input_ids : torch.Tensor
+        The unshifted input token ids the labels were derived from.
+    float_token_id : int
+        The id of the ``<float>`` token.
+    ignore_index : int
+        The CE ignore index masked positions are set to.
+
+    Returns
+    -------
+    torch.Tensor
+        The ``labels`` tensor (masked in place).
+    """
+    target_mask = input_ids[..., 1:] == float_token_id
+    if target_mask.shape[-1] > labels.shape[-1]:
+        target_mask = target_mask[..., :labels.shape[-1]]
+    elif target_mask.shape[-1] < labels.shape[-1]:
+        padding = torch.zeros(
+            (*target_mask.shape[:-1], labels.shape[-1] - target_mask.shape[-1]),
+            dtype=torch.bool,
+            device=target_mask.device,
+        )
+        target_mask = torch.cat([target_mask, padding], dim=-1)
+    labels[target_mask] = ignore_index
+    return labels
+
+
 class BatchFormatter:
     """Utility that normalizes jagged dataloader batches."""
 
