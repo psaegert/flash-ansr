@@ -602,7 +602,7 @@ class Trainer:
         if not isinstance(labels, torch.Tensor) or not isinstance(input_ids, torch.Tensor):
             return
 
-        mask_float_targets(labels, input_ids, float_token_id, self.metrics_ignore_index)
+        mask_float_targets(labels, input_ids, float_token_id, int(self.metrics_ignore_index))
 
     @staticmethod
     def _canonicalize_prompt_terms(terms: Any) -> tuple[tuple[str, ...], ...]:

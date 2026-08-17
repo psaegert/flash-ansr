@@ -281,8 +281,8 @@ def _producer_worker(
     # channel), driven by this worker's rng. 'v23' (default) keeps behavior byte-identical.
     mixed_constants = worker_config.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED
     if mixed_constants:
-        ieee754_start_id = tokenizer[IEEE754_START_TOKEN]
-        ieee754_end_id = tokenizer[IEEE754_END_TOKEN]
+        ieee754_start_id = int(tokenizer[IEEE754_START_TOKEN])
+        ieee754_end_id = int(tokenizer[IEEE754_END_TOKEN])
 
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(

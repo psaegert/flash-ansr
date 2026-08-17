@@ -24,11 +24,7 @@ from typing import Sequence
 
 import numpy as np
 
-from flash_ansr.utils.ieee754 import (
-    IEEE754_END_TOKEN,
-    IEEE754_START_TOKEN,
-    wrap_float32,
-)
+from flash_ansr.utils.ieee754 import wrap_float32
 
 #: The compact-constant token. Deliberately the EXISTING ``<float>`` special (it already
 #: carries a value on the numeric channel in the prompt-serialization path); no new token.
@@ -48,7 +44,7 @@ def _is_constant_placeholder(token: str) -> bool:
 
 def serialize_constant_tokens(
     tokens: Sequence[str],
-    constants: Sequence[float],
+    constants: "Sequence[float] | np.ndarray",
     *,
     representation: str = CONSTANT_REPRESENTATION_V23,
     rng: np.random.Generator | None = None,
