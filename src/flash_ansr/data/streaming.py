@@ -12,9 +12,10 @@ from typing import Any, Literal
 import numpy as np
 
 from symbolic_data import ProblemSource
-from simplipy.utils import substitude_constants as substitute_constants
+from simplipy.utils import substitute_constants
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
+from flash_ansr.utils.skeleton import mask_literals_positional
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -259,6 +260,7 @@ def _producer_worker(
     # config, driven by this worker's rng. `catalog` is reused for the preprocessor + variables.
     source = ProblemSource(worker_config.source_config, rng=worker_rng)
     catalog = source.catalog
+    simplipy_engine = catalog.simplipy_engine
     variables = catalog.variables
 
     bos_token_id = tokenizer["<bos>"]
@@ -280,7 +282,7 @@ def _producer_worker(
     preprocessor: FlashANSRPreprocessor | None = None
     if worker_preprocess and prompt_config is not None:
         preprocessor = FlashANSRPreprocessor(
-            simplipy_engine=catalog.simplipy_engine,
+            simplipy_engine=simplipy_engine,
             tokenizer=tokenizer,
             catalog=catalog,
             prompt_config=prompt_config,
@@ -322,8 +324,20 @@ def _producer_worker(
 
                 x_support = problem.x_support
                 y_support = problem.y_support
-                skeleton = list(problem.skeleton)
-                literals = np.asarray(problem.constants, dtype=np.float32)
+
+                # symbolic-data >= 0.14: generative catalogs yield CONCRETE expressions
+                # (literal values inside the tokens, ``problem.constants`` empty); masking
+                # is downstream policy. Reconstruct the training contract here: the
+                # concrete expression, and the positionally masked skeleton with the
+                # extracted values aligned 1:1 to its '<constant>' placeholders (the
+                # alignment the numeric head trains on). Placeholder-style problems
+                # (curated pools) still substitute their carried constants first, so both
+                # problem shapes take the same path.
+                expression = substitute_constants(
+                    list(problem.skeleton), values=list(problem.constants), inplace=False)
+                skeleton, literal_values = mask_literals_positional(
+                    simplipy_engine, expression)
+                literals = np.asarray(literal_values, dtype=np.float32)
 
                 mask_unused_variable_columns(
                     arrays=(x_support,),
@@ -345,7 +359,7 @@ def _producer_worker(
                 metadata = {
                     "skeleton": skeleton,
                     "skeleton_hash": tuple(skeleton),
-                    "expression": substitute_constants(skeleton, values=literals, inplace=False),
+                    "expression": expression,
                     "n_support": int(x_support.shape[0]),
                 }
                 # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this

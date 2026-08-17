@@ -12,6 +12,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.skeleton import mask_all_literals, simplify_and_mask
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -82,8 +83,7 @@ def canonicalize_beam(
     decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
     simplified_seq = seq0
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
-        simplified_expression = simplipy_engine.mask(
-            simplipy_engine.simplify(decoded_expression))
+        simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
         simplified_seq = before + tokenizer.encode(simplified_expression) + after
 
     canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
@@ -885,8 +885,7 @@ class FlashANSRModel(nn.Module):
                                         continue
 
                                     simplified_tokens = self.tokenizer.encode(
-                                        self.simplipy_engine.mask(
-                                            self.simplipy_engine.simplify(candidate_expression_decoded))
+                                        simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
                                     )
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
@@ -1829,17 +1828,18 @@ class FlashANSRModel(nn.Module):
                     if simplify_map is not None and raw_key in simplify_map:
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
-                        expression = self.simplipy_engine.mask(
-                            self.simplipy_engine.simplify(expression))
+                        expression = simplify_and_mask(self.simplipy_engine, expression)
                 elif simplify == 'sympy':
                     try:
-                        from simplipy.utils import numbers_to_constant
                         infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
                         result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
                         if result is not None:
                             simplified_infix = result[0].replace('Abs', 'abs')
                             parsed = self.simplipy_engine.parse(simplified_infix)
-                            parsed = numbers_to_constant(parsed, inplace=True)
+                            # deprecated numbers_to_constant replaced by the masking module
+                            # (mask_all == its legacy mask-everything behavior, minus the
+                            # float()-probe blind spots the deprecation notice calls out)
+                            parsed = mask_all_literals(self.simplipy_engine, parsed)
                             if self.simplipy_engine.is_valid(parsed):
                                 expression = parsed
                     except Exception:

@@ -3,6 +3,7 @@ import unittest
 import warnings
 
 import numpy as np
+import pytest
 import torch
 
 from flash_ansr import (
@@ -22,6 +23,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL = "psaegert/flash-ansr-v23.0-3M"
 
 
+# The published v23 models pin the generation-1 dev_7-3 engine, which every released
+# simplipy >= 0.12 refuses to load, and their vocabulary emits the retired hyper-operators
+# (pow2/mult2/...). Re-enable by pointing MODEL at a v24 checkpoint once published.
+@pytest.mark.skip(reason="no supported published model until flash-ansr v24.0; v23 models unsupported per owner ruling 2026-08-17")
 class TestInference(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

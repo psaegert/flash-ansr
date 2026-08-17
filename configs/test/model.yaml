@@ -1,4 +1,4 @@
-simplipy_engine: 'dev_7-3'
+simplipy_engine: 'acj-4-3'
 tokenizer: './tokenizer.yaml'
 
 pre_encoder_noise_scale: 0.1
