@@ -6,7 +6,7 @@ from flash_ansr.refine import Refiner
 
 
 def test_transform_gracefully_handles_missing_constants() -> None:
-    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
     refiner = Refiner(simplipy_engine=engine, n_variables=1)
     refiner.constants_symbols = ['C_0', 'C_1']
     refiner._all_constants_values = [(np.array([0.5, -0.25]), np.eye(2), 0.0)]
@@ -24,7 +24,7 @@ def test_transform_gracefully_handles_missing_constants() -> None:
 def test_all_constants_values_public_property() -> None:
     # B3: the public accessor mirrors the fit attempts (best-first (constants, cov, loss) tuples), so
     # srbf baselines can read it instead of the private `_all_constants_values`.
-    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
     refiner = Refiner(simplipy_engine=engine, n_variables=1)
     assert refiner.all_constants_values == []
     fits = [(np.array([0.5]), np.eye(1), 0.1), (np.array([1.0]), np.eye(1), 0.9)]
@@ -35,7 +35,7 @@ def test_all_constants_values_public_property() -> None:
 
 
 def test_fit_discards_mismatched_constants(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
     refiner = Refiner(simplipy_engine=engine, n_variables=1)
 
     expression = ['+', '<constant>', '<constant>']
@@ -66,7 +66,7 @@ def test_fit_discards_mismatched_constants(monkeypatch: pytest.MonkeyPatch) -> N
     ],
 )
 def test_fit_supports_multiple_optimizers(method: str) -> None:
-    engine = SimpliPyEngine.load('dev_7-3', install=True)
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
     refiner = Refiner(simplipy_engine=engine, n_variables=1)
 
     expression = ['+', 'x1', '<constant>']
