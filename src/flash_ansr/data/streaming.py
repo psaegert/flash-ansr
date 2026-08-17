@@ -13,8 +13,15 @@ import numpy as np
 
 from symbolic_data import ProblemSource
 from simplipy.utils import substitute_constants
+from flash_ansr.data.serialization import (
+    CONSTANT_REPRESENTATION_IEEE754_MIXED,
+    CONSTANT_REPRESENTATION_V23,
+    serialize_constant_tokens,
+    truncation_cuts_ieee754_span,
+)
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
+from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -31,6 +38,7 @@ class WorkerConfig:
     max_seq_len: int
     preprocessor_prompt_config: dict[str, Any] | None
     unconditional_prob: float = 0.0
+    constant_representation: str = CONSTANT_REPRESENTATION_V23
 
 
 class SharedMemoryWorkerPool:
@@ -42,10 +50,12 @@ class SharedMemoryWorkerPool:
         source: ProblemSource,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
+        constant_representation: str = CONSTANT_REPRESENTATION_V23,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
         self.padding = padding
+        self.constant_representation = constant_representation
 
         self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
@@ -155,6 +165,7 @@ class SharedMemoryWorkerPool:
             max_seq_len=max_seq_len,
             preprocessor_prompt_config=preprocessor_prompt_config,
             unconditional_prob=unconditional_prob,
+            constant_representation=self.constant_representation,
         )
 
         self._workers = []
@@ -265,6 +276,14 @@ def _producer_worker(
     eos_token_id = tokenizer["<eos>"]
     has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
 
+    # v24 ieee754_mixed constants representation: serialize each <constant> occurrence per-constant
+    # independently as an expanded <ieee754> bit span or a compact <float> (value on the numeric
+    # channel), driven by this worker's rng. 'v23' (default) keeps behavior byte-identical.
+    mixed_constants = worker_config.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED
+    if mixed_constants:
+        ieee754_start_id = tokenizer[IEEE754_START_TOKEN]
+        ieee754_end_id = tokenizer[IEEE754_END_TOKEN]
+
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(
             "Tokenizer defines '<expression>' but misses '</expression>'; training batches will omit expression terminators.",
@@ -313,6 +332,7 @@ def _producer_worker(
             constants_batch = []
             metadata_batch = []
             preprocessed_batch: list[dict[str, Any]] | None = [] if preprocessor is not None else None
+            n_dropped_truncation = 0
 
             i = 0
             while i < batch_size:
@@ -332,15 +352,38 @@ def _producer_worker(
                     padding=padding,
                 )
 
-                tokens_to_encode = list(skeleton)
+                if mixed_constants:
+                    # Raises on non-finite constants: the generator must never emit them.
+                    serialized_tokens, body_numeric = serialize_constant_tokens(
+                        skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
+                    )
+                    tokens_to_encode = serialized_tokens
+                else:
+                    tokens_to_encode = list(skeleton)
+                    body_numeric = None
                 if has_expression_wrappers:
                     tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
+                    if body_numeric is not None:
+                        body_numeric = [float("nan"), *body_numeric, float("nan")]
+
+                # Numeric channel aligned with the FINAL input_ids ([<bos>, ..., <eos>]): values
+                # only at compact <float> positions; merged downstream by ensure_numeric_channel.
+                input_num = None if body_numeric is None else [float("nan"), *body_numeric, float("nan")]
 
                 body_ids = tokenizer.encode(tokens_to_encode, oov=tokenizer_oov)
                 input_ids = [bos_token_id, *body_ids, eos_token_id]
                 if len(input_ids) > max_seq_len:
+                    if mixed_constants and truncation_cuts_ieee754_span(
+                            input_ids, max_seq_len, ieee754_start_id, ieee754_end_id):
+                        # Truncation must never cut inside an <ieee754> span: drop the
+                        # instance (like other rejected samples) and count it.
+                        n_dropped_truncation += 1
+                        continue
                     input_ids = input_ids[:max_seq_len]
                     input_ids[-1] = eos_token_id
+                    if input_num is not None:
+                        input_num = input_num[:max_seq_len]
+                        input_num[-1] = float("nan")
 
                 metadata = {
                     "skeleton": skeleton,
@@ -356,6 +399,12 @@ def _producer_worker(
                 # in the model when False. Per-worker RNG is seeded at worker start.
                 if unconditional_prob > 0.0:
                     metadata["condition_mask"] = bool(worker_rng.random() >= unconditional_prob)
+
+                # Mixed representation only (key present <=> feature on, like condition_mask):
+                # the per-token numeric channel computed during serialization. Merged over the
+                # (all-NaN in mixed mode) recomputed channel by ensure_numeric_channel.
+                if input_num is not None:
+                    metadata["input_num"] = input_num
 
                 x_tensors_batch[i, : x_support.shape[0], : x_support.shape[1]] = x_support
                 x_tensors_batch[i, x_support.shape[0]:, :] = 0
@@ -382,6 +431,10 @@ def _producer_worker(
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
+            if mixed_constants:
+                # Instances dropped because truncation would have cut inside an <ieee754> span
+                # while filling THIS batch (mixed representation only).
+                payload["n_dropped_truncation"] = n_dropped_truncation
             metadata_list[slot_idx] = payload
             result_queue.put(slot_idx)
     finally:

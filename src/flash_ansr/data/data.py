@@ -18,7 +18,14 @@ from simplipy import SimpliPyEngine
 from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
+from flash_ansr.data.serialization import (
+    CONSTANT_REPRESENTATION_IEEE754_MIXED,
+    CONSTANT_REPRESENTATION_V23,
+    CONSTANT_REPRESENTATIONS,
+    COMPACT_CONSTANT_TOKEN,
+)
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
+from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
 from symbolic_data import LampleChartonCatalog, ProblemSource
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
@@ -68,6 +75,7 @@ class FlashANSRDataset:
         padding: Literal["random", "zero"],
         preprocessor: FlashANSRPreprocessor | None = None,
         unconditional_prob: float = 0.0,
+        constant_representation: str = CONSTANT_REPRESENTATION_V23,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -77,6 +85,23 @@ class FlashANSRDataset:
         # condition (CFG). 0.0 = every example conditioned (original behavior). Set only on the TRAIN
         # dataset; keep 0.0 on val so validation CE stays a pure conditioned metric.
         self.unconditional_prob = float(unconditional_prob)
+        # v24 constants representation gate: 'v23' (default) keeps serialization byte-identical to
+        # current behavior; 'ieee754_mixed' serializes constants per-constant 50/50 as expanded
+        # <ieee754> bit spans or compact <float> tokens (see flash_ansr.data.serialization).
+        if constant_representation not in CONSTANT_REPRESENTATIONS:
+            raise ValueError(
+                f"Unknown constant_representation {constant_representation!r}; "
+                f"expected one of {CONSTANT_REPRESENTATIONS}."
+            )
+        if constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED:
+            required_tokens = (*IEEE754_SPECIAL_TOKENS, COMPACT_CONSTANT_TOKEN)
+            missing_tokens = [token for token in required_tokens if token not in tokenizer]
+            if missing_tokens:
+                raise ValueError(
+                    f"constant_representation 'ieee754_mixed' requires the special tokens "
+                    f"{list(required_tokens)}, but the tokenizer is missing {missing_tokens}."
+                )
+        self.constant_representation = constant_representation
         self.data = None
 
         self._collator = BatchFormatter(tokenizer=tokenizer)
@@ -84,6 +109,7 @@ class FlashANSRDataset:
             source=source,
             tokenizer=tokenizer,
             padding=padding,
+            constant_representation=constant_representation,
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -177,6 +203,7 @@ class FlashANSRDataset:
             padding=config_["padding"],
             preprocessor=preprocessor,
             unconditional_prob=config_.get("unconditional_prob", 0.0),
+            constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_V23),
         )
 
     def save(
@@ -494,6 +521,16 @@ class FlashANSRDataset:
             batch_size = 1
 
         tqdm_kwargs = dict(tqdm_kwargs) if tqdm_kwargs else {}
+
+        if preprocess and self.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED:
+            # The prompt serializer rebuilds the expression body from the RAW skeleton
+            # (PromptFeatures.expression_tokens), which would silently discard the mixed
+            # constant serialization. Refuse loudly until the prompt path is threaded.
+            raise NotImplementedError(
+                "preprocess=True is not supported with constant_representation='ieee754_mixed' yet: "
+                "prompt serialization would rebuild the expression body from the raw skeleton and "
+                "drop the mixed constant forms."
+            )
 
         use_worker_preprocess = False
         if preprocess:
