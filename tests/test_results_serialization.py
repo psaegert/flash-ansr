@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from simplipy import SimpliPyEngine
 
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -10,8 +10,6 @@ from flash_ansr.results import (
     save_results_payload,
     serialize_results_payload,
 )
-
-from test_inference import install_model_for_released_simplipy
 
 
 @pytest.fixture(scope="module")
@@ -110,9 +108,11 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     assert entry["fits"] == [(np.array([3.0]), None, 0.0)]
 
 
+@pytest.mark.skip(reason="no supported published model until flash-ansr v24.0; v23 models unsupported per owner ruling 2026-08-17")
 def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
     model_repo = "psaegert/flash-ansr-v23.0-3M"
-    model_dir = install_model_for_released_simplipy(model_repo)
+    install_model(model_repo)
+    model_dir = get_path("models", model_repo)
 
     generation_config = SoftmaxSamplingConfig(
         choices=16,
