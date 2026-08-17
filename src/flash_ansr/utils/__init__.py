@@ -21,4 +21,5 @@ from flash_ansr.utils.paths import (
     normalize_path_preserve_leading_dot,
     substitute_root_path,
 )
+from flash_ansr.utils.skeleton import mask_all_literals, simplify_and_mask
 from flash_ansr.utils.tensor_ops import pad_input_set

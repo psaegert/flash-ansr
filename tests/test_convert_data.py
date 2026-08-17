@@ -15,7 +15,7 @@ class TestConvertData(unittest.TestCase):
         with self.assertRaises((ValueError, TypeError)):
             parser.parse_data(
                 test_set_df=df,
-                simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+                simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
                 base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
     def test_unparseable_skipped_when_opted_in(self):
@@ -24,7 +24,7 @@ class TestConvertData(unittest.TestCase):
         parser = SOOSEParser()
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')),
             skip_unparseable=True)
         self.assertIsInstance(catalog, LampleChartonCatalog)
@@ -41,7 +41,7 @@ class TestConvertData(unittest.TestCase):
 
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
         self.assertIsInstance(catalog, LampleChartonCatalog)
@@ -58,7 +58,7 @@ class TestConvertData(unittest.TestCase):
 
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
         self.assertIsInstance(catalog, LampleChartonCatalog)
@@ -74,7 +74,7 @@ class TestConvertData(unittest.TestCase):
 
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
         self.assertIsInstance(catalog, LampleChartonCatalog)
@@ -88,7 +88,7 @@ class TestConvertData(unittest.TestCase):
 
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
         self.assertIsInstance(catalog, LampleChartonCatalog)
@@ -107,7 +107,7 @@ class TestConvertData(unittest.TestCase):
 
         catalog = parser.parse_data(
             test_set_df=df,
-            simplipy_engine=SimpliPyEngine.load('dev_7-3', install=True),
+            simplipy_engine=SimpliPyEngine.load('acj-4-3', install=True),
             base_catalog=LampleChartonCatalog.from_config(get_path('configs', 'test', 'catalog_test.yaml')))
 
         self.assertIsInstance(catalog, LampleChartonCatalog)

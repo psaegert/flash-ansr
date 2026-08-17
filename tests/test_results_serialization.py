@@ -14,8 +14,8 @@ from flash_ansr.results import (
 
 @pytest.fixture(scope="module")
 def simplipy_engine() -> SimpliPyEngine:
-    # Use the small dev config that tests already rely on.
-    return SimpliPyEngine.load("dev_7-3", install=True)
+    # The generation-2 engine released simplipy (>= 0.12) can actually load.
+    return SimpliPyEngine.load("acj-4-3", install=True)
 
 
 def _make_result_entry(expr: list[str]) -> dict:
@@ -108,6 +108,7 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     assert entry["fits"] == [(np.array([3.0]), None, 0.0)]
 
 
+@pytest.mark.skip(reason="no supported published model until flash-ansr v24.0; v23 models unsupported per owner ruling 2026-08-17")
 def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
     model_repo = "psaegert/flash-ansr-v23.0-3M"
     install_model(model_repo)

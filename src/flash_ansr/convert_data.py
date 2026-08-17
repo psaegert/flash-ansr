@@ -10,6 +10,8 @@ from simplipy.utils import codify, explicit_constant_placeholders as identify_co
 
 from symbolic_data import LampleChartonCatalog  # Parse expressions with SimpliPyEngine.parse_infix_expression
 
+from flash_ansr.utils.skeleton import simplify_and_mask
+
 
 class _InvalidExpression(Exception):
     """A parsed expression failed the engine's validity check (skip + count as invalid)."""
@@ -70,10 +72,9 @@ class TestSetParser:
             raise
         if not simplipy_engine.is_valid(prefix_expression, verbose=True):
             raise _InvalidExpression()
-        # simplipy.simplify no longer masks (it is the equivalence loop only); mask() relabels
+        # simplipy.simplify no longer masks (it is the equivalence loop only); masking relabels
         # the literals it may emit (0/1/pi/2/...) back to <constant> for the model's vocabulary.
-        prefix_expression = simplipy_engine.mask(
-            simplipy_engine.simplify(prefix_expression))
+        prefix_expression = simplify_and_mask(simplipy_engine, prefix_expression)
 
         found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
         prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
