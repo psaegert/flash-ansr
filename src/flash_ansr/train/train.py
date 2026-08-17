@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from flash_ansr.model import FlashANSRModel
 from flash_ansr.data import FlashANSRDataset
+from flash_ansr.data.collate import mask_float_targets
 from flash_ansr.utils.config_io import load_config, save_config, unfold_config
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.train.optimizers import get_optimizer
@@ -579,6 +580,30 @@ class Trainer:
 
         labels[target_mask] = self.metrics_ignore_index
 
+    def _apply_float_target_mask(self, batch: dict[str, torch.Tensor]) -> None:
+        """Mask the loss terms whose TARGET token is ``<float>``, wherever they occur.
+
+        In prompt spans ``<float>`` is already covered by the prompt mask; under the v24
+        ``ieee754_mixed`` constants representation it also appears as the compact-constant
+        form inside expression spans and must never become a training target (the model
+        emits bits; the pipeline compacts them into ``<float>``). Same shifted-label
+        discipline as :meth:`_apply_prompt_mask`; a no-op when the vocabulary has no
+        ``<float>`` token.
+        """
+        tokenizer_mapping = getattr(self.model.tokenizer, 'token2idx', None)
+        if not isinstance(tokenizer_mapping, dict):
+            return
+        float_token_id = tokenizer_mapping.get('<float>')
+        if float_token_id is None:
+            return
+
+        labels = batch.get('labels')
+        input_ids = batch.get('input_ids')
+        if not isinstance(labels, torch.Tensor) or not isinstance(input_ids, torch.Tensor):
+            return
+
+        mask_float_targets(labels, input_ids, float_token_id, int(self.metrics_ignore_index))
+
     @staticmethod
     def _canonicalize_prompt_terms(terms: Any) -> tuple[tuple[str, ...], ...]:
         """Return a hashable representation of prompt terms."""
@@ -642,6 +667,7 @@ class Trainer:
             if preprocess:
                 self._update_prompt_statistics(micro_batch)
             self._apply_prompt_mask(micro_batch)
+            self._apply_float_target_mask(micro_batch)
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
@@ -730,6 +756,7 @@ class Trainer:
                     max_seq_len=self.decoder_max_seq_len):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
+                self._apply_float_target_mask(batch)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):

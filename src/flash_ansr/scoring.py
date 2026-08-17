@@ -99,12 +99,17 @@ def is_constant_token(token: str) -> bool:
     """Return ``True`` if ``token`` denotes a constant in a prefix expression.
 
     Recognises the ``<constant>`` placeholder, generated ``C_i`` symbols, a small set of named
-    literals (signed/unsigned ``0``/``1``, ``np.pi``, ``np.e``, the float specials), and any token
-    that parses as a Python ``float``. This is the constant count that feeds ``constants_penalty``
-    in :func:`score_from_fvu`, so it is owned here alongside the rest of the scoring path.
+    literals (signed/unsigned ``0``/``1``, ``np.pi``, ``np.e``, the float specials), any token
+    that parses as a Python ``float``, and the v24 ``ieee754_mixed`` constant forms: the compact
+    ``<float>`` token and the ``<ieee754>`` span OPENING tag. The bit tokens ``<b0>``/``<b1>``
+    and the closing ``</ieee754>`` tag deliberately do NOT count, so a whole 34-token expanded
+    span contributes exactly ONE constant to any per-token sum (the count that feeds
+    ``constants_penalty`` in :func:`score_from_fvu` must see one constant per span, not 34).
     """
-    if token == '<constant>':
+    if token in ('<constant>', '<float>', '<ieee754>'):
         return True
+    if token in ('<b0>', '<b1>', '</ieee754>'):
+        return False
     if token.startswith('C_') and token[2:].isdigit():
         return True
     if token in {'0', '1', '(-1)', 'np.pi', 'np.e', 'float("inf")', 'float("-inf")', 'float("nan")'}:

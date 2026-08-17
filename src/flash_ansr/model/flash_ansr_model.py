@@ -105,37 +105,6 @@ def canonicalize_beam(
     return key, expression
 
 
-# Engagement counter for the static-decode path: incremented every time `_sample_top_kp_static` runs.
-# Gates read this to PROVE the static path actually engaged (vs `static_decode` silently failing to
-# propagate through generate()'s arms -> dynamic fallback, which would false-pass a quality/equality gate
-# as dynamic-vs-dynamic). This is the assertion gate_overlap.py enforces via `_overlap_supported()`.
-STATIC_DECODE_CALL_COUNT = 0
-
-# Global kill-switch for the deployed static-decode default (default ON, 2026-06-24). When True,
-# `static_decode=None` (the config/library default) resolves to static iff the model is capable AND the
-# decode is MULTI-chunk (the resolved static batch < choices) -- see `_resolve_static_decode`. Set False to
-# force the dynamic path everywhere. RATIONALE: the cross-GPU SPEED grid (consumer Turing/Ampere + datacenter
-# A100/H100/H200) showed static wins in the multi-chunk regime on EVERY measured card; the only losses are
-# single-chunk small-model cells, which the `batch < choices` predicate excludes by construction. So this one
-# runtime predicate replaces the old per-(scale,c) enable table + scale-class/c-band + hardware gate -- the
-# regime is computed from each card's own free VRAM, so it is hardware-general with no table to maintain.
-# (Was _DEPLOYED_STATIC_DEFAULT.) See PREREG_overlap_default_and_static_global.md + INFERENCE_SPEED_FINDINGS.md.
-_DEPLOYED_STATIC_ENABLED = True
-
-# The runtime spill-guard trips when a static-decode chunk's live ALLOCATED working set exceeds this
-# fraction of the card's physical memory. Set near the physical limit: the auto chunk size
-# (suggest_batch_size_dims) is already conservative (~0.7 of FREE), so this is a backstop for an explicit
-# oversized batch, not a second-guess of the cap. 0.9 of FREE passes the validated static b256 (~9.5 GB
-# transient of ~18.6 free) with margin and trips on a gross over-budget chunk.
-_VRAM_GUARD_FRACTION = 0.9
-
-# Per-row pad the spill-guard uses, DELIBERATELY LARGER than suggest_batch_size_dims's cap overhead (1.6)
-# so the guard is an INDEPENDENT backstop: a guard self-consistent with the cap could never catch a cap
-# under-estimate. At 2.0 the guard passes the validated static b256 but trips b384+ (the measured spill
-# onset) -- tighter than the cap, looser than reality, exactly a backstop.
-_GUARD_OVERHEAD = 2.0
-
-
 class FlashANSRModel(nn.Module):
     """Transformer backbone that maps ``(X, y)`` data to expression-token sequences.
 
@@ -645,6 +614,7 @@ class FlashANSRModel(nn.Module):
         prompt_prefix: PromptPrefix | None = None,
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
+        constrain_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
         """Decode candidate expressions from ``data`` with beam search.
 
@@ -672,6 +642,9 @@ class FlashANSRModel(nn.Module):
             Explicit initial token prefix to start decoding from.
         input_num : list[float], optional
             Numeric values aligned with ``initial_tokens`` for the numeric embedding.
+        constrain_ieee754 : bool, optional
+            Apply the v24 constrained-decoding vocabulary mask (grammar over ``<ieee754>``
+            spans; ``<float>`` forbidden outright). Defaults to False.
 
         Returns
         -------
@@ -682,6 +655,13 @@ class FlashANSRModel(nn.Module):
             were found.
         """
         device = data.device
+
+        # v24 constrained decoding (T6/T7): a stateless vocabulary mask recomputed per step
+        # from each beam's token prefix (no carried state -> nothing to reindex with beams).
+        grammar = None
+        if constrain_ieee754:
+            from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
+            grammar = IEEE754GrammarConstraint(self.tokenizer)
 
         base_tokens, base_input_num = self._resolve_generation_prefix(
             prompt_prefix=prompt_prefix,
@@ -800,6 +780,15 @@ class FlashANSRModel(nn.Module):
 
                     next_token_log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
 
+                    if grammar is not None:
+                        # Forbidden continuations -> -inf WITHOUT renormalizing: allowed tokens
+                        # keep their conditioned log-likelihoods (scores comparable to the
+                        # unconstrained path); -inf candidates are skipped in selection below.
+                        forbidden = grammar.forbidden(
+                            sequences[batch_indices, :current_length],
+                            remaining=max_len - current_length)
+                        next_token_log_probs = next_token_log_probs.masked_fill(forbidden, float('-inf'))
+
                     vocab_size = next_token_log_probs.size(-1)
                     if limit_expansions:
                         expansion_factor = 2 if unique else 1
@@ -864,6 +853,13 @@ class FlashANSRModel(nn.Module):
                     parent_idx = sorted_parents_cpu[rank_idx]
                     token_id = sorted_tokens_cpu[rank_idx]
                     new_score = sorted_scores_cpu[rank_idx]
+
+                    # Constrained decoding: -inf candidates are grammar-forbidden expansions
+                    # (topk can surface them when fewer than k tokens are admissible inside a
+                    # span); never let one occupy a beam slot or register as completed. Guarded
+                    # on `grammar` so the unconstrained path stays byte-identical.
+                    if grammar is not None and new_score == float('-inf'):
+                        continue
 
                     if token_id == eos_token_id:
                         new_seq = sequences[parent_idx, :current_length].tolist() + [token_id]
@@ -1283,6 +1279,7 @@ class FlashANSRModel(nn.Module):
         input_num: list[float] | None = None,
         memory: torch.Tensor | None = None,
         guidance_weight: float | None = None,
+        constrain_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
         """Decode candidate expressions from ``data`` by top-k / top-p (nucleus) sampling.
 
@@ -1334,6 +1331,11 @@ class FlashANSRModel(nn.Module):
         guidance_weight : float, optional
             Classifier-free guidance weight (optional-condition models only): ``1`` is a pure
             conditioned decode, ``0`` a pure prior decode, ``>1`` amplifies the data signal.
+        constrain_ieee754 : bool, optional
+            Apply the v24 constrained-decoding vocabulary mask (grammar over ``<ieee754>``
+            spans; ``<float>`` forbidden outright). Applied AFTER the CFG combine and BEFORE
+            top-k / temperature / top-p; like those, it shapes only the sampling distribution
+            (``original_scores`` stays the raw conditioned log-likelihood). Defaults to False.
 
         Returns
         -------
@@ -1387,9 +1389,16 @@ class FlashANSRModel(nn.Module):
                 batch_size=batch_size, temperature=temperature, valid_only=valid_only,
                 simplify=simplify, unique=unique, verbose=verbose, return_raw=return_raw,
                 prompt_prefix=prompt_prefix, initial_tokens=initial_tokens,
-                input_num=input_num, memory=memory)
+                input_num=input_num, memory=memory, constrain_ieee754=constrain_ieee754)
 
         device = data.device
+
+        # v24 constrained decoding (T6/T7): a stateless vocabulary mask recomputed per step
+        # from each row's token prefix (correct under KV cache + mini-batching by construction).
+        grammar = None
+        if constrain_ieee754:
+            from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
+            grammar = IEEE754GrammarConstraint(self.tokenizer)
 
         # --- 1. Vectorized Initialization ---
         base_tokens, base_input_num = self._resolve_generation_prefix(
@@ -1498,6 +1507,16 @@ class FlashANSRModel(nn.Module):
                         next_token_uncond = logits_uncond[:, -1, :]
                         next_token_logits = next_token_uncond + guidance_weight * (next_token_logits - next_token_uncond)
 
+                    if grammar is not None:
+                        # Hard grammar constraint: applied AFTER the CFG combine, BEFORE the
+                        # top_k/temperature/top_p shaping. Like those transforms it steers only
+                        # WHICH tokens are drawn; `original_scores` above stays the raw
+                        # conditioned log-likelihood.
+                        forbidden = grammar.forbidden(
+                            sequences[batch_indices, :current_length],
+                            remaining=max_len - current_length)
+                        next_token_logits = next_token_logits.masked_fill(forbidden, -float('inf'))
+
                     if top_k > 0:
                         top_k_val = min(top_k, next_token_logits.size(-1))
                         ignore_mask = next_token_logits < torch.topk(next_token_logits, top_k_val, dim=1)[0][..., -1, None]
@@ -1586,6 +1605,7 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
         memory: torch.Tensor | None = None,
+        constrain_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
         """Static-shape, position-indexed-KV variant of ``sample_top_kp`` (Stage 1b).
 
@@ -1607,6 +1627,13 @@ class FlashANSRModel(nn.Module):
         global STATIC_DECODE_CALL_COUNT
         STATIC_DECODE_CALL_COUNT += 1  # engagement proof for gates (see module-level definition)
         device = data.device
+
+        # v24 constrained decoding (T6/T7): the mask is stateless (recomputed per step from the
+        # token prefix), so the static position-indexed cache needs no extra bookkeeping.
+        grammar = None
+        if constrain_ieee754:
+            from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
+            grammar = IEEE754GrammarConstraint(self.tokenizer)
 
         block0 = self.decoder.layers[0]
 
@@ -1712,11 +1739,20 @@ class FlashANSRModel(nn.Module):
                     if active.numel() == 0:
                         break
 
+                    global_active = active + chunk_start
+
                     # sample on the ACTIVE subset (eager); score from the RAW (pre-mask) distribution
                     active_logits = next_logits.index_select(0, active)            # (n_active, vocab)
                     original_scores = torch.log_softmax(active_logits, dim=-1)     # BEFORE top_k/p/temp
 
                     work = active_logits
+                    if grammar is not None:
+                        # Hard grammar constraint BEFORE the top_k/temperature/top_p shaping
+                        # (mirrors the dynamic path; `original_scores` stays raw).
+                        forbidden = grammar.forbidden(
+                            sequences[global_active, :current_length],
+                            remaining=max_len - current_length)
+                        work = work.masked_fill(forbidden, -float('inf'))
                     if top_k > 0:
                         top_k_val = min(top_k, work.size(-1))
                         ignore = work < torch.topk(work, top_k_val, dim=1)[0][..., -1, None]
@@ -1735,7 +1771,6 @@ class FlashANSRModel(nn.Module):
                     probs = torch.softmax(work, dim=-1)
                     sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)   # (n_active,)
 
-                    global_active = active + chunk_start
                     sequences[global_active, current_length] = sampled
                     scores[global_active] += torch.gather(original_scores, 1, sampled.unsqueeze(-1)).squeeze(-1)
                     chunk_finished[active] |= (sampled == eos_token)
