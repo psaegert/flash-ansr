@@ -154,6 +154,11 @@ def test_t5_numeric_pathway_reaches_decoder(tokenizer: Tokenizer, engine) -> Non
 
 
 def test_t5_ablation_reproduces_token_only_path(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    # Ablation is an EXTERNAL patch on this test's model instance, never a switch in the
+    # model class (owner ruling 2026-08-17: production stays clean and minimal; experiments
+    # patch it or branch off it). Severing only the decoder's `extra_parallel_embeddings`
+    # argument and landing bitwise on token-only logits ALSO proves that argument is the
+    # sole route by which `input_num` reaches the logits.
     model = _tiny_model(tokenizer, engine)
     torch.manual_seed(0x24C5)
     x, y = torch.randn(6, 10), torch.randn(6, 1)
@@ -161,20 +166,24 @@ def test_t5_ablation_reproduces_token_only_path(tokenizer: Tokenizer, engine) ->
     batch_other = _t5_collated_batch(tokenizer, -1.25, x, y)
     data = torch.cat([batch["x_tensors"], batch["y_tensors"]], dim=-1)
 
-    # The switch exists and defaults OFF.
-    assert hasattr(model, "ablate_numeric_pathway")
-    assert model.ablate_numeric_pathway is False
+    orig_decoder_forward = model.decoder.forward
+
+    def severed_forward(*args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs["extra_parallel_embeddings"] = None
+        return orig_decoder_forward(*args, **kwargs)
 
     with torch.no_grad():
         logits_token_only = model(batch["input_ids"], data, input_num=None,
                                   data_attn_mask=batch["data_attn_mask"])
 
-        model.ablate_numeric_pathway = True
-        logits_ablated = model(batch["input_ids"], data, input_num=batch["input_num"],
-                               data_attn_mask=batch["data_attn_mask"])
-        logits_ablated_other = model(batch_other["input_ids"], data, input_num=batch_other["input_num"],
-                                     data_attn_mask=batch_other["data_attn_mask"])
-        model.ablate_numeric_pathway = False
+        model.decoder.forward = severed_forward  # type: ignore[method-assign]
+        try:
+            logits_ablated = model(batch["input_ids"], data, input_num=batch["input_num"],
+                                   data_attn_mask=batch["data_attn_mask"])
+            logits_ablated_other = model(batch_other["input_ids"], data, input_num=batch_other["input_num"],
+                                         data_attn_mask=batch_other["data_attn_mask"])
+        finally:
+            del model.decoder.forward  # drop the instance shadow; the class method takes over again
         logits_live = model(batch["input_ids"], data, input_num=batch["input_num"],
                             data_attn_mask=batch["data_attn_mask"])
 
@@ -182,7 +191,7 @@ def test_t5_ablation_reproduces_token_only_path(tokenizer: Tokenizer, engine) ->
     assert torch.equal(logits_ablated, logits_token_only)
     # Under ablation the differing value cannot reach the decoder at all.
     assert torch.equal(logits_ablated, logits_ablated_other)
-    # The switch is not sticky: turned back off, the pathway is live again.
+    # The patch is not sticky: removed, the pathway is live again.
     assert not torch.equal(logits_live, logits_token_only)
 
 

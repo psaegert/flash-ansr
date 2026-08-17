@@ -105,37 +105,6 @@ def canonicalize_beam(
     return key, expression
 
 
-# Engagement counter for the static-decode path: incremented every time `_sample_top_kp_static` runs.
-# Gates read this to PROVE the static path actually engaged (vs `static_decode` silently failing to
-# propagate through generate()'s arms -> dynamic fallback, which would false-pass a quality/equality gate
-# as dynamic-vs-dynamic). This is the assertion gate_overlap.py enforces via `_overlap_supported()`.
-STATIC_DECODE_CALL_COUNT = 0
-
-# Global kill-switch for the deployed static-decode default (default ON, 2026-06-24). When True,
-# `static_decode=None` (the config/library default) resolves to static iff the model is capable AND the
-# decode is MULTI-chunk (the resolved static batch < choices) -- see `_resolve_static_decode`. Set False to
-# force the dynamic path everywhere. RATIONALE: the cross-GPU SPEED grid (consumer Turing/Ampere + datacenter
-# A100/H100/H200) showed static wins in the multi-chunk regime on EVERY measured card; the only losses are
-# single-chunk small-model cells, which the `batch < choices` predicate excludes by construction. So this one
-# runtime predicate replaces the old per-(scale,c) enable table + scale-class/c-band + hardware gate -- the
-# regime is computed from each card's own free VRAM, so it is hardware-general with no table to maintain.
-# (Was _DEPLOYED_STATIC_DEFAULT.) See PREREG_overlap_default_and_static_global.md + INFERENCE_SPEED_FINDINGS.md.
-_DEPLOYED_STATIC_ENABLED = True
-
-# The runtime spill-guard trips when a static-decode chunk's live ALLOCATED working set exceeds this
-# fraction of the card's physical memory. Set near the physical limit: the auto chunk size
-# (suggest_batch_size_dims) is already conservative (~0.7 of FREE), so this is a backstop for an explicit
-# oversized batch, not a second-guess of the cap. 0.9 of FREE passes the validated static b256 (~9.5 GB
-# transient of ~18.6 free) with margin and trips on a gross over-budget chunk.
-_VRAM_GUARD_FRACTION = 0.9
-
-# Per-row pad the spill-guard uses, DELIBERATELY LARGER than suggest_batch_size_dims's cap overhead (1.6)
-# so the guard is an INDEPENDENT backstop: a guard self-consistent with the cap could never catch a cap
-# under-estimate. At 2.0 the guard passes the validated static b256 but trips b384+ (the measured spill
-# onset) -- tighter than the cap, looser than reality, exactly a backstop.
-_GUARD_OVERHEAD = 2.0
-
-
 class FlashANSRModel(nn.Module):
     """Transformer backbone that maps ``(X, y)`` data to expression-token sequences.
 
@@ -209,11 +178,6 @@ class FlashANSRModel(nn.Module):
         self.pre_encoder_numeric_tokens = pre_encoder_cls(input_size=1)
         self.pre_encoder_noise_scale = pre_encoder_noise_scale
         self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, decoder_input_dim)
-
-        # T5 diagnostic switch: when True, `forward`/`forward_static` ignore `input_num`
-        # entirely (numeric_embeddings = None), reproducing the token-only embedding EXACTLY.
-        # Not a config key -- a runtime ablation for tests/interventions; default OFF.
-        self.ablate_numeric_pathway: bool = False
 
         self.encoder = SetTransformer(
             input_dim=self.pre_encoder.output_size,
@@ -555,8 +519,7 @@ class FlashANSRModel(nn.Module):
         # Add numeric token logic back
         # The new TransformerDecoder handles embedding and positional encoding internally.
         # We need to pass the numeric embeddings to it.
-        # `ablate_numeric_pathway` (T5) severs the side-channel: token-only embeddings, exactly.
-        if input_num is not None and not self.ablate_numeric_pathway:
+        if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
@@ -598,7 +561,7 @@ class FlashANSRModel(nn.Module):
         and reads the full buffer under a causal mask, instead of the dynamic cat-grow path. Returns
         logits only (the cache is mutated in place). v23.0 decoder path only (see static_kv.py)."""
         self.memory = memory
-        if input_num is not None and not self.ablate_numeric_pathway:
+        if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
             input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
