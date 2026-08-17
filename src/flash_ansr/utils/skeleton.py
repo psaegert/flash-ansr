@@ -15,6 +15,7 @@ site keeps ONE shared behavior:
   n-ary dialect (``<add> ... </add>``), which the tokenizer cannot encode. The explicit
   binary-chain form is the classic prefix dialect the models were trained on.
 """
+import math
 from typing import TYPE_CHECKING, cast
 
 from simplipy import masking
@@ -41,3 +42,34 @@ def simplify_and_mask(engine: "SimpliPyEngine", expression: list[str]) -> list[s
     # simplify mirrors its input container type; a list input returns a list
     simplified = cast(list[str], engine.simplify(list(expression), form='explicit'))
     return mask_all_literals(engine, simplified)
+
+
+def _literal_value(token: str) -> float:
+    """Numeric value of a literal token as classified by ``simplipy.masking.literal_sites``:
+    a plain int/float spelling, a one-token exact rational (``1/3``), or ``np.pi``/``np.e``."""
+    if token == 'np.pi':
+        return math.pi
+    if token == 'np.e':
+        return math.e
+    try:
+        return float(token)
+    except ValueError:
+        numerator, _, denominator = token.partition('/')
+        return float(numerator) / float(denominator)
+
+
+def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str]) -> tuple[list[str], list[float]]:
+    """Mask every literal in a CONCRETE ``expression`` positionally and return the values.
+
+    The training-data contract: symbolic-data >= 0.14 generative catalogs yield concrete
+    expressions (literal values in the tokens, ``Problem.constants`` empty) and masking is
+    downstream policy. ``collect=False`` keeps the strict 1:1 site<->token correspondence,
+    so the i-th returned value belongs to the i-th ``<constant>`` in the returned skeleton
+    -- the alignment the numeric head trains on. Reserved non-finite spellings
+    (``float("inf")``/``float("nan")``) are not literal sites and stay as written, and
+    pre-existing ``<constant>`` placeholders are likewise left alone (they carry no value).
+    """
+    tokens = list(expression)
+    sites = masking.literal_sites(tokens, engine)
+    skeleton = masking.mask(tokens, engine, masking.mask_all, collect=False)
+    return skeleton, [_literal_value(value) for _, value, _ in sites]

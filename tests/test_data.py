@@ -78,9 +78,12 @@ class TestFlashANSRDataset(unittest.TestCase):
         seen: list = []
         with FlashANSRDataset.from_config(dataset_cfg) as dataset:
             for batch in dataset.iterate(steps=2, batch_size=8):
-                seen.extend(batch["skeleton"])
+                seen.extend(batch["expression"])
         assert seen
-        assert all(tuple(sk) in fixed for sk in seen)   # only the loaded fixed skeletons, none fresh
+        # Only the loaded fixed skeletons, none fresh. The catalog stores CONCRETE
+        # expressions (symbolic-data >= 0.14); the batch's "skeleton" is their masked
+        # projection, so the identity check runs on the concrete "expression" field.
+        assert all(tuple(expr) in fixed for expr in seen)
 
     def test_collate_single(self):
         # The training config uses `n_support: prior` (variable support size). To pin a fixed support
