@@ -39,6 +39,7 @@ from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, 
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.utils.skeleton import simplify_and_mask
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -271,8 +272,7 @@ def _simplify_pool_worker(raw_expr: tuple) -> tuple:
     """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial).
     simplipy.simplify is the equivalence loop only; mask() relabels any emitted literals to
     <constant> for the model's vocabulary (matching the pre-carve-out masked output)."""
-    return tuple(_SIMPLIFY_ENGINE.mask(
-        _SIMPLIFY_ENGINE.simplify(list(raw_expr))))
+    return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
 
 
 @dataclass
@@ -2012,8 +2012,7 @@ class FlashANSR(BaseEstimator):
                             if variant_key in seen_expressions:
                                 continue
 
-                            simplified_variant = self.simplipy_engine.mask(
-                                self.simplipy_engine.simplify(list(variant)))
+                            simplified_variant = simplify_and_mask(self.simplipy_engine, list(variant))
                             if not self.simplipy_engine.is_valid(simplified_variant):
                                 continue
 
