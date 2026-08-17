@@ -589,6 +589,31 @@ def test_t4_mask_is_keyed_on_shifted_targets_not_inputs(tokenizer: Tokenizer) ->
             assert masked[0, p] == tokenizer[token]
 
 
+# ---------------------------------------------------------------------------
+# Peripheral: constant counting must see one constant per form, not 34/1 tokens
+# ---------------------------------------------------------------------------
+
+def test_scoring_counts_each_constant_form_as_one() -> None:
+    from flash_ansr.scoring import count_constants, is_constant_token
+    from flash_ansr.utils.ieee754 import wrap_float32
+
+    # Compact form: one constant.
+    assert is_constant_token("<float>") is True
+    assert count_constants(["*", "<float>", "x1"]) == 1
+
+    # Expanded form: the whole 34-token span is ONE constant (opened by <ieee754>;
+    # bits and the closing tag never count on their own, keeping naive per-token
+    # sums over a span exact).
+    assert is_constant_token("<ieee754>") is True
+    for token in ("<b0>", "<b1>", "</ieee754>"):
+        assert is_constant_token(token) is False
+    assert count_constants(["*", *wrap_float32(2.5), "x1"]) == 1
+
+    # Mixed expression: compact + expanded + legacy placeholder = three constants.
+    expression = ["+", "*", "<float>", "x1", "+", "*", *wrap_float32(-1.5), "x2", "<constant>"]
+    assert count_constants(expression) == 3
+
+
 def test_t4_trainer_applies_float_mask_in_both_train_and_val() -> None:
     """The seam must be wired into both _train_step and _validate_step."""
     import inspect
