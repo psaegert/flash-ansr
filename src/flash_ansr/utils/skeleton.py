@@ -15,7 +15,7 @@ site keeps ONE shared behavior:
   n-ary dialect (``<add> ... </add>``), which the tokenizer cannot encode. The explicit
   binary-chain form is the classic prefix dialect the models were trained on.
 """
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from simplipy import masking
 
@@ -38,4 +38,6 @@ def simplify_and_mask(engine: "SimpliPyEngine", expression: list[str]) -> list[s
 
     Drop-in successor of the pre-simplipy-0.12 ``engine.mask(engine.simplify(x))`` idiom.
     """
-    return mask_all_literals(engine, engine.simplify(list(expression), form='explicit'))
+    # simplify mirrors its input container type; a list input returns a list
+    simplified = cast(list[str], engine.simplify(list(expression), form='explicit'))
+    return mask_all_literals(engine, simplified)
