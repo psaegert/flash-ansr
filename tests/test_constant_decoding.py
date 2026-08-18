@@ -25,10 +25,11 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_BITS,
+    IEEE754_N_NIBBLES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    bit_tokens_to_float32,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
     wrap_float32,
 )
 
@@ -72,11 +73,11 @@ def _biased_model(tokenizer: Tokenizer, engine, token: str, bias: float):  # typ
 
 
 def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
-    """Assert every `<ieee754>` span in `ids` is well-formed (exactly 32 bits, then the
-    close), no bit/close token strays outside a span, and return the decoded values."""
+    """Assert every `<ieee754>` span in `ids` is well-formed (exactly 8 nibbles, then the
+    close), no nibble/close token strays outside a span, and return the decoded values."""
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
-    b0_id, b1_id = tokenizer["<b0>"], tokenizer["<b1>"]
+    id_to_nibble = {int(tokenizer[token]): token for token in NIBBLE_TOKENS}
 
     values = []
     i = 0
@@ -84,16 +85,15 @@ def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
         token = ids[i]
         if token == open_id:
             assert i + IEEE754_SPAN_LENGTH <= len(ids), f"unterminated span at {i}: {ids}"
-            inner = ids[i + 1:i + 1 + IEEE754_N_BITS]
-            assert all(x in (b0_id, b1_id) for x in inner), f"non-bit token inside span at {i}: {ids}"
-            assert ids[i + IEEE754_SPAN_LENGTH - 1] == close_id, f"span at {i} not closed after 32 bits: {ids}"
-            bit_tokens = ["<b1>" if x == b1_id else "<b0>" for x in inner]
-            value = bit_tokens_to_float32(bit_tokens)
+            inner = ids[i + 1:i + 1 + IEEE754_N_NIBBLES]
+            assert all(x in id_to_nibble for x in inner), f"non-nibble token inside span at {i}: {ids}"
+            assert ids[i + IEEE754_SPAN_LENGTH - 1] == close_id, f"span at {i} not closed after 8 nibbles: {ids}"
+            value = nibble_tokens_to_float32([id_to_nibble[x] for x in inner])
             assert isinstance(value, float)
             values.append(value)
             i += IEEE754_SPAN_LENGTH
         else:
-            assert token not in (b0_id, b1_id, close_id), f"stray bit/close outside span at {i}: {ids}"
+            assert token not in id_to_nibble and token != close_id, f"stray nibble/close outside span at {i}: {ids}"
             i += 1
     return values
 
@@ -206,18 +206,17 @@ def test_t6_mask_forbids_float_in_every_state(tokenizer: Tokenizer) -> None:
     float_id = tokenizer[COMPACT_TOKEN]
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
-    b0_id, b1_id = tokenizer["<b0>"], tokenizer["<b1>"]
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
 
     outside = tokenizer.encode(["<bos>", "<expression>", "x1"])
-    span_bits = [b0_id if bit == "<b0>" else b1_id
-                 for bit in wrap_float32(0.5)[1:-1]]
+    span_nibbles = [int(tokenizer[token]) for token in wrap_float32(0.5)[1:-1]]
     prefixes = {
         "empty": [],
         "outside": outside,
-        "inside_0_bits": [*outside, open_id],
-        "inside_17_bits": [*outside, open_id, *span_bits[:17]],
-        "inside_32_bits": [*outside, open_id, *span_bits],
-        "after_closed_span": [*outside, open_id, *span_bits, close_id],
+        "inside_0_nibbles": [*outside, open_id],
+        "inside_5_nibbles": [*outside, open_id, *span_nibbles[:5]],
+        "inside_8_nibbles": [*outside, open_id, *span_nibbles],
+        "after_closed_span": [*outside, open_id, *span_nibbles, close_id],
     }
 
     for name, prefix in prefixes.items():
@@ -229,27 +228,27 @@ def test_t6_mask_forbids_float_in_every_state(tokenizer: Tokenizer) -> None:
     for name in ("empty", "outside", "after_closed_span"):
         tensor = torch.tensor([prefixes[name]], dtype=torch.long)
         forbidden = g.forbidden(tensor, remaining=100)[0]
-        # Outside a span: bits and the close tag are forbidden, the open tag and ordinary
-        # expression tokens are allowed.
-        for forbidden_id in (b0_id, b1_id, close_id):
+        # Outside a span: nibbles and the close tag are forbidden, the open tag and
+        # ordinary expression tokens are allowed.
+        for forbidden_id in (*nibble_ids, close_id):
             assert bool(forbidden[forbidden_id]), (name, forbidden_id)
         for allowed_token in (IEEE754_START_TOKEN, "x2", "+", "sin", "<eos>"):
             assert not bool(forbidden[tokenizer[allowed_token]]), (name, allowed_token)
 
-    for name in ("inside_0_bits", "inside_17_bits"):
+    for name in ("inside_0_nibbles", "inside_5_nibbles"):
         tensor = torch.tensor([prefixes[name]], dtype=torch.long)
         forbidden = g.forbidden(tensor, remaining=100)[0]
         allowed_ids = (~forbidden).nonzero().flatten().tolist()
-        # Inside the tags, before 32 bits: EXACTLY <b0>/<b1> are admissible.
-        assert sorted(allowed_ids) == sorted([b0_id, b1_id]), (name, allowed_ids)
+        # Inside the tags, before 8 nibbles: EXACTLY the 16 nibbles are admissible.
+        assert sorted(allowed_ids) == sorted(nibble_ids), (name, allowed_ids)
 
-    tensor = torch.tensor([prefixes["inside_32_bits"]], dtype=torch.long)
+    tensor = torch.tensor([prefixes["inside_8_nibbles"]], dtype=torch.long)
     forbidden = g.forbidden(tensor, remaining=100)[0]
     allowed_ids = (~forbidden).nonzero().flatten().tolist()
-    # After exactly 32 bits: ONLY the close is admissible.
+    # After exactly 8 nibbles: ONLY the close is admissible.
     assert allowed_ids == [close_id]
 
-    # Budget rule: opening a span requires 34 remaining slots so it can always terminate.
+    # Budget rule: opening a span requires 10 remaining slots so it can always terminate.
     tensor = torch.tensor([prefixes["outside"]], dtype=torch.long)
     assert not bool(g.forbidden(tensor, remaining=IEEE754_SPAN_LENGTH)[0][open_id])
     assert bool(g.forbidden(tensor, remaining=IEEE754_SPAN_LENGTH - 1)[0][open_id])
@@ -339,12 +338,12 @@ def test_t6_float_logit_rank_suppressed_after_warmup() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T7 — grammar: exactly <b0>/<b1> inside the tags, exactly 32, then the close
+# T7 — grammar: exactly the 16 nibbles inside the tags, exactly 8, then the close
 # ---------------------------------------------------------------------------
 
 def test_t7_grammar_state_machine_property(tokenizer: Tokenizer) -> None:
     """Property test: ANY walk that only ever takes mask-admitted tokens produces
-    well-formed spans (32 bits + close, nothing stray, every span parses to a float)."""
+    well-formed spans (8 nibbles + close, nothing stray, every span parses to a float)."""
     from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
 
     g = IEEE754GrammarConstraint(tokenizer)
@@ -430,7 +429,7 @@ def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine)
     span = wrap_float32(value)
     continuation = ["x2", "</expression>", "<eos>"]
     span_start = len(prefix)              # 7
-    expanded_length = span_start + IEEE754_SPAN_LENGTH  # 41
+    expanded_length = span_start + IEEE754_SPAN_LENGTH  # 17
 
     prefix_ids = torch.tensor([tokenizer.encode(prefix)], dtype=torch.long)
     span_ids = torch.tensor([tokenizer.encode(span)], dtype=torch.long)
@@ -450,7 +449,7 @@ def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine)
         _, past = _feed_incremental(model, span_ids, _nan(1, IEEE754_SPAN_LENGTH), memory, past)
         assert past[0][0][0].shape[2] == expanded_length
 
-        # --- compaction: bits -> value -> span collapse -> <float>+input_num -> KV drop + re-encode ---
+        # --- compaction: nibbles -> value -> span collapse -> <float>+input_num -> KV drop + re-encode ---
         buffer = torch.full((1, 64), pad_id, dtype=torch.long)
         buffer[0, :span_start] = prefix_ids[0]
         buffer[0, span_start:expanded_length] = span_ids[0]
@@ -462,7 +461,7 @@ def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine)
             memory=memory, input_num=num_buffer)
 
         # Mechanics: value decoded, span collapsed to ONE <float>, tail cleared, KV shrunk
-        # by exactly the 34 span entries (+1 for the re-encoded compact token).
+        # by exactly the 10 span entries (+1 for the re-encoded compact token).
         assert result.values.tolist() == [value]
         assert result.length == span_start + 1
         assert int(result.sequences[0, span_start]) == float_id
@@ -583,14 +582,14 @@ def test_t8_compaction_validates_the_span(tokenizer: Tokenizer, engine) -> None:
             compact_closed_ieee754_spans(model, bad, current_length=length,
                                          past_key_values=past, memory=memory)
 
-        # A non-bit token inside the span.
+        # A non-nibble token inside the span.
         bad = seq.clone()
-        bad[0, length - 10] = tokenizer["x1"]
+        bad[0, length - 4] = tokenizer["x1"]
         with pytest.raises(ValueError):
             compact_closed_ieee754_spans(model, bad, current_length=length,
                                          past_key_values=past, memory=memory)
 
         # Too short to contain a whole span.
         with pytest.raises(ValueError):
-            compact_closed_ieee754_spans(model, seq[:, :10], current_length=10,
+            compact_closed_ieee754_spans(model, seq[:, :6], current_length=6,
                                          past_key_values=past, memory=memory)
