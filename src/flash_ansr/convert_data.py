@@ -10,7 +10,7 @@ from simplipy.utils import codify, explicit_constant_placeholders as identify_co
 
 from symbolic_data import LampleChartonCatalog  # Parse expressions with SimpliPyEngine.parse_infix_expression
 
-from flash_ansr.utils.skeleton import simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
 
 
 class _InvalidExpression(Exception):
@@ -74,7 +74,14 @@ class TestSetParser:
             raise _InvalidExpression()
         # simplipy.simplify no longer masks (it is the equivalence loop only); masking relabels
         # the literals it may emit (0/1/pi/2/...) back to <constant> for the model's vocabulary.
-        prefix_expression = simplify_and_mask(simplipy_engine, prefix_expression)
+        try:
+            prefix_expression = simplify_and_mask(simplipy_engine, prefix_expression)
+        except NonFiniteExpressionError as exc:
+            # A row that simplifies to inf/nan (a vanishing denominator, log of zero) is
+            # count + skip attrition like an engine-invalid row, not an abort: an external
+            # benchmark file is not flash-ansr's contract to enforce. _finalize reports the tally.
+            record_non_finite_drop()
+            raise _InvalidExpression() from exc
 
         found_variables = [token for token in prefix_expression if token not in simplipy_engine.operators and not is_number(token) and token != '<constant>']
         prefix_expression, mapping = remap_expression(prefix_expression, found_variables, variable_mapping=None, variable_prefix="x", enumeration_offset=1)
