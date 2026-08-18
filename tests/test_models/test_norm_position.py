@@ -253,7 +253,7 @@ class TestEncoderBlockNormPosition:
             norm_position=norm_position,
         )
         x = torch.randn(2, 6, 4)
-        attn_mask = torch.ones(2, 6)
+        attn_mask = torch.ones(2, 6, dtype=torch.bool)
         out = enc(x, attn_mask=attn_mask)
         assert out.shape == (2, 4, 16)
         assert torch.isfinite(out).all()
@@ -276,7 +276,7 @@ class TestEncoderBlockNormPosition:
             norm_position=norm_position,
         )
         x = torch.randn(2, 6, 4)
-        attn_mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 0]], dtype=torch.float32)
+        attn_mask = torch.tensor([[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 0]], dtype=torch.bool)
         out = enc(x, attn_mask=attn_mask)
         assert out.shape == (2, 4, 16)
         assert torch.isfinite(out).all()

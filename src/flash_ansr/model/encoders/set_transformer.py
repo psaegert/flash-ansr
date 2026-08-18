@@ -1,4 +1,5 @@
 """Set Transformer encoder building blocks."""
+import warnings
 from typing import List, Optional, Union
 
 import torch
@@ -156,6 +157,15 @@ class MAB(nn.Module):
         ``norm(x + sub(x))``). Defaults to ``"pre"``. In post-norm mode the
         residual is normalized once after the addition; ``norm_kv`` is left
         unused on the key/value stream to mirror standard Post-LN Transformers.
+    mask_query_norms : bool, optional
+        When ``True`` and a ``query_mask`` is passed to :meth:`forward`, the query/residual-stream
+        norms (``norm_q``/``norm_ffn``) receive that mask so SetNorm statistics are computed over
+        valid query rows only, and the attention and feed-forward outputs are zeroed on padded
+        query rows so bias terms cannot write garbage into the residual stream. ``query_mask``
+        must be 2D ``(batch, len_q)``. Defaults to ``False`` (legacy
+        behavior: when the query is a zero-padded set, its SetNorm statistics include the padding,
+        which understates the RMS by ``sqrt(n_valid / set_len)`` and inflates valid rows by the
+        inverse factor; existing checkpoints were trained with this behavior).
     """
     def __init__(
         self,
@@ -171,9 +181,11 @@ class MAB(nn.Module):
         attn_norm: str = "none",
         ffn_norm: str = "none",
         norm_position: str = "pre",
+        mask_query_norms: bool = False,
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
+        self.mask_query_norms = mask_query_norms
 
         norm_position_l = norm_position.lower()
         if norm_position_l not in ("pre", "post"):
@@ -205,11 +217,27 @@ class MAB(nn.Module):
         self.norm_ffn = get_norm_layer(ffn_norm, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
 
-    def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _norm_query_stream(self, norm: nn.Module, x: torch.Tensor, query_mask: Optional[torch.Tensor]) -> torch.Tensor:
+        """Apply a query/residual-stream norm, mask-aware when ``mask_query_norms`` is enabled."""
+        if self.mask_query_norms and query_mask is not None and isinstance(norm, SetNormBase):
+            return norm(x, attn_mask=query_mask)
+        return norm(x)
+
+    def _forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None, query_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Internal forward pass supporting gradient checkpointing."""
+        row_mask: Optional[torch.Tensor] = None
+        if self.mask_query_norms and query_mask is not None:
+            if query_mask.dim() != 2:
+                raise ValueError(
+                    f"query_mask must be 2D (batch, len_q); got shape {tuple(query_mask.shape)}. "
+                    f"Higher-rank attention masks cannot be reused as query-row masks."
+                )
+            if query_mask.dtype != torch.bool:
+                query_mask = query_mask != 0
+            row_mask = query_mask.unsqueeze(-1)
         if self.norm_position == "pre":
             # Pre-LN: x + sub(norm(x))
-            q_norm = self.norm_q(query)
+            q_norm = self._norm_query_stream(self.norm_q, query, query_mask)
 
             # Mask padded elements in the key/value before normalization if using SetNorms
             if isinstance(self.norm_kv, SetNormBase):
@@ -218,27 +246,40 @@ class MAB(nn.Module):
                 kv_norm = self.norm_kv(key_value)
 
             attn_output = self.attention(q_norm, kv_norm, attn_mask=attn_mask)
+            if row_mask is not None:
+                # Padded query rows produce nonzero attention outputs through the projection
+                # biases; zero them so the residual stream stays exactly zero on padding and
+                # downstream set statistics see only valid rows.
+                attn_output = attn_output * row_mask
             query = query + attn_output
 
-            q_norm = self.norm_ffn(query)
+            q_norm = self._norm_query_stream(self.norm_ffn, query, query_mask)
             ffn_output = self.ffn(q_norm)
+            if row_mask is not None:
+                # No-op for RMSSetNorm (norm(0)=0, bias-free FFN keeps zeros), but load-bearing
+                # for norms with a shift (e.g. OriginalSetNorm's beta maps zero rows to beta).
+                ffn_output = ffn_output * row_mask
             query = query + ffn_output
         else:
             # Post-LN: norm(x + sub(x)). norm_kv is intentionally unused on the
-            # key/value stream (mirrors standard Post-LN Transformers). The
-            # attn_mask describes the kv stream, so we do not pass it to norms
-            # operating on the query/residual stream (matches pre-norm behavior
-            # where norm_q / norm_ffn are also called without attn_mask).
+            # key/value stream (mirrors standard Post-LN Transformers). With
+            # mask_query_norms enabled, the residual-stream norms receive the
+            # query mask (the query is the padded set in self-refinement blocks);
+            # otherwise legacy behavior is preserved.
             attn_output = self.attention(query, key_value, attn_mask=attn_mask)
+            if row_mask is not None:
+                attn_output = attn_output * row_mask
             residual = query + attn_output
             norm_attn = self.norm_residual_attn if self.norm_residual_attn is not None else self.norm_q
-            query = norm_attn(residual)
+            query = self._norm_query_stream(norm_attn, residual, query_mask)
 
             ffn_output = self.ffn(query)
-            query = self.norm_ffn(query + ffn_output)
+            if row_mask is not None:
+                ffn_output = ffn_output * row_mask
+            query = self._norm_query_stream(self.norm_ffn, query + ffn_output, query_mask)
         return query
 
-    def forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, query: torch.Tensor, key_value: torch.Tensor, attn_mask: Optional[torch.Tensor] = None, query_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Run attention and feed-forward refinement with optional checkpointing.
 
         Parameters
@@ -249,6 +290,13 @@ class MAB(nn.Module):
             Tensor of shape ``(batch, len_kv, dim_kv)`` containing keys and values.
         attn_mask : torch.Tensor, optional
             Optional padding mask broadcastable to ``(batch, n_heads, len_q, len_kv)``.
+            Describes the KEY/VALUE stream (masked keys are excluded from attention and
+            from SetNorm statistics on the kv side).
+        query_mask : torch.Tensor, optional
+            Optional padding mask of shape ``(batch, len_q)`` describing the QUERY stream.
+            Only used when the block was built with ``mask_query_norms=True``: SetNorm
+            statistics on the query/residual stream are then computed over valid rows only,
+            and sub-layer outputs are zeroed on padded query rows.
 
         Returns
         -------
@@ -256,10 +304,10 @@ class MAB(nn.Module):
             Output tensor of shape ``(batch, len_q, dim)``.
         """
         if self.use_checkpointing and self.training:
-            # Pass attn_mask through checkpointing
-            return checkpoint(self._forward, query, key_value, attn_mask, use_reentrant=False)
+            # Pass masks through checkpointing
+            return checkpoint(self._forward, query, key_value, attn_mask, query_mask, use_reentrant=False)
         else:
-            return self._forward(query, key_value, attn_mask)
+            return self._forward(query, key_value, attn_mask, query_mask)
 
 
 class SAB(nn.Module):
@@ -295,9 +343,17 @@ class SAB(nn.Module):
 
 
 class ISAB(nn.Module):
-    """Induced Set Attention Block with shared inducing points across the batch."""
+    """Induced Set Attention Block with shared inducing points across the batch.
 
-    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False, norm_position: str = "pre"):
+    ``mask_query_norms`` only affects ``mab_self``, where the (possibly zero-padded) input set
+    is the QUERY stream: with the flag enabled, the set's padding mask is forwarded to the
+    query/residual-stream SetNorms so their shared statistics are computed over valid rows only
+    (legacy behavior counts the padding in the denominator, inflating valid rows by
+    ``sqrt(set_len / n_valid)``). ``mab_cross`` needs no query mask — its queries are the dense
+    inducing points — and already receives the set mask on its key/value stream.
+    """
+
+    def __init__(self, dim_in: int, dim_out: int, n_heads: int, n_inducing_points: int, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0, attn_norm: str = "none", ffn_norm: str = "none", use_checkpointing: bool = False, norm_position: str = "pre", mask_query_norms: bool = False):
         super().__init__()
         self.inducing_points = nn.Parameter(torch.randn(1, n_inducing_points, dim_out))
         nn.init.xavier_uniform_(self.inducing_points)
@@ -316,6 +372,7 @@ class ISAB(nn.Module):
             use_checkpointing=use_checkpointing, is_self_attention=False,
             attn_norm=attn_norm, ffn_norm=ffn_norm,
             norm_position=norm_position,
+            mask_query_norms=mask_query_norms,
         )
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -327,7 +384,9 @@ class ISAB(nn.Module):
             Tensor of shape ``(batch, set_len, dim_in)`` representing the input set.
         attn_mask : torch.Tensor, optional
             Padding mask with ``1`` for valid elements and ``0`` for padded ones. Can be
-            of shape ``(batch, set_len)`` or broadcastable to ``(batch, 1, 1, set_len)``.
+            of shape ``(batch, set_len)`` or broadcastable to ``(batch, 1, 1, set_len)``;
+            with ``mask_query_norms=True`` the mask is also reused as the query-row mask
+            and must then be 2D ``(batch, set_len)`` (enforced).
 
         Returns
         -------
@@ -342,7 +401,9 @@ class ISAB(nn.Module):
 
         # Input set x attends to the dense inducing point representation h.
         # No mask is needed for the attention calculation itself, as h (key/value) is not padded.
-        out = self.mab_self(x, h)
+        # The set's padding mask is passed as query_mask so that (when mask_query_norms is
+        # enabled) the query/residual-stream SetNorms exclude padded rows from their statistics.
+        out = self.mab_self(x, h, query_mask=attn_mask)
 
         # Zero out the outputs corresponding to padded inputs to prevent information leakage
         # in residual connections and subsequent layers.
@@ -424,6 +485,10 @@ class SetTransformer(SetEncoder):
         Final normalization layer type. Defaults to ``"none"``.
     use_checkpointing : bool, optional
         Whether to apply gradient checkpointing in attention blocks. Defaults to ``False``.
+    mask_query_norms : bool, optional
+        Thread the set padding mask into the ISAB self-refinement blocks' query/residual-stream
+        SetNorms so their statistics exclude zero-padding (see :class:`MAB`). Defaults to
+        ``False`` — the legacy behavior existing checkpoints were trained with.
     """
 
     def __init__(
@@ -432,6 +497,7 @@ class SetTransformer(SetEncoder):
         n_seeds: int = 1, ffn_hidden_dim: Optional[int] = None, dropout: float = 0.0,
         attn_norm: str = "none", ffn_norm: str = "none", output_norm: str = "none", use_checkpointing: bool = False,
         norm_position: str = "pre",
+        mask_query_norms: bool = False,
     ):
         super().__init__()
         if isinstance(n_inducing_points, int):
@@ -440,7 +506,7 @@ class SetTransformer(SetEncoder):
         self.embedding = nn.Linear(input_dim, model_dim)
 
         self.isabs = nn.ModuleList([
-            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position)
+            ISAB(model_dim, model_dim, n_heads, n_ip, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position, mask_query_norms=mask_query_norms)
             for n_ip in n_inducing_points
         ])
         self.pma = PMA(model_dim, n_heads, n_seeds, ffn_hidden_dim=ffn_hidden_dim, dropout=dropout, attn_norm=attn_norm, ffn_norm=ffn_norm, use_checkpointing=use_checkpointing, norm_position=norm_position)
@@ -473,6 +539,20 @@ class SetTransformer(SetEncoder):
         torch.Tensor
             Tensor of shape ``(batch, n_seeds, output_dim)`` containing set encodings.
         """
+        # Normalize the padding mask to bool. SDPA interprets FLOAT masks as ADDITIVE logit
+        # biases (a 0/1 float mask therefore masks nothing); only bool masks exclude keys.
+        # The standard pipeline (FlashANSRDataset.collate) already passes bool; coerce and warn
+        # for any other caller so silent additive semantics cannot occur.
+        if attn_mask is not None and attn_mask.dtype != torch.bool:
+            warnings.warn(
+                "SetTransformer received a non-bool attn_mask; coercing to bool (mask != 0). "
+                "Float masks are interpreted by scaled_dot_product_attention as additive logit "
+                "biases and would silently not mask padding. If you intended an ADDITIVE mask "
+                "(0 = keep, -inf = drop), this coercion INVERTS it - pass a bool mask instead.",
+                stacklevel=2,
+            )
+            attn_mask = attn_mask != 0
+
         x = self.embedding(x)
 
         # Apply mask to input features before encoder to zero out padding.

@@ -660,6 +660,14 @@ class Trainer:
         total_loss = 0.0
 
         # Split the batch into micro-batches to support gradient accumulation
+        if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
+            raise ValueError(
+                f"Batch of size {len(batch['x_tensors'])} is not divisible by "
+                f"gradient_accumulation_steps {self.gradient_accumulation_steps}; the integer split "
+                f"below would silently drop the remainder samples. Use a batch size that is a "
+                f"multiple of gradient_accumulation_steps (for pre-compiled datasets this can also "
+                f"be a ragged FINAL batch - re-compile with a compatible batch size)."
+            )
         for acc_step in range(self.gradient_accumulation_steps):
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
