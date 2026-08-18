@@ -645,6 +645,7 @@ class FlashANSRModel(nn.Module):
         initial_tokens: list[int] | None = None,
         input_num: list[float] | None = None,
         constrain_ieee754: bool = False,
+        compact_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
         """Decode candidate expressions from ``data`` with beam search.
 
@@ -675,6 +676,10 @@ class FlashANSRModel(nn.Module):
         constrain_ieee754 : bool, optional
             Apply the v24 constrained-decoding vocabulary mask (grammar over ``<ieee754>``
             spans; ``<float>`` forbidden outright). Defaults to False.
+        compact_ieee754 : bool, optional
+            Compact each beam's closed ``<ieee754>`` spans in place (per-beam KV surgery on
+            the dynamic cache; see decoding/beam_compaction.py). Requires
+            ``constrain_ieee754=True`` and ``use_cache=True``. Defaults to False.
 
         Returns
         -------
@@ -684,6 +689,25 @@ class FlashANSRModel(nn.Module):
             for active-beam fallbacks appended when fewer than ``beam_width`` completed sequences
             were found.
         """
+        # v24 per-beam compaction (T9/T10) lives on its own dynamic-cache loop; default
+        # OFF keeps every path below byte-identical.
+        if compact_ieee754:
+            if not constrain_ieee754:
+                raise ValueError(
+                    "compact_ieee754=True requires constrain_ieee754=True: compaction relies on "
+                    "the grammar guaranteeing well-formed spans."
+                )
+            if not use_cache:
+                raise ValueError(
+                    "compact_ieee754=True requires use_cache=True: compaction is KV surgery on "
+                    "the dynamic cache."
+                )
+            from flash_ansr.decoding.beam_compaction import beam_search_with_compaction
+            return beam_search_with_compaction(
+                self, data, beam_width=beam_width, max_len=max_len, batch_size=batch_size,
+                unique=unique, verbose=verbose, limit_expansions=limit_expansions,
+                prompt_prefix=prompt_prefix, initial_tokens=initial_tokens, input_num=input_num)
+
         device = data.device
 
         # v24 constrained decoding (T6/T7): a stateless vocabulary mask recomputed per step
