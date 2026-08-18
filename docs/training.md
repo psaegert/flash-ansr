@@ -13,6 +13,12 @@
 	- `model.yaml`: architecture, precision, and simplifier config.
 - Keep paths relative; `load_config(...)` normalizes `./` and `{{ROOT}}`.
 
+> **Config compatibility.** The bundles shipped in `configs/` are all pre-v24 and work only with
+> flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`); this line (>= 0.13.0) targets v24 configs
+> only. They are kept, not deleted, as the record of the v23.x training runs. See
+> [`configs/VERSIONS.md`](https://github.com/psaegert/flash-ansr/blob/main/configs/VERSIONS.md) for
+> the register and the reasons.
+
 ### How a dataset config consumes a catalog
 `FlashANSRDataset.from_config` reads a `source:` block and hands it to a `symbolic_data.ProblemSource`. The source samples a catalog into ready-to-use problems under a usage policy (`sampling:`):
 
@@ -111,7 +117,9 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 - Training uses [automatic mixed precision (AMP)](https://docs.pytorch.org/docs/stable/amp.html) and [torch.compile](https://huggingface.co/docs/transformers/en/perf_torch_compile)
 
 ## Adding a new config
-- Copy an existing bundle (e.g., `configs/v23.0-3M-pma-k1/`).
+- Copy an existing bundle (e.g., `configs/v23.0-3M-pma-k1/`). The shipped bundles are pre-v24: on
+  flash-ansr >= 0.13.0 replace the retired `simplipy_engine: 'dev_7-3'` pin with a current `acj-*`
+  engine (see [`configs/VERSIONS.md`](https://github.com/psaegert/flash-ansr/blob/main/configs/VERSIONS.md)).
 - Update paths and tokenizer/operator choices; ensure special prompt tokens exist before enabling prompt features.
 - Prefer cloning configs instead of mutating in-place to keep saved YAMLs portable.
 

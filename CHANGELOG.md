@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`configs/VERSIONS.md` compatibility register.** Records that every shipped (pre-v24) config
+  works only with flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`) — this line targets v24
+  configs only — with the two concrete reasons (the retired `dev_7-3` engine pin, and the removal
+  of v23-era model support in 0.13.0), plus a note that the `v23.0-20M-A-Y{1,10,50K}` bundles are
+  now near-duplicates of the `-A-S*` arms after their SymPy arm was migrated to `simplify: true`.
+  No config is deleted. `docs/training.md` and `docs/evaluation.md` point at the register.
 - **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
   `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
   sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
