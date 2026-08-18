@@ -24,7 +24,14 @@ from typing import Sequence
 
 import numpy as np
 
-from flash_ansr.utils.ieee754 import wrap_float32
+from flash_ansr.utils.ieee754 import (
+    BIT_ONE_TOKEN,
+    BIT_ZERO_TOKEN,
+    IEEE754_N_BITS,
+    IEEE754_SPAN_LENGTH,
+    bit_tokens_to_float32,
+    wrap_float32,
+)
 
 #: The compact-constant token. Deliberately the EXISTING ``<float>`` special (it already
 #: carries a value on the numeric channel in the prompt-serialization path); no new token.
@@ -170,3 +177,63 @@ def truncation_cuts_ieee754_span(
         if start <= last_kept < end:
             return True
     return False
+
+
+def replace_ieee754_spans_with_constants(
+    token_ids: Sequence[int],
+    *,
+    start_id: int,
+    end_id: int,
+    b0_id: int,
+    b1_id: int,
+    constant_id: int,
+) -> tuple[list[int], list[float] | None]:
+    """Map expanded ``<ieee754>`` spans to ``<constant>`` slots + their float32 values (T11).
+
+    The DESERIALIZATION half of the refiner handshake: each well-formed 34-token span in a
+    generated beam collapses to one ``constant_id`` token, and the decoded values (exact,
+    via the token codec -- no decimal round-trip) become the refiner's verbatim ``p0`` in
+    order of appearance.
+
+    Returns
+    -------
+    tuple[list[int], list[float] | None]
+        ``(mapped_ids, values)``. ``values`` is the per-span float32 list ONLY when the
+        init is sound: at least one span, every span well-formed, every value finite, and
+        no pre-existing ``constant_id`` in the input (a bare placeholder -- e.g.
+        constantified sugar -- would break the slot alignment; the skeleton is still
+        mapped, the init is withheld and refinement takes the v23 path). Any MALFORMED
+        span returns the input unchanged with ``None`` (the beam is not a v24 carrier;
+        downstream validity checks dispose of it as today).
+    """
+    ids = list(token_ids)
+    mapped: list[int] = []
+    values: list[float] = []
+    index = 0
+    while index < len(ids):
+        token = ids[index]
+        if token == start_id:
+            inner = ids[index + 1:index + 1 + IEEE754_N_BITS]
+            closed = (
+                index + IEEE754_SPAN_LENGTH <= len(ids)
+                and ids[index + IEEE754_SPAN_LENGTH - 1] == end_id
+                and all(bit in (b0_id, b1_id) for bit in inner)
+            )
+            if not closed:
+                return ids, None
+            bit_tokens = [BIT_ONE_TOKEN if bit == b1_id else BIT_ZERO_TOKEN for bit in inner]
+            values.append(bit_tokens_to_float32(bit_tokens))
+            mapped.append(constant_id)
+            index += IEEE754_SPAN_LENGTH
+            continue
+        if token in (end_id, b0_id, b1_id):
+            # A stray close/bit outside a span: not a v24-well-formed carrier.
+            return ids, None
+        mapped.append(token)
+        index += 1
+
+    if not values:
+        return mapped, None
+    if constant_id in ids or not all(math.isfinite(value) for value in values):
+        return mapped, None
+    return mapped, values
