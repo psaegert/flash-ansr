@@ -4,6 +4,34 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-18
+
+Compatibility release for the simplipy 0.13 line, plus the numeric-constants foundations for
+the next model generation. All new decoding features default off; existing configs produce
+byte-identical behavior.
+
+### Changed
+- **simplipy 0.13 lockstep.** Requirements pin `simplipy>=0.13.0,<0.14`; test engine bundles use
+  generation-2 simplipy assets; mask handling ported to the simplipy 0.13 API; symbolic-data
+  `>=0.14` contract fix.
+
+### Added
+- **Per-constant mixed serialization** (`constant_representation` config gate): numeric constants
+  can serialize as a `<float>` summary token or an expanded `<ieee754>` bit span, mixed 50/50 per
+  constant; universal loss mask for `<float>`-target positions.
+- **Constrained decoding** (`constrain_ieee754`, default off): a decode-time grammar mask at the
+  sampling, beam, and static logit sites guaranteeing every opened `<ieee754>` span emits exactly
+  32 bits and closes within the length budget.
+- **KV-span compaction**: closed `<ieee754>` spans compact out of the dynamic KV cache with
+  verified equivalence to the fresh forward (atol 1e-5), re-encoding the collapsed `<float>`
+  position.
+- **`condition_dropout` config key** (default 0) for unconditional-prediction training instances.
+
+### Removed
+- **v23-era model support.** flash-ansr 0.12.x remains the supported pairing for v23 models
+  (`pip install "flash-ansr<0.13"`); this line targets the next model generation. Tests requiring
+  a published model are skipped until new checkpoints exist.
+
 ## [0.12.1] - 2026-08-17
 
 - Cap `simplipy>=0.10,<0.12`: simplipy 0.12.0 deletes `SimpliPyEngine.mask` (six call sites here), refuses the generation-1 `dev_7-3` engine the v23 models pin, and silently flips the `explicit_constant_placeholders` default -- 0.12.x of flash-ansr only ever worked against simplipy 0.10/0.11.
