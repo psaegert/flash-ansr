@@ -10,6 +10,9 @@ with refiner failure falling back exactly to the v23 path).
 NOTE on the test engine: models are constructed directly from the configs/test model
 kwargs with the generation-2 'base' engine (the lane C1/C2 pattern); refiner-level tests
 use the released 'acj-4-3' engine like tests/test_refine.py.
+
+Format ruling 2026-08-18: expanded constants are HEX NIBBLE spans -- `<ieee754>` + 8
+tokens over the 16-symbol `<h0>`..`<hf>` alphabet + `</ieee754>` = 10 tokens (was 34).
 """
 import copy
 import math
@@ -24,10 +27,11 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_BITS,
+    IEEE754_N_NIBBLES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    bit_tokens_to_float32,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
     wrap_float32,
 )
 
@@ -81,10 +85,10 @@ def _steered_model(tokenizer: Tokenizer, engine, biases: dict[str, float], seed:
 
 def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
     """Assert every `<ieee754>` span in `ids` is well-formed and return the decoded values
-    (the C2 helper; stray bit/close tokens outside a span fail the assertion)."""
+    (the C2 helper; stray nibble/close tokens outside a span fail the assertion)."""
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
-    b0_id, b1_id = tokenizer["<b0>"], tokenizer["<b1>"]
+    id_to_nibble = {int(tokenizer[token]): token for token in NIBBLE_TOKENS}
 
     values = []
     i = 0
@@ -92,13 +96,14 @@ def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
         token = ids[i]
         if token == open_id:
             assert i + IEEE754_SPAN_LENGTH <= len(ids), f"unterminated span at {i}: {ids}"
-            inner = ids[i + 1:i + 1 + IEEE754_N_BITS]
-            assert all(x in (b0_id, b1_id) for x in inner), f"non-bit token inside span at {i}: {ids}"
-            assert ids[i + IEEE754_SPAN_LENGTH - 1] == close_id, f"span at {i} not closed after 32 bits: {ids}"
-            values.append(bit_tokens_to_float32(["<b1>" if x == b1_id else "<b0>" for x in inner]))
+            inner = ids[i + 1:i + 1 + IEEE754_N_NIBBLES]
+            assert all(x in id_to_nibble for x in inner), f"non-nibble token inside span at {i}: {ids}"
+            assert ids[i + IEEE754_SPAN_LENGTH - 1] == close_id, f"span at {i} not closed after 8 nibbles: {ids}"
+            values.append(nibble_tokens_to_float32([id_to_nibble[x] for x in inner]))
             i += IEEE754_SPAN_LENGTH
         else:
-            assert token not in (b0_id, b1_id, close_id), f"stray bit/close outside span at {i}: {ids}"
+            assert token not in id_to_nibble and token != close_id, \
+                f"stray nibble/close outside span at {i}: {ids}"
             i += 1
     return values
 
@@ -118,8 +123,9 @@ def _nan(*shape: int) -> torch.Tensor:
 _T9_BIASES = {
     "sin": 13.9,
     "</expression>": 13.0,
-    "<b0>": 11.0,
-    "<b1>": -20.0,
+    # Steer the 16-symbol in-span alphabet onto <h0> (the all-zero span decodes to +0.0,
+    # a finite value compaction accepts); every other nibble is pushed far down.
+    **{token: (11.0 if token == "<h0>" else -20.0) for token in NIBBLE_TOKENS},
     IEEE754_END_TOKEN: 8.0,
     "<eos>": 8.0,
 }
@@ -354,7 +360,7 @@ def test_t10_pruned_mid_span_leaves_no_orphaned_state(tokenizer: Tokenizer, engi
     calls = _spied_compaction(monkeypatch)
     biases = {
         IEEE754_START_TOKEN: 14.0,
-        "<b1>": -20.0,
+        **{token: -20.0 for token in NIBBLE_TOKENS},
         IEEE754_END_TOKEN: 8.0,
         "*": 13.0,
         "x1": 12.0,
@@ -386,12 +392,12 @@ def test_t10_pruned_mid_span_leaves_no_orphaned_state(tokenizer: Tokenizer, engi
 
 
 def test_t10_nonfinite_span_is_left_expanded(tokenizer: Tokenizer, engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
-    """An all-<b1> span decodes to NaN: the numeric channel cannot carry it, so compaction
+    """An all-<hf> span (0xffffffff) decodes to NaN: the numeric channel cannot carry it, so compaction
     must NOT fire (the span stays expanded in history and in the returned beam) -- the
     landed T8 refusal, honored by the beam loop instead of crashing it."""
     calls = _spied_compaction(monkeypatch)
     _model, _data, beams, _log_probs, completed = _run_t9_beam_search(
-        tokenizer, engine, bias_overrides={"<b0>": -20.0, "<b1>": 11.0})
+        tokenizer, engine, bias_overrides={"<h0>": -20.0, "<hf>": 11.0})
 
     assert calls == [], "compaction fired on a non-finite constant"
     nan_spans = 0
@@ -429,8 +435,7 @@ def test_t11_span_to_constant_mapping_is_bit_exact(tokenizer: Tokenizer) -> None
         ids,
         start_id=int(tokenizer[IEEE754_START_TOKEN]),
         end_id=int(tokenizer[IEEE754_END_TOKEN]),
-        b0_id=int(tokenizer["<b0>"]),
-        b1_id=int(tokenizer["<b1>"]),
+        nibble_ids=[int(tokenizer[token]) for token in NIBBLE_TOKENS],
         constant_id=constant_id,
     )
 
@@ -451,8 +456,7 @@ def test_t11_mapping_degenerate_cases(tokenizer: Tokenizer) -> None:
     kwargs = dict(
         start_id=int(tokenizer[IEEE754_START_TOKEN]),
         end_id=int(tokenizer[IEEE754_END_TOKEN]),
-        b0_id=int(tokenizer["<b0>"]),
-        b1_id=int(tokenizer["<b1>"]),
+        nibble_ids=[int(tokenizer[token]) for token in NIBBLE_TOKENS],
         constant_id=int(tokenizer["<constant>"]),
     )
     plain = [int(tokenizer["*"]), int(tokenizer["x1"]), int(tokenizer["x2"])]
@@ -467,7 +471,7 @@ def test_t11_mapping_degenerate_cases(tokenizer: Tokenizer) -> None:
     assert mapped == truncated and values is None
 
     # Well-formed but non-finite value: the SKELETON is still salvaged, the init is not.
-    nan_span = [kwargs["start_id"], *([kwargs["b1_id"]] * IEEE754_N_BITS), kwargs["end_id"]]
+    nan_span = [kwargs["start_id"], *([kwargs["nibble_ids"][0xf]] * IEEE754_N_NIBBLES), kwargs["end_id"]]
     mapped, values = replace_ieee754_spans_with_constants([int(tokenizer["*"]), *nan_span, int(tokenizer["x1"])], **kwargs)
     assert mapped == [int(tokenizer["*"]), kwargs["constant_id"], int(tokenizer["x1"])]
     assert values is None
