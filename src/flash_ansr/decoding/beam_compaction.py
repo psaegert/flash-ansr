@@ -6,7 +6,7 @@ desynchronize -- each beam carries its own cache length and RoPE frontier. This 
 the dynamic cache PER BEAM (batch-1 per row), groups equal-length rows for each forward
 (the dynamic path derives positions from the cached length, so only equal-length rows may
 batch), and compacts exactly the rows that JUST emitted ``</ieee754>`` -- those rows share
-their span position by construction (spans are fixed 34-long), satisfying the T8 helper's
+their span position by construction (spans are fixed 10-long), satisfying the T8 helper's
 uniform-tail precondition per group.
 
 Safety rules (T10):
@@ -19,7 +19,7 @@ Safety rules (T10):
   cannot carry it -- the landed T8 refusal, honored here by exclusion instead of an error).
 
 Score accounting (T9 comparability): scores are cumulative log-probs over EMITTED tokens,
-exactly as in the uniform loop. A compacted constant contributes its 34 emitted-token
+exactly as in the uniform loop. A compacted constant contributes its 10 emitted-token
 log-probs once, whenever they were emitted, and the continuation is scored from the
 compacted state (whose logits the T8/T9 golden equality pins to the compact view) -- no
 rescoring, no double counting, so beams that compacted at different steps rank on one
@@ -27,7 +27,7 @@ scale. There is no length normalization to skew.
 
 Return convention: sequences present constants in EXPANDED form -- compacted ``<float>``
 slots are re-expanded from their numeric-channel values before leaving this function
-(exact: float32 -> bits is the T1 round-trip). Downstream (validity, refiner handshake)
+(exact: float32 -> hex nibbles is the T1 round-trip). Downstream (validity, refiner handshake)
 therefore sees one uniform carrier, and the compact token never leaks out of the decode.
 Prompt-prefix ``<float>`` tokens (e.g. the complexity slot) are NOT re-expanded: only
 positions at or beyond the generated region are.
@@ -47,12 +47,11 @@ from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
 from flash_ansr.decoding.compaction import compact_closed_ieee754_spans
 from flash_ansr.decoding.constrained import COMPACT_CONSTANT_TOKEN, IEEE754GrammarConstraint
 from flash_ansr.utils.ieee754 import (
-    BIT_ONE_TOKEN,
-    BIT_ZERO_TOKEN,
     IEEE754_END_TOKEN,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    bit_tokens_to_float32,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
     wrap_float32,
 )
 
@@ -98,10 +97,10 @@ def _split_rows(past: list, n_rows: int) -> list[list]:
     ]
 
 
-def _tail_span_value(row: torch.Tensor, length: int, b1_id: int) -> float:
-    """Decode the value of the just-closed span at the tail of ``row`` (grammar-guaranteed bits)."""
+def _tail_span_value(row: torch.Tensor, length: int, id_to_nibble: dict[int, str]) -> float:
+    """Decode the value of the just-closed span at the tail of ``row`` (grammar-guaranteed nibbles)."""
     inner = row[length - IEEE754_SPAN_LENGTH + 1:length - 1].tolist()
-    return bit_tokens_to_float32([BIT_ONE_TOKEN if token == b1_id else BIT_ZERO_TOKEN for token in inner])
+    return nibble_tokens_to_float32([id_to_nibble[token] for token in inner])
 
 
 def beam_search_with_compaction(
@@ -130,8 +129,8 @@ def beam_search_with_compaction(
 
     open_id = int(tokenizer[IEEE754_START_TOKEN])
     close_id = int(tokenizer[IEEE754_END_TOKEN])
-    b0_id = int(tokenizer[BIT_ZERO_TOKEN])
-    b1_id = int(tokenizer[BIT_ONE_TOKEN])
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    id_to_nibble = {token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)}
     float_id = int(tokenizer[COMPACT_CONSTANT_TOKEN])
     constant_id = int(tokenizer['<constant>'])
     eos_token_id = int(tokenizer['<eos>'])
@@ -158,7 +157,7 @@ def beam_search_with_compaction(
         for position in range(length):
             token = int(row[position])
             if token == float_id and position >= prefix_length:
-                out.extend(int(tokenizer[bit]) for bit in wrap_float32(float(num_row[position])))
+                out.extend(int(tokenizer[nibble]) for nibble in wrap_float32(float(num_row[position])))
             else:
                 out.append(token)
         return out
@@ -221,14 +220,14 @@ def beam_search_with_compaction(
             return False
         mapped, _values = replace_ieee754_spans_with_constants(
             expression_tokens, start_id=open_id, end_id=close_id,
-            b0_id=b0_id, b1_id=b1_id, constant_id=constant_id)
+            nibble_ids=nibble_ids, constant_id=constant_id)
         decoded = tokenizer.decode(mapped, special_tokens='<constant>')
         registrable = bool(model.simplipy_engine.is_valid(decoded)) and len(decoded) > 1
         validity_cache[key] = registrable
         return registrable
 
-    # Each step emits one token per live beam; each compaction frees 33 slots and there is
-    # at most one compaction per 34 emissions, so 2x the uniform budget bounds the loop.
+    # Each step emits one token per live beam; each compaction frees 9 slots and there is
+    # at most one compaction per 10 emissions, so 2x the uniform budget caps the loop.
     max_steps = 2 * (max_len - prefix_length)
     pbar = tqdm(total=max_steps, disable=not verbose,
                 desc=f"Generating beams with compaction (max length: {max_len})", smoothing=0.0)
@@ -284,7 +283,7 @@ def beam_search_with_compaction(
                         for position, beam_index in enumerate(chunk)
                         if group_length - IEEE754_SPAN_LENGTH >= prefix_length
                         and int(sequences[beam_index, group_length - 1]) == close_id
-                        and math.isfinite(_tail_span_value(sequences[beam_index], group_length, b1_id))
+                        and math.isfinite(_tail_span_value(sequences[beam_index], group_length, id_to_nibble))
                     ]
                     if closing:
                         compact_positions = [position for position, _ in closing]

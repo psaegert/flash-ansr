@@ -194,6 +194,30 @@ def _spied_compaction(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return calls
 
 
+def _spied_grammar_states(monkeypatch: pytest.MonkeyPatch, tokenizer: Tokenizer) -> dict[str, int]:
+    """Count, from OUTSIDE, how often the decode loop asked for a mask while a beam sat
+    INSIDE an open span -- the mid-span state T10 is about (the production grammar stays
+    uninstrumented; the class method is monkeypatched)."""
+    from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
+
+    open_id = int(tokenizer[IEEE754_START_TOKEN])
+    close_id = int(tokenizer[IEEE754_END_TOKEN])
+    counts = {"mid_span": 0}
+    real_forbidden = IEEE754GrammarConstraint.forbidden
+
+    def spy(self, prefixes, remaining=None):  # type: ignore[no-untyped-def]
+        for row in prefixes.tolist():
+            if open_id not in row:
+                continue
+            tail = row[len(row) - 1 - row[::-1].index(open_id):]
+            if close_id not in tail:
+                counts["mid_span"] += 1
+        return real_forbidden(self, prefixes, remaining)
+
+    monkeypatch.setattr(IEEE754GrammarConstraint, "forbidden", spy)
+    return counts
+
+
 def _run_t9_beam_search(tokenizer: Tokenizer, engine, bias_overrides: dict[str, float] | None = None):  # type: ignore[no-untyped-def]
     biases = dict(_T9_BIASES)
     if bias_overrides:
@@ -353,11 +377,12 @@ def test_t10_compaction_fires_only_on_closed_tag(tokenizer: Tokenizer, engine, m
 
 
 def test_t10_pruned_mid_span_leaves_no_orphaned_state(tokenizer: Tokenizer, engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
-    """Beams that open spans here are outcompeted within a step or two (bit tokens carry
+    """Beams that open spans here are outcompeted within a step or two (nibble tokens carry
     no bias), so every span-carrying beam is pruned MID-expansion: compaction must never
     fire, the search must terminate cleanly, and no fragment of a pruned span may
     resurface in the results."""
     calls = _spied_compaction(monkeypatch)
+    states = _spied_grammar_states(monkeypatch, tokenizer)
     biases = {
         IEEE754_START_TOKEN: 14.0,
         **{token: -20.0 for token in NIBBLE_TOKENS},
@@ -377,6 +402,11 @@ def test_t10_pruned_mid_span_leaves_no_orphaned_state(tokenizer: Tokenizer, engi
 
     assert calls == [], "compaction fired although no span ever closed"
     assert beams, "mid-span pruning starved the beam search"
+    # Non-vacuity: a span really did open and the loop really did evaluate the MID-SPAN
+    # state before pruning it. The retired 34-token spans never fit the max_len=16 budget
+    # (the grammar's budget rule forbade opening outright), so this guard only became
+    # exercisable with 10-token hex spans.
+    assert states["mid_span"] > 0, "no beam ever entered a span: the mid-span path is untested"
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
     float_id = tokenizer[COMPACT_TOKEN]

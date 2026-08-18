@@ -41,7 +41,7 @@ from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig,
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import simplify_and_mask
 from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
-from flash_ansr.utils.ieee754 import BIT_ONE_TOKEN, BIT_ZERO_TOKEN, IEEE754_END_TOKEN, IEEE754_START_TOKEN
+from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -1865,8 +1865,7 @@ class FlashANSR(BaseEstimator):
                     beam,
                     start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
                     end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
-                    b0_id=int(self.tokenizer[BIT_ZERO_TOKEN]),
-                    b1_id=int(self.tokenizer[BIT_ONE_TOKEN]),
+                    nibble_ids=[int(self.tokenizer[token]) for token in NIBBLE_TOKENS],
                     constant_id=int(self.tokenizer['<constant>']),
                 )
                 for beam in beams
