@@ -208,6 +208,26 @@ class FlashANSRDataset:
 
         source_obj = ProblemSource({"catalog": catalog_spec, "sampling": source_cfg.get("sampling", {})})
 
+        # The catalog's `simplify` is symbolic-data's parameter, which flash-ansr only passes
+        # through -- and symbolic-data still offers its own `simplify='sympy'` skeleton path.
+        # flash-ansr removed SymPy simplification (owner ruling, 2026-08-18: it is an ablation of
+        # the product simplifier, and ablations do not live in production code), so the removal on
+        # this side is a REFUSAL at the boundary: flash-ansr will not build a data source that
+        # routes into it. Checked on the constructed catalog rather than the raw config so every
+        # spelling is covered (inline dict, config path, curated name, saved directory).
+        # Construction does not sample, so nothing has run through the removed path yet.
+        catalog_simplify = getattr(source_obj.catalog, "simplify", None)
+        if catalog_simplify is not None and not isinstance(catalog_simplify, bool):
+            raise ValueError(
+                f"The catalog config requests simplify={catalog_simplify!r}. flash-ansr removed the "
+                "simplify='sympy' path (2026-08-18): SymPy simplification was an ablation of the "
+                "product simplifier, and ablations do not live in production code. symbolic-data "
+                "still implements it, but flash-ansr refuses to build a data source that routes into "
+                "it. Set `simplify: true` (SimpliPy, the product default) or `simplify: false` in the "
+                "catalog config. There is no fallback -- this config is refused rather than silently "
+                "served by a different simplifier."
+            )
+
         tokenizer = Tokenizer.from_config(config_["tokenizer"])
 
         preprocessor_cfg = config_.get("preprocessor") if isinstance(config_, dict) else None

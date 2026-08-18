@@ -33,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integer division that silently dropped `batch_size % gradient_accumulation_steps` samples from every
   step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
 
+### Removed
+- **The `simplify='sympy'` simplification path is gone (owner ruling, 2026-08-18).** SymPy
+  simplification was an *ablation* of the product simplifier (SimpliPy), and the standing rule is that
+  production code stays clean and minimal: experiments and ablations branch off it or patch it, they
+  never live inside it. Removed: the `simplify == 'sympy'` branch in `FlashANSRModel._postprocess_sampled`,
+  the `flash_ansr.utils.sympy_timeout` helper module, and the `[sympy]` optional-dependency extra.
+  `simplify` is now a two-state `bool` (`True` = SimpliPy, the product default; `False` = no
+  simplification) everywhere it is accepted.
+- **A config that asks for the removed path FAILS LOUDLY; it never falls back.** `simplify='sympy'` is
+  refused by `SoftmaxSamplingConfig` / `create_generation_config` and by `sample_top_kp` /
+  `_sample_top_kp_static` / `_postprocess_sampled` with a `ValueError` naming the removal. Silently
+  re-serving such a config with SimpliPy would swap the canonicalizer a config explicitly named — a
+  behaviour change wearing a removal's clothes — so the request is refused instead.
+- **Catalog configs requesting the SymPy skeleton path are refused at the flash-ansr boundary.**
+  `simplify` in a *catalog* config is symbolic-data's parameter, which flash-ansr only passes through;
+  symbolic-data keeps its own `simplify='sympy'` path and is unchanged. `FlashANSRDataset.from_config`
+  now raises rather than build a data source that routes into it.
+- **Shipped configs migrated**: `configs/v23.0-20M-A-Y{1,10,50K}/catalog_train.yaml` — the SymPy
+  ablation arms — move from `simplify: 'sympy'` to `simplify: true`. They are otherwise identical to
+  the corresponding `-A-S*` arms except for `max_tries`.
+
 ## [0.13.0] - 2026-08-18
 
 Compatibility release for the simplipy 0.13 line, plus the numeric-constants foundations for
