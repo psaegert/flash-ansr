@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import mask_all_literals, simplify_and_mask
+from flash_ansr.utils.skeleton import simplify_and_mask
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -20,7 +20,7 @@ from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.model.decoders.static_kv import StaticKVCache
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep, tree_stats
-from flash_ansr.utils.sympy_timeout import _sympy_simplify_with_timeout
+from flash_ansr.utils.generation import validate_simplify
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
@@ -1297,7 +1297,7 @@ class FlashANSRModel(nn.Module):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         verbose: bool = False,
         use_cache: bool = False,
@@ -1336,8 +1336,10 @@ class FlashANSRModel(nn.Module):
             Softmax temperature applied to the logits before sampling. Defaults to 1.0.
         valid_only : bool, optional
             Keep only grammar-valid completed sequences. Defaults to True.
-        simplify : bool or str, optional
-            Simplify decoded expressions during post-processing. Defaults to True.
+        simplify : bool, optional
+            Canonicalize decoded expressions with SimpliPy during post-processing. Defaults to
+            True. Two-state only: the ``'sympy'`` selector was removed (see
+            :func:`flash_ansr.utils.generation.validate_simplify`).
         unique : bool, optional
             Deduplicate by constantified skeleton. Defaults to True.
         verbose : bool, optional
@@ -1373,6 +1375,9 @@ class FlashANSRModel(nn.Module):
             When ``return_raw`` is False, ``(sequences, scores, is_valid)`` after
             post-processing; when ``return_raw`` is True, the raw ``(sequences, scores)``.
         """
+        # Refuse a removed simplifier BEFORE decoding: `return_raw=True` skips post-processing
+        # entirely, so a guard only in `_postprocess_sampled` would let the request through.
+        simplify = validate_simplify(simplify)
 
         # Static-shape, position-indexed-KV decode (Stage 1b): route to the chunk-major static loop.
         # `static_decode` is tri-state: None -> the deployed default for capable models, True/False explicit
@@ -1625,7 +1630,7 @@ class FlashANSRModel(nn.Module):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         verbose: bool = False,
         return_raw: bool = False,
@@ -1654,6 +1659,7 @@ class FlashANSRModel(nn.Module):
         ``early_stop_every``: check ``all-finished`` every K steps (K=1 mirrors the dynamic path's
         per-step sync for an apples-to-apples Stage-1b measurement; Stage 2 bumps it for the graph).
         """
+        simplify = validate_simplify(simplify)
         global STATIC_DECODE_CALL_COUNT
         STATIC_DECODE_CALL_COUNT += 1  # engagement proof for gates (see module-level definition)
         device = data.device
@@ -1853,7 +1859,7 @@ class FlashANSRModel(nn.Module):
         completed_sequences: list[list[int]],
         completed_scores: list[float],
         *,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         valid_only: bool = True,
         eos_token: int | None = None,
@@ -1869,6 +1875,7 @@ class FlashANSRModel(nn.Module):
         every simplipy.simplify() call in ONE parallel pass and pass the results in; the per-expression
         engine.simplify() is then a dict lookup with the SAME values, so the output stays byte-identical.
         """
+        simplify = validate_simplify(simplify)
         if eos_token is None:
             eos_token = self.tokenizer['<eos>']
 
@@ -1894,21 +1901,6 @@ class FlashANSRModel(nn.Module):
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
                         expression = simplify_and_mask(self.simplipy_engine, expression)
-                elif simplify == 'sympy':
-                    try:
-                        infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
-                        result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
-                        if result is not None:
-                            simplified_infix = result[0].replace('Abs', 'abs')
-                            parsed = self.simplipy_engine.parse(simplified_infix)
-                            # deprecated numbers_to_constant replaced by the masking module
-                            # (mask_all == its legacy mask-everything behavior, minus the
-                            # float()-probe blind spots the deprecation notice calls out)
-                            parsed = mask_all_literals(self.simplipy_engine, parsed)
-                            if self.simplipy_engine.is_valid(parsed):
-                                expression = parsed
-                    except Exception:
-                        pass  # keep unsimplified expression on failure
 
                 expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:
