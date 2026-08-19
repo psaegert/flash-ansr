@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -82,9 +82,19 @@ def canonicalize_beam(
 
     decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
     simplified_seq = seq0
+    non_finite = False
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
-        simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
-        simplified_seq = before + tokenizer.encode(simplified_expression) + after
+        try:
+            simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
+        except NonFiniteExpressionError:
+            # The completion simplifies to inf/nan: unrefinable, which is exactly this function's
+            # existing `expression is None` state (the caller treats the completion as invalid).
+            # The key stays defined -- on the UNSIMPLIFIED sequence, as in the unparseable branch
+            # above -- so the tree still deduplicates these consistently.
+            record_non_finite_drop()
+            non_finite = True
+        else:
+            simplified_seq = before + tokenizer.encode(simplified_expression) + after
 
     canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
     key = tuple(canonical_seq)
@@ -99,8 +109,9 @@ def canonicalize_beam(
     expression = tokenizer.decode(canon_expr_tokens, special_tokens='<constant>')
     # Validity gate ONLY (matches the deploy refine gate `is_valid(beam_decoded)`); do NOT reject len<=1 --
     # a bare single-variable expression (e.g. 'x15') is a legitimate, refinable candidate. The len>1 guard
-    # above governs only whether to SIMPLIFY, not validity.
-    if not simplipy_engine.is_valid(expression):
+    # above governs only whether to SIMPLIFY, not validity. A non-finite fold leaves through the SAME
+    # gate: it is unrefinable for the same reason, and the key stays defined so the tree still dedups it.
+    if non_finite or not simplipy_engine.is_valid(expression):
         return key, None
     return key, expression
 
@@ -910,9 +921,19 @@ class FlashANSRModel(nn.Module):
                                         n_pruned += 1
                                         continue
 
-                                    simplified_tokens = self.tokenizer.encode(
-                                        simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
-                                    )
+                                    try:
+                                        simplified_tokens = self.tokenizer.encode(
+                                            simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
+                                        )
+                                    except NonFiniteExpressionError:
+                                        # Simplification folded this completion to inf/nan. Drop it
+                                        # like any other unusable completion (the `is_valid` and
+                                        # length rejections just above do the same) -- a sampled
+                                        # expression that folds to nan is a rejectable sample, not a
+                                        # programming error, and raising would abort a whole decode.
+                                        record_non_finite_drop()
+                                        n_pruned += 1
+                                        continue
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
                                 else:
@@ -1900,7 +1921,16 @@ class FlashANSRModel(nn.Module):
                     if simplify_map is not None and raw_key in simplify_map:
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
-                        expression = simplify_and_mask(self.simplipy_engine, expression)
+                        try:
+                            expression = simplify_and_mask(self.simplipy_engine, expression)
+                        except NonFiniteExpressionError:
+                            # Dropped, NOT recorded as an invalid candidate: the raw sequence IS a
+                            # valid expression (it is the simplification that is unusable), so
+                            # filing it under `is_valid=False` would mislabel it in the ledger --
+                            # `build_candidate_ledger` re-runs validity on non-fitted candidates
+                            # and would classify it FIT_FAILED anyway. Counted instead.
+                            record_non_finite_drop()
+                            continue
 
                 expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:

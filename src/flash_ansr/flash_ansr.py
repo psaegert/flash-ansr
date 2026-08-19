@@ -39,7 +39,7 @@ from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, 
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -268,11 +268,20 @@ def _persistent_pool_init(engine: Any) -> None:
     _SIMPLIFY_ENGINE = engine
 
 
-def _simplify_pool_worker(raw_expr: tuple) -> tuple:
+def _simplify_pool_worker(raw_expr: tuple) -> tuple | None:
     """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial).
     simplipy.simplify is the equivalence loop only; mask() relabels any emitted literals to
-    <constant> for the model's vocabulary (matching the pre-carve-out masked output)."""
-    return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
+    <constant> for the model's vocabulary (matching the pre-carve-out masked output).
+
+    Returns ``None`` when the expression folds to a non-finite skeleton. The worker does NOT drop
+    the candidate itself: it runs in a forked process, so it can neither raise across the fork
+    without killing the run nor increment the parent's drop count. Reporting by omission leaves
+    the key out of the lookup map, and the parent then takes its normal serial path -- which
+    raises, drops and counts in the process that can be observed."""
+    try:
+        return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
+    except NonFiniteExpressionError:
+        return None
 
 
 @dataclass
@@ -992,7 +1001,7 @@ class FlashANSR(BaseEstimator):
             # and fall back to the legacy per-call fork below, never re-forking the pool post-CUDA.
             try:
                 simplified = self._refine_pool.map_ordered(_simplify_pool_worker, raw_list, chunksize=chunksize, recover=False)
-                return dict(zip(raw_list, simplified))
+                return {raw: value for raw, value in zip(raw_list, simplified) if value is not None}
             except BrokenProcessPool:
                 if getattr(self, '_overlap_mode', False):
                     # Step 4b: under the overlap engine a GPU producer thread is live and the consumer
@@ -1009,7 +1018,9 @@ class FlashANSR(BaseEstimator):
                                  initializer=_simplify_pool_init,
                                  initargs=(self.simplipy_engine,)) as executor:
             simplified = list(executor.map(_simplify_pool_worker, raw_list, chunksize=chunksize))
-        return dict(zip(raw_list, simplified))
+        # Non-finite folds come back as None and are OMITTED, so _postprocess_sampled misses the
+        # key and falls back to its guarded serial simplify (which drops + counts in this process).
+        return {raw: value for raw, value in zip(raw_list, simplified) if value is not None}
 
     def _build_mcts_config(self) -> MCTSConfig:
         cfg = self.generation_config
@@ -2012,7 +2023,13 @@ class FlashANSR(BaseEstimator):
                             if variant_key in seen_expressions:
                                 continue
 
-                            simplified_variant = simplify_and_mask(self.simplipy_engine, list(variant))
+                            try:
+                                simplified_variant = simplify_and_mask(self.simplipy_engine, list(variant))
+                            except NonFiniteExpressionError:
+                                # Pruning a constant can make a denominator vanish; the variant is
+                                # then unusable. Dropped like the is_valid rejection below it.
+                                record_non_finite_drop()
+                                continue
                             if not self.simplipy_engine.is_valid(simplified_variant):
                                 continue
 

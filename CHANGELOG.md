@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`configs/VERSIONS.md` compatibility register.** Records that every shipped (pre-v24) config
+  works only with flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`) — this line targets v24
+  configs only — with the two concrete reasons (the retired `dev_7-3` engine pin, and the removal
+  of v23-era model support in 0.13.0), plus a note that the `v23.0-20M-A-Y{1,10,50K}` bundles are
+  now near-duplicates of the `-A-S*` arms after their SymPy arm was migrated to `simplify: true`.
+  No config is deleted. `docs/training.md` and `docs/evaluation.md` point at the register.
+- **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
+  `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
+  sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
+  'x1']`, `is_valid` True), so such skeletons re-entered the candidate stream as valid predictions.
+  `flash_ansr.utils.skeleton.simplify_and_mask` — the one seam every candidate producer shares —
+  now raises `NonFiniteExpressionError`, and each producer (beam search, softmax post-processing,
+  MCTS canonicalization, the constant-pruning lane, the forked simplify pool, dataset conversion)
+  DROPS the candidate and counts it: `flash_ansr.utils.non_finite_drops()` /
+  `reset_non_finite_drops()` expose the tally. The token set matches symbolic-data's generator-side
+  forbidden list (`float("inf")`, `float("-inf")`, `float("nan")`, `zoo`, `nan`, `oo`). On the
+  training-data INGEST direction (`mask_literals_positional`) it does NOT drop but propagates:
+  symbolic-data rejects these before yielding, so one arriving means a broken producer contract,
+  and skipping it would silently reshape the training distribution.
 - **`encoder_mask_query_norms` model flag (default `False`)**: threads the support-set padding mask
   into the ISAB self-refinement blocks' query/residual-stream SetNorms (`norm_q`/`norm_ffn`) and zeroes
   sub-layer outputs on padded query rows. Legacy (default) behavior computes those shared set statistics
