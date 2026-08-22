@@ -154,6 +154,11 @@ class Attention(nn.Module):
         else:
             raise ValueError("Either key_value or past_key_value must be provided")
 
+        # Ensure K/V batch dim matches Q (handles encoder memory broadcast)
+        if k.shape[0] != batch_size_q:
+            k = k.expand(batch_size_q, -1, -1, -1).contiguous()
+            v = v.expand(batch_size_q, -1, -1, -1).contiguous()
+
         attn_output = F.scaled_dot_product_attention(
             q,
             k,
@@ -179,10 +184,6 @@ class Attention(nn.Module):
         output = self.w_o(attn_output)
 
         if use_cache:
-            # Ensure cached K/V batch dim matches Q (handles encoder memory broadcast)
-            if k.shape[0] != batch_size_q:
-                k = k.expand(batch_size_q, -1, -1, -1).contiguous()
-                v = v.expand(batch_size_q, -1, -1, -1).contiguous()
             return output, (k, v)
         return output
 
@@ -243,6 +244,12 @@ class Attention(nn.Module):
             ca_holder[0] = cached
         k, v = cached
         q = self.w_q(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        # Ensure K/V batch dim matches Q (handles encoder memory broadcast); cached so the
+        # expand costs one call per decode, not one per step.
+        if k.shape[0] != batch_size_q:
+            k = k.expand(batch_size_q, -1, -1, -1).contiguous()
+            v = v.expand(batch_size_q, -1, -1, -1).contiguous()
+            ca_holder[0] = (k, v)
         attn_output = F.scaled_dot_product_attention(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
         return self.w_o(attn_output)
