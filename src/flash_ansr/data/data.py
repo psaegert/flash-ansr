@@ -105,7 +105,7 @@ class FlashANSRDataset:
             self.unconditional_prob = float(unconditional_prob)
         # v24 constants representation gate: 'v23' (default) keeps serialization byte-identical to
         # current behavior; 'ieee754_mixed' serializes constants per-constant 50/50 as expanded
-        # <ieee754> bit spans or compact <float> tokens (see flash_ansr.data.serialization).
+        # <ieee754> hex-nibble spans or compact <float> tokens (see flash_ansr.data.serialization).
         if constant_representation not in CONSTANT_REPRESENTATIONS:
             raise ValueError(
                 f"Unknown constant_representation {constant_representation!r}; "

@@ -8,8 +8,8 @@ channel (``input_num``), injected downstream by
 ``'ieee754_mixed'`` replaces each constant occurrence -- per constant independently with
 probability ``expanded_probability`` (default 0.5, seeded RNG) -- with one of two forms:
 
-* EXPANDED (34 tokens): ``<ieee754>`` + 32 bit tokens + ``</ieee754>``; the numeric channel is
-  NaN across the whole span (the value lives in the bits).
+* EXPANDED (10 tokens): ``<ieee754>`` + 8 hex-nibble tokens + ``</ieee754>``; the numeric channel
+  is NaN across the whole span (the value lives in the nibbles).
 * COMPACT (1 token): the existing ``<float>`` special token, with the float32 value on the
   numeric channel at that position. The label at positions whose TARGET is ``<float>`` is
   loss-masked downstream (:func:`flash_ansr.data.collate.mask_float_targets`): the model must
@@ -25,11 +25,10 @@ from typing import Sequence
 import numpy as np
 
 from flash_ansr.utils.ieee754 import (
-    BIT_ONE_TOKEN,
-    BIT_ZERO_TOKEN,
-    IEEE754_N_BITS,
+    IEEE754_N_NIBBLES,
     IEEE754_SPAN_LENGTH,
-    bit_tokens_to_float32,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
     wrap_float32,
 )
 
@@ -184,16 +183,21 @@ def replace_ieee754_spans_with_constants(
     *,
     start_id: int,
     end_id: int,
-    b0_id: int,
-    b1_id: int,
+    nibble_ids: Sequence[int],
     constant_id: int,
 ) -> tuple[list[int], list[float] | None]:
     """Map expanded ``<ieee754>`` spans to ``<constant>`` slots + their float32 values (T11).
 
-    The DESERIALIZATION half of the refiner handshake: each well-formed 34-token span in a
+    The DESERIALIZATION half of the refiner handshake: each well-formed 10-token span in a
     generated beam collapses to one ``constant_id`` token, and the decoded values (exact,
     via the token codec -- no decimal round-trip) become the refiner's verbatim ``p0`` in
     order of appearance.
+
+    Parameters
+    ----------
+    nibble_ids : Sequence[int]
+        The 16 hex-nibble token ids IN NIBBLE-VALUE ORDER (``nibble_ids[10]`` is ``<ha>``),
+        i.e. ``[int(tokenizer[token]) for token in NIBBLE_TOKENS]``.
 
     Returns
     -------
@@ -206,6 +210,12 @@ def replace_ieee754_spans_with_constants(
         span returns the input unchanged with ``None`` (the beam is not a v24 carrier;
         downstream validity checks dispose of it as today).
     """
+    if len(nibble_ids) != len(NIBBLE_TOKENS):
+        raise ValueError(
+            f"Expected {len(NIBBLE_TOKENS)} nibble ids in nibble-value order, got {len(nibble_ids)}."
+        )
+    id_to_nibble = {token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)}
+
     ids = list(token_ids)
     mapped: list[int] = []
     values: list[float] = []
@@ -213,21 +223,20 @@ def replace_ieee754_spans_with_constants(
     while index < len(ids):
         token = ids[index]
         if token == start_id:
-            inner = ids[index + 1:index + 1 + IEEE754_N_BITS]
+            inner = ids[index + 1:index + 1 + IEEE754_N_NIBBLES]
             closed = (
                 index + IEEE754_SPAN_LENGTH <= len(ids)
                 and ids[index + IEEE754_SPAN_LENGTH - 1] == end_id
-                and all(bit in (b0_id, b1_id) for bit in inner)
+                and all(nibble in id_to_nibble for nibble in inner)
             )
             if not closed:
                 return ids, None
-            bit_tokens = [BIT_ONE_TOKEN if bit == b1_id else BIT_ZERO_TOKEN for bit in inner]
-            values.append(bit_tokens_to_float32(bit_tokens))
+            values.append(nibble_tokens_to_float32([id_to_nibble[nibble] for nibble in inner]))
             mapped.append(constant_id)
             index += IEEE754_SPAN_LENGTH
             continue
-        if token in (end_id, b0_id, b1_id):
-            # A stray close/bit outside a span: not a v24-well-formed carrier.
+        if token == end_id or token in id_to_nibble:
+            # A stray close/nibble outside a span: not a v24-well-formed carrier.
             return ids, None
         mapped.append(token)
         index += 1
