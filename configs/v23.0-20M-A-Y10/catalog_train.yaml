@@ -15,7 +15,7 @@ sample_strategy:
   independent_dimensions: true
 
 allow_nan: false
-simplify: 'sympy'
+simplify: true
 
 literal_prior:
   name: 'normal'

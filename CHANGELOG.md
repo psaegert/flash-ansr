@@ -4,6 +4,103 @@ All notable changes to Flash-ANSR are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`configs/VERSIONS.md` compatibility register.** Records that every shipped (pre-v24) config
+  works only with flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`) — this line targets v24
+  configs only — with the two concrete reasons (the retired `dev_7-3` engine pin, and the removal
+  of v23-era model support in 0.13.0), plus a note that the `v23.0-20M-A-Y{1,10,50K}` bundles are
+  now near-duplicates of the `-A-S*` arms after their SymPy arm was migrated to `simplify: true`.
+  No config is deleted. `docs/training.md` and `docs/evaluation.md` point at the register.
+- **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
+  `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
+  sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
+  'x1']`, `is_valid` True), so such skeletons re-entered the candidate stream as valid predictions.
+  `flash_ansr.utils.skeleton.simplify_and_mask` — the one seam every candidate producer shares —
+  now raises `NonFiniteExpressionError`, and each producer (beam search, softmax post-processing,
+  MCTS canonicalization, the constant-pruning lane, the forked simplify pool, dataset conversion)
+  DROPS the candidate and counts it: `flash_ansr.utils.non_finite_drops()` /
+  `reset_non_finite_drops()` expose the tally. The token set matches symbolic-data's generator-side
+  forbidden list (`float("inf")`, `float("-inf")`, `float("nan")`, `zoo`, `nan`, `oo`). On the
+  training-data INGEST direction (`mask_literals_positional`) it does NOT drop but propagates:
+  symbolic-data rejects these before yielding, so one arriving means a broken producer contract,
+  and skipping it would silently reshape the training distribution.
+- **`encoder_mask_query_norms` model flag (default `False`)**: threads the support-set padding mask
+  into the ISAB self-refinement blocks' query/residual-stream SetNorms (`norm_q`/`norm_ffn`) and zeroes
+  sub-layer outputs on padded query rows. Legacy (default) behavior computes those shared set statistics
+  over the zero-padding too, which understates the set RMS by `sqrt(n_valid/set_len)` — inflating valid
+  rows by up to 32x for a 1-point support set padded to 1024 during training — and, for small sets, lets
+  projection-bias "garbage" rows dominate the `norm_ffn` statistic. With the flag enabled, a sample's
+  encoding is invariant to padding length (tested). Existing checkpoints were trained with the legacy
+  semantics and load/run bit-identically under the default.
+- **`sanitize_input_num` model flag (default `False`)**: zeroes the numeric-token bit encodings at
+  positions whose `input_num` is NaN (no numeric payload). The previous guard checked `isnan` on the
+  IEEE-754 *bit encodings* — which are ±1 for any input, including NaN — and therefore never fired
+  (dead code, removed); non-constant positions received a learned NaN-bit-pattern embedding instead of
+  zero. Checkpoints trained before this flag (v23- and v24-era alike) keep the legacy behavior
+  under the default. Under the mixed constants representation (0.13.0), `input_num` is NaN at
+  every non-payload position by design, so enabling this flag is recommended for models trained
+  from now on.
+
+### Fixed
+- **Encoder padding masks are coerced to `bool` (with a warning) at the `SetTransformer` entry.**
+  `scaled_dot_product_attention` interprets float masks as *additive logit biases*, so a float 0/1
+  padding mask silently masked nothing. The standard pipeline (`FlashANSRDataset.collate`) already
+  passes bool masks and is unaffected; direct callers passing float masks were silently unprotected.
+- **Trainer raises on gradient-accumulation remainder.** `_train_step` split micro-batches with an
+  integer division that silently dropped `batch_size % gradient_accumulation_steps` samples from every
+  step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
+
+### Removed
+- **The `simplify='sympy'` simplification path is gone (owner ruling, 2026-08-18).** SymPy
+  simplification was an *ablation* of the product simplifier (SimpliPy), and the standing rule is that
+  production code stays clean and minimal: experiments and ablations branch off it or patch it, they
+  never live inside it. Removed: the `simplify == 'sympy'` branch in `FlashANSRModel._postprocess_sampled`,
+  the `flash_ansr.utils.sympy_timeout` helper module, and the `[sympy]` optional-dependency extra.
+  `simplify` is now a two-state `bool` (`True` = SimpliPy, the product default; `False` = no
+  simplification) everywhere it is accepted.
+- **A config that asks for the removed path FAILS LOUDLY; it never falls back.** `simplify='sympy'` is
+  refused by `SoftmaxSamplingConfig` / `create_generation_config` and by `sample_top_kp` /
+  `_sample_top_kp_static` / `_postprocess_sampled` with a `ValueError` naming the removal. Silently
+  re-serving such a config with SimpliPy would swap the canonicalizer a config explicitly named — a
+  behaviour change wearing a removal's clothes — so the request is refused instead.
+- **Catalog configs requesting the SymPy skeleton path are refused at the flash-ansr boundary.**
+  `simplify` in a *catalog* config is symbolic-data's parameter, which flash-ansr only passes through;
+  symbolic-data keeps its own `simplify='sympy'` path and is unchanged. `FlashANSRDataset.from_config`
+  now raises rather than build a data source that routes into it.
+- **Shipped configs migrated**: `configs/v23.0-20M-A-Y{1,10,50K}/catalog_train.yaml` — the SymPy
+  ablation arms — move from `simplify: 'sympy'` to `simplify: true`. They are otherwise identical to
+  the corresponding `-A-S*` arms except for `max_tries`.
+
+## [0.13.0] - 2026-08-18
+
+Compatibility release for the simplipy 0.13 line, plus the numeric-constants foundations for
+the next model generation. All new decoding features default off; existing configs produce
+byte-identical behavior.
+
+### Changed
+- **simplipy 0.13 lockstep.** Requirements pin `simplipy>=0.13.0,<0.14`; test engine bundles use
+  generation-2 simplipy assets; mask handling ported to the simplipy 0.13 API; symbolic-data
+  `>=0.14` contract fix.
+
+### Added
+- **Per-constant mixed serialization** (`constant_representation` config gate): numeric constants
+  can serialize as a `<float>` summary token or an expanded `<ieee754>` bit span, mixed 50/50 per
+  constant; universal loss mask for `<float>`-target positions.
+- **Constrained decoding** (`constrain_ieee754`, default off): a decode-time grammar mask at the
+  sampling, beam, and static logit sites guaranteeing every opened `<ieee754>` span emits exactly
+  32 bits and closes within the length budget.
+- **KV-span compaction**: closed `<ieee754>` spans compact out of the dynamic KV cache with
+  verified equivalence to the fresh forward (atol 1e-5), re-encoding the collapsed `<float>`
+  position.
+- **`condition_dropout` config key** (default 0) for unconditional-prediction training instances.
+
+### Removed
+- **v23-era model support.** flash-ansr 0.12.x remains the supported pairing for v23 models
+  (`pip install "flash-ansr<0.13"`); this line targets the next model generation. Tests requiring
+  a published model are skipped until new checkpoints exist.
+
 ## [0.12.1] - 2026-08-17
 
 - Cap `simplipy>=0.10,<0.12`: simplipy 0.12.0 deletes `SimpliPyEngine.mask` (six call sites here), refuses the generation-1 `dev_7-3` engine the v23 models pin, and silently flips the `explicit_constant_placeholders` default -- 0.12.x of flash-ansr only ever worked against simplipy 0.10/0.11.

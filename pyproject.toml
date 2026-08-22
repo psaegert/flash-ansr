@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.12.1"
+version = "0.13.0"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
@@ -92,14 +92,6 @@ dev = [
     "mkdocs-get-deps",
     "mkdocs-material-extensions",
     "mkdocstrings-python",
-]
-
-# Optional: enables the legacy ``simplify="sympy"`` simplification backend in
-# ``model/flash_ansr_model.py``. The product default simplifies via simplipy and needs no sympy;
-# install flash-ansr[sympy] only to use the sympy path. The baseline-model adapters (E2E, NeSymReS)
-# that also used sympy moved to the `srbf` package in v0.6.
-sympy = [
-    "sympy>=1.10",
 ]
 
 [tool.setuptools]

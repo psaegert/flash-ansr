@@ -2,6 +2,30 @@
 from typing import Any, Callable, Iterator, Literal, Mapping, overload
 
 
+def validate_simplify(value: Any) -> bool:
+    """Return ``value`` if it is a valid ``simplify`` selector, else raise ``ValueError``.
+
+    ``simplify`` is a two-state switch: ``True`` canonicalizes with SimpliPy (the product
+    simplifier), ``False`` leaves the decoded expression alone. It used to accept the string
+    ``'sympy'`` as a third state; that path was an ablation of the product simplifier and was
+    removed (owner ruling, 2026-08-18) under the rule that ablations do not live in production
+    code.
+
+    A removed selector is REFUSED, never quietly mapped onto another one: silently answering
+    ``simplify='sympy'`` with SimpliPy would change which canonicalizer a config named without
+    telling anyone, which is a behaviour change wearing a removal's clothes.
+    """
+    if isinstance(value, bool):
+        return value
+    raise ValueError(
+        f"Invalid simplify={value!r}. flash-ansr removed the simplify='sympy' path (2026-08-18): "
+        "SymPy simplification was an ablation of the product simplifier, and ablations do not live "
+        "in production code. Use simplify=True (SimpliPy, the product default) or simplify=False "
+        "(no simplification). There is no fallback -- this request is refused rather than silently "
+        "served by a different simplifier."
+    )
+
+
 class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
@@ -111,7 +135,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     batch_size: int | str
     temperature: float
     valid_only: bool
-    simplify: bool | str
+    simplify: bool
     unique: bool
     use_cache: bool
     static_decode: bool | None
@@ -127,7 +151,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         batch_size: int | str = 'auto',   # c-adaptive chunk size (suggest_batch_size); int overrides
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         use_cache: bool = True,   # KV cache ON by default (quality-equivalent; the inference speed win)
         static_decode: bool | None = None,   # tri-state: None=deployed default for capable models, True/False explicit
@@ -141,7 +165,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.batch_size = batch_size
         self.temperature = temperature
         self.valid_only = valid_only
-        self.simplify = simplify
+        self.simplify = validate_simplify(simplify)
         self.unique = unique
         self.use_cache = use_cache
         self.static_decode = static_decode

@@ -12,7 +12,7 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import mask_all_literals, simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -20,7 +20,7 @@ from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr.model.decoders.static_kv import StaticKVCache
 from flash_ansr.decoding.mcts import MonteCarloTreeSearch, MCTSConfig, PolicyStep, tree_stats
-from flash_ansr.utils.sympy_timeout import _sympy_simplify_with_timeout
+from flash_ansr.utils.generation import validate_simplify
 
 
 ValueFunction: TypeAlias = Callable[[Tuple[int, ...]], float]
@@ -82,9 +82,19 @@ def canonicalize_beam(
 
     decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
     simplified_seq = seq0
+    non_finite = False
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
-        simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
-        simplified_seq = before + tokenizer.encode(simplified_expression) + after
+        try:
+            simplified_expression = simplify_and_mask(simplipy_engine, decoded_expression)
+        except NonFiniteExpressionError:
+            # The completion simplifies to inf/nan: unrefinable, which is exactly this function's
+            # existing `expression is None` state (the caller treats the completion as invalid).
+            # The key stays defined -- on the UNSIMPLIFIED sequence, as in the unparseable branch
+            # above -- so the tree still deduplicates these consistently.
+            record_non_finite_drop()
+            non_finite = True
+        else:
+            simplified_seq = before + tokenizer.encode(simplified_expression) + after
 
     canonical_seq = list(tokenizer.constantify_expression(simplified_seq))
     key = tuple(canonical_seq)
@@ -99,8 +109,9 @@ def canonicalize_beam(
     expression = tokenizer.decode(canon_expr_tokens, special_tokens='<constant>')
     # Validity gate ONLY (matches the deploy refine gate `is_valid(beam_decoded)`); do NOT reject len<=1 --
     # a bare single-variable expression (e.g. 'x15') is a legitimate, refinable candidate. The len>1 guard
-    # above governs only whether to SIMPLIFY, not validity.
-    if not simplipy_engine.is_valid(expression):
+    # above governs only whether to SIMPLIFY, not validity. A non-finite fold leaves through the SAME
+    # gate: it is unrefinable for the same reason, and the key stays defined so the tree still dedups it.
+    if non_finite or not simplipy_engine.is_valid(expression):
         return key, None
     return key, expression
 
@@ -158,12 +169,21 @@ class FlashANSRModel(nn.Module):
 
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
+
+        encoder_mask_query_norms: bool = False,
+        sanitize_input_num: bool = False,
     ) -> None:
         super().__init__()
 
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
         self.encoder_max_n_variables = encoder_max_n_variables
+        # Zero the numeric-token embedding inputs at positions whose input_num is NaN (i.e. no
+        # numeric payload). NaN must be detected on the RAW values: the IEEE-754 bit pre-encoder
+        # maps NaN to a valid ±1 bit pattern, so isnan on the pre-encodings never fires. Legacy
+        # models (flag False) were trained WITH the NaN-pattern embedding at every non-constant
+        # position and must keep receiving it.
+        self.sanitize_input_num = sanitize_input_num
 
         if pre_encoder_bits == 32:
             pre_encoder_cls = IEEE75432PreEncoder
@@ -194,7 +214,8 @@ class FlashANSRModel(nn.Module):
             ffn_norm=encoder_ffn_norm,
             output_norm=encoder_output_norm,
             norm_position=encoder_block_norm_position,
-            use_checkpointing=use_checkpointing
+            use_checkpointing=use_checkpointing,
+            mask_query_norms=encoder_mask_query_norms,
         )
 
         if self.encoder.output_dim != decoder_model_dim:
@@ -433,6 +454,9 @@ class FlashANSRModel(nn.Module):
 
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
+
+            encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
+            sanitize_input_num=config_.get("sanitize_input_num", False),
         )
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -521,10 +545,21 @@ class FlashANSRModel(nn.Module):
         # We need to pass the numeric embeddings to it.
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
-            input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
             if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
                 numeric_embeddings = numeric_embeddings.squeeze(-2)
+            if self.sanitize_input_num:
+                # NaN marks "no numeric payload at this position". Detect it on the RAW values:
+                # the bit pre-encoder maps NaN to a valid ±1 pattern, so checking the
+                # pre-encodings (as legacy code did) can never fire. Zero the embedding OUTPUT
+                # (not the input bits): numeric_embedding has a bias, so a zeroed bit-vector
+                # would still inject a learned constant. Legacy models keep the NaN-pattern
+                # embedding they were trained with (flag defaults to False).
+                payload_mask = ~torch.isnan(input_num)
+                if payload_mask.dim() == numeric_embeddings.dim():
+                    numeric_embeddings = numeric_embeddings * payload_mask
+                else:
+                    numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
         else:
             numeric_embeddings = None
 
@@ -563,10 +598,16 @@ class FlashANSRModel(nn.Module):
         self.memory = memory
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
-            input_num_pre_encodings[torch.isnan(input_num_pre_encodings)] = 0
             numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
             if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
                 numeric_embeddings = numeric_embeddings.squeeze(-2)
+            if self.sanitize_input_num:
+                # See forward(): zero the embedding OUTPUT at NaN (no-payload) positions.
+                payload_mask = ~torch.isnan(input_num)
+                if payload_mask.dim() == numeric_embeddings.dim():
+                    numeric_embeddings = numeric_embeddings * payload_mask
+                else:
+                    numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
         else:
             numeric_embeddings = None
 
@@ -904,9 +945,19 @@ class FlashANSRModel(nn.Module):
                                         n_pruned += 1
                                         continue
 
-                                    simplified_tokens = self.tokenizer.encode(
-                                        simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
-                                    )
+                                    try:
+                                        simplified_tokens = self.tokenizer.encode(
+                                            simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
+                                        )
+                                    except NonFiniteExpressionError:
+                                        # Simplification folded this completion to inf/nan. Drop it
+                                        # like any other unusable completion (the `is_valid` and
+                                        # length rejections just above do the same) -- a sampled
+                                        # expression that folds to nan is a rejectable sample, not a
+                                        # programming error, and raising would abort a whole decode.
+                                        record_non_finite_drop()
+                                        n_pruned += 1
+                                        continue
                                     simplified_tuple = tuple(before + simplified_tokens + after)
                                     simplify_cache[expr_key] = simplified_tuple
                                 else:
@@ -1291,7 +1342,7 @@ class FlashANSRModel(nn.Module):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         verbose: bool = False,
         use_cache: bool = False,
@@ -1330,8 +1381,10 @@ class FlashANSRModel(nn.Module):
             Softmax temperature applied to the logits before sampling. Defaults to 1.0.
         valid_only : bool, optional
             Keep only grammar-valid completed sequences. Defaults to True.
-        simplify : bool or str, optional
-            Simplify decoded expressions during post-processing. Defaults to True.
+        simplify : bool, optional
+            Canonicalize decoded expressions with SimpliPy during post-processing. Defaults to
+            True. Two-state only: the ``'sympy'`` selector was removed (see
+            :func:`flash_ansr.utils.generation.validate_simplify`).
         unique : bool, optional
             Deduplicate by constantified skeleton. Defaults to True.
         verbose : bool, optional
@@ -1367,6 +1420,9 @@ class FlashANSRModel(nn.Module):
             When ``return_raw`` is False, ``(sequences, scores, is_valid)`` after
             post-processing; when ``return_raw`` is True, the raw ``(sequences, scores)``.
         """
+        # Refuse a removed simplifier BEFORE decoding: `return_raw=True` skips post-processing
+        # entirely, so a guard only in `_postprocess_sampled` would let the request through.
+        simplify = validate_simplify(simplify)
 
         # Static-shape, position-indexed-KV decode (Stage 1b): route to the chunk-major static loop.
         # `static_decode` is tri-state: None -> the deployed default for capable models, True/False explicit
@@ -1619,7 +1675,7 @@ class FlashANSRModel(nn.Module):
         batch_size: int = 128,
         temperature: float = 1.0,
         valid_only: bool = True,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         verbose: bool = False,
         return_raw: bool = False,
@@ -1648,6 +1704,7 @@ class FlashANSRModel(nn.Module):
         ``early_stop_every``: check ``all-finished`` every K steps (K=1 mirrors the dynamic path's
         per-step sync for an apples-to-apples Stage-1b measurement; Stage 2 bumps it for the graph).
         """
+        simplify = validate_simplify(simplify)
         global STATIC_DECODE_CALL_COUNT
         STATIC_DECODE_CALL_COUNT += 1  # engagement proof for gates (see module-level definition)
         device = data.device
@@ -1847,7 +1904,7 @@ class FlashANSRModel(nn.Module):
         completed_sequences: list[list[int]],
         completed_scores: list[float],
         *,
-        simplify: bool | str = True,
+        simplify: bool = True,
         unique: bool = True,
         valid_only: bool = True,
         eos_token: int | None = None,
@@ -1863,6 +1920,7 @@ class FlashANSRModel(nn.Module):
         every simplipy.simplify() call in ONE parallel pass and pass the results in; the per-expression
         engine.simplify() is then a dict lookup with the SAME values, so the output stays byte-identical.
         """
+        simplify = validate_simplify(simplify)
         if eos_token is None:
             eos_token = self.tokenizer['<eos>']
 
@@ -1887,22 +1945,16 @@ class FlashANSRModel(nn.Module):
                     if simplify_map is not None and raw_key in simplify_map:
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
-                        expression = simplify_and_mask(self.simplipy_engine, expression)
-                elif simplify == 'sympy':
-                    try:
-                        infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
-                        result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
-                        if result is not None:
-                            simplified_infix = result[0].replace('Abs', 'abs')
-                            parsed = self.simplipy_engine.parse(simplified_infix)
-                            # deprecated numbers_to_constant replaced by the masking module
-                            # (mask_all == its legacy mask-everything behavior, minus the
-                            # float()-probe blind spots the deprecation notice calls out)
-                            parsed = mask_all_literals(self.simplipy_engine, parsed)
-                            if self.simplipy_engine.is_valid(parsed):
-                                expression = parsed
-                    except Exception:
-                        pass  # keep unsimplified expression on failure
+                        try:
+                            expression = simplify_and_mask(self.simplipy_engine, expression)
+                        except NonFiniteExpressionError:
+                            # Dropped, NOT recorded as an invalid candidate: the raw sequence IS a
+                            # valid expression (it is the simplification that is unusable), so
+                            # filing it under `is_valid=False` would mislabel it in the ledger --
+                            # `build_candidate_ledger` re-runs validity on non-fitted candidates
+                            # and would classify it FIT_FAILED anyway. Counted instead.
+                            record_non_finite_drop()
+                            continue
 
                 expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:
