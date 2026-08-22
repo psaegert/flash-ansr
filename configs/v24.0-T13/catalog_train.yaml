@@ -6,7 +6,7 @@
 # request and keeps the first n in-domain rows, instead of demanding every row land
 # in-domain at once.
 type: lample_charton
-simplipy_engine: 'base'
+simplipy_engine: 'acj-4-3'
 # Holdout: fastsrb only. The v23 pattern also excluded the frozen val artifact
 # ("v23-val"), but that is a generation-1 artifact simplipy >= 0.12 refuses to load
 # (retired hyper-operator vocabulary) and T13 does not evaluate against it -- val here
