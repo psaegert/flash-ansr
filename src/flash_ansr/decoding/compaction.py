@@ -1,7 +1,7 @@
 """Compaction of closed ``<ieee754>`` spans on the DYNAMIC KV decode path (contract T8).
 
-At inference the model emits expanded constants (``<ieee754>`` + 32 bits + ``</ieee754>``,
-34 tokens); the pipeline compacts each closed span into ONE ``<float>`` token carrying the
+At inference the model emits expanded constants (``<ieee754>`` + 8 hex nibbles + ``</ieee754>``,
+10 tokens); the pipeline compacts each closed span into ONE ``<float>`` token carrying the
 decoded float32 value on the numeric channel (``input_num``). Compaction must be a
 MECHANICAL NO-OP relative to the compact view: the golden test (T8) checks that logits for
 every post-compaction position computed via this incremental path equal, to float
@@ -9,11 +9,11 @@ tolerance, a fresh forward pass over the compact-view sequence.
 
 Mechanics (per batch of rows that each JUST closed a span, i.e. the span is the cache tail):
 
-1. bits -> float32 value (exact, via the token codec);
-2. span collapse: the 34 span tokens are replaced by ``<float>`` at the span start, the
+1. nibbles -> float32 value (exact, via the token codec);
+2. span collapse: the 10 span tokens are replaced by ``<float>`` at the span start, the
    tail is cleared to ``<pad>``;
 3. ``<float>`` + input_num: the value rides the numeric channel at the collapsed slot;
-4. KV drop + re-encode at COLLAPSED positions: the 34 span entries are dropped from every
+4. KV drop + re-encode at COLLAPSED positions: the 10 span entries are dropped from every
    layer's self-attention K/V (cross-attention K/V are untouched -- they are position-free
    encoder memory), then the compact token is re-encoded through the decoder with the
    truncated cache, which places it at RoPE position ``span_start`` (the dynamic path
@@ -23,7 +23,7 @@ Mechanics (per batch of rows that each JUST closed a span, i.e. the span is the 
    equivalence -- exactly the class of bug T8 exists to catch.
 
 Scope: the dynamic (cat-grow) KV path; batch rows must share the span position (rows that
-close spans at the SAME step always do, since spans have fixed length 34). Per-beam
+close spans at the SAME step always do, since spans have fixed length 10). Per-beam
 compaction (desynchronized close steps, beam-reindexed caches) is T9, layered on top in
 ``beam_compaction.py``: it keeps per-beam caches, groups equal-length rows, and calls this
 function per group -- the precondition above then holds by construction.
@@ -44,12 +44,11 @@ from typing import TYPE_CHECKING
 import torch
 
 from flash_ansr.utils.ieee754 import (
-    BIT_ONE_TOKEN,
-    BIT_ZERO_TOKEN,
     IEEE754_END_TOKEN,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    bit_tokens_to_float32,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
 )
 from flash_ansr.decoding.constrained import COMPACT_CONSTANT_TOKEN
 
@@ -71,7 +70,7 @@ class CompactionResult:
         constant at the collapsed slot, NaN elsewhere.
     past_key_values : list
         Dynamic per-layer ``((sa_k, sa_v), (ca_k, ca_v))`` cache of length ``length``
-        (the 34 span entries dropped, the compact token re-encoded at the collapsed
+        (the 10 span entries dropped, the compact token re-encoded at the collapsed
         position).
     length : int
         The post-compaction sequence length (``span_start + 1``).
@@ -106,7 +105,7 @@ def compact_closed_ieee754_spans(
         The model whose decoder re-encodes the compact token.
     sequences : torch.Tensor
         ``(B, L_buffer)`` long tensor; positions ``[0, current_length)`` are the generated
-        tokens and EVERY row's last 34 of them must form a complete span (the row just
+        tokens and EVERY row's last 10 of them must form a complete span (the row just
         emitted ``</ieee754>``).
     current_length : int
         Number of generated tokens; the cache must cover exactly these positions.
@@ -142,8 +141,9 @@ def compact_closed_ieee754_spans(
     tokenizer = model.tokenizer
     open_id = int(tokenizer[IEEE754_START_TOKEN])
     close_id = int(tokenizer[IEEE754_END_TOKEN])
-    b0_id = int(tokenizer[BIT_ZERO_TOKEN])
-    b1_id = int(tokenizer[BIT_ONE_TOKEN])
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    id_to_nibble = {token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)}
+    nibble_id_tensor = torch.tensor(nibble_ids, dtype=torch.long, device=sequences.device)
     float_id = int(tokenizer[COMPACT_CONSTANT_TOKEN])
     pad_id = int(tokenizer["<pad>"])
 
@@ -156,15 +156,14 @@ def compact_closed_ieee754_spans(
             f"<ieee754> ... </ieee754> at positions [{span_start}, {current_length})."
         )
     inner = span[:, 1:-1]
-    if not bool(((inner == b0_id) | (inner == b1_id)).all()):
-        raise ValueError("Malformed span: non-bit token between the <ieee754> tags.")
+    if not bool(torch.isin(inner, nibble_id_tensor).all()):
+        raise ValueError("Malformed span: non-nibble token between the <ieee754> tags.")
 
-    # 1. bits -> float32 values (exact decode via the token codec).
+    # 1. nibbles -> float32 values (exact decode via the token codec).
     batch = sequences.shape[0]
     decoded = []
     for row in inner.tolist():
-        bit_tokens = [BIT_ONE_TOKEN if token == b1_id else BIT_ZERO_TOKEN for token in row]
-        decoded.append(bit_tokens_to_float32(bit_tokens))
+        decoded.append(nibble_tokens_to_float32([id_to_nibble[token] for token in row]))
     if not all(torch.isfinite(torch.tensor(decoded)).tolist()):
         raise ValueError(
             f"Non-finite decoded constant(s) {decoded!r}: refusing to compact -- NaN on the "
@@ -190,7 +189,7 @@ def compact_closed_ieee754_spans(
     new_input_num[:, span_start:current_length] = float("nan")
     new_input_num[:, span_start] = values
 
-    # 4. KV drop: remove the 34 span entries from every layer's SELF-attention cache;
+    # 4. KV drop: remove the 10 span entries from every layer's SELF-attention cache;
     # cross-attention K/V (position-free encoder memory) are reused untouched.
     trimmed = [
         (
