@@ -1955,21 +1955,6 @@ class FlashANSRModel(nn.Module):
                             # and would classify it FIT_FAILED anyway. Counted instead.
                             record_non_finite_drop()
                             continue
-                elif simplify == 'sympy':
-                    try:
-                        infix = self.simplipy_engine.prefix_to_infix(expression, power='**')
-                        result = _sympy_simplify_with_timeout(infix, timeout_seconds=1.0)
-                        if result is not None:
-                            simplified_infix = result[0].replace('Abs', 'abs')
-                            parsed = self.simplipy_engine.read_infix(simplified_infix)
-                            # deprecated numbers_to_constant replaced by the masking module
-                            # (mask_all == its legacy mask-everything behavior, minus the
-                            # float()-probe blind spots the deprecation notice calls out)
-                            parsed = mask_all_literals(self.simplipy_engine, parsed)
-                            if self.simplipy_engine.is_valid(parsed):
-                                expression = parsed
-                    except Exception:
-                        pass  # keep unsimplified expression on failure
 
                 expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:
