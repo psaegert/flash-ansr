@@ -654,7 +654,6 @@ class Trainer:
             accumulation across micro-batches).
         """
         self.model.train()
-        self.optimizer.zero_grad()
 
         total_ce_loss = 0.0
         total_loss = 0.0
@@ -710,15 +709,17 @@ class Trainer:
             total_ce_loss += ce_loss.item()
             total_loss += loss.item() * self.gradient_accumulation_steps
 
-        # Perform the optimizer step
-        self.scaler.unscale_(self.optimizer)
-
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
 
-        total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
+        # Unscale/clip/zero belong to the step, not the backward: with do_optimizer_step=False
+        # the gradients must survive into the next call. zero_grad moves here (after the step)
+        # from the top of the method for the same reason.
         if do_optimizer_step:
+            self.scaler.unscale_(self.optimizer)
+            total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            self.optimizer.zero_grad()
 
             # Log metrics and update scheduler after the optimizer step
             self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
