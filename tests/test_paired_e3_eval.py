@@ -167,3 +167,32 @@ def test_paired_e3_gap_none_when_nothing_eligible(tokenizer: Tokenizer) -> None:
         "data_attn_mask": [np.ones(4, dtype=np.float32)],
     }
     assert paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128) is None
+
+
+def test_paired_e3_gap_accepts_tensor_batch(tokenizer: Tokenizer) -> None:
+    # The real pipeline hands RAW batches whose fields are torch tensors (cuda in
+    # production: the first T13 validation crashed on np.asarray(cuda_tensor), and the
+    # x/y/mask stacking would have crashed the same way one line later). The
+    # tensor-typed batch must produce the same metrics as the list/ndarray-typed one.
+    import torch
+
+    model = _tiny_model(tokenizer)
+    n_support, n_vars = 4, 10
+    batch = {
+        "skeleton": [SKELETON, ["*", "<constant>", "x1"], SKELETON],
+        "constants": [np.asarray([1.5, -2.25], dtype=np.float32),
+                      np.asarray([3.0], dtype=np.float32),
+                      np.asarray([0.5, 4.0], dtype=np.float32)],
+        "x_tensors": [np.zeros((n_support, n_vars), dtype=np.float32)] * 3,
+        "y_tensors": [np.ones((n_support, 1), dtype=np.float32)] * 3,
+        "data_attn_mask": [np.ones(n_support, dtype=np.float32)] * 3,
+    }
+    listy = paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
+    tensor_batch = dict(batch)
+    for key in ("constants", "x_tensors", "y_tensors", "data_attn_mask"):
+        tensor_batch[key] = [torch.as_tensor(item) for item in batch[key]]
+    tensory = paired_e3_gap(model, tokenizer, tensor_batch, device="cpu", max_seq_len=128)
+    assert listy is not None and tensory is not None
+    assert tensory["e3_n"] == listy["e3_n"]
+    assert tensory["e3_gap"] == pytest.approx(listy["e3_gap"])
+    assert tensory["e3_nll_expanded"] == pytest.approx(listy["e3_nll_expanded"])

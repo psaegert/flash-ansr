@@ -98,6 +98,10 @@ def paired_e3_gap(
 
     rows: list[tuple[int, list[tuple[list[int], list[float], list[int]]]]] = []
     for index, (skeleton, values) in enumerate(zip(skeletons, constants)):
+        # RAW batch fields may be torch tensors on ANY device (the real pipeline hands
+        # cuda tensors; the unit fixtures hand lists) -- never np.asarray a tensor.
+        if torch.is_tensor(values):
+            values = values.detach().cpu()
         views = build_paired_views(list(skeleton), [float(v) for v in np.asarray(values).ravel()],
                                    tokenizer, max_seq_len, zero_tail_bits=zero_tail_bits)
         if views is not None:
@@ -108,9 +112,11 @@ def paired_e3_gap(
         return None
 
     pad_id = int(tokenizer["<pad>"])
-    x_tensors = torch.as_tensor(np.asarray([batch["x_tensors"][i] for i, _ in rows]), dtype=torch.float32)
-    y_tensors = torch.as_tensor(np.asarray([batch["y_tensors"][i] for i, _ in rows]), dtype=torch.float32)
-    attn_mask = torch.as_tensor(np.asarray([batch["data_attn_mask"][i] for i, _ in rows]), dtype=torch.float32)
+    # torch.stack of per-row torch.as_tensor keeps whatever device the batch lives on
+    # (np.asarray over a list of cuda tensors raises); .to(device) then normalizes.
+    x_tensors = torch.stack([torch.as_tensor(batch["x_tensors"][i], dtype=torch.float32) for i, _ in rows])
+    y_tensors = torch.stack([torch.as_tensor(batch["y_tensors"][i], dtype=torch.float32) for i, _ in rows])
+    attn_mask = torch.stack([torch.as_tensor(batch["data_attn_mask"][i], dtype=torch.float32) for i, _ in rows])
     data = torch.cat([x_tensors, y_tensors], dim=-1).to(device)
     attn_mask = attn_mask.to(device)
 
