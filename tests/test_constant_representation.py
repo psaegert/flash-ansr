@@ -6,6 +6,11 @@ config key ('v23' default = byte-identical to current behavior).
 
 T1 (codec round-trip) lives in tests/test_ieee754.py.
 
+Format ruling 2026-08-18: constants expand to HEX NIBBLES -- `<ieee754>` + 8 nibble
+tokens over the 16-symbol `<h0>`..`<hf>` alphabet + `</ieee754>` = 10 tokens (was 34).
+The v24.0 target dialect is simplipy's TAGGED canonical form with no masking and no
+explicit number tokens; its template vocabulary is pinned by the T2 block below.
+
 NOTE on the test engine: the configs/test bundle references the generation-1
 'dev_7-3' simplipy asset, refused at load by the simplipy generation gate this
 repo now targets (a pre-existing baseline condition, out of scope here). The
@@ -25,9 +30,17 @@ from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
+from flash_ansr.utils.ieee754 import (
+    IEEE754_END_TOKEN,
+    IEEE754_N_NIBBLES,
+    IEEE754_SPAN_LENGTH,
+    IEEE754_START_TOKEN,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
+)
 
 
-NEW_SPECIAL_TOKENS = ["<ieee754>", "</ieee754>", "<b0>", "<b1>"]
+NEW_SPECIAL_TOKENS = [IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS]
 COMPACT_TOKEN = "<float>"
 
 
@@ -99,12 +112,154 @@ def test_t2_tokens_disjoint_from_expression_tokens(tokenizer: Tokenizer) -> None
     assert not (set(NEW_SPECIAL_TOKENS) | {COMPACT_TOKEN}) & expression_tokens
 
 
-def test_t2_bit_tokens_are_not_the_literals(tokenizer: Tokenizer) -> None:
-    # <b0>/<b1> are DEDICATED bit tokens, not the numeric literals 0/1.
-    assert "<b0>" != "0" and "<b1>" != "1"
-    assert tokenizer["<b0>"] != tokenizer["0"]
-    assert tokenizer["<b1>"] != tokenizer["1"]
-    assert tokenizer.encode(["<b0>", "<b1>"]) != tokenizer.encode(["0", "1"])
+def test_t2_nibble_tokens_are_not_the_literals(tokenizer: Tokenizer) -> None:
+    # <h0>..<hf> are DEDICATED hex-nibble tokens, never the literals they spell.
+    assert len(NEW_SPECIAL_TOKENS) == 2 + 16
+    for value, token in enumerate(NIBBLE_TOKENS):
+        literal = f"{value:x}"
+        assert token != literal
+        if literal in tokenizer:
+            assert tokenizer[token] != tokenizer[literal]
+    assert tokenizer.encode(["<h0>", "<h1>"]) != tokenizer.encode(["0", "1"])
+
+
+# ---------------------------------------------------------------------------
+# T2 (v24.0 target format) — the tagged-dialect template vocabulary
+#
+# Owner ruling 2026-08-18: v24.0 trains on simplipy's TAGGED CANONICAL form, without
+# masking; every numeric literal rides the ieee754 constants format, so the vocabulary
+# carries NO explicit number tokens (the -10..10 integers are gone) and no gen-1 sugar.
+# The tag set is verified against a LIVE engine, never against memory.
+# ---------------------------------------------------------------------------
+
+#: Prefix expressions whose canonical simplify output exercises every delimiter the
+#: tagged dialect emits (n-ary bags plus the subtract/divide role markers).
+_TAGGED_PROBES = [
+    ["+", "x1", "*", "2", "x2"],
+    ["-", "x1", "x2"],
+    ["/", "x1", "x2"],
+    ["+", "*", "3", "x1", "/", "x2", "-", "x3", "1"],
+    ["sin", "+", "x1", "1"],
+]
+
+#: Generation-1 sugar that must NOT survive into the v24 vocabulary.
+_GEN1_SUGAR = ("pow2", "pow3", "pow4", "pow5", "pow1_2", "pow1_3", "pow1_4", "pow1_5",
+               "mult2", "mult3", "mult4", "mult5", "div2", "div3", "div4", "div5")
+
+
+@pytest.fixture(scope="module")
+def gen2_engine():  # type: ignore[no-untyped-def]
+    from simplipy import SimpliPyEngine
+
+    return SimpliPyEngine.load("base", install=True)
+
+
+@pytest.fixture(scope="module")
+def v24_config() -> dict[str, Any]:
+    return load_config(get_path("configs", "v24-template", "tokenizer.yaml"))
+
+
+def _live_tagged_outputs(engine) -> list[list[str]]:  # type: ignore[no-untyped-def]
+    return [list(engine.simplify(probe)) for probe in _TAGGED_PROBES]
+
+
+def _live_tag_tokens(engine) -> set[str]:  # type: ignore[no-untyped-def]
+    """The delimiter tokens simplipy ACTUALLY emits in canonical tagged form."""
+    return {token for output in _live_tagged_outputs(engine) for token in output
+            if token.startswith("<")}
+
+
+def _parses_as_number(token: str) -> bool:
+    try:
+        float(token)
+    except ValueError:
+        return False
+    return True
+
+
+def _v24_vocabulary(config: dict[str, Any]) -> list[str]:
+    return list(config["special_tokens"]) + list(config["operators"]) + list(config["variables"])
+
+
+def test_v24_template_carries_the_live_tagged_dialect(gen2_engine, v24_config) -> None:  # type: ignore[no-untyped-def]
+    tags = _live_tag_tokens(gen2_engine)
+    # Sanity on the probe set itself: the engine really does emit the n-ary delimiters.
+    assert {"<add>", "</add>", "<mul>", "</mul>", "<sub>", "<div>"} <= tags
+
+    vocabulary = set(_v24_vocabulary(v24_config))
+    missing = sorted(tags - vocabulary)
+    assert not missing, f"tagged-dialect tokens missing from the v24 vocabulary: {missing}"
+
+
+def test_v24_template_operators_are_the_gen2_set_plus_tags(gen2_engine, v24_config) -> None:  # type: ignore[no-untyped-def]
+    operators = list(v24_config["operators"])
+    assert len(operators) == len(set(operators)), "duplicate operator entries"
+    assert set(operators) == set(gen2_engine.operators) | _live_tag_tokens(gen2_engine)
+
+    for sugar in _GEN1_SUGAR:
+        assert sugar not in operators, f"generation-1 sugar {sugar!r} leaked into v24"
+
+
+def test_v24_template_has_no_explicit_number_tokens(v24_config) -> None:  # type: ignore[no-untyped-def]
+    vocabulary = _v24_vocabulary(v24_config)
+    assert len(vocabulary) == len(set(vocabulary)), "duplicate vocabulary entries"
+
+    numbers = [token for token in vocabulary if _parses_as_number(token)]
+    assert numbers == [], f"v24 carries explicit number tokens {numbers}"
+    # The signed-literal spelling and the non-finite literals go with them.
+    for retired in ("(-1)", 'float("inf")', 'float("-inf")', 'float("nan")'):
+        assert retired not in vocabulary
+    # Every integer the ruling retires, spelled out.
+    for integer in range(-10, 11):
+        assert str(integer) not in vocabulary
+
+
+def test_v24_template_carries_the_constants_format(v24_config) -> None:  # type: ignore[no-untyped-def]
+    specials = list(v24_config["special_tokens"])
+    for token in (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS, COMPACT_TOKEN):
+        assert token in specials, f"missing constants-format token {token!r}"
+    # '<constant>' survives for the refiner handshake (spans map back to skeleton slots).
+    assert "<constant>" in specials
+
+
+def test_v24_template_encodes_a_tagged_target_end_to_end(gen2_engine, v24_config) -> None:  # type: ignore[no-untyped-def]
+    """The whole point: a canonical tagged expression, with every numeric literal ridden
+    out on the ieee754 hex-nibble format, encodes under the v24 vocabulary -- no masking
+    step, no number tokens, no `<unk>`."""
+    from flash_ansr.utils.ieee754 import wrap_float32
+
+    v24_tokenizer = Tokenizer.from_config(v24_config)
+    unk_id = v24_tokenizer["<unk>"]
+
+    saw_span = False
+    for output in _live_tagged_outputs(gen2_engine):
+        serialized: list[str] = []
+        for token in output:
+            if _parses_as_number(token):
+                serialized.extend(wrap_float32(float(token)))
+                saw_span = True
+            else:
+                serialized.append(token)
+        ids = v24_tokenizer.encode(serialized, oov="unk")
+        assert unk_id not in ids, f"unencodable tagged target {serialized}"
+        assert v24_tokenizer.decode(ids, special_tokens=True) == serialized
+    assert saw_span, "the probes must exercise at least one literal-bearing span"
+
+
+def test_v23_tokenizer_configs_are_untouched() -> None:
+    """Rule 4: v23-era behavior stays byte-identical -- the new format lives ONLY in the
+    v24 template."""
+    for name in ("v23.0-120M", "v23.0-20M", "v23.0-3M", "v23.0-1B"):
+        config = load_config(get_path("configs", name, "tokenizer.yaml"))
+        specials = list(config["special_tokens"])
+        # The retired literals are still there ...
+        for literal in ("0", "1", "(-1)"):
+            assert literal in specials, (name, literal)
+        # ... and no v24 constants-format token ever entered a v23 config.
+        for token in (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS, "<b0>", "<b1>"):
+            assert token not in specials, (name, token)
+        # v23 keeps its generation-1 sugar operator set.
+        assert "pow2" in config["operators"] and "mult3" in config["operators"]
 
 
 # ---------------------------------------------------------------------------
@@ -195,9 +350,8 @@ def test_t3_mixing_policy_10k_instances() -> None:
         assert abs(freq - 0.5 ** k) < tol, (k, freq)
 
 
-def test_t3_expanded_bits_encode_the_constant() -> None:
+def test_t3_expanded_nibbles_encode_the_constant() -> None:
     from flash_ansr.data.serialization import serialize_constant_tokens
-    from flash_ansr.utils.ieee754 import bit_tokens_to_float32
 
     rng = np.random.default_rng(7)
     value = float(np.float32(-3.75))
@@ -210,8 +364,8 @@ def test_t3_expanded_bits_encode_the_constant() -> None:
             seen.add("E")
             start = serialized.index("<ieee754>")
             end = serialized.index("</ieee754>")
-            assert end - start == 33  # 32 bits + tags span 34 tokens
-            assert bit_tokens_to_float32(serialized[start + 1:end]) == value
+            assert end - start == IEEE754_SPAN_LENGTH - 1  # 8 nibbles + tags span 10 tokens
+            assert nibble_tokens_to_float32(serialized[start + 1:end]) == value
             assert all(math.isnan(v) for v in numeric[start:end + 1])  # numeric NaN across the span
         else:
             seen.add("C")
@@ -344,7 +498,8 @@ def _spans(ids: list[int], start_id: int, end_id: int) -> list[tuple[int, int]]:
 
 def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
     start_id, end_id = tokenizer["<ieee754>"], tokenizer["</ieee754>"]
-    bit_ids = {tokenizer["<b0>"], tokenizer["<b1>"]}
+    id_to_nibble = {int(tokenizer[token]): token for token in NIBBLE_TOKENS}
+    nibble_ids = set(id_to_nibble)
     float_id = tokenizer[COMPACT_TOKEN]
     constant_id = tokenizer["<constant>"]
     pad_id = tokenizer["<pad>"]
@@ -360,15 +515,16 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
                 spans = _spans(ids, start_id, end_id)
                 n_expanded += len(spans)
                 for start, end in spans:
-                    assert end - start == 33  # 34-token span, never cut
+                    assert end - start == IEEE754_SPAN_LENGTH - 1  # 10-token span, never cut
                     inner = ids[start + 1:end]
-                    assert len(inner) == 32 and set(inner) <= bit_ids
+                    assert len(inner) == IEEE754_N_NIBBLES and set(inner) <= nibble_ids
                     # input_num is NaN across the whole expanded span.
                     assert all(math.isnan(numeric[p]) for p in range(start, end + 1))
-                    # The bits decode to a finite float32.
-                    bits = "".join("1" if t == tokenizer["<b1>"] else "0" for t in inner)
-                    value = struct.unpack(">f", int(bits, 2).to_bytes(4, "big"))[0]
+                    # The nibbles decode to a finite float32 (big-endian hex spelling).
+                    hex_string = "".join(id_to_nibble[t][2] for t in inner)
+                    value = struct.unpack(">f", int(hex_string, 16).to_bytes(4, "big"))[0]
                     assert math.isfinite(value)
+                    assert value == nibble_tokens_to_float32([id_to_nibble[t] for t in inner])
 
                 # No dangling tags or bits outside complete spans.
                 in_span = set()
@@ -376,7 +532,7 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
                     in_span.update(range(start, end + 1))
                 for p, t in enumerate(ids):
                     if p not in in_span:
-                        assert t not in bit_ids and t != start_id and t != end_id
+                        assert t not in nibble_ids and t != start_id and t != end_id
 
                 compact_positions = [p for p, t in enumerate(ids) if t == float_id]
                 n_compact += len(compact_positions)
@@ -397,19 +553,20 @@ def test_mixed_streaming_drops_instances_instead_of_cutting_spans(tokenizer: Tok
     """Truncation must never cut inside an <ieee754> span: offending instances are
     dropped (and counted); surviving sequences contain only intact spans."""
     start_id, end_id = tokenizer["<ieee754>"], tokenizer["</ieee754>"]
-    bit_ids = {tokenizer["<b0>"], tokenizer["<b1>"]}
+    nibble_ids = {int(tokenizer[token]) for token in NIBBLE_TOKENS}
 
     saw_drop_counter = False
     with FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero",
                           constant_representation="ieee754_mixed") as dataset:
-        # max_seq_len=16 cannot hold any expanded span (34 tokens): every instance whose
-        # serialization expands a constant must be dropped, so surviving sequences are
-        # all-compact and structurally intact.
-        for batch in dataset.iterate(steps=2, batch_size=8, max_seq_len=16):
+        # max_seq_len=12 cannot hold any expanded span intact (10 tokens, and the body
+        # never starts before index 2, so a span always straddles the truncation point):
+        # every instance whose serialization expands a constant must be dropped, so
+        # surviving sequences are all-compact and structurally intact.
+        for batch in dataset.iterate(steps=2, batch_size=8, max_seq_len=12):
             for row in batch["input_ids"]:
                 ids = [int(t) for t in row.tolist()]
                 assert start_id not in ids and end_id not in ids
-                assert not (set(ids) & bit_ids)
+                assert not (set(ids) & nibble_ids)
             pool = dataset._stream.metadata_pool
             for payload in list(pool):
                 if isinstance(payload, dict) and payload.get("n_dropped_truncation", 0) > 0:
@@ -421,13 +578,14 @@ def test_truncation_span_cut_detector() -> None:
     from flash_ansr.data.serialization import truncation_cuts_ieee754_span
 
     start, end = 100, 101
-    span = [start, *[102] * 32, end]  # 34 tokens
-    ids = [1, 2, *span, 3]
+    span = [start, *[102] * 8, end]  # 10 tokens
+    ids = [1, 2, *span, 3]           # len 13; the span occupies indices [2, 11]
     # Cut inside the span -> True; cut at/after the span end or before its start -> False.
     assert truncation_cuts_ieee754_span(ids, max_seq_len=10, start_id=start, end_id=end)
-    assert truncation_cuts_ieee754_span(ids, max_seq_len=35, start_id=start, end_id=end)
+    assert truncation_cuts_ieee754_span(ids, max_seq_len=12, start_id=start, end_id=end)
     assert not truncation_cuts_ieee754_span(ids, max_seq_len=len(ids), start_id=start, end_id=end)
-    assert not truncation_cuts_ieee754_span(ids, max_seq_len=37, start_id=start, end_id=end)  # span intact, tail cut
+    # last_kept = 11 == the span end: the span survives whole, only the tail is cut.
+    assert not truncation_cuts_ieee754_span([*ids, 4, 5], max_seq_len=13, start_id=start, end_id=end)
     assert not truncation_cuts_ieee754_span([1, 2, 3, *span], max_seq_len=3, start_id=start, end_id=end)  # span fully dropped
 
 
@@ -590,7 +748,7 @@ def test_t4_mask_is_keyed_on_shifted_targets_not_inputs(tokenizer: Tokenizer) ->
 
 
 # ---------------------------------------------------------------------------
-# Peripheral: constant counting must see one constant per form, not 34/1 tokens
+# Peripheral: constant counting must see one constant per form, not 10/1 tokens
 # ---------------------------------------------------------------------------
 
 def test_scoring_counts_each_constant_form_as_one() -> None:
@@ -601,11 +759,11 @@ def test_scoring_counts_each_constant_form_as_one() -> None:
     assert is_constant_token("<float>") is True
     assert count_constants(["*", "<float>", "x1"]) == 1
 
-    # Expanded form: the whole 34-token span is ONE constant (opened by <ieee754>;
-    # bits and the closing tag never count on their own, keeping naive per-token
+    # Expanded form: the whole 10-token span is ONE constant (opened by <ieee754>;
+    # nibbles and the closing tag never count on their own, keeping naive per-token
     # sums over a span exact).
     assert is_constant_token("<ieee754>") is True
-    for token in ("<b0>", "<b1>", "</ieee754>"):
+    for token in (*NIBBLE_TOKENS, "</ieee754>"):
         assert is_constant_token(token) is False
     assert count_constants(["*", *wrap_float32(2.5), "x1"]) == 1
 

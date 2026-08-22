@@ -8,8 +8,8 @@ channel (``input_num``), injected downstream by
 ``'ieee754_mixed'`` replaces each constant occurrence -- per constant independently with
 probability ``expanded_probability`` (default 0.5, seeded RNG) -- with one of two forms:
 
-* EXPANDED (34 tokens): ``<ieee754>`` + 32 bit tokens + ``</ieee754>``; the numeric channel is
-  NaN across the whole span (the value lives in the bits).
+* EXPANDED (10 tokens): ``<ieee754>`` + 8 hex-nibble tokens + ``</ieee754>``; the numeric channel
+  is NaN across the whole span (the value lives in the nibbles).
 * COMPACT (1 token): the existing ``<float>`` special token, with the float32 value on the
   numeric channel at that position. The label at positions whose TARGET is ``<float>`` is
   loss-masked downstream (:func:`flash_ansr.data.collate.mask_float_targets`): the model must
@@ -24,7 +24,13 @@ from typing import Sequence
 
 import numpy as np
 
-from flash_ansr.utils.ieee754 import wrap_float32
+from flash_ansr.utils.ieee754 import (
+    IEEE754_N_NIBBLES,
+    IEEE754_SPAN_LENGTH,
+    NIBBLE_TOKENS,
+    nibble_tokens_to_float32,
+    wrap_float32,
+)
 
 #: The compact-constant token. Deliberately the EXISTING ``<float>`` special (it already
 #: carries a value on the numeric channel in the prompt-serialization path); no new token.
@@ -170,3 +176,73 @@ def truncation_cuts_ieee754_span(
         if start <= last_kept < end:
             return True
     return False
+
+
+def replace_ieee754_spans_with_constants(
+    token_ids: Sequence[int],
+    *,
+    start_id: int,
+    end_id: int,
+    nibble_ids: Sequence[int],
+    constant_id: int,
+) -> tuple[list[int], list[float] | None]:
+    """Map expanded ``<ieee754>`` spans to ``<constant>`` slots + their float32 values (T11).
+
+    The DESERIALIZATION half of the refiner handshake: each well-formed 10-token span in a
+    generated beam collapses to one ``constant_id`` token, and the decoded values (exact,
+    via the token codec -- no decimal round-trip) become the refiner's verbatim ``p0`` in
+    order of appearance.
+
+    Parameters
+    ----------
+    nibble_ids : Sequence[int]
+        The 16 hex-nibble token ids IN NIBBLE-VALUE ORDER (``nibble_ids[10]`` is ``<ha>``),
+        i.e. ``[int(tokenizer[token]) for token in NIBBLE_TOKENS]``.
+
+    Returns
+    -------
+    tuple[list[int], list[float] | None]
+        ``(mapped_ids, values)``. ``values`` is the per-span float32 list ONLY when the
+        init is sound: at least one span, every span well-formed, every value finite, and
+        no pre-existing ``constant_id`` in the input (a bare placeholder -- e.g.
+        constantified sugar -- would break the slot alignment; the skeleton is still
+        mapped, the init is withheld and refinement takes the v23 path). Any MALFORMED
+        span returns the input unchanged with ``None`` (the beam is not a v24 carrier;
+        downstream validity checks dispose of it as today).
+    """
+    if len(nibble_ids) != len(NIBBLE_TOKENS):
+        raise ValueError(
+            f"Expected {len(NIBBLE_TOKENS)} nibble ids in nibble-value order, got {len(nibble_ids)}."
+        )
+    id_to_nibble = {token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)}
+
+    ids = list(token_ids)
+    mapped: list[int] = []
+    values: list[float] = []
+    index = 0
+    while index < len(ids):
+        token = ids[index]
+        if token == start_id:
+            inner = ids[index + 1:index + 1 + IEEE754_N_NIBBLES]
+            closed = (
+                index + IEEE754_SPAN_LENGTH <= len(ids)
+                and ids[index + IEEE754_SPAN_LENGTH - 1] == end_id
+                and all(nibble in id_to_nibble for nibble in inner)
+            )
+            if not closed:
+                return ids, None
+            values.append(nibble_tokens_to_float32([id_to_nibble[nibble] for nibble in inner]))
+            mapped.append(constant_id)
+            index += IEEE754_SPAN_LENGTH
+            continue
+        if token == end_id or token in id_to_nibble:
+            # A stray close/nibble outside a span: not a v24-well-formed carrier.
+            return ids, None
+        mapped.append(token)
+        index += 1
+
+    if not values:
+        return mapped, None
+    if constant_id in ids or not all(math.isfinite(value) for value in values):
+        return mapped, None
+    return mapped, values
