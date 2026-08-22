@@ -7,7 +7,6 @@ import struct
 
 import numpy as np
 import pytest
-import torch
 
 from flash_ansr import get_path
 from flash_ansr.data.serialization import (
