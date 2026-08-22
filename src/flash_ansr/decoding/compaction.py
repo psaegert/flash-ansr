@@ -24,7 +24,9 @@ Mechanics (per batch of rows that each JUST closed a span, i.e. the span is the 
 
 Scope: the dynamic (cat-grow) KV path; batch rows must share the span position (rows that
 close spans at the SAME step always do, since spans have fixed length 34). Per-beam
-compaction (desynchronized close steps, beam-reindexed caches) is T9, next lane.
+compaction (desynchronized close steps, beam-reindexed caches) is T9, layered on top in
+``beam_compaction.py``: it keeps per-beam caches, groups equal-length rows, and calls this
+function per group -- the precondition above then holds by construction.
 
 WHAT THE STATIC PATH NEEDS (not implemented here -- position-indexed StaticKVCache):
 * a per-row (or chunk-uniform) POSITION REWIND: dropping the span is just

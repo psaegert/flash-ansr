@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`configs/VERSIONS.md` compatibility register.** Records that every shipped (pre-v24) config
+  works only with flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`) — this line targets v24
+  configs only — with the two concrete reasons (the retired `dev_7-3` engine pin, and the removal
+  of v23-era model support in 0.13.0), plus a note that the `v23.0-20M-A-Y{1,10,50K}` bundles are
+  now near-duplicates of the `-A-S*` arms after their SymPy arm was migrated to `simplify: true`.
+  No config is deleted. `docs/training.md` and `docs/evaluation.md` point at the register.
+- **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
+  `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
+  sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
+  'x1']`, `is_valid` True), so such skeletons re-entered the candidate stream as valid predictions.
+  `flash_ansr.utils.skeleton.simplify_and_mask` — the one seam every candidate producer shares —
+  now raises `NonFiniteExpressionError`, and each producer (beam search, softmax post-processing,
+  MCTS canonicalization, the constant-pruning lane, the forked simplify pool, dataset conversion)
+  DROPS the candidate and counts it: `flash_ansr.utils.non_finite_drops()` /
+  `reset_non_finite_drops()` expose the tally. The token set matches symbolic-data's generator-side
+  forbidden list (`float("inf")`, `float("-inf")`, `float("nan")`, `zoo`, `nan`, `oo`). On the
+  training-data INGEST direction (`mask_literals_positional`) it does NOT drop but propagates:
+  symbolic-data rejects these before yielding, so one arriving means a broken producer contract,
+  and skipping it would silently reshape the training distribution.
 - **`encoder_mask_query_norms` model flag (default `False`)**: threads the support-set padding mask
   into the ISAB self-refinement blocks' query/residual-stream SetNorms (`norm_q`/`norm_ffn`) and zeroes
   sub-layer outputs on padded query rows. Legacy (default) behavior computes those shared set statistics
@@ -32,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Trainer raises on gradient-accumulation remainder.** `_train_step` split micro-batches with an
   integer division that silently dropped `batch_size % gradient_accumulation_steps` samples from every
   step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
+
+### Removed
+- **The `simplify='sympy'` simplification path is gone (owner ruling, 2026-08-18).** SymPy
+  simplification was an *ablation* of the product simplifier (SimpliPy), and the standing rule is that
+  production code stays clean and minimal: experiments and ablations branch off it or patch it, they
+  never live inside it. Removed: the `simplify == 'sympy'` branch in `FlashANSRModel._postprocess_sampled`,
+  the `flash_ansr.utils.sympy_timeout` helper module, and the `[sympy]` optional-dependency extra.
+  `simplify` is now a two-state `bool` (`True` = SimpliPy, the product default; `False` = no
+  simplification) everywhere it is accepted.
+- **A config that asks for the removed path FAILS LOUDLY; it never falls back.** `simplify='sympy'` is
+  refused by `SoftmaxSamplingConfig` / `create_generation_config` and by `sample_top_kp` /
+  `_sample_top_kp_static` / `_postprocess_sampled` with a `ValueError` naming the removal. Silently
+  re-serving such a config with SimpliPy would swap the canonicalizer a config explicitly named — a
+  behaviour change wearing a removal's clothes — so the request is refused instead.
+- **Catalog configs requesting the SymPy skeleton path are refused at the flash-ansr boundary.**
+  `simplify` in a *catalog* config is symbolic-data's parameter, which flash-ansr only passes through;
+  symbolic-data keeps its own `simplify='sympy'` path and is unchanged. `FlashANSRDataset.from_config`
+  now raises rather than build a data source that routes into it.
+- **Shipped configs migrated**: `configs/v23.0-20M-A-Y{1,10,50K}/catalog_train.yaml` — the SymPy
+  ablation arms — move from `simplify: 'sympy'` to `simplify: true`. They are otherwise identical to
+  the corresponding `-A-S*` arms except for `max_tries`.
 
 ## [0.13.0] - 2026-08-18
 

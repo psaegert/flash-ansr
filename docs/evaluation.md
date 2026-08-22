@@ -12,7 +12,7 @@ Repository: [https://github.com/psaegert/srbf](https://github.com/psaegert/srbf)
 
 ## Evaluation configs
 
-flash-ansr no longer ships evaluation configs. The `configs/` tree now holds only the v23.* model bundles (plus `test/` and `test_set/` assets); the evaluation-config tree was removed. Evaluation configs and benchmark assets live in the srbf package, which drives them via `FlashANSR.infer()`.
+flash-ansr no longer ships evaluation configs. The `configs/` tree now holds only the v23.* model bundles (plus `test/` and `test_set/` assets); the evaluation-config tree was removed. Those bundles are pre-v24 and work only with flash-ansr <= 0.12.1 — see [`configs/VERSIONS.md`](https://github.com/psaegert/flash-ansr/blob/main/configs/VERSIONS.md). Evaluation configs and benchmark assets live in the srbf package, which drives them via `FlashANSR.infer()`.
 
 ## What stays in flash-ansr
 

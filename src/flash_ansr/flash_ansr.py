@@ -40,7 +40,9 @@ from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, 
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
+from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+from flash_ansr.utils.ieee754 import BIT_ONE_TOKEN, BIT_ZERO_TOKEN, IEEE754_END_TOKEN, IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -160,17 +162,38 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     X, y = _resolve_refinement_arrays(payload)
 
     try:
-        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables']).fit(
-            expression=payload['expression'],
-            X=X,
-            y=y,
-            n_restarts=payload['n_restarts'],
-            method=payload['method'],
-            p0=None,
-            p0_noise=payload['p0_noise'],
-            p0_noise_kwargs=payload['p0_noise_kwargs'],
-            converge_error=payload['converge_error'],
-        )
+        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables'])
+        p0_values = payload.get('p0')
+        if p0_values is not None:
+            # v24 handshake (contract T11): the beam's predicted float32 constants are the
+            # init, VERBATIM -- no noise, one restart (float32 embeds exactly in float64,
+            # so np.asarray is bit-preserving).
+            refiner.fit(
+                expression=payload['expression'],
+                X=X,
+                y=y,
+                n_restarts=1,
+                method=payload['method'],
+                p0=np.asarray(p0_values, dtype=float),
+                p0_noise=None,
+                p0_noise_kwargs=None,
+                converge_error='ignore',
+            )
+        if p0_values is None or not refiner.valid_fit:
+            # The v23 refinement, unchanged -- and the T11 fallback on a bad init: the
+            # verbatim attempt consumes no RNG, so this call sees the same stream a plain
+            # v23 worker would and reproduces its fits exactly.
+            refiner.fit(
+                expression=payload['expression'],
+                X=X,
+                y=y,
+                n_restarts=payload['n_restarts'],
+                method=payload['method'],
+                p0=None,
+                p0_noise=payload['p0_noise'],
+                p0_noise_kwargs=payload['p0_noise_kwargs'],
+                converge_error=payload['converge_error'],
+            )
     except ConvergenceError:
         if payload['converge_error'] == 'raise':
             raise
@@ -269,11 +292,20 @@ def _persistent_pool_init(engine: Any) -> None:
     _SIMPLIFY_ENGINE = engine
 
 
-def _simplify_pool_worker(raw_expr: tuple) -> tuple:
+def _simplify_pool_worker(raw_expr: tuple) -> tuple | None:
     """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial).
     simplipy.simplify is the equivalence loop only; mask() relabels any emitted literals to
-    <constant> for the model's vocabulary (matching the pre-carve-out masked output)."""
-    return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
+    <constant> for the model's vocabulary (matching the pre-carve-out masked output).
+
+    Returns ``None`` when the expression folds to a non-finite skeleton. The worker does NOT drop
+    the candidate itself: it runs in a forked process, so it can neither raise across the fork
+    without killing the run nor increment the parent's drop count. Reporting by omission leaves
+    the key out of the lookup map, and the parent then takes its normal serial path -- which
+    raises, drops and counts in the process that can be observed."""
+    try:
+        return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
+    except NonFiniteExpressionError:
+        return None
 
 
 @dataclass
@@ -993,7 +1025,7 @@ class FlashANSR(BaseEstimator):
             # and fall back to the legacy per-call fork below, never re-forking the pool post-CUDA.
             try:
                 simplified = self._refine_pool.map_ordered(_simplify_pool_worker, raw_list, chunksize=chunksize, recover=False)
-                return dict(zip(raw_list, simplified))
+                return {raw: value for raw, value in zip(raw_list, simplified) if value is not None}
             except BrokenProcessPool:
                 if getattr(self, '_overlap_mode', False):
                     # Step 4b: under the overlap engine a GPU producer thread is live and the consumer
@@ -1010,7 +1042,9 @@ class FlashANSR(BaseEstimator):
                                  initializer=_simplify_pool_init,
                                  initargs=(self.simplipy_engine,)) as executor:
             simplified = list(executor.map(_simplify_pool_worker, raw_list, chunksize=chunksize))
-        return dict(zip(raw_list, simplified))
+        # Non-finite folds come back as None and are OMITTED, so _postprocess_sampled misses the
+        # key and falls back to its guarded serial simplify (which drops + counts in this process).
+        return {raw: value for raw, value in zip(raw_list, simplified) if value is not None}
 
     def _build_mcts_config(self) -> MCTSConfig:
         cfg = self.generation_config
@@ -1832,17 +1866,56 @@ class FlashANSR(BaseEstimator):
 
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
+        # v24 refiner handshake (contract T11): expanded <ieee754> spans become '<constant>'
+        # skeleton slots and their decoded float32 values the verbatim init. v23 tokenizers
+        # lack the span tokens and v23 beams carry none, so the mapping is the identity and
+        # refinement stays byte-identical there.
+        beam_span_values: list[list[float] | None]
+        if IEEE754_START_TOKEN in self.tokenizer:
+            mapped_beams = [
+                replace_ieee754_spans_with_constants(
+                    beam,
+                    start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
+                    end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
+                    b0_id=int(self.tokenizer[BIT_ZERO_TOKEN]),
+                    b1_id=int(self.tokenizer[BIT_ONE_TOKEN]),
+                    constant_id=int(self.tokenizer['<constant>']),
+                )
+                for beam in beams
+            ]
+            beams = [mapped_beam for mapped_beam, _ in mapped_beams]
+            beam_span_values = [values for _, values in mapped_beams]
+        else:
+            beam_span_values = [None] * len(beams)
+
         raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
         beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
         sample_count = int(gs.y_np.shape[0])
         refinement_jobs: list[dict[str, Any]] = []
         beam_iterator = zip(gs.raw_beams, raw_beams_decoded, beams, beams_decoded, gs.log_probs)
-        for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
+        for beam_position, (raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob) in enumerate(beam_iterator):
+            span_values = beam_span_values[beam_position]
             if not self.simplipy_engine.is_valid(beam_decoded):
                 continue
 
             constant_count = self._count_constants(beam_decoded)
+
+            # Verbatim init (T11), one slot per constant IN ORDER OF APPEARANCE: the mapper
+            # guarantees every '<constant>' is a span slot. Digit-only literals (which
+            # identify_constants ALSO turns into fittable constants) seed at their literal
+            # values so the slots stay aligned -- unreachable under tokenizers whose
+            # numerals are special tokens (dropped by the decode above), load-bearing for
+            # vocabularies that keep them as ordinary tokens.
+            p0: list[float] | None = None
+            if span_values:
+                p0 = []
+                span_value_iter = iter(span_values)
+                for token in beam_decoded:
+                    if token == '<constant>':
+                        p0.append(next(span_value_iter))
+                    elif token.isnumeric():
+                        p0.append(float(token))
 
             # MCTS cache reuse (M4): the search already refined this exact canonical beam
             # (tuple(raw_beam) == the value_fn refiner-cache key), so reuse that fit instead of refining a
@@ -1876,6 +1949,7 @@ class FlashANSR(BaseEstimator):
                 'expression': beam_decoded,
                 'log_prob': log_prob,
                 'constant_count': constant_count,
+                'p0': p0,
                 'pruned_variant': False,
                 'n_variables': self.n_variables,
                 'n_restarts': self.n_restarts,
@@ -2013,7 +2087,13 @@ class FlashANSR(BaseEstimator):
                             if variant_key in seen_expressions:
                                 continue
 
-                            simplified_variant = simplify_and_mask(self.simplipy_engine, list(variant))
+                            try:
+                                simplified_variant = simplify_and_mask(self.simplipy_engine, list(variant))
+                            except NonFiniteExpressionError:
+                                # Pruning a constant can make a denominator vanish; the variant is
+                                # then unusable. Dropped like the is_valid rejection below it.
+                                record_non_finite_drop()
+                                continue
                             if not self.simplipy_engine.is_valid(simplified_variant):
                                 continue
 
