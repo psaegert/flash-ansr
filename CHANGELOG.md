@@ -86,11 +86,20 @@ byte-identical behavior.
 
 ### Added
 - **Per-constant mixed serialization** (`constant_representation` config gate): numeric constants
-  can serialize as a `<float>` summary token or an expanded `<ieee754>` bit span, mixed 50/50 per
-  constant; universal loss mask for `<float>`-target positions.
+  can serialize as a `<float>` summary token or an expanded `<ieee754>` hex-nibble span, mixed
+  50/50 per constant; universal loss mask for `<float>`-target positions.
 - **Constrained decoding** (`constrain_ieee754`, default off): a decode-time grammar mask at the
   sampling, beam, and static logit sites guaranteeing every opened `<ieee754>` span emits exactly
-  32 bits and closes within the length budget.
+  8 hex nibbles and closes within the length budget.
+- **v24.0 target format** (owner ruling 2026-08-18). Expanded constants are HEX NIBBLE spans:
+  `<ieee754>` + 8 tokens over the 16-symbol `<h0>`..`<hf>` alphabet + `</ieee754>` = **10 tokens**
+  (was 34 with the now-retired `<b0>`/`<b1>` bit tokens). Same float32 value semantics, 4x fewer
+  autoregressive steps per constant; nibble order is big-endian (most-significant first). A new
+  `configs/v24-template/tokenizer.yaml` pins the v24 target vocabulary: simplipy's tagged canonical
+  dialect (`<add> </add> <mul> </mul> <sub> <div>`), the generation-2 23-operator set with no
+  generation-1 sugar, the constants format, and **no explicit number tokens at all** (the integers
+  -10..10 are retired; `np.pi`/`np.e` stay as symbolic constants). v23 configs are untouched and
+  v23-era behavior is byte-identical.
 - **KV-span compaction**: closed `<ieee754>` spans compact out of the dynamic KV cache with
   verified equivalence to the fresh forward (atol 1e-5), re-encoding the collapsed `<float>`
   position.

@@ -296,7 +296,7 @@ def _producer_worker(
     has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
 
     # v24 ieee754_mixed constants representation: serialize each <constant> occurrence per-constant
-    # independently as an expanded <ieee754> bit span or a compact <float> (value on the numeric
+    # independently as an expanded <ieee754> hex-nibble span or a compact <float> (value on the numeric
     # channel), driven by this worker's rng. 'v23' (default) keeps behavior byte-identical.
     mixed_constants = worker_config.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED
     if mixed_constants:

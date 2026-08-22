@@ -27,13 +27,28 @@ special_tokens:
   - 'float("inf")'
   - 'float("-inf")'
   - 'float("nan")'
-  # v24 ieee754_mixed constants representation: expanded-form span tags and the
-  # dedicated bit tokens (deliberately distinct from the literals '0'/'1').
+  # v24 ieee754_mixed constants representation: expanded-form span tags and the 16
+  # dedicated HEX NIBBLE tokens, in nibble-value order (deliberately distinct from the
+  # digit literals they spell). A span is <ieee754> + 8 nibbles + </ieee754> = 10 tokens.
   # The compact form reuses the existing '<float>' token above.
   - "<ieee754>"
   - "</ieee754>"
-  - "<b0>"
-  - "<b1>"
+  - "<h0>"
+  - "<h1>"
+  - "<h2>"
+  - "<h3>"
+  - "<h4>"
+  - "<h5>"
+  - "<h6>"
+  - "<h7>"
+  - "<h8>"
+  - "<h9>"
+  - "<ha>"
+  - "<hb>"
+  - "<hc>"
+  - "<hd>"
+  - "<he>"
+  - "<hf>"
 
 operators:
   - "+"

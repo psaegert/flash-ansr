@@ -40,6 +40,8 @@ from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
+from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -159,17 +161,38 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     X, y = _resolve_refinement_arrays(payload)
 
     try:
-        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables']).fit(
-            expression=payload['expression'],
-            X=X,
-            y=y,
-            n_restarts=payload['n_restarts'],
-            method=payload['method'],
-            p0=None,
-            p0_noise=payload['p0_noise'],
-            p0_noise_kwargs=payload['p0_noise_kwargs'],
-            converge_error=payload['converge_error'],
-        )
+        refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables'])
+        p0_values = payload.get('p0')
+        if p0_values is not None:
+            # v24 handshake (contract T11): the beam's predicted float32 constants are the
+            # init, VERBATIM -- no noise, one restart (float32 embeds exactly in float64,
+            # so np.asarray is bit-preserving).
+            refiner.fit(
+                expression=payload['expression'],
+                X=X,
+                y=y,
+                n_restarts=1,
+                method=payload['method'],
+                p0=np.asarray(p0_values, dtype=float),
+                p0_noise=None,
+                p0_noise_kwargs=None,
+                converge_error='ignore',
+            )
+        if p0_values is None or not refiner.valid_fit:
+            # The v23 refinement, unchanged -- and the T11 fallback on a bad init: the
+            # verbatim attempt consumes no RNG, so this call sees the same stream a plain
+            # v23 worker would and reproduces its fits exactly.
+            refiner.fit(
+                expression=payload['expression'],
+                X=X,
+                y=y,
+                n_restarts=payload['n_restarts'],
+                method=payload['method'],
+                p0=None,
+                p0_noise=payload['p0_noise'],
+                p0_noise_kwargs=payload['p0_noise_kwargs'],
+                converge_error=payload['converge_error'],
+            )
     except ConvergenceError:
         if payload['converge_error'] == 'raise':
             raise
@@ -1842,17 +1865,55 @@ class FlashANSR(BaseEstimator):
 
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
+        # v24 refiner handshake (contract T11): expanded <ieee754> spans become '<constant>'
+        # skeleton slots and their decoded float32 values the verbatim init. v23 tokenizers
+        # lack the span tokens and v23 beams carry none, so the mapping is the identity and
+        # refinement stays byte-identical there.
+        beam_span_values: list[list[float] | None]
+        if IEEE754_START_TOKEN in self.tokenizer:
+            mapped_beams = [
+                replace_ieee754_spans_with_constants(
+                    beam,
+                    start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
+                    end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
+                    nibble_ids=[int(self.tokenizer[token]) for token in NIBBLE_TOKENS],
+                    constant_id=int(self.tokenizer['<constant>']),
+                )
+                for beam in beams
+            ]
+            beams = [mapped_beam for mapped_beam, _ in mapped_beams]
+            beam_span_values = [values for _, values in mapped_beams]
+        else:
+            beam_span_values = [None] * len(beams)
+
         raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
         beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
 
         sample_count = int(gs.y_np.shape[0])
         refinement_jobs: list[dict[str, Any]] = []
         beam_iterator = zip(gs.raw_beams, raw_beams_decoded, beams, beams_decoded, gs.log_probs)
-        for raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob in beam_iterator:
+        for beam_position, (raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob) in enumerate(beam_iterator):
+            span_values = beam_span_values[beam_position]
             if not self.simplipy_engine.is_valid(beam_decoded):
                 continue
 
             constant_count = self._count_constants(beam_decoded)
+
+            # Verbatim init (T11), one slot per constant IN ORDER OF APPEARANCE: the mapper
+            # guarantees every '<constant>' is a span slot. Digit-only literals (which
+            # identify_constants ALSO turns into fittable constants) seed at their literal
+            # values so the slots stay aligned -- unreachable under tokenizers whose
+            # numerals are special tokens (dropped by the decode above), load-bearing for
+            # vocabularies that keep them as ordinary tokens.
+            p0: list[float] | None = None
+            if span_values:
+                p0 = []
+                span_value_iter = iter(span_values)
+                for token in beam_decoded:
+                    if token == '<constant>':
+                        p0.append(next(span_value_iter))
+                    elif token.isnumeric():
+                        p0.append(float(token))
 
             # MCTS cache reuse (M4): the search already refined this exact canonical beam
             # (tuple(raw_beam) == the value_fn refiner-cache key), so reuse that fit instead of refining a
@@ -1886,6 +1947,7 @@ class FlashANSR(BaseEstimator):
                 'expression': beam_decoded,
                 'log_prob': log_prob,
                 'constant_count': constant_count,
+                'p0': p0,
                 'pruned_variant': False,
                 'n_variables': self.n_variables,
                 'n_restarts': self.n_restarts,
