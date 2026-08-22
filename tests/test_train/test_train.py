@@ -124,3 +124,48 @@ def test_train_step_skips_prompt_statistics_when_preprocess_disabled() -> None:
         trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=False)
 
     spy.assert_not_called()
+
+
+def _grads(trainer: Trainer) -> list[torch.Tensor]:
+    return [p.grad.detach().clone() for p in trainer.model.parameters() if p.grad is not None]
+
+
+def test_gradients_accumulate_across_calls_when_not_stepping() -> None:
+    """do_optimizer_step=False must leave gradients in place for the next call."""
+    trainer = _build_dummy_trainer()
+    batch = _make_dummy_batch()
+
+    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
+        trainer._train_step(batch=batch, step=0, preprocess=False, do_optimizer_step=False)
+        after_one = _grads(trainer)
+        trainer._train_step(batch=batch, step=1, preprocess=False, do_optimizer_step=False)
+        after_two = _grads(trainer)
+
+    assert after_one, "no gradients after the first accumulation call"
+    assert len(after_one) == len(after_two)
+    # Same batch twice, so the accumulated gradient should be twice the single-call gradient.
+    for one, two in zip(after_one, after_two):
+        assert torch.allclose(two, one * 2, atol=1e-5), "gradients were cleared between calls"
+
+
+def test_no_parameter_update_when_not_stepping() -> None:
+    """do_optimizer_step=False must not move the parameters."""
+    trainer = _build_dummy_trainer()
+    before = [p.detach().clone() for p in trainer.model.parameters()]
+
+    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
+        trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=False, do_optimizer_step=False)
+
+    for was, now in zip(before, trainer.model.parameters()):
+        assert torch.equal(was, now), "parameters moved despite do_optimizer_step=False"
+
+
+def test_step_clears_gradients_for_the_next_cycle() -> None:
+    """A stepping call must leave gradients zeroed so the next cycle starts clean."""
+    trainer = _build_dummy_trainer()
+
+    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
+        trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=False, do_optimizer_step=True)
+
+    for grad in _grads(trainer):
+        assert torch.count_nonzero(grad) == 0, "gradients survived an optimizer step"
