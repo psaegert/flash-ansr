@@ -7,8 +7,12 @@
 # in-domain at once.
 type: lample_charton
 simplipy_engine: 'base'
+# Holdout: fastsrb only. The v23 pattern also excluded the frozen val artifact
+# ("v23-val"), but that is a generation-1 artifact simplipy >= 0.12 refuses to load
+# (retired hyper-operator vocabulary) and T13 does not evaluate against it -- val here
+# is a fresh stream from THIS catalog (see dataset_val.yaml). The v24 line gets its
+# own frozen val artifact at the symbolic-data 0.15 freeze; it joins this list then.
 holdout_pools: [
-  "v23-val",
   "fastsrb"]
 
 sample_strategy:
