@@ -160,7 +160,11 @@ def v24_config() -> dict[str, Any]:
 
 
 def _live_tagged_outputs(engine) -> list[list[str]]:  # type: ignore[no-untyped-def]
-    return [list(engine.simplify(probe)) for probe in _TAGGED_PROBES]
+    # simplipy >= 0.14 simplify is dialect-preserving: a prefix probe answers in prefix.
+    # The tagged canonical is simplify run IN the tagged dialect (contract A3), so the
+    # probe converts first. (Under 0.13, where this helper was written, tagged was
+    # simplify's default output form and the conversion was implicit.)
+    return [list(engine.simplify(engine.to_tagged(list(probe)))) for probe in _TAGGED_PROBES]
 
 
 def _live_tag_tokens(engine) -> set[str]:  # type: ignore[no-untyped-def]

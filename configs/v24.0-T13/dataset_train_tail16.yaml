@@ -1,0 +1,16 @@
+# The T13 zeroed-tail re-check arm (contract G1): identical to dataset_train.yaml except
+# every EXPANDED span spelling zeroes its low 16 mantissa bits (the pilot's D-arm free
+# region, bit positions 17-32). Compact <float> values keep full precision. The re-check
+# asks whether real data conditioning puts signal in the tail the toy pilot priced at ln 2.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+condition_dropout: 0.1
+tail_zero_bits: 16

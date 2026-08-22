@@ -1,0 +1,117 @@
+# v24.0-T13 pilot catalog: the v23.0-3M size/support shape on the GENERATION-2 engine
+# with the v24 generation surface -- concrete numeric literals (choice + rounded
+# mixture), typed exponent slots for pow/rootn (the retired hyper-operator vocabulary
+# carried this constraint; the 23-operator vocabulary carries it here), and
+# domain-aware support oversampling (C5): a failed draw doubles the per-try support
+# request and keeps the first n in-domain rows, instead of demanding every row land
+# in-domain at once.
+type: lample_charton
+simplipy_engine: 'base'
+holdout_pools: [
+  "v23-val",
+  "fastsrb"]
+
+sample_strategy:
+  n_operator_distribution: "length_exponential"
+  min_operators: 0
+  max_operators: 17
+  power: 0.7
+  lambda: 1
+  max_length: 35
+  max_tries: 8
+  independent_dimensions: true
+  support_oversampling_max: 16
+
+allow_nan: false
+simplify: true
+
+# Concrete literals at constant leaves: half small integers, half rounded floats.
+literal_prior:
+- weight: 0.5
+  name: choice
+  kwargs:
+    values: [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
+    weights: [5, 5, 4, 4, 3, 3, 2, 2, 1, 1]
+- weight: 0.5
+  name: rounded
+  kwargs:
+    base:
+      name: normal
+      kwargs:
+        loc: 0
+        scale: 5
+
+typed_slots:
+  pow:
+    argument: 1
+    prior:
+    - weight: 0.5
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5, 1, -1, 0]
+        weights: [4, 4, 3, 3, 2, 2, 1, 1, 1, 1, 1]
+    - weight: 0.5
+      name: rounded
+      kwargs:
+        base:
+          name: normal
+          kwargs:
+            loc: 0
+            scale: 2
+  rootn:
+    argument: 1
+    prior:
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5]
+        weights: [4, 4, 3, 3, 2, 2, 1, 1]
+
+support_sampler:
+  support_prior:
+    name: "sampler"
+    kwargs:
+      base_dist_name: "uniform"
+      base_kwargs:
+        min_value: -30
+        max_value: 30
+      param_samplers:
+        low:
+          name: "normal"
+          kwargs: {loc: 0, scale: 10}
+        high:
+          name: "normal"
+          kwargs: {loc: 0, scale: 10}
+  n_support_prior:
+    name: "uniform"
+    kwargs:
+      low: 1
+      high: 512
+      min_value: 1
+      max_value: 512
+
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17']
+
+operator_weights:
+  "+": 10
+  "-": 10
+  "*": 10
+  "/": 10
+  pow: 4
+  rootn: 4
+  abs: 1
+  inv: 1
+  neg: 1
+  sin: 1
+  cos: 1
+  tan: 1
+  asin: 1
+  acos: 1
+  atan: 1
+  sinh: 1
+  cosh: 1
+  tanh: 1
+  asinh: 1
+  acosh: 1
+  atanh: 1
+  exp: 1
+  log: 1

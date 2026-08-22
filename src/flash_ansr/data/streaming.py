@@ -13,16 +13,19 @@ import numpy as np
 
 from symbolic_data import ProblemSource
 from simplipy.utils import substitute_constants
+from symbolic_data.token_ops import tagged_canonical
 from flash_ansr.data.serialization import (
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
     CONSTANT_REPRESENTATION_V23,
+    TARGET_DIALECT_EXPLICIT,
+    TARGET_DIALECT_TAGGED,
     serialize_constant_tokens,
     truncation_cuts_ieee754_span,
 )
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN
-from flash_ansr.utils.skeleton import mask_literals_positional
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_positional
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -57,6 +60,8 @@ class WorkerConfig:
     preprocessor_prompt_config: dict[str, Any] | None
     unconditional_prob: float = 0.0
     constant_representation: str = CONSTANT_REPRESENTATION_V23
+    target_dialect: str = TARGET_DIALECT_EXPLICIT
+    tail_zero_bits: int = 0
 
 
 class SharedMemoryWorkerPool:
@@ -69,11 +74,15 @@ class SharedMemoryWorkerPool:
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
         constant_representation: str = CONSTANT_REPRESENTATION_V23,
+        target_dialect: str = TARGET_DIALECT_EXPLICIT,
+        tail_zero_bits: int = 0,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
         self.padding = padding
         self.constant_representation = constant_representation
+        self.target_dialect = target_dialect
+        self.tail_zero_bits = tail_zero_bits
 
         self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
@@ -184,6 +193,8 @@ class SharedMemoryWorkerPool:
             preprocessor_prompt_config=preprocessor_prompt_config,
             unconditional_prob=unconditional_prob,
             constant_representation=self.constant_representation,
+            target_dialect=self.target_dialect,
+            tail_zero_bits=self.tail_zero_bits,
         )
 
         self._workers = []
@@ -302,6 +313,10 @@ def _producer_worker(
     if mixed_constants:
         ieee754_start_id = int(tokenizer[IEEE754_START_TOKEN])
         ieee754_end_id = int(tokenizer[IEEE754_END_TOKEN])
+    # v24 target dialect (contract A3): targets are the engine's TAGGED CANONICAL output,
+    # produced by simplify IN the tagged dialect per problem (literals fold canonically, so
+    # it cannot be cached per skeleton). 'explicit' (default) keeps today's prefix targets.
+    tagged_targets = worker_config.target_dialect == TARGET_DIALECT_TAGGED
 
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(
@@ -352,6 +367,7 @@ def _producer_worker(
             metadata_batch = []
             preprocessed_batch: list[dict[str, Any]] | None = [] if preprocessor is not None else None
             n_dropped_truncation = 0
+            n_dropped_nonfinite = 0
 
             i = 0
             while i < batch_size:
@@ -372,8 +388,25 @@ def _producer_worker(
                 # problem shapes take the same path.
                 expression = substitute_constants(
                     list(problem.skeleton), values=list(problem.constants), inplace=False)
-                skeleton, literal_values = mask_literals_positional(
-                    simplipy_engine, expression)
+                if tagged_targets:
+                    # The tagged canonical differs STRUCTURALLY from the prefix canonical
+                    # (rational literal spellings, negative exponents absorbed into pow,
+                    # negation distributed into <sub> sections) -- see
+                    # symbolic_data.token_ops.tagged_canonical. np.pi/np.e stay symbolic
+                    # tokens; every NUMERIC literal is extracted for ieee754 serialization.
+                    try:
+                        target_expression = tagged_canonical(simplipy_engine, expression)
+                        skeleton, literal_values = mask_literals_positional(
+                            simplipy_engine, target_expression, keep_specials=True)
+                    except NonFiniteExpressionError:
+                        # Minted by OUR tagged simplify call (the producer validated the
+                        # prefix form finite), so this is candidate-direction semantics:
+                        # drop the instance and count it, like a span-cutting truncation.
+                        n_dropped_nonfinite += 1
+                        continue
+                else:
+                    skeleton, literal_values = mask_literals_positional(
+                        simplipy_engine, expression)
                 literals = np.asarray(literal_values, dtype=np.float32)
 
                 mask_unused_variable_columns(
@@ -387,6 +420,7 @@ def _producer_worker(
                     # Raises on non-finite constants: the generator must never emit them.
                     serialized_tokens, body_numeric = serialize_constant_tokens(
                         skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
+                        zero_tail_bits=worker_config.tail_zero_bits,
                     )
                     tokens_to_encode = serialized_tokens
                 else:
@@ -466,6 +500,10 @@ def _producer_worker(
                 # Instances dropped because truncation would have cut inside an <ieee754> span
                 # while filling THIS batch (mixed representation only).
                 payload["n_dropped_truncation"] = n_dropped_truncation
+            if tagged_targets:
+                # Instances whose tagged canonicalization folded a degenerate sub-expression
+                # to a non-finite spelling while filling THIS batch (tagged targets only).
+                payload["n_dropped_nonfinite"] = n_dropped_nonfinite
             metadata_list[slot_idx] = payload
             result_queue.put(slot_idx)
     finally:

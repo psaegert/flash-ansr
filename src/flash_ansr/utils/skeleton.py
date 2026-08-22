@@ -144,7 +144,21 @@ def _literal_value(token: str) -> float:
         return float(numerator) / float(denominator)
 
 
-def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str]) -> tuple[list[str], list[float]]:
+_SPECIAL_CONSTANT_TOKENS = ("np.pi", "np.e")
+
+
+def _mask_numeric_keep_specials(value: str, role: "masking.Role") -> str | None:
+    """The v24 target policy: every NUMERIC literal is extracted for ieee754
+    serialization; the symbolic constants stay as written (contract A3: the AC engine
+    keeps ``np.pi``/``np.e`` symbolic -- they have no decimal spelling to serialize and
+    remain vocabulary tokens in the tagged canonical dialect)."""
+    if value in _SPECIAL_CONSTANT_TOKENS:
+        return None
+    return "<constant>"
+
+
+def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str],
+                             keep_specials: bool = False) -> tuple[list[str], list[float]]:
     """Mask every literal in a CONCRETE ``expression`` positionally and return the values.
 
     The training-data contract: symbolic-data >= 0.14 generative catalogs yield concrete
@@ -161,10 +175,18 @@ def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str]) ->
     token set before yielding), so one arriving here means that contract broke. Skipping the
     sample would hide the broken producer and silently reshape the training distribution; the
     candidate-stream direction drops because there flash-ansr mints the non-finite itself.
+
+    ``keep_specials=True`` is the v24 target-path policy (contract A3): ``np.pi`` and
+    ``np.e`` stay as written -- they are symbolic in the tagged canonical dialect and
+    never serialize to an ieee754 span -- and are correspondingly EXCLUDED from the
+    returned values, keeping the 1:1 site<->``<constant>`` alignment.
     """
     tokens = list(expression)
     sites = masking.literal_sites(tokens, engine)
-    skeleton = masking.mask(tokens, engine, masking.mask_all, collect=False)
+    policy = _mask_numeric_keep_specials if keep_specials else masking.mask_all
+    skeleton = masking.mask(tokens, engine, policy, collect=False)
     if find_non_finite(skeleton):
         raise NonFiniteExpressionError(skeleton)
+    if keep_specials:
+        sites = [site for site in sites if site[1] not in _SPECIAL_CONSTANT_TOKENS]
     return skeleton, [_literal_value(value) for _, value, _ in sites]

@@ -18,6 +18,7 @@ probability ``expanded_probability`` (default 0.5, seeded RNG) -- with one of tw
 
 Non-finite constants raise at serialization time -- assert, don't assume.
 """
+import struct
 import math
 import re
 from typing import Sequence
@@ -41,6 +42,19 @@ CONSTANT_REPRESENTATION_V23 = "v23"
 CONSTANT_REPRESENTATION_IEEE754_MIXED = "ieee754_mixed"
 CONSTANT_REPRESENTATIONS = (CONSTANT_REPRESENTATION_V23, CONSTANT_REPRESENTATION_IEEE754_MIXED)
 
+#: The tagged canonical dialect's delimiter set (verified against a live generation-2
+#: engine by the v24 template tests). ``<sub>`` and ``<div>`` are role markers inside
+#: their enclosing bag, not paired tags.
+TAGGED_DELIMITER_TOKENS = ("<add>", "</add>", "<sub>", "<mul>", "</mul>", "<div>")
+
+#: v24 target-dialect gate: 'explicit' (default) targets the binary-prefix expression
+#: exactly as today; 'tagged' targets the engine's TAGGED CANONICAL output (contract
+#: A3) -- simplify run IN the tagged dialect per problem, every numeric literal riding
+#: the ieee754 constants format, np.pi/np.e staying symbolic.
+TARGET_DIALECT_EXPLICIT = "explicit"
+TARGET_DIALECT_TAGGED = "tagged"
+TARGET_DIALECTS = (TARGET_DIALECT_EXPLICIT, TARGET_DIALECT_TAGGED)
+
 _INDEXED_CONSTANT_PATTERN = re.compile(r"C_\d+$")
 
 
@@ -55,6 +69,8 @@ def serialize_constant_tokens(
     representation: str = CONSTANT_REPRESENTATION_V23,
     rng: np.random.Generator | None = None,
     expanded_probability: float = 0.5,
+    expanded_mask: "Sequence[bool] | None" = None,
+    zero_tail_bits: int = 0,
 ) -> tuple[list[str], list[float]]:
     """Serialize the constant placeholders of a token sequence under ``representation``.
 
@@ -72,6 +88,14 @@ def serialize_constant_tokens(
         ``'ieee754_mixed'``.
     expanded_probability : float, default 0.5
         Probability that a constant is serialized in EXPANDED form.
+    expanded_mask : Sequence[bool], optional
+        Force the per-constant form: ``True`` = expanded span, ``False`` = compact
+        ``<float>``. One entry per placeholder, in order. When given, NO rng draws are
+        consumed (the paired T12 eval builds both views of one instance this way).
+    zero_tail_bits : int, default 0
+        Zero the lowest ``n`` mantissa bits of the float32 in the EXPANDED span
+        spelling (the pilot's D-arm tail policy; the T13 re-check compares 0 vs 16).
+        The compact form's numeric-channel value keeps full float32 precision.
 
     Returns
     -------
@@ -97,8 +121,11 @@ def serialize_constant_tokens(
         # Byte-identical passthrough: placeholders stay, values stay out-of-band.
         return tokens, [float("nan")] * len(tokens)
 
-    if rng is None:
-        raise ValueError("The 'ieee754_mixed' representation requires a (seeded) rng.")
+    if rng is None and expanded_mask is None:
+        raise ValueError("The 'ieee754_mixed' representation requires a (seeded) rng "
+                         "(or an explicit expanded_mask).")
+    if not 0 <= zero_tail_bits <= 23:
+        raise ValueError(f"zero_tail_bits must lie in the float32 mantissa (0..23), got {zero_tail_bits}.")
 
     values = [float(value) for value in constants]
     n_placeholders = sum(1 for token in tokens if _is_constant_placeholder(token))
@@ -106,6 +133,11 @@ def serialize_constant_tokens(
         raise ValueError(
             f"Constant count mismatch: {n_placeholders} placeholder(s) in {tokens!r} but "
             f"{len(values)} value(s)."
+        )
+    if expanded_mask is not None and len(expanded_mask) != n_placeholders:
+        raise ValueError(
+            f"expanded_mask length mismatch: {n_placeholders} placeholder(s) but "
+            f"{len(expanded_mask)} mask entrie(s)."
         )
 
     serialized: list[str] = []
@@ -127,8 +159,20 @@ def serialize_constant_tokens(
             )
         value32 = float(np.float32(value))
 
-        if rng.random() < expanded_probability:
-            span = wrap_float32(value32)  # raises if the value overflowed float32 to non-finite
+        if expanded_mask is not None:
+            expand = bool(expanded_mask[constant_index - 1])
+        else:
+            assert rng is not None  # narrowed by the guard above
+            expand = bool(rng.random() < expanded_probability)
+
+        if expand:
+            span_value = value32
+            if zero_tail_bits:
+                # D-arm tail policy: zero the low mantissa bits of the SPELLING only.
+                pattern = int.from_bytes(struct.pack(">f", np.float32(span_value)), "big")
+                pattern &= ~((1 << zero_tail_bits) - 1)
+                span_value = float(struct.unpack(">f", pattern.to_bytes(4, "big"))[0])
+            span = wrap_float32(span_value)  # raises if the value overflowed float32 to non-finite
             serialized.extend(span)
             numeric.extend([float("nan")] * len(span))
         else:

@@ -1,0 +1,35 @@
+# v24.0-T13: the small real-stack pilot (contract T13) -- one short training on the
+# REAL collator/beams/refiner stack with the full v24 target format, run BEFORE any
+# v24.0-scale compute. 20k steps at the 3M scale; the paired e3 eval (T12) runs at
+# every validation and must sit ~0 for the shipped per-constant mixing policy.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [2_000, 1e-4]  # 10% of steps warmup
+  - [16_000, 1e-4]
+  - [20_000, 0.0]  # 20% of steps cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+val_size: 2_048
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 20_000
+device: cuda

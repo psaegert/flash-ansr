@@ -1,0 +1,13 @@
+# v24.0-T13 train dataset: tagged canonical targets (contract A3) over the mixed
+# ieee754 constants representation, with the owner-ruled 10% condition dropout.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+condition_dropout: 0.1

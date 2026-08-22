@@ -1,0 +1,14 @@
+# Validation stream: the SAME generative shape (decontaminated against the same holdout
+# pools), conditioned throughout (condition_dropout 0) so validation CE stays a pure
+# conditioned metric, same v24 target format so the paired e3 eval (T12) reads real
+# validation sequences.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'

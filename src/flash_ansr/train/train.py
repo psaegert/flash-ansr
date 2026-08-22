@@ -747,6 +747,7 @@ class Trainer:
 
         val_ce_loss = 0.0
         total_items = 0
+        first_raw_batch: dict[str, Any] | None = None
 
         with torch.no_grad():
             if size is None:
@@ -762,6 +763,10 @@ class Trainer:
                     preprocess_in_worker=worker_preprocess,
                     num_workers=self.num_workers,
                     max_seq_len=self.decoder_max_seq_len):
+                if first_raw_batch is None:
+                    # Kept RAW (pre-collate) for the paired e3 eval below: it rebuilds
+                    # both serialization views from the skeleton/constants metadata.
+                    first_raw_batch = batch
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
                 self._apply_float_target_mask(batch)
@@ -789,8 +794,18 @@ class Trainer:
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
 
+        # T12: the paired e3 eval on real validation data (mixed representation only).
+        # Acceptance mirrors the pilot's prediction: gap ~ 0 under per-constant mixing.
+        e3_metrics = None
+        if (first_raw_batch is not None
+                and getattr(self.val_dataset, "constant_representation", None) == "ieee754_mixed"):
+            from flash_ansr.train.paired_eval import paired_e3_gap
+            e3_metrics = paired_e3_gap(
+                self.model, self.val_dataset.tokenizer, first_raw_batch,
+                device=self.device, max_seq_len=self.decoder_max_seq_len)
+
         # Log averaged validation metrics
-        self._log_validation_metrics(step, avg_val_ce_loss)
+        self._log_validation_metrics(step, avg_val_ce_loss, e3_metrics)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Persist model weights, optimiser state, and config for ``step``.
@@ -910,7 +925,8 @@ class Trainer:
 
         wandb.log(log_data, step=step)  # type: ignore
 
-    def _log_validation_metrics(self, step: int, val_ce_loss: float) -> None:
+    def _log_validation_metrics(self, step: int, val_ce_loss: float,
+                                e3_metrics: "dict[str, float] | None" = None) -> None:
         """Submit aggregated validation metrics to Weights & Biases.
 
         Parameters
@@ -919,8 +935,13 @@ class Trainer:
             Global training step the metrics correspond to.
         val_ce_loss : float
             Mean validation cross-entropy loss.
+        e3_metrics : dict or None, optional
+            The T12 paired e3 eval (``e3_gap``/``e3_n``/per-view NLLs), logged under
+            ``val_`` keys when the mixed representation is active.
         """
         log_data = {
             "val_ce_loss": val_ce_loss,
         }
+        if e3_metrics is not None:
+            log_data.update({f"val_{key}": value for key, value in e3_metrics.items()})
         wandb.log(log_data, step=step)  # type: ignore

@@ -23,6 +23,10 @@ from flash_ansr.data.serialization import (
     CONSTANT_REPRESENTATION_V23,
     CONSTANT_REPRESENTATIONS,
     COMPACT_CONSTANT_TOKEN,
+    TAGGED_DELIMITER_TOKENS,
+    TARGET_DIALECT_EXPLICIT,
+    TARGET_DIALECT_TAGGED,
+    TARGET_DIALECTS,
 )
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
 from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
@@ -77,6 +81,8 @@ class FlashANSRDataset:
         unconditional_prob: float = 0.0,
         constant_representation: str = CONSTANT_REPRESENTATION_V23,
         condition_dropout: float | None = None,
+        target_dialect: str = TARGET_DIALECT_EXPLICIT,
+        tail_zero_bits: int = 0,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -120,6 +126,38 @@ class FlashANSRDataset:
                     f"{list(required_tokens)}, but the tokenizer is missing {missing_tokens}."
                 )
         self.constant_representation = constant_representation
+        # v24 target-dialect gate: 'explicit' (default) targets the binary-prefix
+        # expression exactly as today; 'tagged' targets the engine's TAGGED CANONICAL
+        # output (contract A3) and therefore REQUIRES 'ieee754_mixed' (the tagged target
+        # carries no maskable vocabulary -- every numeric literal rides an ieee754 span)
+        # and the tagged delimiter tokens in the tokenizer.
+        if target_dialect not in TARGET_DIALECTS:
+            raise ValueError(
+                f"Unknown target_dialect {target_dialect!r}; expected one of {TARGET_DIALECTS}."
+            )
+        if target_dialect == TARGET_DIALECT_TAGGED:
+            if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
+                raise ValueError(
+                    "target_dialect 'tagged' is the v24 target path (contract A3/A5) and "
+                    "requires constant_representation='ieee754_mixed': the tagged canonical "
+                    "form has no explicit number tokens, so every numeric literal must ride "
+                    "the ieee754 constants format."
+                )
+            missing_delimiters = [token for token in TAGGED_DELIMITER_TOKENS if token not in tokenizer]
+            if missing_delimiters:
+                raise ValueError(
+                    f"target_dialect 'tagged' requires the tagged delimiter tokens "
+                    f"{list(TAGGED_DELIMITER_TOKENS)}, but the tokenizer is missing "
+                    f"{missing_delimiters}."
+                )
+        self.target_dialect = target_dialect
+        # D-arm tail policy (pinned by the configuration freeze pending the T13 re-check):
+        # zero the low n mantissa bits of every EXPANDED span spelling. 0 = full precision.
+        if not 0 <= int(tail_zero_bits) <= 23:
+            raise ValueError(f"tail_zero_bits must lie in the float32 mantissa (0..23), got {tail_zero_bits}.")
+        if tail_zero_bits and constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
+            raise ValueError("tail_zero_bits only applies to constant_representation='ieee754_mixed'.")
+        self.tail_zero_bits = int(tail_zero_bits)
         self.data = None
 
         self._collator = BatchFormatter(tokenizer=tokenizer)
@@ -128,6 +166,8 @@ class FlashANSRDataset:
             tokenizer=tokenizer,
             padding=padding,
             constant_representation=constant_representation,
+            target_dialect=target_dialect,
+            tail_zero_bits=int(tail_zero_bits),
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -249,6 +289,8 @@ class FlashANSRDataset:
             constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_V23),
             # v24 canonical key for the same probability; the constructor rejects a conflict.
             condition_dropout=config_.get("condition_dropout"),
+            target_dialect=config_.get("target_dialect", TARGET_DIALECT_EXPLICIT),
+            tail_zero_bits=config_.get("tail_zero_bits", 0),
         )
 
     def save(
