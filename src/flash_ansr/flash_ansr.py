@@ -27,7 +27,8 @@ from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 
-from simplipy import SimpliPyEngine, normalize_skeleton
+from simplipy import SimpliPyEngine
+from symbolic_data.token_ops import normalize_skeleton
 
 from flash_ansr._refine_pool import RecoverableForkPool
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation

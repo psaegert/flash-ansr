@@ -65,7 +65,7 @@ class TestSetParser:
         (:class:`_InvalidExpression` / :class:`_TooManyVariables`) -- they are the designed, reported
         attrition of importing an external set into a specific catalog vocabulary, not errors.'''
         try:
-            prefix_expression = simplipy_engine.parse(expression, mask_numbers=True)
+            prefix_expression = simplipy_engine.read_infix(expression, mask_numbers=True)
         except (ValueError, TypeError) as exc:
             if skip_unparseable:
                 raise _InvalidExpression() from exc

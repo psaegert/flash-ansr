@@ -12,7 +12,7 @@ Design choices (deliberate):
 * **Import via the path srbf actually uses.** Several contract symbols are NOT re-exported from the
   ``flash_ansr`` package root: the scoring primitives live in ``flash_ansr.scoring``,
   ``mask_unused_variable_columns`` in ``flash_ansr.utils.tensor_ops``, and
-  ``normalize_skeleton`` / ``normalize_expression`` in ``flash_ansr.expressions.normalization``.
+  ``normalize_skeleton`` / ``normalize_expression`` in ``symbolic_data.token_ops`` (simplipy 0.14 carve-back).
   srbf imports them via those submodule paths (see ``eval/run_config.py``, ``eval/model_adapters.py``,
   ``eval/data_sources.py``, ``baselines/*``), so the contract is pinned at those paths. Adding root
   re-exports later is optional API polish, not required for the contract to hold.
@@ -96,10 +96,13 @@ class TestScoringPrimitives:
 
 class TestExpressionNormalization:
     """``normalize_skeleton`` / ``normalize_expression`` -- srbf's adapters + data sources import
-    these from ``simplipy`` (where expression-token normalization lives post-carve)."""
+    these from ``symbolic_data.token_ops``: simplipy 0.14 replaced its ``normalize_*``
+    surface with the engine-bound ``to_skeleton``/``to_expression`` canonicalisers, and
+    the positional walks moved to the consumer package (the decontamination key and the
+    concrete ground truth must not depend on the loaded rule artifact)."""
 
     def test_signatures(self):
-        from simplipy import normalize_expression, normalize_skeleton
+        from symbolic_data.token_ops import normalize_expression, normalize_skeleton
 
         _assert_has_params(normalize_skeleton, {"tokens"})
         _assert_has_params(normalize_expression, {"tokens"})

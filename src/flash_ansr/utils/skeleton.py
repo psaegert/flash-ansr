@@ -39,8 +39,9 @@ def simplify_and_mask(engine: "SimpliPyEngine", expression: list[str]) -> list[s
 
     Drop-in successor of the pre-simplipy-0.12 ``engine.mask(engine.simplify(x))`` idiom.
     """
-    # simplify mirrors its input container type; a list input returns a list
-    simplified = cast(list[str], engine.simplify(list(expression), form='explicit'))
+    # simplipy >= 0.14 simplify is dialect-preserving: an explicit binary-prefix
+    # list in means an explicit binary-prefix list out (the form= escape is removed)
+    simplified = cast(list[str], engine.simplify(list(expression)))
     return mask_all_literals(engine, simplified)
 
 

@@ -26,11 +26,15 @@ def test_expressions_shim_is_gone():
         import flash_ansr.expressions  # noqa: F401
 
 
-def test_normalization_lives_in_simplipy():
+def test_normalization_lives_in_symbolic_data():
+    """simplipy 0.14 carve-back: the positional walks live in the consumer package
+    (simplipy's to_skeleton/to_expression canonicalise through the engine instead)."""
+    from symbolic_data.token_ops import normalize_expression, normalize_skeleton
+    assert callable(normalize_skeleton)
+    assert callable(normalize_expression)
     import simplipy
-
-    assert callable(simplipy.normalize_skeleton)
-    assert callable(simplipy.normalize_expression)
+    assert not hasattr(simplipy, 'normalize_skeleton')
+    assert not hasattr(simplipy, 'normalize_expression')
 
 
 def test_flash_ansr_dataset_source_seam():
