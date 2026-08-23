@@ -244,11 +244,11 @@ class Attention(nn.Module):
             ca_holder[0] = cached
         k, v = cached
         q = self.w_q(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
-        # Ensure K/V batch dim matches Q (handles encoder memory broadcast); cached so the
-        # expand costs one call per decode, not one per step.
+        # Ensure K/V batch dim matches Q (handles encoder memory broadcast); a stride-0 view, so
+        # satisfying the shape contract costs no copy. Cached so the expand runs once per decode.
         if k.shape[0] != batch_size_q:
-            k = k.expand(batch_size_q, -1, -1, -1).contiguous()
-            v = v.expand(batch_size_q, -1, -1, -1).contiguous()
+            k = k.expand(batch_size_q, -1, -1, -1)
+            v = v.expand(batch_size_q, -1, -1, -1)
             ca_holder[0] = (k, v)
         attn_output = F.scaled_dot_product_attention(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
