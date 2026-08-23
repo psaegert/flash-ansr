@@ -90,6 +90,30 @@ class TestCrossAttentionBatchDims(unittest.TestCase):
                                      f"layer {layer} cached K/V has batch {tensor.shape[0]}, "
                                      f"expected {n_rows}")
 
+    def test_static_cross_caches_a_view_and_matches_a_contiguous_reference(self):
+        """forward_static_cross satisfies the batch contract without copying the memory."""
+        n_rows = 8
+        memory = self.nsr._create_memory(torch.rand(1, 13, 11))
+        attn = self.nsr.decoder.layers[0].cross_attention
+        dim = attn.n_heads * attn.head_dim
+        q = torch.randn(n_rows, 1, dim)
+
+        holder = [None]
+        with torch.no_grad():
+            first = attn.forward_static_cross(q, memory, holder)
+            second = attn.forward_static_cross(q, memory, holder)   # reuses the cached pair
+
+        k, v = holder[0]
+        self.assertEqual(k.shape[0], n_rows)
+        self.assertEqual(k.stride()[0], 0, "cached K was materialized instead of expanded")
+        self.assertEqual(v.stride()[0], 0, "cached V was materialized instead of expanded")
+        self.assertTrue(torch.equal(first, second), "cache reuse changed the result")
+
+        # ... and the view must give exactly what a materialized copy would.
+        with torch.no_grad():
+            ref = attn.forward_static_cross(q, memory, [(k.contiguous(), v.contiguous())])
+        self.assertTrue(torch.allclose(first, ref, atol=1e-6))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -154,12 +154,13 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     if numpy_errors is not None:
         np.seterr(all=numpy_errors)
 
-    seed = payload.get('seed')
-    if seed is not None:
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-
     X, y = _resolve_refinement_arrays(payload)
+
+    seed = payload.get('seed')
+    numpy_rng_state = None
+    if seed is not None:
+        numpy_rng_state = np.random.get_state()
+        np.random.seed(seed)
 
     try:
         refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables'])
@@ -200,6 +201,8 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
     finally:
         np.seterr(**numpy_state)
+        if numpy_rng_state is not None:
+            np.random.set_state(numpy_rng_state)
 
     if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
         warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
@@ -1208,10 +1211,17 @@ class FlashANSR(BaseEstimator):
                     else:
                         if getattr(self, '_n_params', None) is None:
                             self._n_params = sum(p.numel() for p in self.flash_ansr_model.parameters())
-                        _vram_gb = 24.0
+                        # 0.0 until a device reports otherwise: an unqueryable device falls to
+                        # _SMALL_CARD_BATCH_CAP rather than earning the caps measured on a 24 GiB card.
+                        _vram_gb = 0.0
                         if _is_cuda:
                             try:
                                 _vram_gb = torch.cuda.get_device_properties(_dev).total_memory / 1e9
+                            except Exception:
+                                pass
+                        elif getattr(_dev, 'type', None) == 'mps':
+                            try:
+                                _vram_gb = torch.mps.recommended_max_memory() / 1e9
                             except Exception:
                                 pass
                         _raw_bs = suggest_batch_size(choices_target, self._n_params, _vram_gb)
