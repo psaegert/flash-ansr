@@ -55,6 +55,10 @@ special_tokens:
   # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
   # open property blocks (e.g. <complexity>) on its own.
   - "<hypothesize>"
+  # Promptable-mask flags (owner ruling 2026-08-24): harness-owned, never supervised.
+  # Named after simplipy's masking policies; no flag = the unmasked default target.
+  - "<mask_all>"
+  - "<mask_fittable>"
   - "<predict_y>"
   - "</predict_y>"
   - "<point>"

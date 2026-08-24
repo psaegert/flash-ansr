@@ -157,6 +157,31 @@ def _mask_numeric_keep_specials(value: str, role: "masking.Role") -> str | None:
     return "<constant>"
 
 
+def mask_promptable(engine: "SimpliPyEngine", expression: "list[str]",
+                    mode: str) -> "list[str]":
+    """The promptable-mask target (owner ruling 2026-08-24): simplipy's policy
+    semantics under the v24 dialect's specials doctrine.
+
+    ``mode`` is ``'all'`` (every numeric literal masked, simplipy ``mask_all``) or
+    ``'fittable'`` (fittable values masked, structural literals kept, simplipy
+    ``mask_fittable``). ``np.pi``/``np.e`` stay as written in EITHER mode -- they are
+    symbolic in the tagged canonical dialect (contract A3), exactly as the unmasked
+    target path treats them. Runs with ``collect=True``: the degree-of-freedom
+    collection is a ``simplify`` call and may restructure (``2*x0/3`` collects to
+    ``<constant>*x0``) -- ruled fine, it is the canonical skeleton.
+    """
+    if mode not in ("all", "fittable"):
+        raise ValueError(f"mask mode must be 'all' or 'fittable', got {mode!r}")
+    base = masking.mask_all if mode == "all" else masking.mask_fittable
+
+    def policy(value: str, role: "masking.Role") -> "str | None":
+        if value in _SPECIAL_CONSTANT_TOKENS:
+            return None
+        return base(value, role)
+
+    return masking.mask(list(expression), engine, policy, collect=True)
+
+
 def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str],
                              keep_specials: bool = False) -> tuple[list[str], list[float]]:
     """Mask every literal in a CONCRETE ``expression`` positionally and return the values.

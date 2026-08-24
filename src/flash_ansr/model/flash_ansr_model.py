@@ -636,7 +636,8 @@ class FlashANSRModel(nn.Module):
         return self.next_token_head(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
-                          predict: bool = False, hypothesize: bool = False) -> tuple[list[int], list[float]]:
+                          predict: bool = False, hypothesize: bool = False,
+                          mask: "str | None" = None) -> tuple[list[int], list[float]]:
         """The v24 ``<complexity>``-block generation prefix.
 
         With ``mu`` given -- the one-token conditioning interface: ``<bos> <complexity>
@@ -648,17 +649,39 @@ class FlashANSRModel(nn.Module):
         estimate: the self-conditioning default, under which beams naturally diversify
         over complexity.
 
+        ``mask`` selects the promptable target format (owner ruling 2026-08-24):
+        ``'all'`` or ``'fittable'`` insert the harness-owned flag directly after
+        ``<bos>`` (the canonical prompt order), so the model emits the expression under
+        simplipy's corresponding masking policy -- constants as ``<constant>``
+        placeholders for a downstream fitter instead of predicted values. ``None`` (the
+        default) is the unmasked format. ``mask`` composes with any of the three
+        complexity modes and may also be used alone (a mask-only prompt).
+
         Returns ``(initial_tokens, input_num)`` for :meth:`beam_search`/generation.
         ``mu`` is simplipy's integer measure of the MASKED target
         (``engine.complexity``), exactly as trained.
         """
-        if sum([mu is not None, predict, hypothesize]) != 1:
+        n_modes = sum([mu is not None, predict, hypothesize])
+        if n_modes != 1 and not (n_modes == 0 and mask is not None):
             raise ValueError("give exactly one of mu=<value> (condition), predict=True (prompted "
-                             "prediction), or hypothesize=True (self-initiated hypothesis mode)")
+                             "prediction), or hypothesize=True (self-initiated hypothesis mode) "
+                             "-- or mask=... alone for a mask-only prompt")
         # Deferred import: flash_ansr.data imports the model package, not the other way around.
         from flash_ansr.data.serialization import (
-            COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN, HYPOTHESIS_TOKEN)
+            COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN,
+            HYPOTHESIS_TOKEN, MASK_MODE_TOKENS)
         from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
+        mask_token: str | None = None
+        if mask is not None:
+            if mask not in MASK_MODE_TOKENS:
+                raise ValueError(f"mask must be one of {sorted(MASK_MODE_TOKENS)} or None, got {mask!r}")
+            mask_token = MASK_MODE_TOKENS[mask]
+            if mask_token not in self.tokenizer:
+                raise ValueError(f"this tokenizer has no promptable-mask flags (missing {mask_token})")
+        if n_modes == 0:
+            assert mask_token is not None
+            return ([self.tokenizer['<bos>'], self.tokenizer[mask_token]],
+                    [float("nan"), float("nan")])
         if hypothesize:
             required = [HYPOTHESIS_TOKEN]
         else:
@@ -680,6 +703,10 @@ class FlashANSRModel(nn.Module):
             tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
                       self.tokenizer[COMPACT_CONSTANT_TOKEN], self.tokenizer[COMPLEXITY_END_TOKEN]]
             numeric = [float("nan"), float("nan"), float(mu), float("nan")]
+        if mask_token is not None:
+            # Canonical prompt order: <bos>, mask flag, complexity/hypothesis block.
+            tokens.insert(1, self.tokenizer[mask_token])
+            numeric.insert(1, float("nan"))
         return tokens, numeric
 
     def _resolve_generation_prefix(

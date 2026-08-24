@@ -20,6 +20,7 @@ from tqdm import tqdm
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.serialization import (
     HYPOTHESIS_TOKEN,
+    MASK_MODE_TOKENS,
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -118,6 +119,7 @@ class FlashANSRDataset:
         tail_zero_bits: int = 0,
         complexity_block: "dict[str, Any] | None" = None,
         predict_y_block: "dict[str, Any] | None" = None,
+        mask_block: "dict[str, Any] | None" = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -210,11 +212,27 @@ class FlashANSRDataset:
         self.predict_y_block = _validate_task_block(
             predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
             int_keys=("min_n_support",))
-        if self.complexity_block is not None or self.predict_y_block is not None:
+        # The promptable-mask feature (owner ruling 2026-08-24): 'all'/'fittable' target
+        # formats behind harness-owned flag tokens; the remainder is the unmasked mass.
+        self.mask_block = _validate_task_block(
+            mask_block, name="mask_block", probability_keys=("p_mask_all", "p_mask_fittable"))
+        if self.mask_block is not None:
+            if self.mask_block["p_mask_all"] + self.mask_block["p_mask_fittable"] > 1.0:
+                raise ValueError("mask_block: p_mask_all + p_mask_fittable must not exceed 1.0 "
+                                 "(the remainder is the unmasked fraction)")
+            missing_tokens = [t for t in MASK_MODE_TOKENS.values() if t not in tokenizer]
+            if missing_tokens:
+                raise ValueError(f"mask_block requires the flag tokens "
+                                 f"{sorted(MASK_MODE_TOKENS.values())}, missing {missing_tokens}.")
+            if "<constant>" not in tokenizer:
+                raise ValueError("mask_block emits <constant> placeholders in targets and "
+                                 "requires the <constant> token in the tokenizer.")
+        if (self.complexity_block is not None or self.predict_y_block is not None
+                or self.mask_block is not None):
             if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
                 raise ValueError(
-                    "task blocks (complexity_block / predict_y_block) ride the ieee754 "
-                    "machinery and require constant_representation='ieee754_mixed'.")
+                    "task blocks (complexity_block / predict_y_block / mask_block) ride the "
+                    "ieee754 machinery and require constant_representation='ieee754_mixed'.")
             missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
             if missing_wrappers:
                 raise ValueError(f"task blocks require the expression wrappers, missing {missing_wrappers}.")
@@ -238,6 +256,7 @@ class FlashANSRDataset:
             tail_zero_bits=int(tail_zero_bits),
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
+            mask_block=self.mask_block,
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -363,6 +382,7 @@ class FlashANSRDataset:
             tail_zero_bits=config_.get("tail_zero_bits", 0),
             complexity_block=config_.get("complexity_block"),
             predict_y_block=config_.get("predict_y_block"),
+            mask_block=config_.get("mask_block"),
         )
 
     def save(

@@ -134,8 +134,10 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
 
     ``expression/anchor`` is the cross-arm COMMON GROUND: expression CE restricted to
     instances with no expression-informing block (complexity absent, predict_y absent
-    or conditional), emitted in base-shaped runs too (where it equals the expression
-    CE), so main-task ability is comparable across arms with different task mixes.
+    or conditional, no mask flag), emitted in base-shaped runs too (where it equals
+    the expression CE), so main-task ability is comparable across arms with different
+    task mixes. The promptable-mask feature adds ``expression/mask_all|mask_fittable|
+    unmasked`` and ``predict_y/masked_ctx|unmasked_ctx``.
     """
     segments = batch.get('task_segments')
     labels = batch.get('labels')
@@ -192,12 +194,27 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
     # arms trained under different noise configs still predict the expression from
     # different data -- hold the noise setting constant across arms for a clean read.
     complexity_variant_list = batch.get('complexity_variant')
+    mask_mode_list = batch.get('mask_mode')
     anchor = rows([
         (complexity_variant_list is None or complexity_variant_list[i] is None)
         and (predict_y is None or predict_y[i] is None or bool(predict_y[i]["conditional"]))
+        and (mask_mode_list is None or mask_mode_list[i] is None)
         for i in range(n_rows)
     ])
     splits.append(("expression/anchor", 0, anchor))
+
+    if mask_mode_list is not None:
+        # The promptable-mask circumstances (owner: split metrics for each case): the
+        # expression under each target format, and predict_y under a masked vs
+        # unmasked expression context (a masked context withholds the constants the
+        # conditional variant would otherwise read off the expression).
+        masked_rows = rows([v is not None for v in mask_mode_list])
+        splits.append(("expression/mask_all", 0, rows([v == "all" for v in mask_mode_list])))
+        splits.append(("expression/mask_fittable", 0, rows([v == "fittable" for v in mask_mode_list])))
+        splits.append(("expression/unmasked", 0, ~masked_rows))
+        if predict_y is not None:
+            splits.append(("predict_y/masked_ctx", 2, masked_rows))
+            splits.append(("predict_y/unmasked_ctx", 2, ~masked_rows))
 
     if predict_y is not None:
         conditional = rows([draw is not None and bool(draw["conditional"]) for draw in predict_y])

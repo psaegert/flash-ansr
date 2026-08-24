@@ -17,6 +17,7 @@ from symbolic_data.token_ops import tagged_canonical
 from flash_ansr.data.serialization import (
     COMPACT_CONSTANT_TOKEN,
     HYPOTHESIS_TOKEN,
+    MASK_MODE_TOKENS,
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -39,7 +40,7 @@ from flash_ansr.utils.ieee754 import (
     IEEE754_START_TOKEN,
     float32_to_nibble_tokens,
 )
-from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_positional
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_positional, mask_promptable
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -85,6 +86,7 @@ class WorkerConfig:
     tail_zero_bits: int = 0
     complexity_block: dict[str, Any] | None = None
     predict_y_block: dict[str, Any] | None = None
+    mask_block: dict[str, Any] | None = None
 
 
 class SharedMemoryWorkerPool:
@@ -101,6 +103,7 @@ class SharedMemoryWorkerPool:
         tail_zero_bits: int = 0,
         complexity_block: dict[str, Any] | None = None,
         predict_y_block: dict[str, Any] | None = None,
+        mask_block: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -110,6 +113,7 @@ class SharedMemoryWorkerPool:
         self.tail_zero_bits = tail_zero_bits
         self.complexity_block = complexity_block
         self.predict_y_block = predict_y_block
+        self.mask_block = mask_block
 
         self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
@@ -230,6 +234,7 @@ class SharedMemoryWorkerPool:
             tail_zero_bits=self.tail_zero_bits,
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
+            mask_block=self.mask_block,
         )
 
         self._workers = []
@@ -358,8 +363,9 @@ def _producer_worker(
     # selector / <float> value position is loss-masked (task_mask True), supervision
     # lands on content nibbles and closing tags only.
     complexity_cfg = worker_config.complexity_block
+    mask_cfg = worker_config.mask_block
     predict_y_cfg = worker_config.predict_y_block
-    task_blocks_on = complexity_cfg is not None or predict_y_cfg is not None
+    task_blocks_on = complexity_cfg is not None or predict_y_cfg is not None or mask_cfg is not None
 
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(
@@ -413,6 +419,7 @@ def _producer_worker(
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
             n_skipped_task_blocks = 0
+            n_mask_fallbacks = 0
 
             i = 0
             while i < batch_size:
@@ -474,12 +481,65 @@ def _producer_worker(
                 if unconditional_prob > 0.0:
                     condition_mask_value = draw_condition_mask(worker_rng, unconditional_prob)
 
+                # Promptable-mask draw (owner ruling 2026-08-24): 'all' / 'fittable' /
+                # None (unmasked, the default mass). Drawn before serialization because
+                # the mode decides WHAT gets serialized.
+                mask_mode: str | None = None
+                if mask_cfg is not None:
+                    mask_draw = worker_rng.random()
+                    if mask_draw < float(mask_cfg["p_mask_all"]):
+                        mask_mode = "all"
+                    elif mask_draw < float(mask_cfg["p_mask_all"]) + float(mask_cfg["p_mask_fittable"]):
+                        mask_mode = "fittable"
+
+                masked_expression: list[str] | None = None
+                skeleton_m: list[str] | None = None
+                kept_values: list[float] | None = None
+                if mask_mode is not None:
+                    # simplipy's policy on the CONCRETE target; collect=True may
+                    # restructure (one <constant> per degree of freedom) -- ruled fine.
+                    # mask_literals_positional is 1:1 on ITS input and leaves the
+                    # policy's placeholders alone, so position p tells the two kinds of
+                    # <constant> apart: a value slot (was a literal) vs a placeholder.
+                    try:
+                        masked_expression = mask_promptable(
+                            simplipy_engine,
+                            target_expression if tagged_targets else expression,
+                            mask_mode)
+                        skeleton_m, kept_values = mask_literals_positional(
+                            simplipy_engine, masked_expression, keep_specials=True)
+                    except (NonFiniteExpressionError, ValueError):
+                        # Fall back to the unmasked target and COUNT it: dropping the
+                        # instance would reshape the expression prior conditional on a
+                        # 5% formatting draw.
+                        n_mask_fallbacks += 1
+                        mask_mode = None
+
                 if mixed_constants:
-                    # Raises on non-finite constants: the generator must never emit them.
-                    serialized_tokens, body_numeric = serialize_constant_tokens(
-                        skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
-                        zero_tail_bits=worker_config.tail_zero_bits,
-                    )
+                    if mask_mode is not None:
+                        assert masked_expression is not None and skeleton_m is not None
+                        assert kept_values is not None
+                        constants_opt: list[float | None] = []
+                        vi = 0
+                        for original, slot in zip(masked_expression, skeleton_m):
+                            if slot == "<constant>":
+                                if original == "<constant>":
+                                    constants_opt.append(None)
+                                else:
+                                    constants_opt.append(float(kept_values[vi]))
+                                    vi += 1
+                        assert vi == len(kept_values), "positional value alignment broke"
+                        serialized_tokens, body_numeric = serialize_constant_tokens(
+                            skeleton_m, constants_opt,
+                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
+                            zero_tail_bits=worker_config.tail_zero_bits,
+                        )
+                    else:
+                        # Raises on non-finite constants: the generator must never emit them.
+                        serialized_tokens, body_numeric = serialize_constant_tokens(
+                            skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
+                            zero_tail_bits=worker_config.tail_zero_bits,
+                        )
                     tokens_to_encode = serialized_tokens
                 else:
                     tokens_to_encode = list(skeleton)
@@ -508,6 +568,18 @@ def _producer_worker(
                     suffix_numeric: list[float] = []
                     suffix_masked: list[bool] = []
                     suffix_segments: list[int] = []
+
+                    if mask_mode is not None:
+                        # The mask flag leads the prompt (canonical order: <bos>, mask
+                        # flag, complexity/hypothesis, unconditional predict_y,
+                        # <expression>). Harness-owned: never supervised. A masked body
+                        # is strictly shorter than its unmasked spelling, so the one
+                        # flag token always fits the budget the body already passed.
+                        prefix_tokens.append(MASK_MODE_TOKENS[mask_mode])
+                        prefix_numeric.append(float("nan"))
+                        prefix_masked.append(True)
+                        prefix_segments.append(TASK_SEGMENT_EXPRESSION)
+                        budget -= 1
 
                     complexity_mode = None
                     if complexity_cfg is not None:
@@ -664,6 +736,8 @@ def _producer_worker(
                     metadata["complexity_variant"] = None if complexity_draw is None else complexity_draw["variant"]
                 if predict_y_cfg is not None:
                     metadata["predict_y"] = predict_y_draw
+                if mask_cfg is not None:
+                    metadata["mask_mode"] = mask_mode
 
                 # Mixed representation only (key present <=> feature on, like condition_mask):
                 # the per-token numeric channel computed during serialization. Merged over the
@@ -700,6 +774,7 @@ def _producer_worker(
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if task_blocks_on:
                 payload["n_skipped_task_blocks"] = n_skipped_task_blocks
+                payload["n_mask_fallbacks"] = n_mask_fallbacks
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
             if mixed_constants:

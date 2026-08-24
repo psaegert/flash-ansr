@@ -53,6 +53,14 @@ PREDICT_Y_TOKENS = (PREDICT_Y_START_TOKEN, PREDICT_Y_END_TOKEN, POINT_START_TOKE
 # flag itself is never supervised -- only the harness may put the model into hypothesis
 # mode; without it, openers stay force-fed and loss-masked.
 HYPOTHESIS_TOKEN = "<hypothesize>"
+
+#: Promptable-mask flags (owner ruling 2026-08-24): harness-owned, never supervised.
+#: Named after simplipy's masking policies. Absence of a flag means the unmasked
+#: (constants-spelled) target -- the 90% default -- so the common path carries no
+#: new token.
+MASK_ALL_TOKEN = "<mask_all>"
+MASK_FITTABLE_TOKEN = "<mask_fittable>"
+MASK_MODE_TOKENS = {"all": MASK_ALL_TOKEN, "fittable": MASK_FITTABLE_TOKEN}
 COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
 
 #: Legal values of the ``constant_representation`` config key.
@@ -96,8 +104,12 @@ def serialize_constant_tokens(
     ----------
     tokens : Sequence[str]
         The expression tokens; constants are the ``<constant>`` / ``C_<i>`` placeholders.
-    constants : Sequence[float]
-        The fitted values, one per placeholder occurrence, in order.
+    constants : Sequence[float or None]
+        The fitted values, one per placeholder occurrence, in order. A ``None`` entry
+        KEEPS that occurrence as a literal ``<constant>`` placeholder (nan on the
+        numeric channel, no rng draw consumed) -- the promptable-mask target format,
+        where the policy's placeholders survive serialization while kept structural
+        literals still ride the ieee754 spelling.
     representation : str, default 'v23'
         ``'v23'`` returns the tokens unchanged (values stay out-of-band);
         ``'ieee754_mixed'`` applies the per-constant 50/50 expanded/compact mixing.
@@ -145,7 +157,7 @@ def serialize_constant_tokens(
     if not 0 <= zero_tail_bits <= 23:
         raise ValueError(f"zero_tail_bits must lie in the float32 mantissa (0..23), got {zero_tail_bits}.")
 
-    values = [float(value) for value in constants]
+    values = [None if value is None else float(value) for value in constants]
     n_placeholders = sum(1 for token in tokens if _is_constant_placeholder(token))
     if n_placeholders != len(values):
         raise ValueError(
@@ -170,6 +182,11 @@ def serialize_constant_tokens(
 
         value = values[constant_index]
         constant_index += 1
+        if value is None:
+            # The policy's placeholder: it IS the target token. No coin flip, no span.
+            serialized.append(token)
+            numeric.append(float("nan"))
+            continue
         if not math.isfinite(value):
             raise ValueError(
                 f"Non-finite constant {value!r} at placeholder {constant_index - 1}: the data "
