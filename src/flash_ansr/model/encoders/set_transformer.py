@@ -523,7 +523,8 @@ class SetTransformer(SetEncoder):
 
         self.output_dim = output_dim if output_dim is not None else model_dim
 
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None,
+                return_point_representations: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """Encode a set into a fixed-size representation.
 
         Parameters
@@ -534,10 +535,16 @@ class SetTransformer(SetEncoder):
             Padding mask with ones for valid elements and zeros for padding. Accepts
             shape ``(batch, set_len)`` or any broadcastable variant.
 
+        return_point_representations : bool, optional
+            Also return the per-point representations after the ISAB stack (immediately
+            before pooling), shape ``(batch, set_len, model_dim)`` with padded rows zeroed --
+            the attach point for per-point heads. Defaults to ``False``.
+
         Returns
         -------
-        torch.Tensor
-            Tensor of shape ``(batch, n_seeds, output_dim)`` containing set encodings.
+        torch.Tensor or tuple[torch.Tensor, torch.Tensor]
+            Tensor of shape ``(batch, n_seeds, output_dim)`` containing set encodings; with
+            ``return_point_representations`` a ``(encodings, point_representations)`` pair.
         """
         # Normalize the padding mask to bool. SDPA interprets FLOAT masks as ADDITIVE logit
         # biases (a 0/1 float mask therefore masks nothing); only bool masks exclude keys.
@@ -562,6 +569,8 @@ class SetTransformer(SetEncoder):
         for isab in self.isabs:
             x = isab(x, attn_mask=attn_mask)
 
+        point_representations = x
+
         x = self.pma(x, attn_mask=attn_mask)
 
         # The decoder operates on the dense output of PMA, so no mask is needed.
@@ -569,4 +578,7 @@ class SetTransformer(SetEncoder):
             x = sab(x)
 
         x = self.output_norm(x)
-        return self.output(x)
+        out = self.output(x)
+        if return_point_representations:
+            return out, point_representations
+        return out

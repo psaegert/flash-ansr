@@ -169,6 +169,7 @@ class FlashANSRModel(nn.Module):
 
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
+        outlier_head: bool = False,
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
@@ -249,6 +250,19 @@ class FlashANSRModel(nn.Module):
             nn.GELU(),
             nn.Dropout(p=decoder_dropout),
             nn.Linear(decoder_model_dim, len(self.tokenizer)))
+
+        # Per-point outlier head (noise mixture): a small MLP over the encoder's post-ISAB
+        # per-point representations (pre-pooling), trained with BCE against the source's
+        # generative contamination labels. Created ONLY when enabled, so existing
+        # checkpoints/configs load unchanged. The representations are captured during the
+        # SAME encoder pass that builds the memory (never a recompute) -- see _create_memory.
+        self.outlier_head: nn.Sequential | None = None
+        if outlier_head:
+            self.outlier_head = nn.Sequential(
+                nn.Linear(encoder_dim, encoder_dim),
+                nn.GELU(),
+                nn.Linear(encoder_dim, 1))
+        self.point_representations: torch.Tensor | None = None
 
         self.preprocessor = FlashANSRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
 
@@ -454,6 +468,7 @@ class FlashANSRModel(nn.Module):
 
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
+            outlier_head=config_.get("outlier_head", False),
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),
@@ -472,8 +487,14 @@ class FlashANSRModel(nn.Module):
             noise = torch.randn_like(data_pre_encodings) * self.pre_encoder_noise_scale
             data_pre_encodings = data_pre_encodings + noise
 
-        # Encoder forward pass
-        memory = self.encoder(data_pre_encodings.view(B, M, D * E), data_attn_mask)
+        # Encoder forward pass; with the outlier head enabled, the per-point (pre-pooling)
+        # representations are captured from the SAME pass for the head -- no recompute.
+        flat_pre_encodings = data_pre_encodings.view(B, M, D * E)
+        if self.outlier_head is not None:
+            memory, self.point_representations = self.encoder(
+                flat_pre_encodings, data_attn_mask, return_point_representations=True)
+        else:
+            memory = self.encoder(flat_pre_encodings, data_attn_mask)
 
         if memory.ndim > 3:
             memory = memory.view(B, -1, memory.size(-1))

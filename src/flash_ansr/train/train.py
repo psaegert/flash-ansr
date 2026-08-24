@@ -91,6 +91,17 @@ def _enable_tf32_precision() -> None:
 _enable_tf32_precision()
 
 
+def _binary_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
+    """Rank-based AUROC (Mann-Whitney U). Ties in float logits are vanishingly rare, so
+    average-rank tie correction is deliberately omitted."""
+    order = scores.argsort()
+    ranks = torch.empty(len(scores), dtype=torch.float64)
+    ranks[order] = torch.arange(1, len(scores) + 1, dtype=torch.float64)
+    n_pos = int(labels.sum())
+    n_neg = len(labels) - n_pos
+    return float((ranks[labels].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
+
+
 class Trainer:
     """Manage end-to-end training for a ``FlashANSRModel``.
 
@@ -163,6 +174,16 @@ class Trainer:
         # Metrics and Loss Functions
         self.metrics_ignore_index = self.model.tokenizer["<pad>"]
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
+
+        # Outlier-head auxiliary loss (noise mixture). weight 0.0 <=> off. pos_weight
+        # rebalances the BCE positive class; the ruling starts at 1.0 (calibrated suspicion
+        # scores) -- raise only if the head under-fires.
+        self.outlier_loss_weight = float(self.config.get('outlier_loss_weight', 0.0))
+        self.outlier_pos_weight = float(self.config.get('outlier_pos_weight', 1.0))
+        if self.outlier_loss_weight > 0.0 and self.model.outlier_head is None:
+            raise ValueError(
+                "outlier_loss_weight > 0 but the model has no outlier head "
+                "(set outlier_head: true in the model config)")
 
         self.total_pflops = 0.0
         self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
@@ -638,6 +659,32 @@ class Trainer:
             self.prompt_combo_counts[key] += 1
             self.prompt_total_samples += 1
 
+    def _outlier_scores(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor] | None:
+        """Per-point outlier-head logits and contamination labels over valid support points.
+
+        ``None`` when inactive (no head, or the batch carries no mixture labels). Reads the
+        per-point representations captured by the SAME model forward that produced the
+        next-token logits -- never a second encoder pass.
+        """
+        head = self.model.outlier_head
+        if head is None or 'outlier_mask' not in batch:
+            return None
+        point_representations = self.model.point_representations
+        if point_representations is None:
+            return None
+        logits = head(point_representations).squeeze(-1)
+        valid = batch['data_attn_mask'].to(logits.device)
+        labels = batch['outlier_mask'].to(logits.device)
+        return logits[valid], labels[valid]
+
+    def _outlier_loss(self, scored: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        logits, labels = scored
+        if logits.numel() == 0:
+            return torch.zeros((), device=logits.device)
+        pos_weight = torch.tensor(self.outlier_pos_weight, device=logits.device, dtype=logits.dtype)
+        return nn.functional.binary_cross_entropy_with_logits(
+            logits, labels.to(logits.dtype), pos_weight=pos_weight)
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -656,6 +703,7 @@ class Trainer:
         self.model.train()
 
         total_ce_loss = 0.0
+        total_outlier_loss = 0.0
         total_loss = 0.0
 
         # Split the batch into micro-batches to support gradient accumulation
@@ -699,7 +747,13 @@ class Trainer:
                 param_sum = sum(p.sum() for p in self.model.parameters())
                 zero_loss = 0.0 * param_sum
 
-                loss = ce_loss / self.gradient_accumulation_steps + zero_loss
+                outlier_loss = torch.zeros((), device=self.device, dtype=ce_loss.dtype)
+                if self.outlier_loss_weight > 0.0:
+                    scored = self._outlier_scores(micro_batch)
+                    if scored is not None:
+                        outlier_loss = self._outlier_loss(scored)
+
+                loss = (ce_loss + self.outlier_loss_weight * outlier_loss) / self.gradient_accumulation_steps + zero_loss
 
             # If the loss is nan or inf, stop the training
             if not torch.isfinite(loss):
@@ -707,6 +761,7 @@ class Trainer:
 
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
+            total_outlier_loss += outlier_loss.item()
             total_loss += loss.item() * self.gradient_accumulation_steps
 
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
@@ -722,7 +777,12 @@ class Trainer:
             self.optimizer.zero_grad()
 
             # Log metrics and update scheduler after the optimizer step
-            self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
+            # Positional call when the feature is off: monkeypatched/legacy 4-arg loggers keep working.
+            if self.outlier_loss_weight > 0.0:
+                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm,
+                                  extra={"train_outlier_loss": total_outlier_loss})
+            else:
+                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -748,6 +808,8 @@ class Trainer:
 
         val_ce_loss = 0.0
         total_items = 0
+        val_outlier_scores: list[torch.Tensor] = []
+        val_outlier_labels: list[torch.Tensor] = []
         first_raw_batch: dict[str, Any] | None = None
 
         with torch.no_grad():
@@ -789,6 +851,12 @@ class Trainer:
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                     total_items += flat_labels.shape[0]
 
+                    if self.outlier_loss_weight > 0.0:
+                        scored = self._outlier_scores(batch)
+                        if scored is not None:
+                            val_outlier_scores.append(scored[0].detach().float().cpu())
+                            val_outlier_labels.append(scored[1].detach().cpu())
+
                 pbar.update(1)
             pbar.close()
 
@@ -805,8 +873,21 @@ class Trainer:
                 self.model, self.val_dataset.tokenizer, first_raw_batch,
                 device=self.device, max_seq_len=self.decoder_max_seq_len)
 
-        # Log averaged validation metrics
-        self._log_validation_metrics(step, avg_val_ce_loss, e3_metrics)
+        outlier_metrics: dict[str, float] | None = None
+        if val_outlier_scores:
+            scores = torch.cat(val_outlier_scores)
+            labels = torch.cat(val_outlier_labels).bool()
+            bce = nn.functional.binary_cross_entropy_with_logits(
+                scores, labels.float(), pos_weight=torch.tensor(self.outlier_pos_weight))
+            outlier_metrics = {"val_outlier_loss": float(bce)}
+            if labels.any() and (~labels).any():
+                outlier_metrics["val_outlier_auroc"] = _binary_auroc(scores, labels)
+
+        # Log averaged validation metrics (positional when the feature is off, see _log_metrics)
+        if outlier_metrics is not None:
+            self._log_validation_metrics(step, avg_val_ce_loss, e3_metrics, extra=outlier_metrics)
+        else:
+            self._log_validation_metrics(step, avg_val_ce_loss, e3_metrics)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Persist model weights, optimiser state, and config for ``step``.
@@ -901,7 +982,8 @@ class Trainer:
 
         return resume_step
 
-    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor) -> None:
+    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor,
+                     extra: "dict[str, float] | None" = None) -> None:
         """Submit training metrics for the current batch to Weights & Biases.
 
         Parameters
@@ -923,11 +1005,14 @@ class Trainer:
             "lr": self.optimizer.param_groups[0]['lr'],
             "total_pflops": self.total_pflops,
         }
+        if extra:
+            log_data.update(extra)
 
         wandb.log(log_data, step=step)  # type: ignore
 
     def _log_validation_metrics(self, step: int, val_ce_loss: float,
-                                e3_metrics: "dict[str, float] | None" = None) -> None:
+                                e3_metrics: "dict[str, float] | None" = None,
+                                extra: "dict[str, float] | None" = None) -> None:
         """Submit aggregated validation metrics to Weights & Biases.
 
         Parameters
@@ -945,4 +1030,6 @@ class Trainer:
         }
         if e3_metrics is not None:
             log_data.update({f"val_{key}": value for key, value in e3_metrics.items()})
+        if extra:
+            log_data.update(extra)
         wandb.log(log_data, step=step)  # type: ignore

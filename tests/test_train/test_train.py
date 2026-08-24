@@ -79,6 +79,8 @@ def _build_dummy_trainer() -> Trainer:
     trainer.device = torch.device('cpu')
     trainer.metrics_ignore_index = -100
     trainer.cross_entropy_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    trainer.outlier_loss_weight = 0.0
+    trainer.outlier_pos_weight = 1.0
     trainer.total_pflops = 0.0
     trainer.encoder_parameters = sum(p.numel() for p in trainer.model.encoder.parameters() if p.requires_grad)
     trainer.decoder_parameters = sum(p.numel() for p in trainer.model.decoder.parameters() if p.requires_grad)
