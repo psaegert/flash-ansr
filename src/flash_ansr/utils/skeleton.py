@@ -202,6 +202,42 @@ def fittable_slots(engine: "SimpliPyEngine", expression: "list[str]") -> "list[b
             for _, value, role in sites if value not in _SPECIAL_CONSTANT_TOKENS]
 
 
+def nonspecial_site_positions(engine: "SimpliPyEngine", expression: "list[str]") -> "list[int]":
+    """Token positions of the non-special literal sites, in positional order --
+    aligned 1:1 with ``mask_literals_positional``'s returned values."""
+    sites = masking.literal_sites(list(expression), engine)
+    return [pos for pos, value, _ in sites if value not in _SPECIAL_CONSTANT_TOKENS]
+
+
+def mask_selected_sites(engine: "SimpliPyEngine", expression: "list[str]",
+                        placeheld: "list[bool]", *, collect: bool) -> "list[str]":
+    """simplipy's ``masking.mask`` over exactly the selected non-special sites.
+
+    ``placeheld`` is aligned with the non-special literal sites in positional
+    order. With ``collect=True`` this is the engine's COLLECTED mask of the
+    selected sites -- the reference the v24 stability check compares against
+    plain substitution (owner ruling 2026-08-24: instances where collection
+    restructures carry no ``<predict_constants>`` block, because the merged /
+    sign-absorbed placeholder values are engine-internal until simplipy's
+    value-carrying mask exists).
+    """
+    counter = {"i": 0}
+
+    def policy(value: str, role: "masking.Role") -> "str | None":
+        if value in _SPECIAL_CONSTANT_TOKENS:
+            return None
+        if counter["i"] >= len(placeheld):
+            raise ValueError(f"site count mismatch: more sites than the {len(placeheld)} entries")
+        selected = placeheld[counter["i"]]
+        counter["i"] += 1
+        return "<constant>" if selected else None
+
+    out = masking.mask(list(expression), engine, policy, collect=collect)
+    if counter["i"] != len(placeheld):
+        raise ValueError(f"site count mismatch: policy saw {counter['i']}, expected {len(placeheld)}")
+    return out
+
+
 def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str],
                              keep_specials: bool = False) -> tuple[list[str], list[float]]:
     """Mask every literal in a CONCRETE ``expression`` positionally and return the values.

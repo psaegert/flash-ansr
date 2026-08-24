@@ -43,7 +43,9 @@ from flash_ansr.utils.ieee754 import (
     IEEE754_START_TOKEN,
     float32_to_nibble_tokens,
 )
-from flash_ansr.utils.skeleton import NonFiniteExpressionError, fittable_slots, mask_literals_positional
+from flash_ansr.utils.skeleton import (NonFiniteExpressionError, fittable_slots,
+                                        mask_literals_positional, mask_selected_sites,
+                                        nonspecial_site_positions)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -423,6 +425,7 @@ def _producer_worker(
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
             n_skipped_task_blocks = 0
+            n_collection_restructured = 0
 
             i = 0
             while i < batch_size:
@@ -519,10 +522,63 @@ def _producer_worker(
                         partial_instance = True
                         placeheld = [bool(worker_rng.random() < float(mask_cfg["p_placeheld"]))
                                      for _ in range(n_slots)]
-                placeheld_values = [float(v) for v, ph in zip(literals, placeheld) if ph]
+                # COLLECTION-STABILITY check (owner ruling 2026-08-24): the engine's
+                # collected mask of the drawn sites is the reference; if it is
+                # token-identical to plain substitution, the site values ARE the
+                # placeholder ground truth (and no group has more than one member, so
+                # the block's posterior cannot be degenerate). If collection
+                # RESTRUCTURES (merges, absorbs signs, fires rules -- measured ~4-6%),
+                # the values are engine-internal until simplipy's value-carrying mask:
+                # a flagged instance then keeps the COLLECTED expression as its
+                # emission target but carries no block; a partial instance skips its
+                # decoration entirely (it exists only for the block). Counted, never
+                # silent.
+                collected_body: list[str] | None = None
+                if any(placeheld):
+                    source_tokens = list(target_expression if tagged_targets else expression)
+                    try:
+                        collected = mask_selected_sites(
+                            simplipy_engine, source_tokens, placeheld, collect=True)
+                        positions = nonspecial_site_positions(simplipy_engine, source_tokens)
+                        assert len(positions) == n_slots, "site alignment broke"
+                        expected = list(source_tokens)
+                        for pos, ph in zip(positions, placeheld):
+                            if ph:
+                                expected[pos] = "<constant>"
+                        stable = collected == expected
+                    except (NonFiniteExpressionError, ValueError):
+                        stable = False
+                        collected = None
+                    if not stable:
+                        n_collection_restructured += 1
+                        if mask_mode is None:
+                            # partial: undecorate -- a partial instance without a
+                            # sound block trains nothing.
+                            partial_instance = False
+                            placeheld = [False] * n_slots
+                        elif collected is not None:
+                            collected_body = [MASKED_CONSTANT_TOKEN if t == "<constant>" else t
+                                              for t in collected]
+                        else:
+                            # the engine refused the mask outright: fall back unmasked.
+                            mask_mode = None
+                            placeheld = [False] * n_slots
+                placeheld_values = ([float(v) for v, ph in zip(literals, placeheld) if ph]
+                                    if collected_body is None else [])
 
                 if mixed_constants:
-                    if placeheld_values:
+                    if collected_body is not None:
+                        # Restructured flagged target: the engine's collected output IS
+                        # the emission format. Remaining literals (fittable's kept
+                        # structural ones) are extracted positionally -- placeholders
+                        # are a different token by now, so there is no ambiguity.
+                        skeleton_mm, kept = mask_literals_positional(
+                            simplipy_engine, collected_body, keep_specials=True)
+                        serialized_tokens, body_numeric = serialize_constant_tokens(
+                            skeleton_mm, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                        )
+                    elif any(placeheld):
                         slot_index = 0
                         body_source: list[str] = []
                         for token in skeleton:
@@ -533,14 +589,16 @@ def _producer_worker(
                             else:
                                 body_source.append(token)
                         kept = [float(v) for v, ph in zip(literals, placeheld) if not ph]
+                        serialized_tokens, body_numeric = serialize_constant_tokens(
+                            body_source, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                        )
                     else:
-                        body_source = list(skeleton)
-                        kept = list(literals)
-                    # Raises on non-finite constants: the generator must never emit them.
-                    serialized_tokens, body_numeric = serialize_constant_tokens(
-                        body_source, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                    )
+                        # Raises on non-finite constants: the generator must never emit them.
+                        serialized_tokens, body_numeric = serialize_constant_tokens(
+                            skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                        )
                     tokens_to_encode = serialized_tokens
                 else:
                     tokens_to_encode = list(skeleton)
@@ -796,7 +854,7 @@ def _producer_worker(
                     metadata["predict_y"] = predict_y_draw
                 if mask_cfg is not None:
                     metadata["mask_mode"] = mask_mode
-                    metadata["n_placeholders"] = int(sum(placeheld))
+                    metadata["n_placeholders"] = int(tokens_to_encode.count(MASKED_CONSTANT_TOKEN))
                     metadata["predict_constants"] = predict_constants_draw
                 if task_blocks_on:
                     metadata["block_order"] = (block_order if block_order is not None
@@ -837,6 +895,7 @@ def _producer_worker(
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if task_blocks_on:
                 payload["n_skipped_task_blocks"] = n_skipped_task_blocks
+                payload["n_collection_restructured"] = n_collection_restructured
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
             if mixed_constants:

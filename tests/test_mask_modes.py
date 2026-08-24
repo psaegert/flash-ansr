@@ -106,9 +106,16 @@ class TestPredictConstantsBlock:
     def test_block_spans_bind_positionally_and_decode(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
         for batch in _iterate(tokenizer, mask_block=cfg):
+            saw_block = False
             for row, tokens in _rows(batch, tokenizer):
                 draw = batch["predict_constants"][row]
-                assert draw is not None, "p=1: every placeholder-bearing instance gets the block"
+                if draw is None:
+                    # collection restructured this instance (merge or sign absorption):
+                    # the gate withholds the block rather than supervise engine-internal
+                    # values. The collected expression is still the target.
+                    assert PREDICT_CONSTANTS_START_TOKEN not in tokens
+                    continue
+                saw_block = True
                 k = batch["n_placeholders"][row]
                 assert len(draw["values"]) == k >= 1
                 start = tokens.index(PREDICT_CONSTANTS_START_TOKEN)
@@ -129,6 +136,7 @@ class TestPredictConstantsBlock:
                 assert not mask[end], "the closing tag is the model's"
                 seg = batch["task_segments"][row].tolist()
                 assert set(seg[start:end + 1]) == {3}, "the block is segment 3"
+            assert saw_block, "some instances must be collection-stable"
 
     def test_block_probability_zero_means_no_block(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         cfg = _mask_cfg(p_mask_all=1.0)
@@ -249,3 +257,40 @@ class TestPromptSurface:
             model.complexity_prefix(mask="everything")
         with pytest.raises(ValueError):
             model.complexity_prefix()
+
+
+class TestCollectionStability:
+    def test_the_check_detects_restructuring(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        # The measured unstable class: two long exact additive constants (one in a
+        # <sub> section) merge under collection into a single placeholder whose
+        # value is engine-internal (summed, sign-absorbed). Such instances carry no
+        # <predict_constants> block until simplipy's value-carrying mask exists.
+        from flash_ansr.utils.skeleton import mask_selected_sites, nonspecial_site_positions
+
+        tokens = ["<add>", "<mul>", "3.0636630579799418", "x1", "</mul>",
+                  "<sub>", "4.44534694254616499745643103212266", "1.8272203218203917", "</add>"]
+        placeheld = [True, True, True]
+        collected = mask_selected_sites(engine, tokens, placeheld, collect=True)
+        positions = nonspecial_site_positions(engine, tokens)
+        expected = list(tokens)
+        for pos, ph in zip(positions, placeheld):
+            if ph:
+                expected[pos] = "<constant>"
+        assert collected != expected, "the merge must be detected"
+        assert collected.count("<constant>") < sum(placeheld), "placeholders merged"
+
+    def test_plain_substitution_is_stable(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        from flash_ansr.utils.skeleton import mask_selected_sites
+
+        tokens = ["<mul>", "2.71875", "x1", "</mul>"]
+        assert mask_selected_sites(engine, tokens, [True], collect=True) == \
+            ["<mul>", "<constant>", "x1", "</mul>"]
+
+    def test_subset_masking_counts_sites_exactly(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        from flash_ansr.utils.skeleton import mask_selected_sites
+
+        tokens = ["<add>", "<mul>", "2.71875", "x1", "</mul>", "0.15625", "</add>"]
+        out = mask_selected_sites(engine, tokens, [False, True], collect=False)
+        assert out == ["<add>", "<mul>", "2.71875", "x1", "</mul>", "<constant>", "</add>"]
+        with pytest.raises(ValueError, match="site count"):
+            mask_selected_sites(engine, tokens, [True], collect=False)
