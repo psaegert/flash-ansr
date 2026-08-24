@@ -1,7 +1,6 @@
-# v24.0-T14: the task-extension pilot at the T13 scale (3M, 20k steps) -- T13's
-# architecture and schedule with the four ruled extensions on (noise mixture, outlier
-# head, complexity block, predict_y) and the acj-4 engine pinned throughout. The
-# paired comparison against T13 isolates the new tasks.
+# v24.0-T14-base: the CONTROL arm at the T13 scale (3M, 20k steps) -- T14's catalog
+# (acj-4, oversampling retired) with every task extension OFF, so the paired reads are
+# T13 vs T14-base (catalog/engine move) and T14-base vs T14 (the new tasks).
 model: ./model.yaml
 
 optimizer:
@@ -33,8 +32,4 @@ wandb_watch_log_freq: 1000
 
 steps: 20_000
 
-# Outlier-head auxiliary loss (small: the head must not distort the encoder);
-# pos_weight 1.0 = calibrated suspicion scores (ruling 2026-08-24).
-outlier_loss_weight: 0.05
-outlier_pos_weight: 1.0
 device: cuda
