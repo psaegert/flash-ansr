@@ -1,5 +1,5 @@
 """T12 mechanics: forced serialization views (``expanded_mask``), the D-arm tail-policy
-knob (``zero_tail_bits``), and the paired e3 eval that reads real validation batches.
+knob (``zero_tail_bits``), and the paired constant-span eval that reads real validation batches.
 The ACCEPTANCE half of T12 (gap ~ 0 for the shipped mixing policy) runs in T13's
 training; these tests pin the machinery that makes that number trustworthy."""
 import math
@@ -15,7 +15,7 @@ from flash_ansr.data.serialization import (
     serialize_constant_tokens,
 )
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.train.paired_eval import build_paired_views, paired_e3_gap
+from flash_ansr.train.paired_eval import build_paired_views, paired_constant_gap
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
@@ -132,10 +132,10 @@ def test_paired_views_reject_single_constant(tokenizer: Tokenizer) -> None:
 
 
 # ---------------------------------------------------------------------------
-# paired_e3_gap on a raw batch
+# paired_constant_gap on a raw batch
 # ---------------------------------------------------------------------------
 
-def test_paired_e3_gap_returns_finite_deterministic_metrics(tokenizer: Tokenizer) -> None:
+def test_paired_constant_gap_returns_finite_deterministic_metrics(tokenizer: Tokenizer) -> None:
     model = _tiny_model(tokenizer)
     n_support, n_vars = 4, 10
     batch = {
@@ -147,17 +147,17 @@ def test_paired_e3_gap_returns_finite_deterministic_metrics(tokenizer: Tokenizer
         "y_tensors": [np.ones((n_support, 1), dtype=np.float32)] * 3,
         "data_attn_mask": [np.ones(n_support, dtype=np.float32)] * 3,
     }
-    first = paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
+    first = paired_constant_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
     assert first is not None
-    assert first["e3_n"] == 2.0  # the single-constant instance is ineligible
-    for key in ("e3_gap", "e3_nll_expanded", "e3_nll_compacted"):
+    assert first["ce_constant_n"] == 2.0  # the single-constant instance is ineligible
+    for key in ("ce_constant_gap", "ce_constant_expanded", "ce_constant_compacted"):
         assert math.isfinite(first[key])
-    assert first["e3_gap"] == pytest.approx(first["e3_nll_compacted"] - first["e3_nll_expanded"])
-    second = paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
+    assert first["ce_constant_gap"] == pytest.approx(first["ce_constant_compacted"] - first["ce_constant_expanded"])
+    second = paired_constant_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
     assert second == first  # teacher forcing is deterministic
 
 
-def test_paired_e3_gap_none_when_nothing_eligible(tokenizer: Tokenizer) -> None:
+def test_paired_constant_gap_none_when_nothing_eligible(tokenizer: Tokenizer) -> None:
     model = _tiny_model(tokenizer)
     batch = {
         "skeleton": [["*", "<constant>", "x1"]],
@@ -166,10 +166,10 @@ def test_paired_e3_gap_none_when_nothing_eligible(tokenizer: Tokenizer) -> None:
         "y_tensors": [np.ones((4, 1), dtype=np.float32)],
         "data_attn_mask": [np.ones(4, dtype=np.float32)],
     }
-    assert paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128) is None
+    assert paired_constant_gap(model, tokenizer, batch, device="cpu", max_seq_len=128) is None
 
 
-def test_paired_e3_gap_accepts_tensor_batch(tokenizer: Tokenizer) -> None:
+def test_paired_constant_gap_accepts_tensor_batch(tokenizer: Tokenizer) -> None:
     # The real pipeline hands RAW batches whose fields are torch tensors (cuda in
     # production: the first T13 validation crashed on np.asarray(cuda_tensor), and the
     # x/y/mask stacking would have crashed the same way one line later). The
@@ -187,12 +187,12 @@ def test_paired_e3_gap_accepts_tensor_batch(tokenizer: Tokenizer) -> None:
         "y_tensors": [np.ones((n_support, 1), dtype=np.float32)] * 3,
         "data_attn_mask": [np.ones(n_support, dtype=np.float32)] * 3,
     }
-    listy = paired_e3_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
+    listy = paired_constant_gap(model, tokenizer, batch, device="cpu", max_seq_len=128)
     tensor_batch = dict(batch)
     for key in ("constants", "x_tensors", "y_tensors", "data_attn_mask"):
         tensor_batch[key] = [torch.as_tensor(item) for item in batch[key]]
-    tensory = paired_e3_gap(model, tokenizer, tensor_batch, device="cpu", max_seq_len=128)
+    tensory = paired_constant_gap(model, tokenizer, tensor_batch, device="cpu", max_seq_len=128)
     assert listy is not None and tensory is not None
-    assert tensory["e3_n"] == listy["e3_n"]
-    assert tensory["e3_gap"] == pytest.approx(listy["e3_gap"])
-    assert tensory["e3_nll_expanded"] == pytest.approx(listy["e3_nll_expanded"])
+    assert tensory["ce_constant_n"] == listy["ce_constant_n"]
+    assert tensory["ce_constant_gap"] == pytest.approx(listy["ce_constant_gap"])
+    assert tensory["ce_constant_expanded"] == pytest.approx(listy["ce_constant_expanded"])

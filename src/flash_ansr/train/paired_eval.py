@@ -1,12 +1,14 @@
-"""T12 -- the paired e3 eval on the real stack (contract 'Training-run acceptance').
+"""T12 -- the paired constant-span eval on the real stack (contract 'Training-run acceptance').
 
-The pilot's e3 metric, re-derived for real validation data: for one instance, the NLL
+The pilot's third eval ("e3" in the pilot's arm notes -- the label the metric carried
+until 2026-08-24), re-derived for real validation data: for one instance, the NLL
 of the TARGET constant's expanded hex-nibble span is computed twice under teacher
 forcing -- once with every history constant EXPANDED (view E), once with every history
 constant COMPACT (view C, the inference pattern) -- and the gap is their difference.
 Acceptance mirrors the pilot's prediction: gap ~ 0 for the shipped per-constant mixing
 policy. A persistent positive gap means compacted histories are out-of-distribution and
-the mixing policy is broken (the pilot's B arm, +0.032, reproduced twice).
+the mixing policy is broken (the pilot's B arm, +0.032 in summed-span units = +0.004
+per nibble in today's keys, reproduced twice).
 
 Views are built with ``serialize_constant_tokens(expanded_mask=...)`` -- forced forms,
 no rng -- so both views of an instance carry byte-identical history VALUES and differ
@@ -77,7 +79,7 @@ def build_paired_views(
     return views
 
 
-def paired_e3_gap(
+def paired_constant_gap(
     model: Any,
     tokenizer: Any,
     batch: "dict[str, Any]",
@@ -86,7 +88,7 @@ def paired_e3_gap(
     zero_tail_bits: int = 0,
     max_instances: int = 64,
 ) -> "dict[str, float] | None":
-    """Mean e3 gap over the eligible instances of one RAW (pre-collate) batch.
+    """Mean paired constant-span gap over the eligible instances of one RAW (pre-collate) batch.
 
     ``None`` when no instance is eligible (fewer than two constants everywhere, or
     nothing fits the sequence budget).
@@ -144,9 +146,13 @@ def paired_e3_gap(
             per_view_nll.append(nlls)
 
     gaps = [compacted - expanded for expanded, compacted in zip(per_view_nll[0], per_view_nll[1])]
+    # PER-NIBBLE means, so the keys read on the same scale as every other ce_* curve
+    # (a summed 8-nibble span sat at 7-8 while the per-token CE losses sat at 1-2 --
+    # the same quantity in different units; owner ruling 2026-08-24). Historical
+    # comparison: multiply by IEEE754_N_NIBBLES (the pilot's +0.032 gap = +0.004 here).
     return {
-        "e3_gap": float(np.mean(gaps)),
-        "e3_n": float(len(gaps)),
-        "e3_nll_expanded": float(np.mean(per_view_nll[0])),
-        "e3_nll_compacted": float(np.mean(per_view_nll[1])),
+        "ce_constant_gap": float(np.mean(gaps)) / IEEE754_N_NIBBLES,
+        "ce_constant_n": float(len(gaps)),
+        "ce_constant_expanded": float(np.mean(per_view_nll[0])) / IEEE754_N_NIBBLES,
+        "ce_constant_compacted": float(np.mean(per_view_nll[1])) / IEEE754_N_NIBBLES,
     }
