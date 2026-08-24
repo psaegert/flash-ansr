@@ -1,0 +1,12 @@
+# Validation stream: the control arm's clean, feature-off counterpart (same generative
+# shape, conditioned throughout).
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
