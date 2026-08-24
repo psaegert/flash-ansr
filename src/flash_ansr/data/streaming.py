@@ -43,9 +43,9 @@ from flash_ansr.utils.ieee754 import (
     IEEE754_START_TOKEN,
     float32_to_nibble_tokens,
 )
-from flash_ansr.utils.skeleton import (NonFiniteExpressionError, fittable_slots,
-                                        mask_literals_positional, mask_selected_sites,
-                                        nonspecial_site_positions)
+from flash_ansr.utils.skeleton import (
+    NonFiniteExpressionError, fittable_slots, mask_literals_positional,
+    mask_selected_sites, nonspecial_site_positions)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
