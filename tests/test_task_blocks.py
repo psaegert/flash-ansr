@@ -162,3 +162,24 @@ def test_without_block_configs_the_batch_surface_is_unchanged(tokenizer) -> None
     for batch in _iterate(tokenizer):
         for key in ("task_mask", "complexity_mu", "complexity_variant", "predict_y"):
             assert key not in batch
+
+
+def test_complexity_prefix_for_generation(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    from flash_ansr.model.flash_ansr_model import FlashANSRModel
+    cfg = load_config(get_path("configs", "test", "model.yaml"))
+    kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
+    model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
+
+    tokens, numeric = model.complexity_prefix(76000)
+    names = [tokenizer.vocab[i] for i in tokens]
+    assert names == ["<bos>", "<complexity>", "<float>", "</complexity>"]
+    assert numeric[2] == 76000.0 and all(np.isnan(v) for i, v in enumerate(numeric) if i != 2)
+
+    tokens, numeric = model.complexity_prefix(predict=True)
+    assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", "<complexity>", "<ieee754>"]
+    assert all(np.isnan(v) for v in numeric)
+
+    with pytest.raises(ValueError, match="exactly one"):
+        model.complexity_prefix()
+    with pytest.raises(ValueError, match="exactly one"):
+        model.complexity_prefix(42.0, predict=True)

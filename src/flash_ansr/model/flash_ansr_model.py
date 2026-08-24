@@ -635,6 +635,44 @@ class FlashANSRModel(nn.Module):
         decoder_output = self.decoder.forward_static(input_tokens, self.memory, numeric_embeddings, static_cache, position)
         return self.next_token_head(decoder_output)
 
+    def complexity_prefix(self, mu: "float | int | None" = None, *,
+                          predict: bool = False) -> tuple[list[int], list[float]]:
+        """The v24 ``<complexity>``-block generation prefix.
+
+        With ``mu`` given -- the one-token conditioning interface: ``<bos> <complexity>
+        <float> </complexity>`` with ``mu`` riding the numeric channel; generation then
+        starts at ``<expression>`` under the requested complexity (sweep ``mu`` over a
+        grid for an accuracy-complexity front from one model). With ``predict=True``
+        (and no ``mu``) -- the prefix stops after ``<ieee754>``, so the model first
+        PREDICTS the complexity nibbles of its own answer and then conditions on that
+        estimate: the self-conditioning default, under which beams naturally diversify
+        over complexity.
+
+        Returns ``(initial_tokens, input_num)`` for :meth:`beam_search`/generation.
+        ``mu`` is simplipy's integer measure of the MASKED target
+        (``engine.complexity``), exactly as trained.
+        """
+        if (mu is None) == (not predict):
+            raise ValueError("give exactly one of mu=<value> (condition) or predict=True")
+        # Deferred import: flash_ansr.data imports the model package, not the other way around.
+        from flash_ansr.data.serialization import (
+            COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN)
+        from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
+        required = [COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN,
+                    IEEE754_START_TOKEN if predict else COMPACT_CONSTANT_TOKEN]
+        missing = [token for token in required if token not in self.tokenizer]
+        if missing:
+            raise ValueError(f"this tokenizer has no complexity block (missing {missing})")
+        if predict:
+            tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
+                      self.tokenizer[IEEE754_START_TOKEN]]
+            numeric = [float("nan")] * 3
+        else:
+            tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
+                      self.tokenizer[COMPACT_CONSTANT_TOKEN], self.tokenizer[COMPLEXITY_END_TOKEN]]
+            numeric = [float("nan"), float("nan"), float(mu), float("nan")]
+        return tokens, numeric
+
     def _resolve_generation_prefix(
         self,
         *,
