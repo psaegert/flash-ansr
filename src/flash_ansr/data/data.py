@@ -21,6 +21,8 @@ from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.serialization import (
     HYPOTHESIS_TOKEN,
     MASK_MODE_TOKENS,
+    MASKED_CONSTANT_TOKEN,
+    PREDICT_CONSTANTS_TOKENS,
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -212,21 +214,23 @@ class FlashANSRDataset:
         self.predict_y_block = _validate_task_block(
             predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
             int_keys=("min_n_support",))
-        # The promptable-mask feature (owner ruling 2026-08-24): 'all'/'fittable' target
-        # formats behind harness-owned flag tokens; the remainder is the unmasked mass.
+        # The promptable-mask + constant-infilling feature (owner rulings 2026-08-24):
+        # 'all'/'fittable' emission formats behind harness-owned flags, the unflagged
+        # per-slot partial circumstance, and the <predict_constants> block probabilities.
+        # All six priors pinned, never defaulted.
         self.mask_block = _validate_task_block(
-            mask_block, name="mask_block", probability_keys=("p_mask_all", "p_mask_fittable"))
+            mask_block, name="mask_block",
+            probability_keys=("p_mask_all", "p_mask_fittable", "p_partial", "p_placeheld",
+                              "p_predict_constants_flagged", "p_predict_constants_partial"))
         if self.mask_block is not None:
             if self.mask_block["p_mask_all"] + self.mask_block["p_mask_fittable"] > 1.0:
                 raise ValueError("mask_block: p_mask_all + p_mask_fittable must not exceed 1.0 "
                                  "(the remainder is the unmasked fraction)")
-            missing_tokens = [t for t in MASK_MODE_TOKENS.values() if t not in tokenizer]
+            required = sorted(MASK_MODE_TOKENS.values()) + [MASKED_CONSTANT_TOKEN,
+                                                            *PREDICT_CONSTANTS_TOKENS]
+            missing_tokens = [t for t in required if t not in tokenizer]
             if missing_tokens:
-                raise ValueError(f"mask_block requires the flag tokens "
-                                 f"{sorted(MASK_MODE_TOKENS.values())}, missing {missing_tokens}.")
-            if "<constant>" not in tokenizer:
-                raise ValueError("mask_block emits <constant> placeholders in targets and "
-                                 "requires the <constant> token in the tokenizer.")
+                raise ValueError(f"mask_block requires tokens {required}, missing {missing_tokens}.")
         if (self.complexity_block is not None or self.predict_y_block is not None
                 or self.mask_block is not None):
             if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:

@@ -61,6 +61,19 @@ HYPOTHESIS_TOKEN = "<hypothesize>"
 MASK_ALL_TOKEN = "<mask_all>"
 MASK_FITTABLE_TOKEN = "<mask_fittable>"
 MASK_MODE_TOKENS = {"all": MASK_ALL_TOKEN, "fittable": MASK_FITTABLE_TOKEN}
+
+#: The valueless placeholder the model reads and (under a flag) emits for a masked
+#: constant. Deliberately NOT simplipy's `<constant>` (the serialization pipeline's
+#: value slot) and visibly distinct from the value-carrying `<float>` (owner ruling
+#: 2026-08-24).
+MASKED_CONSTANT_TOKEN = "<masked_constant>"
+
+#: The constant-infilling block (owner ruling 2026-08-24): appended after
+#: `</expression>`, one `<ieee754>` span per `<masked_constant>` placeholder, in
+#: positional order. Named in the `<predict_y>` family.
+PREDICT_CONSTANTS_START_TOKEN = "<predict_constants>"
+PREDICT_CONSTANTS_END_TOKEN = "</predict_constants>"
+PREDICT_CONSTANTS_TOKENS = (PREDICT_CONSTANTS_START_TOKEN, PREDICT_CONSTANTS_END_TOKEN)
 COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
 
 #: Legal values of the ``constant_representation`` config key.

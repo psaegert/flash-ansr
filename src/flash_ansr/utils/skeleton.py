@@ -182,6 +182,26 @@ def mask_promptable(engine: "SimpliPyEngine", expression: "list[str]",
     return masking.mask(list(expression), engine, policy, collect=True)
 
 
+def fittable_slots(engine: "SimpliPyEngine", expression: "list[str]") -> "list[bool]":
+    """Per non-special literal site of ``expression``, in positional order (the SAME
+    slots ``mask_literals_positional`` returns values for): True where simplipy's
+    ``mask_fittable`` policy masks the literal (a fittable value), False where it
+    keeps it (a structural literal -- pow exponent, rootn index).
+
+    The v24 promptable-mask worker decides placeholding PER SLOT with this, rather
+    than re-running ``engine.mask`` with collection: the slots are exactly the ones
+    the nibble serialization fills, and per-slot decisions keep the placeheld values
+    recoverable for the ``<predict_constants>`` block. Note the slot granularity is
+    the LITERAL SITE, not the degree of freedom: the tagged canonical spells an exact
+    rational structurally (``2.5`` is ``5 <div> 2``, two sites), so such a
+    coefficient masks into two placeholders -- the serialization's own premise,
+    inherited, not introduced here.
+    """
+    sites = masking.literal_sites(list(expression), engine)
+    return [masking.mask_fittable(value, role) is not None
+            for _, value, role in sites if value not in _SPECIAL_CONSTANT_TOKENS]
+
+
 def mask_literals_positional(engine: "SimpliPyEngine", expression: list[str],
                              keep_specials: bool = False) -> tuple[list[str], list[float]]:
     """Mask every literal in a CONCRETE ``expression`` positionally and return the values.

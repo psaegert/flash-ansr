@@ -91,7 +91,7 @@ def _enable_tf32_precision() -> None:
 _enable_tf32_precision()
 
 
-TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y"}
+TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "predict_constants"}
 
 
 def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Tensor,
@@ -136,8 +136,9 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
     instances with no expression-informing block (complexity absent, predict_y absent
     or conditional, no mask flag), emitted in base-shaped runs too (where it equals
     the expression CE), so main-task ability is comparable across arms with different
-    task mixes. The promptable-mask feature adds ``expression/mask_all|mask_fittable|
-    unmasked`` and ``predict_y/masked_ctx|unmasked_ctx``.
+    task mixes; partial instances (unflagged placeholders) are excluded too. The
+    promptable-mask feature adds ``expression/mask_all|mask_fittable|unmasked|partial``,
+    ``predict_y/masked_ctx|unmasked_ctx`` and ``constants/after_flagged|partial``.
     """
     segments = batch.get('task_segments')
     labels = batch.get('labels')
@@ -195,10 +196,12 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
     # different data -- hold the noise setting constant across arms for a clean read.
     complexity_variant_list = batch.get('complexity_variant')
     mask_mode_list = batch.get('mask_mode')
+    n_placeholders_list = batch.get('n_placeholders')
     anchor = rows([
         (complexity_variant_list is None or complexity_variant_list[i] is None)
         and (predict_y is None or predict_y[i] is None or bool(predict_y[i]["conditional"]))
         and (mask_mode_list is None or mask_mode_list[i] is None)
+        and (n_placeholders_list is None or int(n_placeholders_list[i]) == 0)
         for i in range(n_rows)
     ])
     splits.append(("expression/anchor", 0, anchor))
@@ -215,6 +218,14 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         if predict_y is not None:
             splits.append(("predict_y/masked_ctx", 2, masked_rows))
             splits.append(("predict_y/unmasked_ctx", 2, ~masked_rows))
+        if n_placeholders_list is not None:
+            partial_rows = rows([mask_mode_list[i] is None and int(n_placeholders_list[i]) > 0
+                                 for i in range(n_rows)])
+            splits.append(("expression/partial", 0, partial_rows))
+            # The infilling block, split by how the placeholders arose: a flagged
+            # (policy-determined) context vs an unflagged partial (random) one.
+            splits.append(("constants/after_flagged", 3, masked_rows))
+            splits.append(("constants/partial", 3, partial_rows))
 
     if predict_y is not None:
         conditional = rows([draw is not None and bool(draw["conditional"]) for draw in predict_y])
@@ -982,10 +993,10 @@ class Trainer:
                     outlier_labels = torch.cat(train_outlier_labels).bool()
                     if outlier_labels.any() and (~outlier_labels).any():
                         extra["train_outlier_auroc"] = _binary_auroc(scores, outlier_labels)
-            for name, (ce_sum, count) in task_ce_sums.items():
-                extra[f"train_ce_{name}"] = ce_sum / count
-            for name, (ce_sum, count) in split_ce_sums.items():
-                extra[f"ce_split/train/{name}"] = ce_sum / count
+            for name, sums in task_ce_sums.items():
+                extra[f"train_ce_{name}"] = sums[0] / sums[1]
+            for name, sums in split_ce_sums.items():
+                extra[f"ce_split/train/{name}"] = sums[0] / sums[1]
             if extra:
                 self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm, extra=extra)
             else:

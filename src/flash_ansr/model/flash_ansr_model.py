@@ -700,6 +700,7 @@ class FlashANSRModel(nn.Module):
                       self.tokenizer[IEEE754_START_TOKEN]]
             numeric = [float("nan")] * 3
         else:
+            assert mu is not None  # the n_modes guard above admits exactly this mode
             tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
                       self.tokenizer[COMPACT_CONSTANT_TOKEN], self.tokenizer[COMPLEXITY_END_TOKEN]]
             numeric = [float("nan"), float("nan"), float(mu), float("nan")]

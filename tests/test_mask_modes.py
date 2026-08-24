@@ -1,10 +1,11 @@
-"""The promptable-mask feature (owner ruling 2026-08-24).
+"""The promptable-mask + constant-infilling feature (owner rulings 2026-08-24).
 
-Three target formats behind harness-owned flags: ``<mask_all>`` (every numeric
-literal masked, simplipy ``mask_all``), ``<mask_fittable>`` (fittable values
-masked, structural literals kept, simplipy ``mask_fittable``), and no flag
-(unmasked, the default mass). The flag is force-fed and never supervised; the
-masked body is the model's own output under the requested policy.
+Three emission formats behind harness-owned flags (``<mask_all>``, ``<mask_fittable>``,
+absence = unmasked), the unflagged per-slot PARTIAL circumstance, and the
+``<predict_constants>`` block: one ``<ieee754>`` span per ``<masked_constant>``
+placeholder, positional order. The flag is an emission-format directive -- under a flag
+the placeholder pattern is policy-determined and supervised; in a partial instance it is
+a random harness draw and context-only.
 """
 import math
 
@@ -19,13 +20,24 @@ from flash_ansr.data.serialization import (
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
     MASK_ALL_TOKEN,
     MASK_FITTABLE_TOKEN,
+    MASKED_CONSTANT_TOKEN,
+    PREDICT_CONSTANTS_END_TOKEN,
+    PREDICT_CONSTANTS_START_TOKEN,
     serialize_constant_tokens,
 )
 from flash_ansr.utils.config_io import load_config
-from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
+from flash_ansr.utils.ieee754 import (
+    IEEE754_N_NIBBLES,
+    IEEE754_START_TOKEN,
+    nibble_tokens_to_float32,
+)
 
-MASK_ALL_ONLY = {"p_mask_all": 1.0, "p_mask_fittable": 0.0}
-MASK_FITTABLE_ONLY = {"p_mask_all": 0.0, "p_mask_fittable": 1.0}
+
+def _mask_cfg(**overrides):
+    cfg = {"p_mask_all": 0.0, "p_mask_fittable": 0.0, "p_partial": 0.0, "p_placeheld": 0.5,
+           "p_predict_constants_flagged": 0.0, "p_predict_constants_partial": 0.0}
+    cfg.update(overrides)
+    return cfg
 
 
 def _expression_span(tokens: "list[str]") -> "list[str]":
@@ -33,62 +45,50 @@ def _expression_span(tokens: "list[str]") -> "list[str]":
 
 
 class TestMaskedTargets:
-    def test_mask_all_bodies_carry_placeholders_and_no_spans(self, tokenizer) -> None:  # type: ignore[no-untyped-def]
-        for batch in _iterate(tokenizer, mask_block=MASK_ALL_ONLY):
+    def test_mask_all_bodies_carry_placeholders_and_no_spans(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        for batch in _iterate(tokenizer, mask_block=_mask_cfg(p_mask_all=1.0)):
             for row, tokens in _rows(batch, tokenizer):
-                assert tokens[1] == MASK_ALL_TOKEN, "the flag leads the prompt"
+                assert tokens[1] == MASK_ALL_TOKEN, "single prefix element leads the prompt"
                 assert batch["mask_mode"][row] == "all"
                 body = _expression_span(tokens)
                 assert IEEE754_START_TOKEN not in body and "<float>" not in body, \
                     "mask_all leaves no serialized values in the body"
-                assert "<constant>" in body or not any(
-                    t == "<constant>" for t in body), "placeholders spell the constants"
+                assert MASKED_CONSTANT_TOKEN in body
+                assert batch["n_placeholders"][row] == body.count(MASKED_CONSTANT_TOKEN)
                 mask = batch["task_mask"][row].tolist()
                 assert mask[1], "the flag itself is NEVER supervised (harness-only)"
                 start = tokens.index("<expression>")
                 end = tokens.index("</expression>")
-                assert not any(mask[start:end + 1]), "the masked body carries loss"
+                assert not any(mask[start:end + 1]), \
+                    "flagged placeholders are policy-determined: the whole body carries loss"
 
-    def test_the_flag_is_absent_from_unmasked_instances(self, tokenizer) -> None:  # type: ignore[no-untyped-def]
-        cfg = {"p_mask_all": 0.0, "p_mask_fittable": 0.0}
-        for batch in _iterate(tokenizer, mask_block=cfg):
+    def test_the_flag_is_absent_from_unmasked_instances(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        for batch in _iterate(tokenizer, mask_block=_mask_cfg()):
             assert all(mode is None for mode in batch["mask_mode"])
             for _, tokens in _rows(batch, tokenizer):
                 assert MASK_ALL_TOKEN not in tokens and MASK_FITTABLE_TOKEN not in tokens
+                assert MASKED_CONSTANT_TOKEN not in tokens
 
-    def test_t0_no_config_no_key(self, tokenizer) -> None:  # type: ignore[no-untyped-def]
+    def test_t0_no_config_no_key(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         for batch in _iterate(tokenizer):
             assert "mask_mode" not in batch
+            assert "n_placeholders" not in batch
+            assert "predict_constants" not in batch
 
 
-class TestFittableKeepsStructure:
-    def test_fittable_keeps_structural_literals_serialized(self, engine) -> None:  # type: ignore[no-untyped-def]
-        # The worker's exact alignment recipe on a pow-carrying expression: the
-        # exponent survives as a SERIALIZED value, the coefficient becomes the
-        # placeholder.
-        from flash_ansr.utils.skeleton import mask_literals_positional, mask_promptable
+class TestPerSlotPolicies:
+    def test_fittable_slots_match_the_simplipy_policy(self, engine) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        from flash_ansr.utils.skeleton import fittable_slots
 
-        concrete = engine.simplify(["+", "*", "2.5", "x1", "pow", "x2", "3"], mode="corpus")
-        masked = mask_promptable(engine, list(concrete), "fittable")
-        assert "3" in masked and "<constant>" in masked
-        skeleton_m, kept = mask_literals_positional(engine, masked, keep_specials=True)
-        constants_opt: "list[float | None]" = []
-        vi = 0
-        for original, slot in zip(masked, skeleton_m):
-            if slot == "<constant>":
-                if original == "<constant>":
-                    constants_opt.append(None)
-                else:
-                    constants_opt.append(float(kept[vi]))
-                    vi += 1
-        assert vi == len(kept) == 1
-        out, numeric = serialize_constant_tokens(
-            skeleton_m, constants_opt,
-            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-            rng=np.random.default_rng(0))
-        assert "<constant>" in out, "the placeholder survives serialization"
-        assert IEEE754_START_TOKEN in out or "<float>" in out, \
-            "the kept structural literal rides the ieee754 spelling"
+        # The worker's target dialect (symbolic-data's tagged_canonical) spells the
+        # exact rational 2.5 STRUCTURALLY as 5 <div> 2 -- two coefficient sites --
+        # while the exponent is one structural site. Slot granularity is the literal
+        # site (the serialization's own premise), and the policy decides per site:
+        # both coefficient halves fittable, the exponent kept.
+        from symbolic_data.token_ops import tagged_canonical
+        concrete = tagged_canonical(engine, engine.to_prefix("2.5*x1 + x2^3"))
+        slots = fittable_slots(engine, list(concrete))
+        assert sorted(slots) == [False, True, True]
 
     def test_serializer_none_entries_consume_no_draws(self) -> None:
         tokens = ["+", "<constant>", "<constant>"]
@@ -99,17 +99,112 @@ class TestFittableKeepsStructure:
             ["+", "<constant>"], [2.5], representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
             rng=np.random.default_rng(7))
         assert out_a[1] == "<constant>" and math.isnan(num_a[1])
-        # the None slot consumed no coin flip: the 2.5 serialization is identical
         assert out_a[2:] == out_b[1:]
+
+
+class TestPredictConstantsBlock:
+    def test_block_spans_bind_positionally_and_decode(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
+        for batch in _iterate(tokenizer, mask_block=cfg):
+            for row, tokens in _rows(batch, tokenizer):
+                draw = batch["predict_constants"][row]
+                assert draw is not None, "p=1: every placeholder-bearing instance gets the block"
+                k = batch["n_placeholders"][row]
+                assert len(draw["values"]) == k >= 1
+                start = tokens.index(PREDICT_CONSTANTS_START_TOKEN)
+                end = tokens.index(PREDICT_CONSTANTS_END_TOKEN)
+                assert end > tokens.index("</expression>"), "the block is a suffix"
+                block = tokens[start:end + 1]
+                assert block.count(IEEE754_START_TOKEN) == k
+                # first span decodes to the first placeheld value, positional binding
+                first = block.index(IEEE754_START_TOKEN)
+                nibbles = block[first + 1:first + 1 + IEEE754_N_NIBBLES]
+                assert nibble_tokens_to_float32(nibbles) == float(np.float32(draw["values"][0]))
+                # loss discipline: openers force-fed, nibbles + closers supervised
+                mask = batch["task_mask"][row].tolist()
+                assert mask[start], "the block opener is harness-owned"
+                assert mask[start + 1], "each span opener is harness-owned"
+                assert not any(mask[start + 2:start + 2 + IEEE754_N_NIBBLES]), \
+                    "the nibbles are the model's"
+                assert not mask[end], "the closing tag is the model's"
+                seg = batch["task_segments"][row].tolist()
+                assert set(seg[start:end + 1]) == {3}, "the block is segment 3"
+
+    def test_block_probability_zero_means_no_block(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        cfg = _mask_cfg(p_mask_all=1.0)
+        for batch in _iterate(tokenizer, mask_block=cfg):
+            assert all(draw is None for draw in batch["predict_constants"])
+            for _, tokens in _rows(batch, tokenizer):
+                assert PREDICT_CONSTANTS_START_TOKEN not in tokens
+
+
+class TestPartialInstances:
+    def test_partial_placeholders_are_context_only(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        cfg = _mask_cfg(p_partial=1.0, p_placeheld=0.5, p_predict_constants_partial=1.0)
+        saw_partial = False
+        for batch in _iterate(tokenizer, steps=2, batch_size=16, mask_block=cfg):
+            assert all(mode is None for mode in batch["mask_mode"]), "partial is unflagged"
+            for row, tokens in _rows(batch, tokenizer):
+                assert MASK_ALL_TOKEN not in tokens and MASK_FITTABLE_TOKEN not in tokens
+                k = batch["n_placeholders"][row]
+                mask = batch["task_mask"][row].tolist()
+                placeholder_positions = [i for i, t in enumerate(tokens)
+                                         if t == MASKED_CONSTANT_TOKEN]
+                assert len(placeholder_positions) == k
+                if k == 0:
+                    continue
+                saw_partial = True
+                assert all(mask[i] for i in placeholder_positions), \
+                    "random placeholders are unlearnable: context-only, loss-masked"
+                draw = batch["predict_constants"][row]
+                assert draw is not None and len(draw["values"]) == k
+        assert saw_partial, "p_placeheld=0.5 over 32 instances must place at least once"
+
+
+class TestOrderRandomization:
+    def test_prefix_elements_permute(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        orders = set()
+        for batch in _iterate(tokenizer, steps=2, batch_size=16,
+                              mask_block=_mask_cfg(p_mask_all=1.0),
+                              complexity_block={"p_present": 1.0, "p_nibbles": 0.0,
+                                                "p_hypothesize": 0.0},
+                              predict_y_block={"p_present": 1.0, "p_conditional": 0.0,
+                                               "min_n_support": 1}):
+            for order in batch["block_order"]:
+                orders.add(tuple(order["prefix"]))
+        assert len(orders) >= 2, f"three commutative elements never permuted: {orders}"
+
+    def test_hypothesis_element_is_pinned_last(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        for batch in _iterate(tokenizer, steps=1, batch_size=16,
+                              mask_block=_mask_cfg(p_mask_all=1.0),
+                              complexity_block={"p_present": 0.0, "p_nibbles": 0.0,
+                                                "p_hypothesize": 1.0}):
+            for order in batch["block_order"]:
+                assert order["prefix"][-1] == "complexity", \
+                    "from the flag on, the pen is the model's until <expression>"
+
+    def test_suffix_blocks_swap(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
+        orders = set()
+        for batch in _iterate(tokenizer, steps=3, batch_size=16,
+                              mask_block=_mask_cfg(p_mask_all=1.0,
+                                                   p_predict_constants_flagged=1.0),
+                              predict_y_block={"p_present": 1.0, "p_conditional": 1.0,
+                                               "min_n_support": 1}):
+            for order in batch["block_order"]:
+                if len(order["suffix"]) == 2:
+                    orders.add(tuple(order["suffix"]))
+        assert len(orders) == 2, f"the two suffix blocks never swapped: {orders}"
 
 
 class TestConfigValidation:
     @pytest.mark.parametrize("bad", [
-        {"p_mask_all": 0.05},                                      # missing key
-        {"p_mask_all": 0.05, "p_mask_fittable": 0.05, "x": 1},     # extra key
-        {"p_mask_all": 0.7, "p_mask_fittable": 0.7},               # mass > 1
+        {"p_mask_all": 0.05},                                      # missing keys
+        {**{"p_mask_all": 0.05, "p_mask_fittable": 0.05, "p_partial": 0.1, "p_placeheld": 0.5,
+            "p_predict_constants_flagged": 0.5, "p_predict_constants_partial": 0.9}, "x": 1},
+        {"p_mask_all": 0.7, "p_mask_fittable": 0.7, "p_partial": 0.1, "p_placeheld": 0.5,
+         "p_predict_constants_flagged": 0.5, "p_predict_constants_partial": 0.9},  # mass > 1
     ])
-    def test_malformed_blocks_refuse(self, tokenizer, bad) -> None:  # type: ignore[no-untyped-def]
+    def test_malformed_blocks_refuse(self, tokenizer, bad) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         with pytest.raises(ValueError):
             FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
                              constant_representation="ieee754_mixed",
@@ -117,23 +212,25 @@ class TestConfigValidation:
 
 
 class TestSplitsAndAnchor:
-    def test_mask_splits_partition_and_anchor_excludes_masked(self, tokenizer) -> None:  # type: ignore[no-untyped-def]
+    def test_mask_splits_partition_and_anchor_excludes_masked(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         from flash_ansr.train.train import _ce_split_metrics
 
-        for batch in _iterate(tokenizer, steps=1, batch_size=16, mask_block=MASK_ALL_ONLY):
+        cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
+        for batch in _iterate(tokenizer, steps=1, batch_size=16, mask_block=cfg):
             batch["labels"] = batch["input_ids"].clone()[..., 1:]
             torch.manual_seed(0)
             logits = torch.randn(batch["input_ids"].shape[0], batch["input_ids"].shape[1],
                                  len(tokenizer))
             parts = _ce_split_metrics(batch, logits, ignore_index=tokenizer["<pad>"])
             assert "expression/mask_all" in parts
+            assert "constants/after_flagged" in parts
             assert "expression/anchor" not in parts, \
                 "every instance is masked, so nothing is base-shaped"
-            assert "expression/unmasked" not in parts
+            assert "constants/partial" not in parts, "no partial rows in a flagged-only run"
 
 
 class TestPromptSurface:
-    def test_mask_prefix_composes_and_stands_alone(self, tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    def test_mask_prefix_composes_and_stands_alone(self, tokenizer, engine) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         from flash_ansr.model.flash_ansr_model import FlashANSRModel
         cfg = load_config(get_path("configs", "test", "model.yaml"))
         kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}

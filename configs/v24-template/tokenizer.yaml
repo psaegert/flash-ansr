@@ -59,6 +59,14 @@ special_tokens:
   # Named after simplipy's masking policies; no flag = the unmasked default target.
   - "<mask_all>"
   - "<mask_fittable>"
+  # The valueless placeholder a masked constant leaves in the expression -- distinct
+  # from <float> (which carries a value on the numeric channel) and from <constant>
+  # (the refiner-handshake skeleton slot).
+  - "<masked_constant>"
+  # The constant-infilling block: one <ieee754> span per <masked_constant>, in
+  # positional order, appended after </expression>.
+  - "<predict_constants>"
+  - "</predict_constants>"
   - "<predict_y>"
   - "</predict_y>"
   - "<point>"

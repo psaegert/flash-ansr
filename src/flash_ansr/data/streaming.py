@@ -18,6 +18,9 @@ from flash_ansr.data.serialization import (
     COMPACT_CONSTANT_TOKEN,
     HYPOTHESIS_TOKEN,
     MASK_MODE_TOKENS,
+    MASKED_CONSTANT_TOKEN,
+    PREDICT_CONSTANTS_END_TOKEN,
+    PREDICT_CONSTANTS_START_TOKEN,
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -40,7 +43,7 @@ from flash_ansr.utils.ieee754 import (
     IEEE754_START_TOKEN,
     float32_to_nibble_tokens,
 )
-from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_positional, mask_promptable
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, fittable_slots, mask_literals_positional
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -49,6 +52,7 @@ from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 TASK_SEGMENT_EXPRESSION = 0
 TASK_SEGMENT_COMPLEXITY = 1
 TASK_SEGMENT_PREDICT_Y = 2
+TASK_SEGMENT_PREDICT_CONSTANTS = 3
 
 
 def draw_condition_mask(rng: np.random.Generator, condition_dropout: float) -> bool:
@@ -419,7 +423,6 @@ def _producer_worker(
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
             n_skipped_task_blocks = 0
-            n_mask_fallbacks = 0
 
             i = 0
             while i < batch_size:
@@ -481,65 +484,63 @@ def _producer_worker(
                 if unconditional_prob > 0.0:
                     condition_mask_value = draw_condition_mask(worker_rng, unconditional_prob)
 
-                # Promptable-mask draw (owner ruling 2026-08-24): 'all' / 'fittable' /
-                # None (unmasked, the default mass). Drawn before serialization because
-                # the mode decides WHAT gets serialized.
+                # Promptable-mask machinery (owner rulings 2026-08-24). Every decision
+                # is PER SLOT over the tagged canonical's literal sites -- exactly the
+                # slots the nibble serialization fills (an exact rational spells
+                # structurally and contributes one slot per literal) -- so the
+                # placeheld values stay recoverable for the <predict_constants> block
+                # (a collect-style re-mask would lose them).
+                #
+                #   flag 'all'       -> every slot placeheld (deterministic).
+                #   flag 'fittable'  -> simplipy's mask_fittable per slot (deterministic).
+                #   unflagged partial-> per-slot three-way draw (random harness choice).
+                #
+                # The flag is an EMISSION-FORMAT directive: under a flag the placeholder
+                # pattern is policy-determined and the placeholders are supervised; in a
+                # partial instance the pattern is a random draw, so the placeholders are
+                # context-only (loss-masked below). Either half without the other would
+                # train noise or unlearn masked emission.
                 mask_mode: str | None = None
+                partial_instance = False
+                n_slots = len(literals)
+                placeheld: list[bool] = [False] * n_slots
                 if mask_cfg is not None:
                     mask_draw = worker_rng.random()
                     if mask_draw < float(mask_cfg["p_mask_all"]):
                         mask_mode = "all"
+                        placeheld = [True] * n_slots
                     elif mask_draw < float(mask_cfg["p_mask_all"]) + float(mask_cfg["p_mask_fittable"]):
                         mask_mode = "fittable"
-
-                masked_expression: list[str] | None = None
-                skeleton_m: list[str] | None = None
-                kept_values: list[float] | None = None
-                if mask_mode is not None:
-                    # simplipy's policy on the CONCRETE target; collect=True may
-                    # restructure (one <constant> per degree of freedom) -- ruled fine.
-                    # mask_literals_positional is 1:1 on ITS input and leaves the
-                    # policy's placeholders alone, so position p tells the two kinds of
-                    # <constant> apart: a value slot (was a literal) vs a placeholder.
-                    try:
-                        masked_expression = mask_promptable(
+                        placeheld = fittable_slots(
                             simplipy_engine,
-                            target_expression if tagged_targets else expression,
-                            mask_mode)
-                        skeleton_m, kept_values = mask_literals_positional(
-                            simplipy_engine, masked_expression, keep_specials=True)
-                    except (NonFiniteExpressionError, ValueError):
-                        # Fall back to the unmasked target and COUNT it: dropping the
-                        # instance would reshape the expression prior conditional on a
-                        # 5% formatting draw.
-                        n_mask_fallbacks += 1
-                        mask_mode = None
+                            target_expression if tagged_targets else expression)
+                        assert len(placeheld) == n_slots, "slot alignment broke"
+                    elif n_slots > 0 and worker_rng.random() < float(mask_cfg["p_partial"]):
+                        partial_instance = True
+                        placeheld = [bool(worker_rng.random() < float(mask_cfg["p_placeheld"]))
+                                     for _ in range(n_slots)]
+                placeheld_values = [float(v) for v, ph in zip(literals, placeheld) if ph]
 
                 if mixed_constants:
-                    if mask_mode is not None:
-                        assert masked_expression is not None and skeleton_m is not None
-                        assert kept_values is not None
-                        constants_opt: list[float | None] = []
-                        vi = 0
-                        for original, slot in zip(masked_expression, skeleton_m):
-                            if slot == "<constant>":
-                                if original == "<constant>":
-                                    constants_opt.append(None)
-                                else:
-                                    constants_opt.append(float(kept_values[vi]))
-                                    vi += 1
-                        assert vi == len(kept_values), "positional value alignment broke"
-                        serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton_m, constants_opt,
-                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
-                            zero_tail_bits=worker_config.tail_zero_bits,
-                        )
+                    if placeheld_values:
+                        slot_index = 0
+                        body_source: list[str] = []
+                        for token in skeleton:
+                            if token == "<constant>":
+                                body_source.append(MASKED_CONSTANT_TOKEN
+                                                   if placeheld[slot_index] else token)
+                                slot_index += 1
+                            else:
+                                body_source.append(token)
+                        kept = [float(v) for v, ph in zip(literals, placeheld) if not ph]
                     else:
-                        # Raises on non-finite constants: the generator must never emit them.
-                        serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED, rng=worker_rng,
-                            zero_tail_bits=worker_config.tail_zero_bits,
-                        )
+                        body_source = list(skeleton)
+                        kept = list(literals)
+                    # Raises on non-finite constants: the generator must never emit them.
+                    serialized_tokens, body_numeric = serialize_constant_tokens(
+                        body_source, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                    )
                     tokens_to_encode = serialized_tokens
                 else:
                     tokens_to_encode = list(skeleton)
@@ -558,27 +559,26 @@ def _producer_worker(
                 predict_y_draw: dict[str, Any] | None = None
                 task_mask: list[bool] | None = None
                 task_segments: list[int] | None = None
+                block_order: dict[str, list[str]] | None = None
+                predict_constants_draw: dict[str, Any] | None = None
                 if task_blocks_on:
                     budget = max_seq_len - (len(tokens_to_encode) + 2)  # <bos> ... <eos>
-                    prefix_tokens: list[str] = []
-                    prefix_numeric: list[float] = []
-                    prefix_masked: list[bool] = []
-                    prefix_segments: list[int] = []
-                    suffix_tokens: list[str] = []
-                    suffix_numeric: list[float] = []
-                    suffix_masked: list[bool] = []
-                    suffix_segments: list[int] = []
+                    # Blocks are built as ELEMENTS and assembled at the end (owner
+                    # ruling 2026-08-24): truly commutative prefix elements are PERMUTED
+                    # per instance so none welds to a position; the hypothesis element is
+                    # pinned LAST (from the flag on, the pen is the model's until
+                    # <expression>); the two suffix blocks swap 50/50. The drawn order is
+                    # recorded in metadata for later splits.
+                    # element = (name, tokens, numeric, masked, segments)
+                    prefix_elements: list[tuple] = []
+                    hypothesis_element: tuple | None = None
+                    suffix_elements: list[tuple] = []
 
                     if mask_mode is not None:
-                        # The mask flag leads the prompt (canonical order: <bos>, mask
-                        # flag, complexity/hypothesis, unconditional predict_y,
-                        # <expression>). Harness-owned: never supervised. A masked body
-                        # is strictly shorter than its unmasked spelling, so the one
-                        # flag token always fits the budget the body already passed.
-                        prefix_tokens.append(MASK_MODE_TOKENS[mask_mode])
-                        prefix_numeric.append(float("nan"))
-                        prefix_masked.append(True)
-                        prefix_segments.append(TASK_SEGMENT_EXPRESSION)
+                        # The emission-format directive: harness-owned, never supervised.
+                        prefix_elements.append(("mask_flag", [MASK_MODE_TOKENS[mask_mode]],
+                                                [float("nan")], [True],
+                                                [TASK_SEGMENT_EXPRESSION]))
                         budget -= 1
 
                     complexity_mode = None
@@ -591,6 +591,7 @@ def _producer_worker(
                         elif mode_draw < float(complexity_cfg["p_hypothesize"]) + float(complexity_cfg["p_present"]):
                             complexity_mode = "prompted"
                     if complexity_mode is not None:
+                        assert complexity_cfg is not None  # complexity_mode implies the config
                         # mu of the MASKED target (a <constant> prices one symbol unit): the
                         # only complexity a user can state at inference without knowing the
                         # constants. complexity() measures the canonical form, so the target
@@ -622,10 +623,12 @@ def _producer_worker(
                             variant = "float"
                         if len(block_tokens) <= budget:
                             budget -= len(block_tokens)
-                            prefix_tokens += block_tokens
-                            prefix_numeric += block_numeric
-                            prefix_masked += block_masked
-                            prefix_segments += [TASK_SEGMENT_COMPLEXITY] * len(block_tokens)
+                            element = ("complexity", block_tokens, block_numeric, block_masked,
+                                       [TASK_SEGMENT_COMPLEXITY] * len(block_tokens))
+                            if variant == "hypothesis":
+                                hypothesis_element = element
+                            else:
+                                prefix_elements.append(element)
                             complexity_draw = {"mu": mu, "variant": variant}
                         else:
                             n_skipped_task_blocks += 1
@@ -662,24 +665,79 @@ def _producer_worker(
                             block_numeric += [float("nan")] * (4 + IEEE754_N_NIBBLES)
                             block_masked += [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
                             budget -= len(block_tokens)
+                            element = ("predict_y", block_tokens, block_numeric, block_masked,
+                                       [TASK_SEGMENT_PREDICT_Y] * len(block_tokens))
                             if conditional:
-                                suffix_tokens += block_tokens
-                                suffix_numeric += block_numeric
-                                suffix_masked += block_masked
-                                suffix_segments += [TASK_SEGMENT_PREDICT_Y] * len(block_tokens)
+                                suffix_elements.append(element)
                             else:
-                                prefix_tokens += block_tokens
-                                prefix_numeric += block_numeric
-                                prefix_masked += block_masked
-                                prefix_segments += [TASK_SEGMENT_PREDICT_Y] * len(block_tokens)
+                                prefix_elements.append(element)
                             predict_y_draw = {"x": point.tolist(), "y": y_star, "conditional": conditional}
                         else:
                             n_skipped_task_blocks += 1
 
-                    if prefix_tokens or suffix_tokens:
+                    # <predict_constants> (owner rulings 2026-08-24): conditional on >= 1
+                    # placeholder, p < 1 in both circumstances so both the plain ending and
+                    # the harness-opened continuation stay in-distribution. One span per
+                    # placeholder, POSITIONAL order -- the binding needs no indices, and a
+                    # fixed constant is simply spelled inline in the expression instead.
+                    # Loss discipline as everywhere: openers force-fed, nibbles and closing
+                    # tags are the model's.
+                    if placeheld_values and mask_cfg is not None:
+                        p_block = float(mask_cfg["p_predict_constants_flagged"]
+                                        if mask_mode is not None
+                                        else mask_cfg["p_predict_constants_partial"])
+                        if worker_rng.random() < p_block:
+                            need = 2 + len(placeheld_values) * IEEE754_SPAN_LENGTH
+                            if need <= budget:
+                                budget -= need
+                                block_tokens = [PREDICT_CONSTANTS_START_TOKEN]
+                                block_numeric = [float("nan")]
+                                block_masked = [True]
+                                for value in placeheld_values:
+                                    block_tokens += [IEEE754_START_TOKEN,
+                                                     *float32_to_nibble_tokens(float(value)),
+                                                     IEEE754_END_TOKEN]
+                                    block_numeric += [float("nan")] * IEEE754_SPAN_LENGTH
+                                    block_masked += [True, *[False] * IEEE754_N_NIBBLES, False]
+                                block_tokens.append(PREDICT_CONSTANTS_END_TOKEN)
+                                block_numeric.append(float("nan"))
+                                block_masked.append(False)
+                                suffix_elements.append((
+                                    "predict_constants", block_tokens, block_numeric, block_masked,
+                                    [TASK_SEGMENT_PREDICT_CONSTANTS] * len(block_tokens)))
+                                predict_constants_draw = {"values": list(placeheld_values)}
+                            else:
+                                n_skipped_task_blocks += 1
+
+                    if len(prefix_elements) > 1:
+                        prefix_elements = [prefix_elements[int(k)]
+                                           for k in worker_rng.permutation(len(prefix_elements))]
+                    if hypothesis_element is not None:
+                        prefix_elements.append(hypothesis_element)
+                    if len(suffix_elements) > 1 and worker_rng.random() < 0.5:
+                        suffix_elements.reverse()
+                    block_order = {"prefix": [e[0] for e in prefix_elements],
+                                   "suffix": [e[0] for e in suffix_elements]}
+
+                    prefix_tokens = [t for e in prefix_elements for t in e[1]]
+                    prefix_numeric = [v for e in prefix_elements for v in e[2]]
+                    prefix_masked = [m for e in prefix_elements for m in e[3]]
+                    prefix_segments = [g for e in prefix_elements for g in e[4]]
+                    suffix_tokens = [t for e in suffix_elements for t in e[1]]
+                    suffix_numeric = [v for e in suffix_elements for v in e[2]]
+                    suffix_masked = [m for e in suffix_elements for m in e[3]]
+                    suffix_segments = [g for e in suffix_elements for g in e[4]]
+
+                    if prefix_tokens or suffix_tokens or partial_instance:
                         base_numeric = (body_numeric if body_numeric is not None
                                         else [float("nan")] * len(tokens_to_encode))
-                        task_mask = [False, *prefix_masked, *[False] * len(tokens_to_encode),
+                        # Flag-dependent placeholder loss (owner ruling): under a flag the
+                        # pattern is policy-determined and the placeholders stay
+                        # supervised; in a partial instance they are a random harness
+                        # draw the model cannot predict -- context-only, loss-masked.
+                        body_masked = ([token == MASKED_CONSTANT_TOKEN for token in tokens_to_encode]
+                                       if partial_instance else [False] * len(tokens_to_encode))
+                        task_mask = [False, *prefix_masked, *body_masked,
                                      *suffix_masked, False]
                         task_segments = [0, *prefix_segments, *[0] * len(tokens_to_encode),
                                          *suffix_segments, 0]
@@ -738,6 +796,11 @@ def _producer_worker(
                     metadata["predict_y"] = predict_y_draw
                 if mask_cfg is not None:
                     metadata["mask_mode"] = mask_mode
+                    metadata["n_placeholders"] = int(sum(placeheld))
+                    metadata["predict_constants"] = predict_constants_draw
+                if task_blocks_on:
+                    metadata["block_order"] = (block_order if block_order is not None
+                                               else {"prefix": [], "suffix": []})
 
                 # Mixed representation only (key present <=> feature on, like condition_mask):
                 # the per-token numeric channel computed during serialization. Merged over the
@@ -774,7 +837,6 @@ def _producer_worker(
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if task_blocks_on:
                 payload["n_skipped_task_blocks"] = n_skipped_task_blocks
-                payload["n_mask_fallbacks"] = n_mask_fallbacks
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
             if mixed_constants:
