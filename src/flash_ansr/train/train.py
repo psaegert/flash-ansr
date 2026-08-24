@@ -166,6 +166,10 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         if condition_mask is not None:
             splits.append(("complexity/data_cond", 1, conditioned))
             splits.append(("complexity/data_uncond", 1, ~conditioned))
+        hypothesized = rows([v == "hypothesis" for v in complexity_variant])
+        prompted = rows([v in ("nibbles", "float") for v in complexity_variant])
+        splits.append(("complexity/hypothesized", 1, hypothesized))
+        splits.append(("complexity/prompted", 1, prompted))
     predict_y = batch.get('predict_y')
     if predict_y is not None:
         conditional = rows([draw is not None and bool(draw["conditional"]) for draw in predict_y])

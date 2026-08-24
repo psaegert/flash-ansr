@@ -11,8 +11,8 @@ from flash_ansr.train.train import Trainer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, nibble_tokens_to_float32
 
-COMPLEXITY_NIBBLES = {"p_present": 1.0, "p_nibbles": 1.0}
-COMPLEXITY_FLOAT = {"p_present": 1.0, "p_nibbles": 0.0}
+COMPLEXITY_NIBBLES = {"p_present": 1.0, "p_nibbles": 1.0, "p_hypothesize": 0.0}
+COMPLEXITY_FLOAT = {"p_present": 1.0, "p_nibbles": 0.0, "p_hypothesize": 0.0}
 PREDICT_A = {"p_present": 1.0, "p_conditional": 0.0, "min_n_support": 1}
 PREDICT_B = {"p_present": 1.0, "p_conditional": 1.0, "min_n_support": 1}
 
@@ -222,7 +222,7 @@ def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # t
     with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
                           constant_representation="ieee754_mixed", target_dialect="tagged",
                           condition_dropout=0.5,
-                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0},
+                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0, "p_hypothesize": 0.0},
                           predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}) as ds:
         for batch in ds.iterate(steps=1, batch_size=32):
             batch = ds.collate(batch, device=torch.device("cpu"))
@@ -250,3 +250,50 @@ def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # t
             for row, draw in enumerate(batch["predict_y"]):
                 if draw is not None:
                     assert bool(batch["condition_mask"][row])
+
+
+HYPOTHESIS_ONLY = {"p_present": 0.0, "p_nibbles": 1.0, "p_hypothesize": 1.0}
+
+
+def test_hypothesis_mode_supervises_the_whole_block_after_the_flag(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    for batch in _iterate(tokenizer, complexity_block=HYPOTHESIS_ONLY):
+        for row, tokens in _rows(batch, tokenizer):
+            assert tokens[:4] == ["<bos>", "<hypothesize>", "<complexity>", "<ieee754>"]
+            assert batch["complexity_variant"][row] == "hypothesis"
+            nibbles = tokens[4:4 + IEEE754_N_NIBBLES]
+            mu = batch["complexity_mu"][row]
+            assert nibble_tokens_to_float32(nibbles) == float(np.float32(mu))
+            assert mu == engine.complexity(list(batch["skeleton"][row]))
+            mask = batch["task_mask"][row].tolist()
+            assert mask[1], "the flag itself is NEVER supervised (harness-only)"
+            block_end = 4 + IEEE754_N_NIBBLES + 2   # through </ieee754> </complexity>
+            assert not any(mask[2:block_end]), \
+                "opener, selector, nibbles and closers are the model's own hypothesis: all supervised"
+
+
+def test_hypothesis_config_validation(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ValueError, match="exceed"):
+        FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                         constant_representation="ieee754_mixed", target_dialect="tagged",
+                         complexity_block={"p_present": 0.6, "p_nibbles": 0.5, "p_hypothesize": 0.6})
+    with pytest.raises(ValueError, match="p_hypothesize"):
+        FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                         constant_representation="ieee754_mixed", target_dialect="tagged",
+                         complexity_block={"p_present": 1.0, "p_nibbles": 1.0})  # missing key
+    old_tokenizer = Tokenizer.from_config(load_config(get_path("configs", "v24.0-T13", "tokenizer.yaml")))
+    with pytest.raises(ValueError, match="hypothesize"):
+        FlashANSRDataset(source=_source(), tokenizer=old_tokenizer, padding="zero",
+                         constant_representation="ieee754_mixed", target_dialect="tagged",
+                         complexity_block=HYPOTHESIS_ONLY)
+
+
+def test_complexity_prefix_hypothesize_mode(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    from flash_ansr.model.flash_ansr_model import FlashANSRModel
+    cfg = load_config(get_path("configs", "test", "model.yaml"))
+    kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
+    model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
+    tokens, numeric = model.complexity_prefix(hypothesize=True)
+    assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", "<hypothesize>"]
+    assert all(np.isnan(v) for v in numeric)
+    with pytest.raises(ValueError, match="exactly one"):
+        model.complexity_prefix(42.0, hypothesize=True)

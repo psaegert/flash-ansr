@@ -16,6 +16,7 @@ from simplipy.utils import substitute_constants
 from symbolic_data.token_ops import tagged_canonical
 from flash_ansr.data.serialization import (
     COMPACT_CONSTANT_TOKEN,
+    HYPOTHESIS_TOKEN,
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -508,30 +509,52 @@ def _producer_worker(
                     suffix_masked: list[bool] = []
                     suffix_segments: list[int] = []
 
-                    if complexity_cfg is not None and worker_rng.random() < float(complexity_cfg["p_present"]):
+                    complexity_mode = None
+                    if complexity_cfg is not None:
+                        # Three-way instance draw (priors pinned in the config): hypothesis
+                        # mode / prompted block / absent.
+                        mode_draw = worker_rng.random()
+                        if mode_draw < float(complexity_cfg["p_hypothesize"]):
+                            complexity_mode = "hypothesis"
+                        elif mode_draw < float(complexity_cfg["p_hypothesize"]) + float(complexity_cfg["p_present"]):
+                            complexity_mode = "prompted"
+                    if complexity_mode is not None:
                         # mu of the MASKED target (a <constant> prices one symbol unit): the
                         # only complexity a user can state at inference without knowing the
                         # constants. complexity() measures the canonical form, so the target
                         # dialect does not matter. Exact in float32 (mu < 2**24 in practice).
                         mu = int(simplipy_engine.complexity(list(skeleton)))
-                        as_nibbles = bool(worker_rng.random() < float(complexity_cfg["p_nibbles"]))
-                        if as_nibbles:
+                        if complexity_mode == "hypothesis":
+                            # The harness-inserted flag LICENSES self-initiated property
+                            # blocks: the flag itself is never supervised (only the harness
+                            # may utter it), but everything after it -- opener, format
+                            # selector, nibbles, closers -- is the model's own hypothesis
+                            # and carries loss.
+                            block_tokens = [HYPOTHESIS_TOKEN, COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
+                                            *float32_to_nibble_tokens(float(mu)),
+                                            IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
+                            block_numeric = [float("nan")] * len(block_tokens)
+                            block_masked = [True, *[False] * (len(block_tokens) - 1)]
+                            variant = "hypothesis"
+                        elif worker_rng.random() < float(complexity_cfg["p_nibbles"]):
                             block_tokens = [COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
                                             *float32_to_nibble_tokens(float(mu)),
                                             IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
                             block_numeric = [float("nan")] * len(block_tokens)
                             block_masked = [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
+                            variant = "nibbles"
                         else:
                             block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
                             block_numeric = [float("nan"), float(mu), float("nan")]
                             block_masked = [True, True, True]
+                            variant = "float"
                         if len(block_tokens) <= budget:
                             budget -= len(block_tokens)
                             prefix_tokens += block_tokens
                             prefix_numeric += block_numeric
                             prefix_masked += block_masked
                             prefix_segments += [TASK_SEGMENT_COMPLEXITY] * len(block_tokens)
-                            complexity_draw = {"mu": mu, "variant": "nibbles" if as_nibbles else "float"}
+                            complexity_draw = {"mu": mu, "variant": variant}
                         else:
                             n_skipped_task_blocks += 1
 

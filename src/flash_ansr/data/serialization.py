@@ -48,6 +48,11 @@ PREDICT_Y_END_TOKEN = "</predict_y>"
 POINT_START_TOKEN = "<point>"
 POINT_END_TOKEN = "</point>"
 PREDICT_Y_TOKENS = (PREDICT_Y_START_TOKEN, PREDICT_Y_END_TOKEN, POINT_START_TOKEN, POINT_END_TOKEN)
+# Hypothesis mode (owner ruling 2026-08-24): a harness-inserted flag that LICENSES the
+# model to open and fill property blocks on its own (opener + content supervised). The
+# flag itself is never supervised -- only the harness may put the model into hypothesis
+# mode; without it, openers stay force-fed and loss-masked.
+HYPOTHESIS_TOKEN = "<hypothesize>"
 COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
 
 #: Legal values of the ``constant_representation`` config key.

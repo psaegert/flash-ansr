@@ -636,7 +636,7 @@ class FlashANSRModel(nn.Module):
         return self.next_token_head(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
-                          predict: bool = False) -> tuple[list[int], list[float]]:
+                          predict: bool = False, hypothesize: bool = False) -> tuple[list[int], list[float]]:
         """The v24 ``<complexity>``-block generation prefix.
 
         With ``mu`` given -- the one-token conditioning interface: ``<bos> <complexity>
@@ -652,18 +652,27 @@ class FlashANSRModel(nn.Module):
         ``mu`` is simplipy's integer measure of the MASKED target
         (``engine.complexity``), exactly as trained.
         """
-        if (mu is None) == (not predict):
-            raise ValueError("give exactly one of mu=<value> (condition) or predict=True")
+        if sum([mu is not None, predict, hypothesize]) != 1:
+            raise ValueError("give exactly one of mu=<value> (condition), predict=True (prompted "
+                             "prediction), or hypothesize=True (self-initiated hypothesis mode)")
         # Deferred import: flash_ansr.data imports the model package, not the other way around.
         from flash_ansr.data.serialization import (
-            COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN)
+            COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN, HYPOTHESIS_TOKEN)
         from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
-        required = [COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN,
-                    IEEE754_START_TOKEN if predict else COMPACT_CONSTANT_TOKEN]
+        if hypothesize:
+            required = [HYPOTHESIS_TOKEN]
+        else:
+            required = [COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN,
+                        IEEE754_START_TOKEN if predict else COMPACT_CONSTANT_TOKEN]
         missing = [token for token in required if token not in self.tokenizer]
         if missing:
             raise ValueError(f"this tokenizer has no complexity block (missing {missing})")
-        if predict:
+        if hypothesize:
+            # The harness-inserted flag licenses the model to open and fill property
+            # blocks on its own; the model was never trained to emit the flag itself.
+            tokens = [self.tokenizer['<bos>'], self.tokenizer[HYPOTHESIS_TOKEN]]
+            numeric = [float("nan")] * 2
+        elif predict:
             tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
                       self.tokenizer[IEEE754_START_TOKEN]]
             numeric = [float("nan")] * 3

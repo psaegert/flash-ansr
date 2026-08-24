@@ -52,6 +52,9 @@ special_tokens:
   # <predict_y> <point> <float>*dims </point> <ieee754> nibbles </ieee754> </predict_y>.
   # Openers and the point are harness-fed and loss-masked; the model owns the y* nibbles
   # and the closing tags.
+  # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
+  # open property blocks (e.g. <complexity>) on its own.
+  - "<hypothesize>"
   - "<predict_y>"
   - "</predict_y>"
   - "<point>"

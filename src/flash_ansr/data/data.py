@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.serialization import (
+    HYPOTHESIS_TOKEN,
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
@@ -197,7 +198,15 @@ class FlashANSRDataset:
         # auxiliary block. Both ride the mixed-constants machinery, so they require
         # 'ieee754_mixed', the expression wrappers, and their block tokens up front.
         self.complexity_block = _validate_task_block(
-            complexity_block, name="complexity_block", probability_keys=("p_present", "p_nibbles"))
+            complexity_block, name="complexity_block",
+            probability_keys=("p_present", "p_nibbles", "p_hypothesize"))
+        if self.complexity_block is not None:
+            if self.complexity_block["p_present"] + self.complexity_block["p_hypothesize"] > 1.0:
+                raise ValueError("complexity_block: p_present + p_hypothesize must not exceed 1.0 "
+                                 "(the remainder is the block-absent fraction)")
+            if self.complexity_block["p_hypothesize"] > 0.0 and HYPOTHESIS_TOKEN not in tokenizer:
+                raise ValueError(f"complexity_block.p_hypothesize > 0 requires the {HYPOTHESIS_TOKEN} "
+                                 f"token in the tokenizer")
         self.predict_y_block = _validate_task_block(
             predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
             int_keys=("min_n_support",))
