@@ -241,6 +241,19 @@ class BatchFormatter:
                 task_mask_tensor = batch["task_mask"].to(device=device, dtype=torch.bool)
                 batch["task_mask"] = _adjust_length(task_mask_tensor, target_length, False)
 
+        # Per-position task-segment ids (0 expression / 1 complexity / 2 predict_y); pad 0.
+        if "task_segments" in batch:
+            target_length = token_bucket_length
+            if isinstance(batch["task_segments"][0], list):
+                padded_segments = [
+                    self._pad_sequence(seq, target_length, 0, device=device, dtype=torch.long)
+                    for seq in batch["task_segments"]
+                ]
+                batch["task_segments"] = torch.stack(padded_segments)
+            else:
+                segments_tensor = batch["task_segments"].to(device=device, dtype=torch.long)
+                batch["task_segments"] = _adjust_length(segments_tensor, target_length, 0)
+
         if "complexity" in batch:
             batch["complexity"] = [
                 torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None

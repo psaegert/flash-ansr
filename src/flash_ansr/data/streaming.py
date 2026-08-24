@@ -42,6 +42,13 @@ from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_po
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
+# Per-position task-segment ids (metadata "task_segments"): the trainer splits the CE
+# by these so each task's learning curve is visible on wandb.
+TASK_SEGMENT_EXPRESSION = 0
+TASK_SEGMENT_COMPLEXITY = 1
+TASK_SEGMENT_PREDICT_Y = 2
+
+
 def draw_condition_mask(rng: np.random.Generator, condition_dropout: float) -> bool:
     """One per-instance condition-dropout draw (owner ruling: 10% condition dropout).
 
@@ -489,14 +496,17 @@ def _producer_worker(
                 complexity_draw: dict[str, Any] | None = None
                 predict_y_draw: dict[str, Any] | None = None
                 task_mask: list[bool] | None = None
+                task_segments: list[int] | None = None
                 if task_blocks_on:
                     budget = max_seq_len - (len(tokens_to_encode) + 2)  # <bos> ... <eos>
                     prefix_tokens: list[str] = []
                     prefix_numeric: list[float] = []
                     prefix_masked: list[bool] = []
+                    prefix_segments: list[int] = []
                     suffix_tokens: list[str] = []
                     suffix_numeric: list[float] = []
                     suffix_masked: list[bool] = []
+                    suffix_segments: list[int] = []
 
                     if complexity_cfg is not None and worker_rng.random() < float(complexity_cfg["p_present"]):
                         # mu of the MASKED target (a <constant> prices one symbol unit): the
@@ -520,6 +530,7 @@ def _producer_worker(
                             prefix_tokens += block_tokens
                             prefix_numeric += block_numeric
                             prefix_masked += block_masked
+                            prefix_segments += [TASK_SEGMENT_COMPLEXITY] * len(block_tokens)
                             complexity_draw = {"mu": mu, "variant": "nibbles" if as_nibbles else "float"}
                         else:
                             n_skipped_task_blocks += 1
@@ -560,10 +571,12 @@ def _producer_worker(
                                 suffix_tokens += block_tokens
                                 suffix_numeric += block_numeric
                                 suffix_masked += block_masked
+                                suffix_segments += [TASK_SEGMENT_PREDICT_Y] * len(block_tokens)
                             else:
                                 prefix_tokens += block_tokens
                                 prefix_numeric += block_numeric
                                 prefix_masked += block_masked
+                                prefix_segments += [TASK_SEGMENT_PREDICT_Y] * len(block_tokens)
                             predict_y_draw = {"x": point.tolist(), "y": y_star, "conditional": conditional}
                         else:
                             n_skipped_task_blocks += 1
@@ -573,6 +586,8 @@ def _producer_worker(
                                         else [float("nan")] * len(tokens_to_encode))
                         task_mask = [False, *prefix_masked, *[False] * len(tokens_to_encode),
                                      *suffix_masked, False]
+                        task_segments = [0, *prefix_segments, *[0] * len(tokens_to_encode),
+                                         *suffix_segments, 0]
                         tokens_to_encode = [*prefix_tokens, *tokens_to_encode, *suffix_tokens]
                         body_numeric = [*prefix_numeric, *base_numeric, *suffix_numeric]
 
@@ -617,6 +632,10 @@ def _producer_worker(
                 if task_blocks_on:
                     metadata["task_mask"] = (task_mask if task_mask is not None
                                              else [False] * len(input_ids))
+                    # 0 = expression/other, 1 = complexity, 2 = predict_y: the per-position
+                    # channel the trainer splits the CE by (per-task wandb curves).
+                    metadata["task_segments"] = (task_segments if task_segments is not None
+                                                 else [0] * len(input_ids))
                 if complexity_cfg is not None:
                     metadata["complexity_mu"] = None if complexity_draw is None else complexity_draw["mu"]
                     metadata["complexity_variant"] = None if complexity_draw is None else complexity_draw["variant"]

@@ -183,3 +183,34 @@ def test_complexity_prefix_for_generation(tokenizer, engine) -> None:  # type: i
         model.complexity_prefix()
     with pytest.raises(ValueError, match="exactly one"):
         model.complexity_prefix(42.0, predict=True)
+
+
+def test_task_segments_label_the_blocks(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    for batch in _iterate(tokenizer, complexity_block=COMPLEXITY_NIBBLES, predict_y_block=PREDICT_A):
+        assert batch["task_segments"].dtype == torch.long
+        for row, tokens in _rows(batch, tokenizer):
+            segments = batch["task_segments"][row].tolist()
+            for position, token in enumerate(tokens):
+                if token == "<pad>":
+                    break
+                inside_complexity = "<complexity>" in tokens[:position + 1] and "</complexity>" not in tokens[:position]
+                inside_predict = "<predict_y>" in tokens[:position + 1] and "</predict_y>" not in tokens[:position]
+                expected = 1 if inside_complexity else 2 if inside_predict else 0
+                assert segments[position] == expected, (position, token)
+
+
+def test_per_task_ce_splits_by_segment() -> None:
+    from flash_ansr.train.train import _per_task_ce
+    torch.manual_seed(0)
+    logits = torch.randn(1, 6, 10)
+    #                 labels for positions 1..5 of the input; 9 = ignore_index
+    labels = torch.tensor([[4, 9, 5, 6, 7]])
+    segments = torch.tensor([[0, 0, 1, 1, 2, 0]])   # aligned with input positions 0..5
+    parts = _per_task_ce(logits, labels, segments, ignore_index=9)
+    assert set(parts) == {"expression", "complexity", "predict_y"}
+    # labels sit at input positions 1..5; position 2 is ignore_index. Valid: pos 1 (seg 0),
+    # pos 3 (seg 1), pos 4 (seg 2), pos 5 (seg 0).
+    assert parts["expression"][1] == 2
+    assert parts["complexity"][1] == 1
+    assert parts["predict_y"][1] == 1
+    assert sum(count for _, count in parts.values()) == 4

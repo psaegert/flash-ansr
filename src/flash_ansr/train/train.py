@@ -91,6 +91,35 @@ def _enable_tf32_precision() -> None:
 _enable_tf32_precision()
 
 
+TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y"}
+
+
+def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Tensor,
+                 ignore_index: int) -> "dict[str, tuple[float, int]]":
+    """CE sum and token count per task segment, over the SUPERVISED labels only (the
+    task/prompt/float masks have already written ignore_index into the labels, so each
+    segment's mean is the loss on exactly its trained tokens). Shifted-label discipline
+    like the masks; metric-only (caller detaches)."""
+    seg = segments[..., 1:]
+    if seg.shape[-1] > labels.shape[-1]:
+        seg = seg[..., :labels.shape[-1]]
+    elif seg.shape[-1] < labels.shape[-1]:
+        labels = labels[..., :seg.shape[-1]]
+    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])[:labels.numel()]
+    flat_labels = labels.reshape(-1)
+    flat_segments = seg.reshape(-1)
+    valid = flat_labels != ignore_index
+    parts: dict[str, tuple[float, int]] = {}
+    if valid.any():
+        ce = nn.functional.cross_entropy(flat_logits[valid], flat_labels[valid], reduction="none")
+        valid_segments = flat_segments[valid]
+        for segment_id, name in TASK_SEGMENT_NAMES.items():
+            member = valid_segments == segment_id
+            if member.any():
+                parts[name] = (float(ce[member].sum()), int(member.sum()))
+    return parts
+
+
 def _binary_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     """Rank-based AUROC (Mann-Whitney U). Ties in float logits are vanishingly rare, so
     average-rank tie correction is deliberately omitted."""
@@ -738,6 +767,7 @@ class Trainer:
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
         total_loss = 0.0
+        task_ce_sums: dict[str, list[float]] = {}
 
         # Split the batch into micro-batches to support gradient accumulation
         if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
@@ -796,6 +826,14 @@ class Trainer:
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_outlier_loss += outlier_loss.item()
+            if 'task_segments' in micro_batch:
+                with torch.no_grad():
+                    for name, (ce_sum, count) in _per_task_ce(
+                            logits.detach(), micro_batch['labels'],
+                            micro_batch['task_segments'], self.metrics_ignore_index).items():
+                        entry = task_ce_sums.setdefault(name, [0.0, 0])
+                        entry[0] += ce_sum
+                        entry[1] += count
             total_loss += loss.item() * self.gradient_accumulation_steps
 
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
@@ -811,10 +849,14 @@ class Trainer:
             self.optimizer.zero_grad()
 
             # Log metrics and update scheduler after the optimizer step
-            # Positional call when the feature is off: monkeypatched/legacy 4-arg loggers keep working.
+            # Positional call when no extras: monkeypatched/legacy 4-arg loggers keep working.
+            extra: dict[str, float] = {}
             if self.outlier_loss_weight > 0.0:
-                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm,
-                                  extra={"train_outlier_loss": total_outlier_loss})
+                extra["train_outlier_loss"] = total_outlier_loss
+            for name, (ce_sum, count) in task_ce_sums.items():
+                extra[f"train_ce_{name}"] = ce_sum / count
+            if extra:
+                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm, extra=extra)
             else:
                 self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
             if self.lr_scheduler is not None:
@@ -844,6 +886,7 @@ class Trainer:
         total_items = 0
         val_outlier_scores: list[torch.Tensor] = []
         val_outlier_labels: list[torch.Tensor] = []
+        val_task_ce_sums: dict[str, list[float]] = {}
         first_raw_batch: dict[str, Any] | None = None
 
         with torch.no_grad():
@@ -891,6 +934,13 @@ class Trainer:
                         if scored is not None:
                             val_outlier_scores.append(scored[0].detach().float().cpu())
                             val_outlier_labels.append(scored[1].detach().cpu())
+                    if 'task_segments' in batch:
+                        for name, (ce_sum, count) in _per_task_ce(
+                                logits.detach(), batch['labels'],
+                                batch['task_segments'], self.metrics_ignore_index).items():
+                            entry = val_task_ce_sums.setdefault(name, [0.0, 0])
+                            entry[0] += ce_sum
+                            entry[1] += count
 
                 pbar.update(1)
             pbar.close()
@@ -909,12 +959,16 @@ class Trainer:
                 device=self.device, max_seq_len=self.decoder_max_seq_len)
 
         outlier_metrics: dict[str, float] | None = None
+        if val_task_ce_sums:
+            outlier_metrics = {f"val_ce_{name}": ce_sum / count
+                               for name, (ce_sum, count) in val_task_ce_sums.items()}
         if val_outlier_scores:
             scores = torch.cat(val_outlier_scores)
             labels = torch.cat(val_outlier_labels).bool()
             bce = nn.functional.binary_cross_entropy_with_logits(
                 scores, labels.float(), pos_weight=torch.tensor(self.outlier_pos_weight))
-            outlier_metrics = {"val_outlier_loss": float(bce)}
+            outlier_metrics = dict(outlier_metrics or {})
+            outlier_metrics["val_outlier_loss"] = float(bce)
             if labels.any() and (~labels).any():
                 outlier_metrics["val_outlier_auroc"] = _binary_auroc(scores, labels)
 

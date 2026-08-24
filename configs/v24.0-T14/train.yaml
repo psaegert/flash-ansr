@@ -22,7 +22,9 @@ batch_size: 128
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
-val_size: 2_048
+# 4x the T13 val size: the pilot's read is the per-task val curves, and 2,048
+# instances left too much variance on them (owner request 2026-08-24).
+val_size: 8_192
 
 compile_mode: 'reduce-overhead'
 gradient_checkpointing: False
