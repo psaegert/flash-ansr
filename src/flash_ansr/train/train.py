@@ -131,16 +131,27 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
     predict_y x variant (conditional b / unconditional a). predict_y x data-dropout does
     not occur -- dropout instances carry no predict_y block by design. Keys are emitted
     only for combinations present in the batch; the flat ``*_ce_*`` totals are untouched.
+
+    ``expression/anchor`` is the cross-arm COMMON GROUND: expression CE restricted to
+    instances with no expression-informing block (complexity absent, predict_y absent
+    or conditional), emitted in base-shaped runs too (where it equals the expression
+    CE), so main-task ability is comparable across arms with different task mixes.
     """
     segments = batch.get('task_segments')
     labels = batch.get('labels')
-    if segments is None or labels is None or not isinstance(labels, torch.Tensor):
+    if labels is None or not isinstance(labels, torch.Tensor):
         return {}
-    seg = segments[..., 1:]
-    if seg.shape[-1] > labels.shape[-1]:
-        seg = seg[..., :labels.shape[-1]]
-    elif seg.shape[-1] < labels.shape[-1]:
-        labels = labels[..., :seg.shape[-1]]
+    if segments is None:
+        # A base-shaped run (no task blocks): every position is expression. Splits are
+        # still emitted so the ANCHOR key below exists in every arm -- it is the common
+        # ground the ablation comparisons read (owner request 2026-08-24).
+        seg = torch.zeros_like(labels)
+    else:
+        seg = segments[..., 1:]
+        if seg.shape[-1] > labels.shape[-1]:
+            seg = seg[..., :labels.shape[-1]]
+        elif seg.shape[-1] < labels.shape[-1]:
+            labels = labels[..., :seg.shape[-1]]
     n_rows, n_positions = labels.shape
     flat_ce = nn.functional.cross_entropy(
         logits[:, :-1].reshape(-1, logits.shape[-1])[:labels.numel()],
@@ -171,6 +182,23 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         splits.append(("complexity/hypothesized", 1, hypothesized))
         splits.append(("complexity/prompted", 1, prompted))
     predict_y = batch.get('predict_y')
+
+    # THE ANCHOR (owner request 2026-08-24): expression CE on instances shaped exactly
+    # like the base task -- nothing that precedes the expression informs it (complexity
+    # block absent; predict_y absent or in the CONDITIONAL position, which follows the
+    # expression and cannot reach its logits under causal masking). In a base arm every
+    # instance qualifies, so the anchor equals the plain expression CE; across arms it
+    # is the like-for-like main-task curve. It does NOT equalize the data distribution:
+    # arms trained under different noise configs still predict the expression from
+    # different data -- hold the noise setting constant across arms for a clean read.
+    complexity_variant_list = batch.get('complexity_variant')
+    anchor = rows([
+        (complexity_variant_list is None or complexity_variant_list[i] is None)
+        and (predict_y is None or predict_y[i] is None or bool(predict_y[i]["conditional"]))
+        for i in range(n_rows)
+    ])
+    splits.append(("expression/anchor", 0, anchor))
+
     if predict_y is not None:
         conditional = rows([draw is not None and bool(draw["conditional"]) for draw in predict_y])
         unconditional = rows([draw is not None and not draw["conditional"] for draw in predict_y])

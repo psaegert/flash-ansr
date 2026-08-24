@@ -297,3 +297,47 @@ def test_complexity_prefix_hypothesize_mode(tokenizer, engine) -> None:  # type:
     assert all(np.isnan(v) for v in numeric)
     with pytest.raises(ValueError, match="exactly one"):
         model.complexity_prefix(42.0, hypothesize=True)
+
+
+def test_ce_split_anchor_is_the_cross_arm_common_ground(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    from flash_ansr.train.train import _ce_split_metrics
+
+    with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                          constant_representation="ieee754_mixed", target_dialect="tagged",
+                          condition_dropout=0.5,
+                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0, "p_hypothesize": 0.0},
+                          predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}) as ds:
+        for batch in ds.iterate(steps=1, batch_size=32):
+            batch = ds.collate(batch, device=torch.device("cpu"))
+            batch["labels"] = batch["input_ids"].clone()[..., 1:]
+            torch.manual_seed(0)
+            logits = torch.randn(batch["input_ids"].shape[0], batch["input_ids"].shape[1], len(tokenizer))
+            parts = _ce_split_metrics(batch, logits, ignore_index=tokenizer["<pad>"])
+            assert "expression/anchor" in parts
+            # the definition, recomputed independently: complexity absent AND predict_y
+            # absent-or-conditional (a conditional block follows the expression and
+            # cannot reach its logits under causal masking)
+            qualifies = [
+                batch["complexity_variant"][i] is None
+                and (batch["predict_y"][i] is None or bool(batch["predict_y"][i]["conditional"]))
+                for i in range(len(batch["complexity_variant"]))
+            ]
+            seg = batch["task_segments"][..., 1:]
+            valid = batch["labels"] != tokenizer["<pad>"]
+            expected_n = int((valid & (seg == 0) & torch.tensor(qualifies)[:, None]).sum())
+            assert parts["expression/anchor"][1] == expected_n
+            assert expected_n <= int((valid & (seg == 0)).sum())
+
+
+def test_ce_split_anchor_exists_in_base_shaped_batches() -> None:
+    # No task blocks at all -- no task_segments key, no block metadata. The anchor must
+    # still be emitted so base arms carry the common-ground curve, and it must cover the
+    # whole batch: every position is expression, every instance qualifies.
+    from flash_ansr.train.train import _ce_split_metrics
+
+    labels = torch.tensor([[4, 9, 5], [6, 7, 9]])
+    torch.manual_seed(0)
+    logits = torch.randn(2, 4, 10)
+    parts = _ce_split_metrics({"labels": labels}, logits, ignore_index=9)
+    assert "expression/anchor" in parts
+    assert parts["expression/anchor"][1] == int((labels != 9).sum())
