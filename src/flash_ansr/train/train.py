@@ -120,6 +120,67 @@ def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Ten
     return parts
 
 
+def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
+                      ignore_index: int) -> "dict[str, tuple[float, int]]":
+    """Fine-grained CE curves: task segments crossed with per-instance conditioning
+    circumstances (owner request 2026-08-24 -- the prior mixes many tasks in many
+    circumstances, and each combination gets its own wandb curve under ``ce_split/``).
+
+    Splits that exist by construction: expression x data-conditioning (CFG mask),
+    expression x complexity-block presence, complexity nibbles x data-conditioning, and
+    predict_y x variant (conditional b / unconditional a). predict_y x data-dropout does
+    not occur -- dropout instances carry no predict_y block by design. Keys are emitted
+    only for combinations present in the batch; the flat ``*_ce_*`` totals are untouched.
+    """
+    segments = batch.get('task_segments')
+    labels = batch.get('labels')
+    if segments is None or labels is None or not isinstance(labels, torch.Tensor):
+        return {}
+    seg = segments[..., 1:]
+    if seg.shape[-1] > labels.shape[-1]:
+        seg = seg[..., :labels.shape[-1]]
+    elif seg.shape[-1] < labels.shape[-1]:
+        labels = labels[..., :seg.shape[-1]]
+    n_rows, n_positions = labels.shape
+    flat_ce = nn.functional.cross_entropy(
+        logits[:, :-1].reshape(-1, logits.shape[-1])[:labels.numel()],
+        labels.reshape(-1), reduction='none', ignore_index=ignore_index)
+    ce = flat_ce.reshape(n_rows, n_positions)
+    valid = labels != ignore_index
+
+    def rows(values: "list[bool]") -> torch.Tensor:
+        return torch.tensor(values, dtype=torch.bool, device=labels.device)
+
+    splits: "list[tuple[str, int, torch.Tensor]]" = []
+    condition_mask = batch.get('condition_mask')
+    if condition_mask is not None:
+        conditioned = (condition_mask.to(device=labels.device, dtype=torch.bool)
+                       if isinstance(condition_mask, torch.Tensor) else rows([bool(v) for v in condition_mask]))
+        splits.append(("expression/data_cond", 0, conditioned))
+        splits.append(("expression/data_uncond", 0, ~conditioned))
+    complexity_variant = batch.get('complexity_variant')
+    if complexity_variant is not None:
+        present = rows([v is not None for v in complexity_variant])
+        splits.append(("expression/complexity_present", 0, present))
+        splits.append(("expression/complexity_absent", 0, ~present))
+        if condition_mask is not None:
+            splits.append(("complexity/data_cond", 1, conditioned))
+            splits.append(("complexity/data_uncond", 1, ~conditioned))
+    predict_y = batch.get('predict_y')
+    if predict_y is not None:
+        conditional = rows([draw is not None and bool(draw["conditional"]) for draw in predict_y])
+        unconditional = rows([draw is not None and not draw["conditional"] for draw in predict_y])
+        splits.append(("predict_y/conditional", 2, conditional))
+        splits.append(("predict_y/unconditional", 2, unconditional))
+
+    out: "dict[str, tuple[float, int]]" = {}
+    for suffix, segment_id, row_mask in splits:
+        member = valid & (seg == segment_id) & row_mask[:, None]
+        if member.any():
+            out[suffix] = (float(ce[member].sum()), int(member.sum()))
+    return out
+
+
 def _binary_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     """Rank-based AUROC (Mann-Whitney U). Ties in float logits are vanishingly rare, so
     average-rank tie correction is deliberately omitted."""
@@ -768,6 +829,7 @@ class Trainer:
         total_outlier_loss = 0.0
         total_loss = 0.0
         task_ce_sums: dict[str, list[float]] = {}
+        split_ce_sums: dict[str, list[float]] = {}
 
         # Split the batch into micro-batches to support gradient accumulation
         if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
@@ -834,6 +896,11 @@ class Trainer:
                         entry = task_ce_sums.setdefault(name, [0.0, 0])
                         entry[0] += ce_sum
                         entry[1] += count
+                    for name, (ce_sum, count) in _ce_split_metrics(
+                            micro_batch, logits.detach(), self.metrics_ignore_index).items():
+                        entry = split_ce_sums.setdefault(name, [0.0, 0])
+                        entry[0] += ce_sum
+                        entry[1] += count
             total_loss += loss.item() * self.gradient_accumulation_steps
 
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
@@ -855,6 +922,8 @@ class Trainer:
                 extra["train_outlier_loss"] = total_outlier_loss
             for name, (ce_sum, count) in task_ce_sums.items():
                 extra[f"train_ce_{name}"] = ce_sum / count
+            for name, (ce_sum, count) in split_ce_sums.items():
+                extra[f"ce_split/train/{name}"] = ce_sum / count
             if extra:
                 self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm, extra=extra)
             else:
@@ -887,6 +956,7 @@ class Trainer:
         val_outlier_scores: list[torch.Tensor] = []
         val_outlier_labels: list[torch.Tensor] = []
         val_task_ce_sums: dict[str, list[float]] = {}
+        val_split_ce_sums: dict[str, list[float]] = {}
         first_raw_batch: dict[str, Any] | None = None
 
         with torch.no_grad():
@@ -941,6 +1011,11 @@ class Trainer:
                             entry = val_task_ce_sums.setdefault(name, [0.0, 0])
                             entry[0] += ce_sum
                             entry[1] += count
+                        for name, (ce_sum, count) in _ce_split_metrics(
+                                batch, logits.detach(), self.metrics_ignore_index).items():
+                            entry = val_split_ce_sums.setdefault(name, [0.0, 0])
+                            entry[0] += ce_sum
+                            entry[1] += count
 
                 pbar.update(1)
             pbar.close()
@@ -962,6 +1037,8 @@ class Trainer:
         if val_task_ce_sums:
             outlier_metrics = {f"val_ce_{name}": ce_sum / count
                                for name, (ce_sum, count) in val_task_ce_sums.items()}
+            outlier_metrics.update({f"ce_split/val/{name}": ce_sum / count
+                                    for name, (ce_sum, count) in val_split_ce_sums.items()})
         if val_outlier_scores:
             scores = torch.cat(val_outlier_scores)
             labels = torch.cat(val_outlier_labels).bool()

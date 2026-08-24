@@ -214,3 +214,39 @@ def test_per_task_ce_splits_by_segment() -> None:
     assert parts["complexity"][1] == 1
     assert parts["predict_y"][1] == 1
     assert sum(count for _, count in parts.values()) == 4
+
+
+def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    from flash_ansr.train.train import _ce_split_metrics
+
+    with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                          constant_representation="ieee754_mixed", target_dialect="tagged",
+                          condition_dropout=0.5,
+                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0},
+                          predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}) as ds:
+        for batch in ds.iterate(steps=1, batch_size=32):
+            batch = ds.collate(batch, device=torch.device("cpu"))
+            batch["labels"] = batch["input_ids"].clone()[..., 1:]
+            vocab_size = len(tokenizer)
+            torch.manual_seed(0)
+            logits = torch.randn(batch["input_ids"].shape[0], batch["input_ids"].shape[1], vocab_size)
+            parts = _ce_split_metrics(batch, logits, ignore_index=tokenizer["<pad>"])
+
+            # with 32 instances at these priors every split should occur
+            expected = {"expression/data_cond", "expression/data_uncond",
+                        "expression/complexity_present", "expression/complexity_absent",
+                        "complexity/data_cond", "predict_y/conditional", "predict_y/unconditional"}
+            assert expected <= set(parts), sorted(parts)
+            # the two data-conditioning expression splits partition the expression tokens
+            cond, uncond = parts["expression/data_cond"], parts["expression/data_uncond"]
+            n_expression = int(((batch["task_segments"][..., 1:] == 0)
+                                & (batch["labels"] != tokenizer["<pad>"])).sum())
+            assert cond[1] + uncond[1] == n_expression
+            # predict_y splits partition the predict_y tokens
+            n_predict = int(((batch["task_segments"][..., 1:] == 2)
+                             & (batch["labels"] != tokenizer["<pad>"])).sum())
+            assert parts["predict_y/conditional"][1] + parts["predict_y/unconditional"][1] == n_predict
+            # dropout instances never carry predict_y (the designed exclusion)
+            for row, draw in enumerate(batch["predict_y"]):
+                if draw is not None:
+                    assert bool(batch["condition_mask"][row])
