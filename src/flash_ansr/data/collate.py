@@ -178,6 +178,8 @@ class BatchFormatter:
         else:
             attn_shape = batch["x_tensors"].shape[:2]
             batch["data_attn_mask"] = torch.ones(attn_shape, device=device, dtype=torch.bool)
+        if "outlier_mask" in batch:
+            batch["outlier_mask"] = batch["outlier_mask"].to(device=device, dtype=torch.bool)
 
         support_lengths = batch["data_attn_mask"].sum(dim=1)
         max_support_length = int(support_lengths.max().item()) if support_lengths.numel() > 0 else 1
@@ -187,6 +189,8 @@ class BatchFormatter:
             batch["x_tensors"] = batch["x_tensors"][:, :support_bucket_length, :]
             batch["y_tensors"] = batch["y_tensors"][:, :support_bucket_length, :]
             batch["data_attn_mask"] = batch["data_attn_mask"][:, :support_bucket_length]
+            if "outlier_mask" in batch:
+                batch["outlier_mask"] = batch["outlier_mask"][:, :support_bucket_length]
 
         constants_list = []
         for const_item in batch["constants"]:

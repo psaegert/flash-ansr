@@ -140,6 +140,12 @@ class SharedMemoryWorkerPool:
                 "shape": (self.pool_size, batch_size, max_n_support, 1),
                 "dtype": np.float32,
             },
+            "outlier_mask": {
+                # per-point contamination labels from the source's noise mixture (all-zero
+                # without one); float32 like data_attn_mask, bool-cast downstream
+                "shape": (self.pool_size, batch_size, max_n_support),
+                "dtype": np.float32,
+            },
             "data_attn_mask": {
                 "shape": (self.pool_size, batch_size, max_n_support),
                 "dtype": np.float32,
@@ -361,6 +367,7 @@ def _producer_worker(
             x_tensors_batch = pools["x_tensors"][slot_idx]
             y_tensors_batch = pools["y_tensors"][slot_idx]
             data_attn_mask_batch = pools["data_attn_mask"][slot_idx]
+            outlier_mask_batch = pools["outlier_mask"][slot_idx]
             input_ids_batch = pools["input_ids"][slot_idx]
 
             constants_batch = []
@@ -377,6 +384,11 @@ def _producer_worker(
 
                 x_support = problem.x_support
                 y_support = problem.y_support
+                # The encoder fits what a model would OBSERVE: the noisy targets (identical
+                # to the clean ones whenever the source ran without a noise spec). The clean
+                # y_support stays local for tasks that must not learn the noise.
+                y_encoder = problem.y_support_noisy
+                outlier_mask = problem.outlier_mask_support
 
                 # symbolic-data >= 0.14: generative catalogs yield CONCRETE expressions
                 # (literal values inside the tokens, ``problem.constants`` empty); masking
@@ -456,6 +468,8 @@ def _producer_worker(
                     "expression": expression,
                     "n_support": int(x_support.shape[0]),
                 }
+                if isinstance(problem.noise, dict):
+                    metadata["noise"] = problem.noise
                 # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
                 # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
                 # The key is emitted iff the feature is active, so condition_mask present <=> feature
@@ -474,8 +488,12 @@ def _producer_worker(
                 x_tensors_batch[i, : x_support.shape[0], : x_support.shape[1]] = x_support
                 x_tensors_batch[i, x_support.shape[0]:, :] = 0
 
-                y_tensors_batch[i, : y_support.shape[0], : y_support.shape[1]] = y_support
-                y_tensors_batch[i, y_support.shape[0]:, :] = 0
+                y_tensors_batch[i, : y_encoder.shape[0], : y_encoder.shape[1]] = y_encoder
+                y_tensors_batch[i, y_encoder.shape[0]:, :] = 0
+
+                outlier_mask_batch[i, : y_encoder.shape[0]] = (
+                    outlier_mask.reshape(-1).astype(np.float32) if outlier_mask is not None else 0)
+                outlier_mask_batch[i, y_encoder.shape[0]:] = 0
 
                 data_attn_mask_batch[i, : x_support.shape[0]] = 1
                 data_attn_mask_batch[i, x_support.shape[0]:] = 0

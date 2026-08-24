@@ -713,6 +713,11 @@ class FlashANSRDataset:
                         for c in metadata_and_constants["constants"]
                     ],
                 }
+                # T0 contract (key present <=> feature on): the contamination labels are
+                # emitted only when the source runs a noise mixture.
+                if getattr(self._stream.source, "noise_spec", None) is not None:
+                    batch_dict["outlier_mask"] = torch.from_numpy(
+                        self._stream.buffers["outlier_mask"][completed_slot_idx]).to(torch.bool)
                 batch_dict.update(metadata_fields)
 
                 preprocessed_batch = metadata_and_constants.get("preprocessed")
