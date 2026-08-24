@@ -37,6 +37,19 @@ from flash_ansr.utils.ieee754 import (
 #: carries a value on the numeric channel in the prompt-serialization path); no new token.
 COMPACT_CONSTANT_TOKEN = "<float>"
 
+# v24 task-block grammar (owner ruling 2026-08-24): the harness owns the structure --
+# every opener/selector below is force-fed and loss-masked; the model owns content
+# nibbles and closing tags. <complexity>/<float> already exist in the v24 vocabulary
+# (v23 prompt lane); the predict_y tokens are new with this feature.
+COMPLEXITY_START_TOKEN = "<complexity>"
+COMPLEXITY_END_TOKEN = "</complexity>"
+PREDICT_Y_START_TOKEN = "<predict_y>"
+PREDICT_Y_END_TOKEN = "</predict_y>"
+POINT_START_TOKEN = "<point>"
+POINT_END_TOKEN = "</point>"
+PREDICT_Y_TOKENS = (PREDICT_Y_START_TOKEN, PREDICT_Y_END_TOKEN, POINT_START_TOKEN, POINT_END_TOKEN)
+COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
+
 #: Legal values of the ``constant_representation`` config key.
 CONSTANT_REPRESENTATION_V23 = "v23"
 CONSTANT_REPRESENTATION_IEEE754_MIXED = "ieee754_mixed"

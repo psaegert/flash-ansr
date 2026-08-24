@@ -15,8 +15,15 @@ from symbolic_data import ProblemSource
 from simplipy.utils import substitute_constants
 from symbolic_data.token_ops import tagged_canonical
 from flash_ansr.data.serialization import (
+    COMPACT_CONSTANT_TOKEN,
+    COMPLEXITY_END_TOKEN,
+    COMPLEXITY_START_TOKEN,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
     CONSTANT_REPRESENTATION_V23,
+    POINT_END_TOKEN,
+    POINT_START_TOKEN,
+    PREDICT_Y_END_TOKEN,
+    PREDICT_Y_START_TOKEN,
     TARGET_DIALECT_EXPLICIT,
     TARGET_DIALECT_TAGGED,
     serialize_constant_tokens,
@@ -24,7 +31,13 @@ from flash_ansr.data.serialization import (
 )
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
-from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN
+from flash_ansr.utils.ieee754 import (
+    IEEE754_END_TOKEN,
+    IEEE754_N_NIBBLES,
+    IEEE754_SPAN_LENGTH,
+    IEEE754_START_TOKEN,
+    float32_to_nibble_tokens,
+)
 from flash_ansr.utils.skeleton import NonFiniteExpressionError, mask_literals_positional
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
@@ -62,6 +75,8 @@ class WorkerConfig:
     constant_representation: str = CONSTANT_REPRESENTATION_V23
     target_dialect: str = TARGET_DIALECT_EXPLICIT
     tail_zero_bits: int = 0
+    complexity_block: dict[str, Any] | None = None
+    predict_y_block: dict[str, Any] | None = None
 
 
 class SharedMemoryWorkerPool:
@@ -76,6 +91,8 @@ class SharedMemoryWorkerPool:
         constant_representation: str = CONSTANT_REPRESENTATION_V23,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         tail_zero_bits: int = 0,
+        complexity_block: dict[str, Any] | None = None,
+        predict_y_block: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -83,6 +100,8 @@ class SharedMemoryWorkerPool:
         self.constant_representation = constant_representation
         self.target_dialect = target_dialect
         self.tail_zero_bits = tail_zero_bits
+        self.complexity_block = complexity_block
+        self.predict_y_block = predict_y_block
 
         self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
@@ -201,6 +220,8 @@ class SharedMemoryWorkerPool:
             constant_representation=self.constant_representation,
             target_dialect=self.target_dialect,
             tail_zero_bits=self.tail_zero_bits,
+            complexity_block=self.complexity_block,
+            predict_y_block=self.predict_y_block,
         )
 
         self._workers = []
@@ -323,6 +344,14 @@ def _producer_worker(
     # produced by simplify IN the tagged dialect per problem (literals fold canonically, so
     # it cannot be cached per skeleton). 'explicit' (default) keeps today's prefix targets.
     tagged_targets = worker_config.target_dialect == TARGET_DIALECT_TAGGED
+    # v24 task blocks: <complexity> conditioning/prediction and <predict_y> auxiliary
+    # blocks (validated at dataset init: mixed constants + wrapper/block tokens present).
+    # The harness owns the grammar; the model owns the content: every opener / format
+    # selector / <float> value position is loss-masked (task_mask True), supervision
+    # lands on content nibbles and closing tags only.
+    complexity_cfg = worker_config.complexity_block
+    predict_y_cfg = worker_config.predict_y_block
+    task_blocks_on = complexity_cfg is not None or predict_y_cfg is not None
 
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(
@@ -375,6 +404,7 @@ def _producer_worker(
             preprocessed_batch: list[dict[str, Any]] | None = [] if preprocessor is not None else None
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
+            n_skipped_task_blocks = 0
 
             i = 0
             while i < batch_size:
@@ -428,6 +458,14 @@ def _producer_worker(
                     padding=padding,
                 )
 
+                # Drawn BEFORE the task blocks: a condition-dropout (unconditioned) instance
+                # gets no predict_y block -- predicting y* with a nulled memory is a nonsense
+                # task (ruled with the v24 task blocks). The worker rng is entropy-seeded, so
+                # moving this draw ahead of serialization changes no reproducibility contract.
+                condition_mask_value: bool | None = None
+                if unconditional_prob > 0.0:
+                    condition_mask_value = draw_condition_mask(worker_rng, unconditional_prob)
+
                 if mixed_constants:
                     # Raises on non-finite constants: the generator must never emit them.
                     serialized_tokens, body_numeric = serialize_constant_tokens(
@@ -442,6 +480,101 @@ def _producer_worker(
                     tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
                     if body_numeric is not None:
                         body_numeric = [float("nan"), *body_numeric, float("nan")]
+
+                # ---- v24 task blocks ------------------------------------------------------
+                # Attached only within the sequence budget: an over-budget block is SKIPPED
+                # (counted, never silent) rather than dropping the instance, so the blocks
+                # add ZERO truncation pressure -- the expression prior's truncation shaping
+                # stays exactly what it is without the features.
+                complexity_draw: dict[str, Any] | None = None
+                predict_y_draw: dict[str, Any] | None = None
+                task_mask: list[bool] | None = None
+                if task_blocks_on:
+                    budget = max_seq_len - (len(tokens_to_encode) + 2)  # <bos> ... <eos>
+                    prefix_tokens: list[str] = []
+                    prefix_numeric: list[float] = []
+                    prefix_masked: list[bool] = []
+                    suffix_tokens: list[str] = []
+                    suffix_numeric: list[float] = []
+                    suffix_masked: list[bool] = []
+
+                    if complexity_cfg is not None and worker_rng.random() < float(complexity_cfg["p_present"]):
+                        # mu of the MASKED target (a <constant> prices one symbol unit): the
+                        # only complexity a user can state at inference without knowing the
+                        # constants. complexity() measures the canonical form, so the target
+                        # dialect does not matter. Exact in float32 (mu < 2**24 in practice).
+                        mu = int(simplipy_engine.complexity(list(skeleton)))
+                        as_nibbles = bool(worker_rng.random() < float(complexity_cfg["p_nibbles"]))
+                        if as_nibbles:
+                            block_tokens = [COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
+                                            *float32_to_nibble_tokens(float(mu)),
+                                            IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
+                            block_numeric = [float("nan")] * len(block_tokens)
+                            block_masked = [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
+                        else:
+                            block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
+                            block_numeric = [float("nan"), float(mu), float("nan")]
+                            block_masked = [True, True, True]
+                        if len(block_tokens) <= budget:
+                            budget -= len(block_tokens)
+                            prefix_tokens += block_tokens
+                            prefix_numeric += block_numeric
+                            prefix_masked += block_masked
+                            complexity_draw = {"mu": mu, "variant": "nibbles" if as_nibbles else "float"}
+                        else:
+                            n_skipped_task_blocks += 1
+
+                    if (predict_y_cfg is not None
+                            and condition_mask_value is not False
+                            and x_support.shape[0] >= int(predict_y_cfg["min_n_support"])
+                            and worker_rng.random() < float(predict_y_cfg["p_present"])):
+                        n_dims = x_support.shape[1]
+                        if 4 + n_dims + IEEE754_SPAN_LENGTH <= budget:
+                            # Prior-exactness: the held-out point is one of the ALREADY-ACCEPTED
+                            # support rows (box acceptance is untouched), never an extra draw;
+                            # y* is the CLEAN value -- the task supervises the function, not the
+                            # noise. Full-precision nibbles (v24 ruling: no tail zeroing).
+                            j = int(worker_rng.integers(x_support.shape[0]))
+                            point = x_support[j].astype(np.float64)
+                            y_star = float(np.float32(y_support[j].reshape(-1)[0]))
+                            conditional = bool(worker_rng.random() < float(predict_y_cfg["p_conditional"]))
+                            x_support = np.delete(x_support, j, axis=0)
+                            y_support = np.delete(y_support, j, axis=0)
+                            y_encoder = np.delete(y_encoder, j, axis=0)
+                            if outlier_mask is not None:
+                                outlier_mask = np.delete(outlier_mask, j, axis=0)
+                            block_tokens = [PREDICT_Y_START_TOKEN, POINT_START_TOKEN]
+                            block_numeric = [float("nan"), float("nan")]
+                            block_masked = [True, True]
+                            for value in point:
+                                block_tokens.append(COMPACT_CONSTANT_TOKEN)
+                                block_numeric.append(float(value))
+                                block_masked.append(True)
+                            block_tokens += [POINT_END_TOKEN, IEEE754_START_TOKEN,
+                                             *float32_to_nibble_tokens(y_star),
+                                             IEEE754_END_TOKEN, PREDICT_Y_END_TOKEN]
+                            block_numeric += [float("nan")] * (4 + IEEE754_N_NIBBLES)
+                            block_masked += [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
+                            budget -= len(block_tokens)
+                            if conditional:
+                                suffix_tokens += block_tokens
+                                suffix_numeric += block_numeric
+                                suffix_masked += block_masked
+                            else:
+                                prefix_tokens += block_tokens
+                                prefix_numeric += block_numeric
+                                prefix_masked += block_masked
+                            predict_y_draw = {"x": point.tolist(), "y": y_star, "conditional": conditional}
+                        else:
+                            n_skipped_task_blocks += 1
+
+                    if prefix_tokens or suffix_tokens:
+                        base_numeric = (body_numeric if body_numeric is not None
+                                        else [float("nan")] * len(tokens_to_encode))
+                        task_mask = [False, *prefix_masked, *[False] * len(tokens_to_encode),
+                                     *suffix_masked, False]
+                        tokens_to_encode = [*prefix_tokens, *tokens_to_encode, *suffix_tokens]
+                        body_numeric = [*prefix_numeric, *base_numeric, *suffix_numeric]
 
                 # Numeric channel aligned with the FINAL input_ids ([<bos>, ..., <eos>]): values
                 # only at compact <float> positions; merged downstream by ensure_numeric_channel.
@@ -476,8 +609,19 @@ def _producer_worker(
                 # on -> existing runs (prob 0) are byte-identical and the model never sees a mask.
                 # Flows into the batch via `metadata_fields` (data.py) and routes to `null_memory`
                 # in the model when False. Per-worker RNG is seeded at worker start.
-                if unconditional_prob > 0.0:
-                    metadata["condition_mask"] = draw_condition_mask(worker_rng, unconditional_prob)
+                if condition_mask_value is not None:
+                    metadata["condition_mask"] = condition_mask_value
+
+                # Task-block metadata: keys present <=> feature configured (T0 contract), and
+                # UNIFORM across the batch (the consumer builds columns from entry 0's keys).
+                if task_blocks_on:
+                    metadata["task_mask"] = (task_mask if task_mask is not None
+                                             else [False] * len(input_ids))
+                if complexity_cfg is not None:
+                    metadata["complexity_mu"] = None if complexity_draw is None else complexity_draw["mu"]
+                    metadata["complexity_variant"] = None if complexity_draw is None else complexity_draw["variant"]
+                if predict_y_cfg is not None:
+                    metadata["predict_y"] = predict_y_draw
 
                 # Mixed representation only (key present <=> feature on, like condition_mask):
                 # the per-token numeric channel computed during serialization. Merged over the
@@ -512,6 +656,8 @@ def _producer_worker(
 
                 i += 1
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
+            if task_blocks_on:
+                payload["n_skipped_task_blocks"] = n_skipped_task_blocks
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
             if mixed_constants:

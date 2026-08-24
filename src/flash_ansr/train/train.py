@@ -601,6 +601,39 @@ class Trainer:
 
         labels[target_mask] = self.metrics_ignore_index
 
+    def _apply_task_mask(self, batch: dict[str, torch.Tensor]) -> None:
+        """Mask loss for v24 task-block structural tokens (openers, selectors, <float>
+        values): same polarity (True = masked) and shifted-label discipline as the
+        prompt mask. Supervision stays on content nibbles and closing tags only."""
+        task_mask = batch.get('task_mask')
+        if task_mask is None:
+            return
+
+        if not isinstance(task_mask, torch.Tensor):
+            task_mask = torch.as_tensor(task_mask, device=self.device, dtype=torch.bool)
+            batch['task_mask'] = task_mask
+        else:
+            if task_mask.dtype != torch.bool:
+                task_mask = task_mask.to(dtype=torch.bool)
+            batch['task_mask'] = task_mask.to(device=self.device)
+
+        labels = batch.get('labels')
+        if labels is None or not isinstance(labels, torch.Tensor):
+            return
+
+        if labels.device != self.device:
+            labels = labels.to(self.device)
+            batch['labels'] = labels
+
+        target_mask = batch['task_mask'][..., 1:]
+        if target_mask.shape[-1] > labels.shape[-1]:
+            target_mask = target_mask[..., :labels.shape[-1]]
+        elif target_mask.shape[-1] < labels.shape[-1]:
+            labels = labels[..., :target_mask.shape[-1]]
+            batch['labels'] = labels
+
+        labels[target_mask] = self.metrics_ignore_index
+
     def _apply_float_target_mask(self, batch: dict[str, torch.Tensor]) -> None:
         """Mask the loss terms whose TARGET token is ``<float>``, wherever they occur.
 
@@ -722,6 +755,7 @@ class Trainer:
             if preprocess:
                 self._update_prompt_statistics(micro_batch)
             self._apply_prompt_mask(micro_batch)
+            self._apply_task_mask(micro_batch)
             self._apply_float_target_mask(micro_batch)
 
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
@@ -832,6 +866,7 @@ class Trainer:
                     first_raw_batch = batch
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
+                self._apply_task_mask(batch)
                 self._apply_float_target_mask(batch)
                 data_tensor = torch.cat([batch['x_tensors'], batch['y_tensors']], dim=-1)
 

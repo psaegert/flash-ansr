@@ -19,6 +19,8 @@ from tqdm import tqdm
 
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.serialization import (
+    COMPLEXITY_TOKENS,
+    PREDICT_Y_TOKENS,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
     CONSTANT_REPRESENTATION_V23,
     CONSTANT_REPRESENTATIONS,
@@ -40,6 +42,36 @@ from flash_ansr.utils.metrics import (
     estimate_curvature_metric,
     estimate_fisher_metric,
 )
+
+
+def _validate_task_block(raw: "dict[str, Any] | None", *, name: str,
+                         probability_keys: tuple[str, ...],
+                         int_keys: tuple[str, ...] = ()) -> "dict[str, Any] | None":
+    """Validate a v24 task-block config mapping: exact keys, probabilities in [0, 1].
+
+    Priors are pinned explicitly, never defaulted -- a missing or unknown key is refused
+    loudly, like the noise-mixture spec on the symbolic-data side."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"{name} must be a mapping, got {raw!r}")
+    required = set(probability_keys) | set(int_keys)
+    if set(raw) != required:
+        raise ValueError(
+            f"{name} must carry exactly {sorted(required)} (got {sorted(raw)}); "
+            f"priors are pinned explicitly, never defaulted")
+    validated: dict[str, Any] = {}
+    for key in probability_keys:
+        probability = float(raw[key])
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(f"{name}.{key} must be a probability in [0, 1], got {raw[key]!r}")
+        validated[key] = probability
+    for key in int_keys:
+        value = int(raw[key])
+        if value < 1:
+            raise ValueError(f"{name}.{key} must be a positive integer, got {raw[key]!r}")
+        validated[key] = value
+    return validated
 
 
 class FlashANSRDataset:
@@ -83,6 +115,8 @@ class FlashANSRDataset:
         condition_dropout: float | None = None,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         tail_zero_bits: int = 0,
+        complexity_block: "dict[str, Any] | None" = None,
+        predict_y_block: "dict[str, Any] | None" = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -158,6 +192,31 @@ class FlashANSRDataset:
         if tail_zero_bits and constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
             raise ValueError("tail_zero_bits only applies to constant_representation='ieee754_mixed'.")
         self.tail_zero_bits = int(tail_zero_bits)
+        # v24 task blocks (owner ruling 2026-08-24): the optional <complexity> block
+        # (50/25/25 absent/nibbles/<float> at the ruled priors) and the <predict_y>
+        # auxiliary block. Both ride the mixed-constants machinery, so they require
+        # 'ieee754_mixed', the expression wrappers, and their block tokens up front.
+        self.complexity_block = _validate_task_block(
+            complexity_block, name="complexity_block", probability_keys=("p_present", "p_nibbles"))
+        self.predict_y_block = _validate_task_block(
+            predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
+            int_keys=("min_n_support",))
+        if self.complexity_block is not None or self.predict_y_block is not None:
+            if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
+                raise ValueError(
+                    "task blocks (complexity_block / predict_y_block) ride the ieee754 "
+                    "machinery and require constant_representation='ieee754_mixed'.")
+            missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
+            if missing_wrappers:
+                raise ValueError(f"task blocks require the expression wrappers, missing {missing_wrappers}.")
+        if self.complexity_block is not None:
+            missing_tokens = [t for t in COMPLEXITY_TOKENS if t not in tokenizer]
+            if missing_tokens:
+                raise ValueError(f"complexity_block requires tokens {list(COMPLEXITY_TOKENS)}, missing {missing_tokens}.")
+        if self.predict_y_block is not None:
+            missing_tokens = [t for t in PREDICT_Y_TOKENS if t not in tokenizer]
+            if missing_tokens:
+                raise ValueError(f"predict_y_block requires tokens {list(PREDICT_Y_TOKENS)}, missing {missing_tokens}.")
         self.data = None
 
         self._collator = BatchFormatter(tokenizer=tokenizer)
@@ -168,6 +227,8 @@ class FlashANSRDataset:
             constant_representation=constant_representation,
             target_dialect=target_dialect,
             tail_zero_bits=int(tail_zero_bits),
+            complexity_block=self.complexity_block,
+            predict_y_block=self.predict_y_block,
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -291,6 +352,8 @@ class FlashANSRDataset:
             condition_dropout=config_.get("condition_dropout"),
             target_dialect=config_.get("target_dialect", TARGET_DIALECT_EXPLICIT),
             tail_zero_bits=config_.get("tail_zero_bits", 0),
+            complexity_block=config_.get("complexity_block"),
+            predict_y_block=config_.get("predict_y_block"),
         )
 
     def save(

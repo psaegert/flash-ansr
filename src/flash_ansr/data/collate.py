@@ -226,6 +226,21 @@ class BatchFormatter:
                 prompt_mask_tensor = batch["prompt_mask"].to(device=device, dtype=torch.bool)
                 batch["prompt_mask"] = _adjust_length(prompt_mask_tensor, target_length, False)
 
+        # v24 task-block loss mask: True = masked from the loss (same polarity and
+        # shifted-label discipline as prompt_mask; padding False is safe -- pads are
+        # already ignore_index in the labels).
+        if "task_mask" in batch:
+            target_length = token_bucket_length
+            if isinstance(batch["task_mask"][0], list):
+                padded_task_masks = [
+                    self._pad_sequence(seq, target_length, False, device=device, dtype=torch.bool)
+                    for seq in batch["task_mask"]
+                ]
+                batch["task_mask"] = torch.stack(padded_task_masks)
+            else:
+                task_mask_tensor = batch["task_mask"].to(device=device, dtype=torch.bool)
+                batch["task_mask"] = _adjust_length(task_mask_tensor, target_length, False)
+
         if "complexity" in batch:
             batch["complexity"] = [
                 torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None
