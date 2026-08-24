@@ -63,10 +63,12 @@ MASK_FITTABLE_TOKEN = "<mask_fittable>"
 MASK_MODE_TOKENS = {"all": MASK_ALL_TOKEN, "fittable": MASK_FITTABLE_TOKEN}
 
 #: The valueless placeholder the model reads and (under a flag) emits for a masked
-#: constant. Deliberately NOT simplipy's `<constant>` (the serialization pipeline's
-#: value slot) and visibly distinct from the value-carrying `<float>` (owner ruling
-#: 2026-08-24).
-MASKED_CONSTANT_TOKEN = "<masked_constant>"
+#: constant: simplipy's native `<constant>` (owner ruling 2026-08-24, reverting the
+#: earlier `<masked_constant>` spelling -- simplipy depends on `<constant>`, so
+#: emitted skeletons feed collection/to_skeleton/refit without a rename shim).
+#: Inside the worker the serializer's None-entry support tells value slots from
+#: placeholders; in finished targets every remaining `<constant>` IS a placeholder.
+MASKED_CONSTANT_TOKEN = "<constant>"
 
 #: The constant-infilling block (owner ruling 2026-08-24): appended after
 #: `</expression>`, one `<ieee754>` span per `<masked_constant>` placeholder, in

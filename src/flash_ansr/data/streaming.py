@@ -557,8 +557,7 @@ def _producer_worker(
                             partial_instance = False
                             placeheld = [False] * n_slots
                         elif collected is not None:
-                            collected_body = [MASKED_CONSTANT_TOKEN if t == "<constant>" else t
-                                              for t in collected]
+                            collected_body = list(collected)
                         else:
                             # the engine refused the mask outright: fall back unmasked.
                             mask_mode = None
@@ -569,28 +568,32 @@ def _producer_worker(
                 if mixed_constants:
                     if collected_body is not None:
                         # Restructured flagged target: the engine's collected output IS
-                        # the emission format. Remaining literals (fittable's kept
-                        # structural ones) are extracted positionally -- placeholders
-                        # are a different token by now, so there is no ambiguity.
+                        # the emission format. mask_literals_positional is 1:1 and
+                        # leaves the engine's <constant> placeholders alone, so
+                        # position p tells the two kinds apart: a value slot (was a
+                        # kept literal) vs a placeholder (stays, as a None entry).
                         skeleton_mm, kept = mask_literals_positional(
                             simplipy_engine, collected_body, keep_specials=True)
+                        kept_iter = iter(kept)
+                        collected_opt: list[float | None] = []
+                        for original, slot in zip(collected_body, skeleton_mm):
+                            if slot == "<constant>":
+                                collected_opt.append(None if original == "<constant>"
+                                                     else float(next(kept_iter)))
+                        assert next(kept_iter, None) is None, "positional value alignment broke"
                         serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton_mm, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                            skeleton_mm, collected_opt,
+                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
                             rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
                         )
                     elif any(placeheld):
-                        slot_index = 0
-                        body_source: list[str] = []
-                        for token in skeleton:
-                            if token == "<constant>":
-                                body_source.append(MASKED_CONSTANT_TOKEN
-                                                   if placeheld[slot_index] else token)
-                                slot_index += 1
-                            else:
-                                body_source.append(token)
-                        kept = [float(v) for v, ph in zip(literals, placeheld) if not ph]
+                        # Placeholders ARE simplipy's <constant>: the serializer's
+                        # None entries keep them, value entries fill the kept slots.
+                        constants_opt: list[float | None] = [
+                            None if ph else float(v) for v, ph in zip(literals, placeheld)]
                         serialized_tokens, body_numeric = serialize_constant_tokens(
-                            body_source, kept, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                            skeleton, constants_opt,
+                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
                             rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
                         )
                     else:

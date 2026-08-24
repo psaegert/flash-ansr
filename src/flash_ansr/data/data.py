@@ -21,7 +21,6 @@ from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.data.serialization import (
     HYPOTHESIS_TOKEN,
     MASK_MODE_TOKENS,
-    MASKED_CONSTANT_TOKEN,
     PREDICT_CONSTANTS_TOKENS,
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
@@ -226,7 +225,7 @@ class FlashANSRDataset:
             if self.mask_block["p_mask_all"] + self.mask_block["p_mask_fittable"] > 1.0:
                 raise ValueError("mask_block: p_mask_all + p_mask_fittable must not exceed 1.0 "
                                  "(the remainder is the unmasked fraction)")
-            required = sorted(MASK_MODE_TOKENS.values()) + [MASKED_CONSTANT_TOKEN,
+            required = sorted(MASK_MODE_TOKENS.values()) + ["<constant>",
                                                             *PREDICT_CONSTANTS_TOKENS]
             missing_tokens = [t for t in required if t not in tokenizer]
             if missing_tokens:
