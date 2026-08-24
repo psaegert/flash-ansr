@@ -1,0 +1,156 @@
+# v24.0 TARGET-FORMAT TEMPLATE TOKENIZER
+#
+# Owner ruling 2026-08-18 (evening):
+#   "v24.0 will train on the tagged canonical form, without masking. All numbers will be
+#    represented by their ieee754 representation (meaning we also don't need the explicit
+#    integers -10 to 10 anymore). And I think we could also format the ieee754 bit strings
+#    as hexadecimal. Same representative power, fewer tokens."
+#
+# Consequences pinned by this file (acceptance: the T2 block in
+# tests/test_constant_representation.py, which verifies the tag set against a LIVE engine):
+#
+#  1. TARGETS ARE THE TAGGED CANONICAL FORM. The training target is simplipy's native
+#     `simplify` output -- n-ary bags delimited by <add>/</add> and <mul>/</mul>, with
+#     <sub>/<div> marking the inverted members. There is NO dialect conversion and NO
+#     masking step anywhere in the v24 target path.
+#  2. NO EXPLICIT NUMBER TOKENS. Every numeric literal -- including structural exponents
+#     such as the 2 in pow(x, 2) -- rides the ieee754 constants format. The integers
+#     -10..10, the '0'/'1'/'(-1)' literals and the non-finite float() spellings are gone.
+#     np.pi and np.e STAY: the AC engine keeps special constants symbolic, so they are not
+#     numeric literals in this dialect and have no decimal spelling to serialize.
+#  3. GENERATION-2 OPERATORS ONLY. The 23-operator clean vocabulary; no generation-1 sugar
+#     (pow2..pow5, pow1_2..pow1_5, mult2..mult5, div2..div5 are all retired; `pow` and
+#     `rootn` carry them, with the exponent as an ieee754 literal).
+#  4. HEX NIBBLE CONSTANTS. An expanded constant is <ieee754> + 8 nibble tokens over the
+#     16-symbol <h0>..<hf> alphabet + </ieee754> = 10 tokens (was 34 with bit tokens).
+#     The compact form is the existing <float> token, value on the numeric channel.
+#
+# This is a TEMPLATE: `variables` mirrors the v23.0-120M run config (x1..x17) so vocabulary
+# sizes compare like for like; a concrete v24 run config copies it and adjusts.
+#
+# The tagged delimiters live under `operators` rather than `special_tokens` deliberately:
+# they are EXPRESSION tokens and must survive `Tokenizer.decode(..., special_tokens=...)`,
+# which filters special tokens out.
+
+special_tokens:
+  - "<pad>"
+  - "<bos>"
+  - "<eos>"
+  - "<unk>"
+  - "<cls>"
+  - "<mask>"
+  # Kept for the refiner handshake: expanded spans map back to '<constant>' skeleton slots
+  # (contract T11). It never appears in a v24 training target.
+  - "<constant>"
+  - "<prompt>"
+  - "</prompt>"
+  - "<expression>"
+  - "</expression>"
+  - "<complexity>"
+  - "</complexity>"
+  # v24 task blocks (owner ruling 2026-08-24): the predict_y auxiliary block --
+  # <predict_y> <point> <float>*dims </point> <ieee754> nibbles </ieee754> </predict_y>.
+  # Openers and the point are harness-fed and loss-masked; the model owns the y* nibbles
+  # and the closing tags.
+  # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
+  # open property blocks (e.g. <complexity>) on its own.
+  - "<hypothesize>"
+  # Promptable-mask flags (owner ruling 2026-08-24): harness-owned, never supervised.
+  # Named after simplipy's masking policies; no flag = the unmasked default target.
+  - "<mask_all>"
+  - "<mask_fittable>"
+  # The constant-infilling block: one <ieee754> span per <constant> placeholder, in
+  # positional order, appended after </expression>. The placeholder is simplipy's
+  # native <constant> (owner ruling: emitted skeletons feed simplipy directly).
+  - "<predict_constants>"
+  - "</predict_constants>"
+  - "<predict_y>"
+  - "</predict_y>"
+  - "<point>"
+  - "</point>"
+  # The compact-constant summary token (loss-masked as a target; carries its value on the
+  # numeric channel). The per-constant 50/50 expanded/compact mixing is unchanged.
+  - "<float>"
+  - "<allowed_term>"
+  - "</allowed_term>"
+  - "<include_term>"
+  - "</include_term>"
+  - "<exclude_term>"
+  - "</exclude_term>"
+  # Symbolic constants: NOT numeric literals in the tagged canonical dialect.
+  - 'np.pi'
+  - 'np.e'
+  # v24 constants format: span tags + the 16 hex-nibble tokens in nibble-value order.
+  - "<ieee754>"
+  - "</ieee754>"
+  - "<h0>"
+  - "<h1>"
+  - "<h2>"
+  - "<h3>"
+  - "<h4>"
+  - "<h5>"
+  - "<h6>"
+  - "<h7>"
+  - "<h8>"
+  - "<h9>"
+  - "<ha>"
+  - "<hb>"
+  - "<hc>"
+  - "<hd>"
+  - "<he>"
+  - "<hf>"
+
+operators:
+  # --- the tagged canonical dialect's delimiters (verified live against the engine) ---
+  - "<add>"
+  - "</add>"
+  - "<sub>"
+  - "<mul>"
+  - "</mul>"
+  - "<div>"
+  # --- the generation-2 operator set, engine order ---
+  # '+', '-', '*' and '/' never appear in a tagged target (the delimiters above carry
+  # them); they remain the engine's operator set for the explicit-dialect conversion and
+  # realization paths.
+  - "+"
+  - "-"
+  - "neg"
+  - "*"
+  - "/"
+  - abs
+  - inv
+  - pow
+  - rootn
+  - sin
+  - cos
+  - tan
+  - asin
+  - acos
+  - atan
+  - sinh
+  - cosh
+  - tanh
+  - asinh
+  - acosh
+  - atanh
+  - exp
+  - log
+
+variables:
+  - x1
+  - x2
+  - x3
+  - x4
+  - x5
+  - x6
+  - x7
+  - x8
+  - x9
+  - x10
+  - x11
+  - x12
+  - x13
+  - x14
+  - x15
+  - x16
+  - x17

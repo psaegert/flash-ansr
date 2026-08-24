@@ -1,0 +1,43 @@
+# Validation stream: the SAME generative shape and the SAME task features as training
+# (noise mixture, complexity block, predict_y) so val CE, val_outlier_auroc and the
+# paired e3 eval all read the real T14 distribution; conditioned throughout
+# (condition_dropout 0) so validation CE stays a pure conditioned metric.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise:
+      p_clean: 0.30
+      types: {additive: 0.5, multiplicative: 0.5}
+      level: [1.0e-4, 0.3]
+      outliers:
+        p_instance: 0.10
+        rate: [0.005, 0.1]
+        magnitude: [3.0, 100.0]
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+complexity_block:
+  p_present: 0.4
+  p_nibbles: 0.5
+  p_hypothesize: 0.2
+# Promptable masking + constant infilling (owner rulings 2026-08-24, audited):
+# flags 5/5/90 all/fittable/unmasked; partial on 10% of unflagged instances with
+# per-slot 50/25/25 placeheld/expanded/compact; <predict_constants> attaches at
+# 0.5 after flagged skeletons and 0.9 on partial instances (>=1 placeholder,
+# CFG-conditioned, collection-stable only -- the gate withholds engine-internal
+# values). Prompt elements permute per instance; suffix pair swaps 50/50.
+mask_block:
+  p_mask_all: 0.05
+  p_mask_fittable: 0.05
+  p_partial: 0.1
+  p_placeheld: 0.5
+  p_predict_constants_flagged: 0.5
+  p_predict_constants_partial: 0.9
+
+predict_y_block:
+  p_present: 0.3333333333333333
+  p_conditional: 0.5
+  min_n_support: 8
