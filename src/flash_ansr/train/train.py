@@ -825,11 +825,17 @@ class Trainer:
         """
         self.model.train()
 
+        # kept for the SYMMETRIC train-side e3 eval at validation time (owner ruling:
+        # every val metric has a train counterpart and vice versa)
+        self._last_raw_train_batch = batch
+
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
         total_loss = 0.0
         task_ce_sums: dict[str, list[float]] = {}
         split_ce_sums: dict[str, list[float]] = {}
+        train_outlier_scores: list[torch.Tensor] = []
+        train_outlier_labels: list[torch.Tensor] = []
 
         # Split the batch into micro-batches to support gradient accumulation
         if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
@@ -878,6 +884,8 @@ class Trainer:
                     scored = self._outlier_scores(micro_batch)
                     if scored is not None:
                         outlier_loss = self._outlier_loss(scored)
+                        train_outlier_scores.append(scored[0].detach().float().cpu())
+                        train_outlier_labels.append(scored[1].detach().cpu())
 
                 loss = (ce_loss + self.outlier_loss_weight * outlier_loss) / self.gradient_accumulation_steps + zero_loss
 
@@ -920,6 +928,11 @@ class Trainer:
             extra: dict[str, float] = {}
             if self.outlier_loss_weight > 0.0:
                 extra["train_outlier_loss"] = total_outlier_loss
+                if train_outlier_scores:
+                    scores = torch.cat(train_outlier_scores)
+                    outlier_labels = torch.cat(train_outlier_labels).bool()
+                    if outlier_labels.any() and (~outlier_labels).any():
+                        extra["train_outlier_auroc"] = _binary_auroc(scores, outlier_labels)
             for name, (ce_sum, count) in task_ce_sums.items():
                 extra[f"train_ce_{name}"] = ce_sum / count
             for name, (ce_sum, count) in split_ce_sums.items():
@@ -1026,12 +1039,23 @@ class Trainer:
         # T12: the paired e3 eval on real validation data (mixed representation only).
         # Acceptance mirrors the pilot's prediction: gap ~ 0 under per-constant mixing.
         e3_metrics = None
+        train_e3_metrics: dict[str, float] | None = None
         if (first_raw_batch is not None
                 and getattr(self.val_dataset, "constant_representation", None) == "ieee754_mixed"):
             from flash_ansr.train.paired_eval import paired_e3_gap
             e3_metrics = paired_e3_gap(
                 self.model, self.val_dataset.tokenizer, first_raw_batch,
                 device=self.device, max_seq_len=self.decoder_max_seq_len)
+            # Symmetric train-side e3 on the last raw TRAIN batch (no extra sampling):
+            # logged as train_e3_* beside the val_e3_* keys at the same step. Carried via
+            # the unprefixed extra channel -- e3_metrics keys get a val_ prefix downstream.
+            last_train_batch = getattr(self, "_last_raw_train_batch", None)
+            if last_train_batch is not None:
+                train_e3 = paired_e3_gap(
+                    self.model, self.train_dataset.tokenizer, last_train_batch,
+                    device=self.device, max_seq_len=self.decoder_max_seq_len)
+                if train_e3 is not None:
+                    train_e3_metrics = {f"train_{key}": value for key, value in train_e3.items()}
 
         outlier_metrics: dict[str, float] | None = None
         if val_task_ce_sums:
@@ -1048,6 +1072,15 @@ class Trainer:
             outlier_metrics["val_outlier_loss"] = float(bce)
             if labels.any() and (~labels).any():
                 outlier_metrics["val_outlier_auroc"] = _binary_auroc(scores, labels)
+
+        # Composite val_loss mirrors train_loss (ce + weighted auxiliary terms).
+        val_composite = avg_val_ce_loss
+        if outlier_metrics is not None and "val_outlier_loss" in outlier_metrics:
+            val_composite = avg_val_ce_loss + self.outlier_loss_weight * outlier_metrics["val_outlier_loss"]
+        outlier_metrics = dict(outlier_metrics or {})
+        outlier_metrics["val_loss"] = val_composite
+        if train_e3_metrics:
+            outlier_metrics.update(train_e3_metrics)
 
         # Log averaged validation metrics (positional when the feature is off, see _log_metrics)
         if outlier_metrics is not None:
