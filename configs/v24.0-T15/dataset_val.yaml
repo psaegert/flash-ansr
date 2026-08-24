@@ -1,0 +1,29 @@
+# Validation stream: the SAME generative shape and the SAME task features as training
+# (noise mixture, complexity block, predict_y) so val CE, val_outlier_auroc and the
+# paired e3 eval all read the real T14 distribution; conditioned throughout
+# (condition_dropout 0) so validation CE stays a pure conditioned metric.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise:
+      p_clean: 0.30
+      types: {additive: 0.5, multiplicative: 0.5}
+      level: [1.0e-4, 0.3]
+      outliers:
+        p_instance: 0.10
+        rate: [0.005, 0.1]
+        magnitude: [3.0, 100.0]
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+complexity_block:
+  p_present: 0.4
+  p_nibbles: 0.5
+  p_hypothesize: 0.2
+predict_y_block:
+  p_present: 0.3333333333333333
+  p_conditional: 0.5
+  min_n_support: 8

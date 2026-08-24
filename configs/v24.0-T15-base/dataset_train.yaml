@@ -1,0 +1,15 @@
+# v24.0-T15-base train dataset: the CONTROL arm -- T15's catalog (acj-4 pinned,
+# support oversampling retired) with every task extension OFF. The T13 -> T14 delta
+# confounds the catalog changes with the new tasks; T14-base separates them:
+# T13 vs T14-base isolates the catalog/engine move, T14-base vs T14 isolates the tasks.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise: 0.0
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+condition_dropout: 0.1

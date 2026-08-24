@@ -1,0 +1,44 @@
+# v24.0-T15: the task-extension pilot at the T13 scale (3M, 20k steps), superseding
+# the aborted T14 launches: adds hypothesis mode, the ce_split/ fine-grained curves
+# and symmetric train/val metrics on top of T14's stack -- T13's
+# architecture and schedule with the four ruled extensions on (noise mixture, outlier
+# head, complexity block, predict_y) and the acj-4 engine pinned throughout. The
+# paired comparison against T13 isolates the new tasks.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [2_000, 1e-4]  # 10% of steps warmup
+  - [16_000, 1e-4]
+  - [20_000, 0.0]  # 20% of steps cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+# 4x the T13 val size: the pilot's read is the per-task val curves, and 2,048
+# instances left too much variance on them (owner request 2026-08-24).
+val_size: 8_192
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 20_000
+
+# Outlier-head auxiliary loss (small: the head must not distort the encoder);
+# pos_weight 1.0 = calibrated suspicion scores (ruling 2026-08-24).
+outlier_loss_weight: 0.05
+outlier_pos_weight: 1.0
+device: cuda
