@@ -230,6 +230,11 @@ class FlashANSRDataset:
             missing_tokens = [t for t in required if t not in tokenizer]
             if missing_tokens:
                 raise ValueError(f"mask_block requires tokens {required}, missing {missing_tokens}.")
+            if target_dialect != TARGET_DIALECT_TAGGED:
+                raise ValueError(
+                    "mask_block requires target_dialect='tagged': the per-slot site walk "
+                    "is defined on the tagged canonical (the explicit path's site filters "
+                    "diverge on np.pi/np.e and would break slot alignment).")
         if (self.complexity_block is not None or self.predict_y_block is not None
                 or self.mask_block is not None):
             if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
@@ -248,6 +253,8 @@ class FlashANSRDataset:
             if missing_tokens:
                 raise ValueError(f"predict_y_block requires tokens {list(PREDICT_Y_TOKENS)}, missing {missing_tokens}.")
         self.data = None
+        #: Monotone worker-counter sums (skipped blocks, restructure gate, drops).
+        self.stream_counters: dict[str, int] = {}
 
         self._collator = BatchFormatter(tokenizer=tokenizer)
         self._stream = SharedMemoryWorkerPool(
@@ -797,6 +804,16 @@ class FlashANSRDataset:
                 if metadata_batch:
                     for key in metadata_batch[0]:
                         metadata_fields[key] = [entry[key] for entry in metadata_batch]
+
+                # Worker health counters ("counted, never silent" -- audit 2026-08-24:
+                # they were shipped in the payload and read by nobody). Monotone sums
+                # over the run, logged by the trainer.
+                for counter_key in ("n_skipped_task_blocks", "n_collection_restructured",
+                                    "n_dropped_nonfinite", "n_dropped_truncation"):
+                    value = metadata_and_constants.get(counter_key)
+                    if value is not None:
+                        self.stream_counters[counter_key] = (
+                            self.stream_counters.get(counter_key, 0) + int(value))
 
                 batch_dict = {
                     "x_tensors": torch.from_numpy(self._stream.buffers["x_tensors"][completed_slot_idx]),

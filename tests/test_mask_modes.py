@@ -294,3 +294,65 @@ class TestCollectionStability:
         assert out == ["<add>", "<mul>", "2.71875", "x1", "</mul>", "<constant>", "</add>"]
         with pytest.raises(ValueError, match="site count"):
             mask_selected_sites(engine, tokens, [True], collect=False)
+
+
+class TestAuditRegressions:
+    def test_the_numeric_channel_never_carries_placeholder_values(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        # THE audit-critical leak: iterate()'s numeric-channel recompute wrote each
+        # constant's value at its <constant> position, handing the model the ground
+        # truth at exactly the masked placeholder positions. The worker channel is
+        # authoritative now; placeholders must be NaN on the model input.
+        import math as _math
+        cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
+        with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              mask_block=cfg) as ds:
+            for batch in ds.iterate(steps=2, batch_size=16):
+                vocab = list(tokenizer.vocab)
+                for row in range(len(batch["input_ids"])):
+                    ids = [int(i) for i in batch["input_ids"][row]]
+                    numeric = [float(v) for v in batch["input_num"][row]]
+                    for pos, token_id in enumerate(ids):
+                        if vocab[token_id] == "<constant>":
+                            assert _math.isnan(numeric[pos]), \
+                                f"ground truth leaked at position {pos}"
+
+    def test_truncation_keeps_task_channels_aligned(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        # Flag-bearing rows near the budget edge are DROPPED, never emitted with a
+        # cut </expression>; surviving rows carry task channels at input length.
+        cfg = _mask_cfg(p_mask_all=1.0)
+        with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              mask_block=cfg) as ds:
+            pad_id = int(tokenizer["<pad>"])
+            for batch in ds.iterate(steps=3, batch_size=16, max_seq_len=12):
+                for row, tokens in _rows(batch, tokenizer):
+                    ids = [int(i) for i in batch["input_ids"][row]]
+                    true_len = len(ids)
+                    while true_len > 0 and ids[true_len - 1] == pad_id:
+                        true_len -= 1
+                    # the audit defect: task channels at PRE-truncation length,
+                    # silently clipped downstream. They must match the true length.
+                    assert len(batch["task_mask"][row]) == true_len
+                    assert len(batch["task_segments"][row]) == true_len
+                    body = tokens[:true_len]
+                    if "<expression>" in body:
+                        assert "</expression>" in body, "no cut wrappers"
+
+    def test_the_block_is_cfg_gated(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        # An unconditioned (nulled-memory) instance must not carry a supervised
+        # infilling block: the values are unknowable from the prompt.
+        cfg = _mask_cfg(p_partial=1.0, p_placeheld=1.0, p_predict_constants_partial=1.0)
+        with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              condition_dropout=1.0, mask_block=cfg) as ds:
+            for batch in ds.iterate(steps=1, batch_size=16):
+                assert all(draw is None for draw in batch["predict_constants"])
+                for _, tokens in _rows(batch, tokenizer):
+                    assert PREDICT_CONSTANTS_START_TOKEN not in tokens
+
+    def test_explicit_dialect_refuses_mask_block(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        with pytest.raises(ValueError, match="tagged"):
+            FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                             constant_representation="ieee754_mixed",
+                             target_dialect="explicit", mask_block=_mask_cfg(p_mask_all=1.0))

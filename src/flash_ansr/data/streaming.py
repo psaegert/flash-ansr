@@ -348,6 +348,10 @@ def _producer_worker(
     simplipy_engine = catalog.simplipy_engine
     variables = catalog.variables
 
+    masked_constant_id = (int(tokenizer[MASKED_CONSTANT_TOKEN])
+
+                          if MASKED_CONSTANT_TOKEN in tokenizer else -1)
+
     bos_token_id = tokenizer["<bos>"]
     eos_token_id = tokenizer["<eos>"]
     has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
@@ -572,8 +576,17 @@ def _producer_worker(
                         # leaves the engine's <constant> placeholders alone, so
                         # position p tells the two kinds apart: a value slot (was a
                         # kept literal) vs a placeholder (stays, as a None entry).
-                        skeleton_mm, kept = mask_literals_positional(
-                            simplipy_engine, collected_body, keep_specials=True)
+                        try:
+                            skeleton_mm, kept = mask_literals_positional(
+                                simplipy_engine, collected_body, keep_specials=True)
+                        except (NonFiniteExpressionError, ValueError):
+                            # A collected body the extractor refuses (a masked fold
+                            # minting a non-finite spelling): fall back unmasked
+                            # rather than kill the worker (audit 2026-08-24).
+                            collected_body = None
+                            mask_mode = None
+                            placeheld = [False] * n_slots
+                    if collected_body is not None:
                         kept_iter = iter(kept)
                         collected_opt: list[float | None] = []
                         for original, slot in zip(collected_body, skeleton_mm):
@@ -635,6 +648,12 @@ def _producer_worker(
                     hypothesis_element: tuple | None = None
                     suffix_elements: list[tuple] = []
 
+                    if mask_mode is not None and budget < 1:
+                        # No room for even the flag (audit 2026-08-24): emitting the
+                        # masked body flag-less would violate flag <=> format, and
+                        # letting truncation cut the wrapper emitted broken rows.
+                        n_dropped_truncation += 1
+                        continue
                     if mask_mode is not None:
                         # The emission-format directive: harness-owned, never supervised.
                         prefix_elements.append(("mask_flag", [MASK_MODE_TOKENS[mask_mode]],
@@ -743,7 +762,10 @@ def _producer_worker(
                     # fixed constant is simply spelled inline in the expression instead.
                     # Loss discipline as everywhere: openers force-fed, nibbles and closing
                     # tags are the model's.
-                    if placeheld_values and mask_cfg is not None:
+                    if (placeheld_values and mask_cfg is not None
+                            and condition_mask_value is not False):
+                        # Same doctrine as predict_y (audit 2026-08-24): supervising
+                        # constant values against a NULLED memory is a nonsense task.
                         p_block = float(mask_cfg["p_predict_constants_flagged"]
                                         if mask_mode is not None
                                         else mask_cfg["p_predict_constants_partial"])
@@ -823,6 +845,14 @@ def _producer_worker(
                     if input_num is not None:
                         input_num = input_num[:max_seq_len]
                         input_num[-1] = float("nan")
+                    # The task channels track input_ids (audit 2026-08-24: they were
+                    # stored at pre-truncation length and silently clipped downstream).
+                    if task_mask is not None:
+                        task_mask = task_mask[:max_seq_len]
+                        task_mask[-1] = False
+                    if task_segments is not None:
+                        task_segments = task_segments[:max_seq_len]
+                        task_segments[-1] = 0
 
                 metadata = {
                     "skeleton": skeleton,
@@ -857,15 +887,17 @@ def _producer_worker(
                     metadata["predict_y"] = predict_y_draw
                 if mask_cfg is not None:
                     metadata["mask_mode"] = mask_mode
-                    metadata["n_placeholders"] = int(tokens_to_encode.count(MASKED_CONSTANT_TOKEN))
+                    metadata["n_placeholders"] = int(sum(
+                        1 for token_id in input_ids if token_id == masked_constant_id))
                     metadata["predict_constants"] = predict_constants_draw
                 if task_blocks_on:
                     metadata["block_order"] = (block_order if block_order is not None
                                                else {"prefix": [], "suffix": []})
 
                 # Mixed representation only (key present <=> feature on, like condition_mask):
-                # the per-token numeric channel computed during serialization. Merged over the
-                # (all-NaN in mixed mode) recomputed channel by ensure_numeric_channel.
+                # the per-token numeric channel computed during serialization. AUTHORITATIVE:
+                # ensure_numeric_channel passes it through verbatim (audit 2026-08-24 -- a
+                # recompute would put ground-truth values at masked placeholder positions).
                 if input_num is not None:
                     metadata["input_num"] = input_num
 

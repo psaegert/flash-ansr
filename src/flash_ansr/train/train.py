@@ -212,15 +212,27 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         # unmasked expression context (a masked context withholds the constants the
         # conditional variant would otherwise read off the expression).
         masked_rows = rows([v is not None for v in mask_mode_list])
+        partial_rows = rows([
+            mask_mode_list[i] is None
+            and n_placeholders_list is not None and int(n_placeholders_list[i]) > 0
+            for i in range(n_rows)
+        ])
         splits.append(("expression/mask_all", 0, rows([v == "all" for v in mask_mode_list])))
         splits.append(("expression/mask_fittable", 0, rows([v == "fittable" for v in mask_mode_list])))
-        splits.append(("expression/unmasked", 0, ~masked_rows))
+        # unmasked excludes partial rows: the four expression circumstances partition
+        # (audit 2026-08-24 -- partial rows counted in both unmasked and partial).
+        splits.append(("expression/unmasked", 0, ~masked_rows & ~partial_rows))
         if predict_y is not None:
-            splits.append(("predict_y/masked_ctx", 2, masked_rows))
-            splits.append(("predict_y/unmasked_ctx", 2, ~masked_rows))
+            # Context is only the expression for the CONDITIONAL variant (the block
+            # follows it); and a partial context withholds constants exactly as a
+            # flagged one does (audit 2026-08-24 -- partial rows contaminated
+            # unmasked_ctx). Unconditional rows live in predict_y/unconditional.
+            conditional_rows = rows([draw is not None and bool(draw["conditional"])
+                                     for draw in predict_y])
+            ctx_masked = masked_rows | partial_rows
+            splits.append(("predict_y/masked_ctx", 2, ctx_masked & conditional_rows))
+            splits.append(("predict_y/unmasked_ctx", 2, ~ctx_masked & conditional_rows))
         if n_placeholders_list is not None:
-            partial_rows = rows([mask_mode_list[i] is None and int(n_placeholders_list[i]) > 0
-                                 for i in range(n_rows)])
             splits.append(("expression/partial", 0, partial_rows))
             # The infilling block, split by how the placeholders arose: a flagged
             # (policy-determined) context vs an unflagged partial (random) one.
@@ -956,19 +968,22 @@ class Trainer:
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_outlier_loss += outlier_loss.item()
-            if 'task_segments' in micro_batch:
-                with torch.no_grad():
+            with torch.no_grad():
+                if 'task_segments' in micro_batch:
                     for name, (ce_sum, count) in _per_task_ce(
                             logits.detach(), micro_batch['labels'],
                             micro_batch['task_segments'], self.metrics_ignore_index).items():
                         entry = task_ce_sums.setdefault(name, [0.0, 0])
                         entry[0] += ce_sum
                         entry[1] += count
-                    for name, (ce_sum, count) in _ce_split_metrics(
-                            micro_batch, logits.detach(), self.metrics_ignore_index).items():
-                        entry = split_ce_sums.setdefault(name, [0.0, 0])
-                        entry[0] += ce_sum
-                        entry[1] += count
+                # Unconditional (audit 2026-08-24): the segments-None fallback treats
+                # every position as expression so BASE arms log the anchor too --
+                # gating it on task_segments made that fallback dead code.
+                for name, (ce_sum, count) in _ce_split_metrics(
+                        micro_batch, logits.detach(), self.metrics_ignore_index).items():
+                    entry = split_ce_sums.setdefault(name, [0.0, 0])
+                    entry[0] += ce_sum
+                    entry[1] += count
             total_loss += loss.item() * self.gradient_accumulation_steps
 
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
@@ -997,6 +1012,8 @@ class Trainer:
                 extra[f"train_ce_{name}"] = sums[0] / sums[1]
             for name, sums in split_ce_sums.items():
                 extra[f"ce_split/train/{name}"] = sums[0] / sums[1]
+            for counter_key, value in getattr(self.train_dataset, "stream_counters", {}).items():
+                extra[f"data/{counter_key}"] = value
             if extra:
                 self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm, extra=extra)
             else:
@@ -1084,11 +1101,12 @@ class Trainer:
                             entry = val_task_ce_sums.setdefault(name, [0.0, 0])
                             entry[0] += ce_sum
                             entry[1] += count
-                        for name, (ce_sum, count) in _ce_split_metrics(
-                                batch, logits.detach(), self.metrics_ignore_index).items():
-                            entry = val_split_ce_sums.setdefault(name, [0.0, 0])
-                            entry[0] += ce_sum
-                            entry[1] += count
+                    # Unconditional, mirroring the train side (audit 2026-08-24).
+                    for name, (ce_sum, count) in _ce_split_metrics(
+                            batch, logits.detach(), self.metrics_ignore_index).items():
+                        entry = val_split_ce_sums.setdefault(name, [0.0, 0])
+                        entry[0] += ce_sum
+                        entry[1] += count
 
                 pbar.update(1)
             pbar.close()

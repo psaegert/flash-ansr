@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.utils.numeric import build_numeric_sequences, merge_numeric_sequence
+from flash_ansr.utils.numeric import build_numeric_sequences
 
 
 def mask_float_targets(
@@ -89,26 +89,19 @@ class BatchFormatter:
         if input_ids is None or constants is None:
             return
 
-        computed_numeric = build_numeric_sequences(self.tokenizer, input_ids, constants)
-        existing_numeric = batch.get("input_num")
-        if existing_numeric is None:
-            batch["input_num"] = computed_numeric
+        if batch.get("input_num") is not None:
+            # The worker's channel is AUTHORITATIVE (audit 2026-08-24). Recomputing
+            # writes each constant's value at its <constant> position and the merge
+            # preferred the computed value over the worker's NaN -- harmless while
+            # mixed bodies contained no <constant> tokens, but a MASKED body's
+            # placeholders would receive their own ground-truth values on the
+            # numeric channel (model input): the infilling task becomes
+            # copy-from-input and flagged emission trains with the answer visible.
+            # For unmasked mixed batches the old merge was a no-op, so returning the
+            # worker channel verbatim is byte-identical there.
             return
 
-        if isinstance(existing_numeric, torch.Tensor):
-            existing_sequences = existing_numeric
-        else:
-            existing_sequences = existing_numeric
-
-        merged = [
-            merge_numeric_sequence(
-                existing_sequences[idx] if idx < len(existing_sequences) else None,
-                computed_seq,
-            )
-            for idx, computed_seq in enumerate(computed_numeric)
-        ]
-
-        batch["input_num"] = merged
+        batch["input_num"] = build_numeric_sequences(self.tokenizer, input_ids, constants)
 
     def collate(self, batch: dict[str, Any], device: str | torch.device | int = "cpu") -> dict[str, Any]:
         """Pad and bucket batch fields to consistent shapes for model consumption."""
