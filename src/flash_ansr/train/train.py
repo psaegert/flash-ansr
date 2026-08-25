@@ -264,6 +264,18 @@ def _binary_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     return float((ranks[labels].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
+def _binary_auprc(scores: torch.Tensor, labels: torch.Tensor) -> float:
+    """Average precision (the step-function AUPRC, sklearn's definition). At the
+    outlier head's ~0.5% base rate this is the deployment metric AUROC cannot be:
+    a 0.93-AUROC ranking can carry 4% precision at half recall (measured, the MAD-z
+    baseline on the T16 val prior), and only AUPRC exposes that."""
+    order = torch.argsort(scores, descending=True)
+    hits = labels[order].to(torch.float64)
+    tp = torch.cumsum(hits, dim=0)
+    precision = tp / torch.arange(1, len(hits) + 1, dtype=torch.float64)
+    return float((precision * hits).sum() / hits.sum())
+
+
 class Trainer:
     """Manage end-to-end training for a ``FlashANSRModel``.
 
@@ -1008,6 +1020,7 @@ class Trainer:
                     outlier_labels = torch.cat(train_outlier_labels).bool()
                     if outlier_labels.any() and (~outlier_labels).any():
                         extra["train_outlier_auroc"] = _binary_auroc(scores, outlier_labels)
+                        extra["train_outlier_auprc"] = _binary_auprc(scores, outlier_labels)
             for name, sums in task_ce_sums.items():
                 extra[f"train_ce_{name}"] = sums[0] / sums[1]
             for name, sums in split_ce_sums.items():
@@ -1151,6 +1164,7 @@ class Trainer:
             outlier_metrics["val_outlier_loss"] = float(bce)
             if labels.any() and (~labels).any():
                 outlier_metrics["val_outlier_auroc"] = _binary_auroc(scores, labels)
+                outlier_metrics["val_outlier_auprc"] = _binary_auprc(scores, labels)
 
         # Composite val_loss mirrors train_loss (ce + weighted auxiliary terms).
         val_composite = avg_val_ce_loss

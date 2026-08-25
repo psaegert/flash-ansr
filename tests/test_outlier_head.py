@@ -5,7 +5,7 @@ import torch
 from flash_ansr import get_path
 from flash_ansr.model.encoders.set_transformer import SetTransformer
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.train.train import _binary_auroc
+from flash_ansr.train.train import _binary_auprc, _binary_auroc
 from flash_ansr.utils.config_io import load_config
 
 
@@ -80,3 +80,20 @@ def test_binary_auroc() -> None:
     assert _binary_auroc(scores, torch.tensor([False, False, True, True])) == pytest.approx(1.0)
     assert _binary_auroc(scores, torch.tensor([True, True, False, False])) == pytest.approx(0.0)
     assert _binary_auroc(scores, torch.tensor([False, True, False, True])) == pytest.approx(0.75)
+
+
+def test_binary_auprc() -> None:
+    scores = torch.tensor([0.0, 1.0, 2.0, 3.0])
+    # perfect ranking: precision 1 at every positive
+    assert _binary_auprc(scores, torch.tensor([False, False, True, True])) == pytest.approx(1.0)
+    # inverted ranking: positives arrive at ranks 3 and 4 -> AP = (1/3 + 2/4) / 2
+    assert _binary_auprc(scores, torch.tensor([True, True, False, False])) == pytest.approx((1 / 3 + 2 / 4) / 2)
+    # alternating: positives at ranks 1 and 3 -> AP = (1/1 + 2/3) / 2
+    assert _binary_auprc(scores, torch.tensor([False, True, False, True])) == pytest.approx((1.0 + 2 / 3) / 2)
+    # the imbalance property AUROC hides: one positive ranked 11th of 1011 still has
+    # AUROC 0.99 but AP 1/11
+    scores = torch.cat([torch.zeros(1000), torch.linspace(1, 2, 11)])
+    labels = torch.zeros(1011, dtype=torch.bool)
+    labels[1000] = True                      # the lowest of the top-11 band
+    assert _binary_auroc(scores, labels) > 0.99
+    assert _binary_auprc(scores, labels) == pytest.approx(1 / 11)
