@@ -41,7 +41,7 @@ from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
-from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS, replace_ieee754_spans_with_constants
 from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
@@ -500,6 +500,20 @@ class FlashANSR(BaseEstimator):
     @staticmethod
     def _is_constant_token(token: str) -> bool:
         return is_constant_token(token)
+
+    _TAGGED_DELIMITERS = frozenset(TAGGED_DELIMITER_TOKENS)
+
+    def _ensure_explicit_dialect(self, tokens: list[str]) -> list[str] | None:
+        """v24 models emit the engine's tagged canonical dialect; the refiner and every
+        downstream consumer read explicit binary-prefix. One conversion, at the decode
+        boundary. A sequence that carries tagged delimiters but does not parse is a
+        malformed emission and returns None (an invalid candidate, not an error)."""
+        if not any(t in self._TAGGED_DELIMITERS for t in tokens):
+            return tokens
+        try:
+            return list(self.simplipy_engine.to_prefix(list(tokens)))
+        except Exception:
+            return None
 
     @classmethod
     def _count_constants(cls, expression: Sequence[str]) -> int:
@@ -1899,6 +1913,7 @@ class FlashANSR(BaseEstimator):
 
         raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
         beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
+        beams_decoded = [self._ensure_explicit_dialect(b) or [] for b in beams_decoded]
 
         sample_count = int(gs.y_np.shape[0])
         refinement_jobs: list[dict[str, Any]] = []
@@ -2429,7 +2444,7 @@ class FlashANSR(BaseEstimator):
 
         def _decode_expr(raw_beam: list[int]) -> list[str] | None:
             expr_ids = self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0]
-            return self.tokenizer.decode(expr_ids, special_tokens='<constant>')
+            return self._ensure_explicit_dialect(self.tokenizer.decode(expr_ids, special_tokens='<constant>'))
 
         ledger = build_candidate_ledger(
             gen_state.raw_beams, gen_state.log_probs, results,

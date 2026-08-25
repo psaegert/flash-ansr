@@ -88,3 +88,32 @@ def test_fit_supports_multiple_optimizers(method: str) -> None:
     assert np.isfinite(preds).all()
     mse = float(np.mean((preds.flatten() - y.flatten()) ** 2))
     assert mse < 1e-3
+
+
+def test_constant_free_candidate_is_a_valid_fit() -> None:
+    # The zero-constant early path returned with valid_fit still at its __init__ False,
+    # so every constant-free beam was discarded by the refinement workers. v23 masked it
+    # (beams nearly always carry constants); v24's tagged emissions surfaced it as
+    # whole-problem ConvergenceErrors.
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
+    refiner = Refiner(simplipy_engine=engine, n_variables=2)
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(64, 2))
+    y = (X[:, 1] - X[:, 0]).reshape(-1, 1)
+    refiner.fit(expression=['-', 'x2', 'x1'], X=X, y=y, n_restarts=2,
+                method='curve_fit_lm', p0=None, p0_noise='normal',
+                p0_noise_kwargs=None, converge_error='raise')
+    assert refiner.valid_fit
+    assert len(refiner._all_constants_values) == 1
+    assert refiner.loss == pytest.approx(0.0, abs=1e-12)
+
+
+def test_constant_free_candidate_with_nan_image_stays_invalid() -> None:
+    engine = SimpliPyEngine.load('acj-4-3', install=True)
+    refiner = Refiner(simplipy_engine=engine, n_variables=1)
+    X = np.full((16, 1), -2.0)
+    y = np.ones((16, 1))
+    refiner.fit(expression=['log', 'x1'], X=X, y=y, n_restarts=2,
+                method='curve_fit_lm', p0=None, p0_noise='normal',
+                p0_noise_kwargs=None, converge_error='ignore')
+    assert not refiner.valid_fit
