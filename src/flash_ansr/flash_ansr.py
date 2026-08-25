@@ -199,6 +199,16 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         if payload['converge_error'] == 'raise':
             raise
         warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
+    except (NameError, KeyError) as exc:
+        # An UNREALIZABLE candidate, not a failed optimization: the expression names an
+        # operator the loaded engine's realization does not define (measured: a v23
+        # model's `pow1_5` sugar under an acj-4 engine -> NameError from lambdify;
+        # KeyError from the realization table). One such candidate must not kill the
+        # whole problem's refinement -- it is dropped like any invalid fit.
+        if payload['converge_error'] == 'raise':
+            raise ConvergenceError(f"Unrealizable candidate {payload['expression']}") from exc
+        warning = (f"Unrealizable candidate ({exc!r}): {payload['expression']}"
+                   if payload['converge_error'] == 'print' else None)
     finally:
         np.seterr(**numpy_state)
         if numpy_rng_state is not None:
