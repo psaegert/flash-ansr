@@ -50,10 +50,16 @@ benchmark nobody can check.
 3. **Dialects and variable names resolve at the boundary.** Every verb accepts explicit or
    tagged prefix tokens and user variable names; internally everything is the tagged
    canonical over `x1..xN`, and outputs map back.
-4. **v23 checkpoints degrade gracefully.** Verbs whose tokens are absent from the
-   vocabulary raise `CapabilityUnavailable` at CALL time, not mid-decode — and the check
-   runs before the encoder, not after it.
-5. **Nothing on the public surface is decorative.** A parameter that is documented as
+4. **v24 only, refused at load.** A checkpoint whose vocabulary lacks `<ieee754>` is refused by
+   `FlashANSR.load` with the reason. Supporting v23 meant a second path in the serializer, the
+   span mapper and the numeric channel, and the v23 branch repeatedly leaked into the v24 one.
+   Within v24, a verb whose block is absent raises `CapabilityUnavailable` at CALL time, before
+   the encoder runs — never mid-decode.
+5. **Every predicted value is a DISTRIBUTION.** A value is eight hex nibbles and each nibble is a
+   softmax draw, so one decode is one sample. The verbs draw `n_samples` (default 32) and return
+   `ValueDistribution` — median, q05/q95, mode, agreement — never a float. Greedy decoding returns
+   the mode of a factorised distribution, which is neither its centre nor its width.
+6. **Nothing on the public surface is decorative.** A parameter that is documented as
    having an effect must have one. `allowed_terms` / `include_terms` / `exclude_terms` are
    withdrawn under this principle rather than implemented (below).
 
@@ -95,17 +101,18 @@ throwing it away.
 Each is a separate public method, out of srbf's scope for now.
 
 ```python
-# Per-point outlier scores. Full support -- this is a planned feature.
-p = ansr.score_outliers(X, y)
+# Per-point outlier scores. NOT sampled: one deterministic forward through a sigmoid head.
+p = ansr.score_outliers(X, y)                                   # -> np.ndarray
 
-# Held-out-point prediction (the <predict_y> block).
-y_star = ansr.predict_y(X, y, x_star)
+# The sampled verbs. n_samples / temperature / seed on each; all return distributions.
+y_star = ansr.predict_y(X, y, x_star)                           # -> list[ValueDistribution]
+mu = ansr.predict_complexity(X, y)                              # -> ComplexityDistribution
+slots = ansr.predict_constants(X, y, expression)                # -> list[ValueDistribution]
 
-# Complexity prediction on its own, in ADDITION to fit(hypothesize=True).
-mu = ansr.predict_complexity(X, y)
-
-# Constant infilling (the <predict_constants> block).
-res = ansr.predict_constants(X, y, expression)
+# Measured on y = 2.5*x1 + 1, 64 draws: complexity median 234,500 [76,000, 454,500] against a
+# true mu of 146,000, agreement 0.09 -- approximately centred and far too diffuse to feed back
+# as a point. A single greedy decode of that same distribution read 342,000 and looked like a
+# 2.3x overshoot, which is exactly the error this shape exists to prevent.
 ```
 
 `score_outliers` returns **raw per-point probabilities and nothing else**. There is no
