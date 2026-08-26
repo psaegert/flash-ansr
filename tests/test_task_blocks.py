@@ -246,10 +246,18 @@ def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # t
             n_predict = int(((batch["task_segments"][..., 1:] == 2)
                              & (batch["labels"] != tokenizer["<pad>"])).sum())
             assert parts["predict_y/conditional"][1] + parts["predict_y/unconditional"][1] == n_predict
-            # dropout instances never carry predict_y (the designed exclusion)
+            # An unconditioned instance DOES carry predict_y, but only in the SUFFIX placement:
+            # with the expression in scope the task is function evaluation, which is well posed.
+            # The prefix placement there would be nulled memory AND no expression -- nothing to
+            # condition on -- so the gate pins rather than drops (owner ruling 2026-08-26).
+            n_uncond_blocks = 0
             for row, draw in enumerate(batch["predict_y"]):
-                if draw is not None:
-                    assert bool(batch["condition_mask"][row])
+                if draw is not None and not bool(batch["condition_mask"][row]):
+                    n_uncond_blocks += 1
+                    assert draw["conditional"] is True, (
+                        "an unconditioned instance must take the suffix placement")
+            # p_present=1.0 with condition_dropout=0.5 over 32 rows: vacuous pass is not credible.
+            assert n_uncond_blocks > 0, "no unconditioned instance carried a block to check"
 
 
 HYPOTHESIS_ONLY = {"p_present": 0.0, "p_nibbles": 1.0, "p_hypothesize": 1.0}

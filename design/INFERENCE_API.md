@@ -42,7 +42,12 @@ benchmark nobody can check.
 ## Principles
 
 1. **One public verb per trained capability.** If the training data contains a task, the
-   estimator exposes it; if it does not, the estimator refuses loudly.
+   estimator exposes it; if it does not, the estimator refuses loudly. This binds on
+   CIRCUMSTANCES, not just blocks: a block trained in two placements needs both reachable, and a
+   model trained with `condition_dropout` needs its unconditioned mode reachable. `conditioned=`
+   is on every decoder verb and on `fit`/`infer`; `predict_y(expression=...)` selects the suffix
+   placement. `score_outliers` takes no `conditioned=`: the head reads the encoder directly and
+   has no null path to route through.
 2. **The harness owns the grammar at inference exactly as in training.** Openers and flags
    are force-fed and never sampled; the model owns content nibbles and closing tags. One
    shared grammar-aware decoder (the `constrain_ieee754` machinery generalized to the task
@@ -108,6 +113,12 @@ y_star = ansr.predict_y(X, y, x_star)                           # -> list[ValueD
 mu = ansr.predict_complexity(X, y)                              # -> ComplexityDistribution
 slots = ansr.predict_constants(X, y, expression)                # -> list[ValueDistribution]
 
+# predict_y's SUFFIX placement -- the expression is in scope (trained, p_conditional=0.5):
+y_star = ansr.predict_y(X, y, x_star, expression=expr)
+
+# FUNCTION EVALUATION: null_memory replaces the data, so only the expression answers.
+y_star = ansr.predict_y(None, None, x_star, expression=expr, conditioned=False)
+
 # Measured on y = 2.5*x1 + 1, 64 draws: complexity median 234,500 [76,000, 454,500] against a
 # true mu of 146,000, agreement 0.09 -- approximately centred and far too diffuse to feed back
 # as a point. A single greedy decode of that same distribution read 342,000 and looked like a
@@ -162,6 +173,32 @@ shape with bare prefix ELEMENTS the harness force-feeds and permutes per instanc
 `<prompt>` section — that inherits a wrapper the model was never trained to read and a metadata
 channel with no decode-time meaning. Adding promptable properties is the moment to reconcile the
 two lanes: absorb the term sampling into the element grammar, or delete it.
+
+## The conditioning knob
+
+`condition_dropout: 0.1` means one training instance in ten routes to the learned `null_memory`
+instead of the encoder's. That is a first-class trained mode, so it is a first-class parameter:
+
+* `fit(conditioned=False)` / `infer(conditioned=False)` — propose candidates from the model's
+  PRIOR over expressions, then refine and score them against the data as usual. Not a blind
+  decode: the data still selects the winner, it just does not shape the proposals.
+* `predict_complexity(conditioned=False)` — the model's prior over mu, the reference a
+  conditioned reading should be compared against.
+* `predict_constants(..., conditioned=False)` — the constants the model finds typical for a
+  SHAPE, with no data to fit.
+* `predict_y(..., expression=e, conditioned=False)` — function evaluation.
+
+`X`/`y` may be `None` whenever `conditioned=False`; a placeholder support set is synthesized and
+discarded by the null substitution. On a checkpoint without `optional_condition` the knob raises
+`CapabilityUnavailable` rather than silently conditioning.
+
+**One caveat on `predict_y` here.** T16 was trained with the block WITHHELD from unconditioned
+instances (an earlier ruling that predicting y* with a nulled memory is ill-posed). That is true
+only for the prefix placement; with the expression in scope it is function evaluation, which is
+well-posed. The gate was corrected 2026-08-26 to pin the block to the suffix on unconditioned
+instances instead of dropping it, so the circumstance trains from the next run on. Until then,
+`predict_y(expression=..., conditioned=False)` on a T16 checkpoint queries something the model
+never saw, and the measured floor reflects that, not a limit of the approach.
 
 ## Not in this document
 

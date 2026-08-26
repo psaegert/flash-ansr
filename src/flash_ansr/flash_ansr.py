@@ -34,7 +34,8 @@ from flash_ansr._refine_pool import RecoverableForkPool
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
-from flash_ansr.preprocessing import PromptPrefix, apply_emission_flag, prepare_prompt_prefix
+from flash_ansr.preprocessing import (
+    CapabilityUnavailable, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
@@ -1727,6 +1728,7 @@ class FlashANSR(BaseEstimator):
             *,
             complexity: int | float | None = None,
             emission: str = 'constants',
+            conditioned: bool = True,
             refine_seed: int | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
@@ -1787,6 +1789,7 @@ class FlashANSR(BaseEstimator):
                 X, y, variable_names,
                 emission=emission,
                 complexity=complexity,
+                conditioned=conditioned,
                 verbose=verbose,
             )
             # Generation-phase state, applied so callers see it even if refinement raises.
@@ -1812,6 +1815,7 @@ class FlashANSR(BaseEstimator):
             *,
             complexity: int | float | None = None,
             emission: str = 'constants',
+            conditioned: bool = True,
             verbose: bool = False) -> "GenState":
         """GPU generation phase of :meth:`fit`: prepare inputs, sample candidates, return a GenState.
 
@@ -1921,7 +1925,22 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
-            memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
+            if conditioned:
+                memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
+            else:
+                # The trained UNCONDITIONED mode (condition_dropout): the learned null_memory
+                # replaces the encoder's, so candidates come from the model's PRIOR over
+                # expressions rather than from this data set. The data is still used downstream --
+                # refinement fits the constants and scores the fits -- which makes this the
+                # "propose from the prior, fit to the data" arm, not a blind decode.
+                model = self.flash_ansr_model
+                if not getattr(model, "optional_condition", False):
+                    raise CapabilityUnavailable(
+                        "fit(conditioned=False) needs a model trained with optional_condition=True "
+                        "(the learned null_memory); this checkpoint has no unconditioned mode.")
+                memory_for_scoring = (
+                    model.null_memory.to(dtype=data_tensor.dtype, device=data_tensor.device)
+                    .expand(data_tensor.shape[0], -1, -1).contiguous())
 
             prompt_prefix = self._prepare_prompt_prefix(
                 emission=emission,
@@ -2476,7 +2495,8 @@ class FlashANSR(BaseEstimator):
         return score_outliers(self, X, y)
 
     def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
-                          n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                          conditioned: bool = True, n_samples: int = DEFAULT_SAMPLES,
+                          temperature: float = 1.0,
                           seed: int | None = None) -> list[ValueDistribution]:
         """Fill the ``'<constant>'`` slots of ``expression`` with the model's own predictions.
 
@@ -2492,6 +2512,9 @@ class FlashANSR(BaseEstimator):
         expression : sequence of str or str
             Prefix tokens or an infix string, with ``'<constant>'`` at each slot to fill.
             ``v1..vn`` variable names are mapped to ``x1..xN`` at the boundary.
+        conditioned : bool, optional
+            ``False`` selects the trained unconditioned mode: the constants the model finds typical
+            for this SHAPE, with the data ignored. ``X``/``y`` may then be ``None``.
 
         Returns
         -------
@@ -2518,25 +2541,33 @@ class FlashANSR(BaseEstimator):
         --------
         fit : refines constants numerically; this verb predicts them directly.
         """
-        return predict_constants(self, X, y, expression, n_samples=n_samples,
-                                 temperature=temperature, seed=seed)
+        return predict_constants(self, X, y, expression, conditioned=conditioned,
+                                 n_samples=n_samples, temperature=temperature, seed=seed)
 
     def predict_y(self, X: Any, y: Any, x_query: Any, *,
+                  expression: Sequence[str] | str | None = None, conditioned: bool = True,
                   n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
                   seed: int | None = None) -> list[ValueDistribution]:
         """Predict the target at held-out points using the trained ``<predict_y>`` block.
 
-        No expression is involved: the model interpolates the point set it was given. The query
-        coordinates ride the numeric channel exactly as training wrote them.
+        Training writes the block in two placements and both are reachable. Without ``expression``
+        the model interpolates the point set it was given; with one, the expression is in scope.
+        ``expression`` plus ``conditioned=False`` is FUNCTION EVALUATION -- the data is replaced by
+        the learned ``null_memory``, so the expression and the query point are all there is.
+        The query coordinates ride the numeric channel exactly as training wrote them.
 
         Parameters
         ----------
-        X : array-like
-            Support-set features the model conditions on.
-        y : array-like
-            Support-set targets.
+        X : array-like or None
+            Support-set features the model conditions on; ``None`` only if ``conditioned=False``.
+        y : array-like or None
+            Support-set targets; ``None`` only if ``conditioned=False``.
         x_query : array-like
             Query coordinates, ``(n_queries, n_variables)`` or one ``(n_variables,)`` point.
+        expression : sequence of str or str, optional
+            Prefix tokens or an infix string. Places the block AFTER the expression.
+        conditioned : bool, optional
+            ``False`` selects the trained unconditioned mode, by default ``True``.
 
         Returns
         -------
@@ -2554,10 +2585,10 @@ class FlashANSR(BaseEstimator):
         --------
         predict : evaluates a FITTED expression; this verb never forms one.
         """
-        return predict_y(self, X, y, x_query, n_samples=n_samples,
-                         temperature=temperature, seed=seed)
+        return predict_y(self, X, y, x_query, expression=expression, conditioned=conditioned,
+                         n_samples=n_samples, temperature=temperature, seed=seed)
 
-    def predict_complexity(self, X: Any, y: Any, *,
+    def predict_complexity(self, X: Any, y: Any, *, conditioned: bool = True,
                            n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
                            seed: int | None = None) -> ComplexityDistribution:
         """Ask the model how complex it thinks the generating expression is.
@@ -2584,7 +2615,7 @@ class FlashANSR(BaseEstimator):
         CapabilityUnavailable
             If this checkpoint lacks the ``<hypothesize>`` or ``<complexity>`` tokens.
         """
-        return predict_complexity(self, X, y, n_samples=n_samples,
+        return predict_complexity(self, X, y, conditioned=conditioned, n_samples=n_samples,
                                   temperature=temperature, seed=seed)
 
     def _skeleton_mu(self, skeleton: Sequence[str] | None) -> float | None:
@@ -2642,6 +2673,8 @@ class FlashANSR(BaseEstimator):
             *,
             X_val: np.ndarray | torch.Tensor | pd.DataFrame | None = None,
             complexity: int | float | None = None,
+            emission: str = 'constants',
+            conditioned: bool = True,
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             refine_seed: int | None = None,
             predict_val: bool = True,
@@ -2685,7 +2718,9 @@ class FlashANSR(BaseEstimator):
         numpy_errors_before = np.geterr()
         np.seterr(all=self.numpy_errors)
         try:
-            gen_state = self._fit_generate(X, y, variable_names, complexity=complexity, verbose=verbose)
+            gen_state = self._fit_generate(X, y, variable_names, complexity=complexity,
+                                           emission=emission, conditioned=conditioned,
+                                           verbose=verbose)
             # allow_empty=True: infer() returns the FULL candidate ledger (all FIT_FAILED/INVALID)
             # even when no beam converged, per its contract, instead of raising ConvergenceError.
             fit_result = self._fit_refine(gen_state, converge_error=converge_error, refine_seed=refine_seed, verbose=verbose, allow_empty=True)

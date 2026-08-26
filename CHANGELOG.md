@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`conditioned=` on every decoder verb, and `predict_y(expression=...)`: the trained
+  circumstances that had no entry point.** `condition_dropout: 0.1` routes one training instance in
+  ten to the learned `null_memory`, and `predict_y_block.p_conditional: 0.5` writes the block in two
+  placements — before `<expression>` (data alone) or after it (data AND expression). Neither knob
+  was reachable: `fit`/`infer`/`predict_*` always conditioned, and `predict_y` only ever emitted the
+  prefix placement. Now `fit`, `infer`, `predict_y`, `predict_constants` and `predict_complexity`
+  all take `conditioned=` (default `True`), and `predict_y` takes `expression=`. `X`/`y` may be
+  `None` whenever `conditioned=False`. On a checkpoint without `optional_condition` the knob raises
+  `CapabilityUnavailable` rather than silently conditioning. `score_outliers` deliberately has no
+  such knob: the head reads the encoder directly and has no null path.
+  `fit(conditioned=False)` is the "propose from the prior, fit to the data" arm — the data still
+  selects the winner, it just does not shape the proposals.
 - **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
   `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
   sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
@@ -38,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from now on.
 
 ### Fixed
+- **Unconditioned instances no longer lose their `<predict_y>` block.** The gate excluded the block
+  from every condition-dropout instance, on the reasoning that "predicting y* with a nulled memory
+  is a nonsense task". That holds for the PREFIX placement — nulled memory and no expression is
+  nothing to condition on — but not for the suffix: with the expression in scope it is FUNCTION
+  EVALUATION, a well-posed task that grounds the expression tokens semantically. The block is now
+  pinned to the suffix on unconditioned instances instead of being dropped (owner ruling
+  2026-08-26). Takes effect from the next training run; T16 was trained under the old gate, so
+  `predict_y(expression=..., conditioned=False)` on a T16 checkpoint queries an untrained
+  circumstance.
 - **Raw batches held past their turn were a use-after-free, and it segfaulted.** The tensors
   `FlashANSRDataset.iterate` yields VIEW the streaming pool's shared-memory ring and are valid only
   until the pool refills that block. `Trainer` kept two of them by reference — `first_raw_batch` in

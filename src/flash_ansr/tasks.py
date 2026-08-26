@@ -213,6 +213,36 @@ def _append(state: tuple[torch.Tensor, torch.Tensor], token_id: int,
     )
 
 
+def _conditioning(estimator: Any, X: Any, y: Any, *, conditioned: bool, n_rows: int,
+                  verb: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Build the encoder inputs and the per-row condition mask for one verb call.
+
+    ``conditioned=True`` is the ordinary path: the model reads the ``(X, y)`` support set.
+    ``conditioned=False`` selects the trained UNCONDITIONED mode -- ``forward`` swaps the learned
+    ``null_memory`` in for the encoder memory, so the verb answers from the token stream alone.
+    The encoder still runs (that is the path training took, and its output is then discarded),
+    which is why ``X``/``y`` may be omitted entirely: a placeholder support set is synthesized.
+    """
+    model = estimator.flash_ansr_model
+    if conditioned:
+        if X is None or y is None:
+            raise ValueError(f"{verb}() needs X and y unless conditioned=False.")
+        data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+        return data, attn_mask, None
+
+    if not getattr(model, "optional_condition", False):
+        raise CapabilityUnavailable(
+            f"{verb}(conditioned=False) needs a model trained with optional_condition=True "
+            f"(the learned null_memory); this checkpoint has no unconditioned mode.")
+    if X is None or y is None:
+        # Discarded by the null substitution -- shape is all that matters.
+        X = np.zeros((1, estimator.n_variables), dtype=np.float32)
+        y = np.zeros((1,), dtype=np.float32)
+    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    mask = torch.zeros(n_rows, dtype=torch.bool, device=model.device)
+    return data, attn_mask, mask
+
+
 def _sample_span(
         model: Any,
         state: tuple[torch.Tensor, torch.Tensor],
@@ -222,6 +252,7 @@ def _sample_span(
         span_end: int,
         temperature: float,
         generator: torch.Generator | None,
+        condition_mask: torch.Tensor | None = None,
 ) -> tuple[ValueDistribution, tuple[torch.Tensor, torch.Tensor]]:
     """Draw one ieee754 span for every row of ``state``, decoded in parallel.
 
@@ -240,7 +271,10 @@ def _sample_span(
     memory = None
     for _ in range(NIBBLES_PER_SPAN):
         if memory is None:
-            logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask)
+            # The mask applies on the FIRST pass only: forward substitutes null_memory into
+            # `model.memory` in place, so the cached memory below is already the routed one.
+            logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask,
+                           condition_mask=condition_mask)
             memory = model.memory
         else:
             logits = model(sequences, None, input_num=numerics, memory=memory,
@@ -354,10 +388,11 @@ def _normalize_expression(estimator: Any, expression: Sequence[str] | str) -> li
 
 def predict_constants(
         estimator: Any,
-        X: np.ndarray,
-        y: np.ndarray,
+        X: "np.ndarray | None",
+        y: "np.ndarray | None",
         expression: Sequence[str] | str,
         *,
+        conditioned: bool = True,
         n_samples: int = DEFAULT_SAMPLES,
         temperature: float = 1.0,
         seed: int | None = None) -> list[ValueDistribution]:
@@ -378,6 +413,9 @@ def predict_constants(
         The support set the constants should explain.
     expression : sequence of str or str
         Prefix tokens or an infix string, with ``'<constant>'`` marking each slot to fill.
+    conditioned : bool, optional
+        ``False`` selects the trained unconditioned mode -- the constants the model considers
+        typical for this SHAPE, with no data to fit, by default ``True``.
     n_samples : int, optional
         Draws, by default :data:`DEFAULT_SAMPLES`.
     temperature : float, optional
@@ -424,7 +462,8 @@ def predict_constants(
     body = tokenizer.encode(["<expression>", *tokens, "</expression>"], add_bos=False, add_eos=False)
     prefix_tokens = [bos, mask_all, *body, pc_start, span_start]
 
-    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    data, attn_mask, condition_mask = _conditioning(
+        estimator, X, y, conditioned=conditioned, n_rows=int(n_samples), verb="predict_constants")
     generator = _seeded_generator(model.device, seed)
 
     model.eval()
@@ -434,7 +473,8 @@ def predict_constants(
                              int(n_samples), model.device)
         for slot in range(n_slots):
             distribution, state = _sample_span(
-                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
+                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+                condition_mask=condition_mask)
             results.append(distribution)
             if slot < n_slots - 1:
                 state = _append(state, span_start)
@@ -444,30 +484,49 @@ def predict_constants(
 
 def predict_y(
         estimator: Any,
-        X: np.ndarray,
-        y: np.ndarray,
+        X: np.ndarray | None,
+        y: np.ndarray | None,
         x_query: np.ndarray,
         *,
+        expression: "Sequence[str] | str | None" = None,
+        conditioned: bool = True,
         n_samples: int = DEFAULT_SAMPLES,
         temperature: float = 1.0,
         seed: int | None = None) -> list[ValueDistribution]:
     """Predict the target at held-out points, from the model's ``<predict_y>`` block.
 
-    The trained circumstance, unconditional variant::
+    Training writes this block in two placements, and both are reachable here. Without an
+    expression the block sits in the PREFIX -- the model interpolates the point set it was given::
 
         <bos> <predict_y> <point> <float>...<float> </point> <ieee754> [8 nibbles of y*] </ieee754>
 
-    The query coordinates ride the NUMERIC channel exactly as training wrote them. No expression is
-    involved -- this is the model interpolating the point set it was given.
+    With one it sits in the SUFFIX, after the expression, so the expression is in scope::
+
+        <bos> <expression> ...tokens... </expression> <predict_y> <point> ... </point> <ieee754> ...
+
+    The query coordinates ride the NUMERIC channel exactly as training wrote them.
+
+    Combining ``expression`` with ``conditioned=False`` gives FUNCTION EVALUATION: the encoder
+    memory is replaced by the learned ``null_memory``, so the only thing the model can answer from
+    is the expression and the query point. Measured 2026-08-26: with the data present the
+    expression buys nothing (median normalized error 0.270 vs 0.277, paired p = 0.56), and
+    expression-only sat at the no-information floor -- but T16 was trained with the block WITHHELD
+    from unconditioned instances, so that floor measures an untrained circumstance, not a limit.
 
     Parameters
     ----------
     estimator : FlashANSR
         The loaded estimator.
-    X, y : array-like
-        The support set the model conditions on.
+    X, y : array-like or None
+        The support set the model conditions on. May be ``None`` only when ``conditioned=False``.
     x_query : array-like
         Query coordinates, ``(n_queries, n_variables)`` or a single ``(n_variables,)`` point.
+    expression : sequence of str or str, optional
+        Prefix tokens or an infix string. When given, the block is placed AFTER the expression --
+        the trained suffix circumstance. When omitted, the prefix circumstance.
+    conditioned : bool, optional
+        ``False`` selects the trained unconditioned mode (``null_memory`` replaces the encoder
+        memory), by default ``True``.
     n_samples : int, optional
         Draws per query point, by default :data:`DEFAULT_SAMPLES`.
     temperature : float, optional
@@ -483,9 +542,11 @@ def predict_y(
     Raises
     ------
     CapabilityUnavailable
-        If the checkpoint lacks the ``<predict_y>`` block.
+        If the checkpoint lacks the ``<predict_y>`` block, or ``conditioned=False`` on a model
+        without a ``null_memory``.
     ValueError
-        If a query point's dimensionality does not match ``X``.
+        If a query point's dimensionality does not match ``X``, or ``X``/``y`` are omitted while
+        ``conditioned=True``.
     """
     model = estimator.flash_ansr_model
     tokenizer = model.tokenizer
@@ -501,20 +562,37 @@ def predict_y(
     nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
 
     queries = np.atleast_2d(np.asarray(x_query, dtype=np.float64))
-    x_arr = np.atleast_2d(np.asarray(X, dtype=np.float64))
-    if queries.shape[-1] != x_arr.shape[-1]:
-        raise ValueError(
-            f"x_query has {queries.shape[-1]} coordinate(s) but X has {x_arr.shape[-1]} variable(s).")
+    if X is not None:
+        x_arr = np.atleast_2d(np.asarray(X, dtype=np.float64))
+        if queries.shape[-1] != x_arr.shape[-1]:
+            raise ValueError(
+                f"x_query has {queries.shape[-1]} coordinate(s) but X has "
+                f"{x_arr.shape[-1]} variable(s).")
 
-    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    body: list[int] = []
+    if expression is not None:
+        tokens = _normalize_expression(estimator, expression)
+        unknown = sorted({token for token in tokens if token not in tokenizer})
+        if unknown:
+            raise ValueError(
+                f"expression carries tokens this checkpoint's vocabulary lacks: {unknown}")
+        _require(tokenizer, "<expression>", "predict_y")
+        _require(tokenizer, "</expression>", "predict_y")
+        body = tokenizer.encode(["<expression>", *tokens, "</expression>"],
+                                add_bos=False, add_eos=False)
+
+    data, attn_mask, condition_mask = _conditioning(
+        estimator, X, y, conditioned=conditioned, n_rows=int(n_samples), verb="predict_y")
     generator = _seeded_generator(model.device, seed)
 
     model.eval()
     results: list[ValueDistribution] = []
     with torch.no_grad():
         for point in queries:
-            prefix_tokens = [bos, py_start, point_start]
-            prefix_numeric = [float("nan"), float("nan"), float("nan")]
+            prefix_tokens = [bos, *body, py_start, point_start]
+            # <bos> + body + <predict_y> + <point>: the numeric channel is NaN across all of it
+            # (a spelled constant rides its own ieee754 span, never this prefix).
+            prefix_numeric = [float("nan")] * len(prefix_tokens)
             for coordinate in point:
                 prefix_tokens.append(compact)
                 prefix_numeric.append(float(coordinate))
@@ -523,7 +601,8 @@ def predict_y(
 
             state = _start_state(prefix_tokens, prefix_numeric, int(n_samples), model.device)
             distribution, _ = _sample_span(
-                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
+                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+                condition_mask=condition_mask)
             results.append(distribution)
 
     return results
@@ -531,9 +610,10 @@ def predict_y(
 
 def predict_complexity(
         estimator: Any,
-        X: np.ndarray,
-        y: np.ndarray,
+        X: "np.ndarray | None",
+        y: "np.ndarray | None",
         *,
+        conditioned: bool = True,
         n_samples: int = DEFAULT_SAMPLES,
         temperature: float = 1.0,
         seed: int | None = None) -> ComplexityDistribution:
@@ -548,8 +628,12 @@ def predict_complexity(
     ----------
     estimator : FlashANSR
         The loaded estimator.
-    X, y : array-like
-        The support set to judge.
+    X, y : array-like or None
+        The support set to judge. May be ``None`` only when ``conditioned=False``.
+    conditioned : bool, optional
+        ``False`` selects the trained unconditioned mode -- the model's PRIOR over complexity with
+        no data to judge, which is the reference any conditioned reading should be compared
+        against, by default ``True``.
     n_samples : int, optional
         Draws, by default :data:`DEFAULT_SAMPLES`.
     temperature : float, optional
@@ -579,7 +663,8 @@ def predict_complexity(
     span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_complexity")
     nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
 
-    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    data, attn_mask, condition_mask = _conditioning(
+        estimator, X, y, conditioned=conditioned, n_rows=int(n_samples), verb="predict_complexity")
     generator = _seeded_generator(model.device, seed)
 
     model.eval()
@@ -587,12 +672,14 @@ def predict_complexity(
         state = _start_state([bos, hypothesize], [float("nan"), float("nan")],
                              int(n_samples), model.device)
         sequences, numerics = state
-        logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask)
+        logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask,
+                       condition_mask=condition_mask)
         self_initiated = float((logits[:, -1].argmax(dim=-1) == cx_start).float().mean().item())
 
         state = _append(_append(state, cx_start), span_start)
         distribution, _ = _sample_span(
-            model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
+            model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+            condition_mask=condition_mask)
 
     return ComplexityDistribution(
         draws=distribution.draws,

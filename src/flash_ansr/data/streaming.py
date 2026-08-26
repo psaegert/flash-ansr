@@ -480,9 +480,9 @@ def _producer_worker(
                     padding=padding,
                 )
 
-                # Drawn BEFORE the task blocks: a condition-dropout (unconditioned) instance
-                # gets no predict_y block -- predicting y* with a nulled memory is a nonsense
-                # task (ruled with the v24 task blocks). The worker rng is entropy-seeded, so
+                # Drawn BEFORE the task blocks: an unconditioned (condition-dropout) instance
+                # still gets a predict_y block, but pinned to the SUFFIX so the expression is in
+                # scope -- see the placement comment below. The worker rng is entropy-seeded, so
                 # moving this draw ahead of serialization changes no reproducibility contract.
                 condition_mask_value: bool | None = None
                 if unconditional_prob > 0.0:
@@ -707,7 +707,6 @@ def _producer_worker(
                             n_skipped_task_blocks += 1
 
                     if (predict_y_cfg is not None
-                            and condition_mask_value is not False
                             and x_support.shape[0] >= int(predict_y_cfg["min_n_support"])
                             and worker_rng.random() < float(predict_y_cfg["p_present"])):
                         n_dims = x_support.shape[1]
@@ -719,7 +718,19 @@ def _producer_worker(
                             j = int(worker_rng.integers(x_support.shape[0]))
                             point = x_support[j].astype(np.float64)
                             y_star = float(np.float32(y_support[j].reshape(-1)[0]))
-                            conditional = bool(worker_rng.random() < float(predict_y_cfg["p_conditional"]))
+                            # Placement decides WHAT the model may condition on:
+                            #   suffix (after </expression>) -> the data AND the expression;
+                            #   prefix (before <expression>) -> the data alone.
+                            # On an UNCONDITIONED instance the encoder memory is nulled, so the
+                            # suffix form becomes "evaluate this expression at x*" -- function
+                            # evaluation, a well-posed task that grounds the expression tokens
+                            # semantically. Only the PREFIX form would be ill-posed there (nulled
+                            # memory and no expression = nothing to condition on), so the block is
+                            # pinned to the suffix rather than dropped (owner ruling 2026-08-26,
+                            # overturning the earlier blanket exclusion).
+                            conditional = (
+                                True if condition_mask_value is False
+                                else bool(worker_rng.random() < float(predict_y_cfg["p_conditional"])))
                             x_support = np.delete(x_support, j, axis=0)
                             y_support = np.delete(y_support, j, axis=0)
                             y_encoder = np.delete(y_encoder, j, axis=0)
