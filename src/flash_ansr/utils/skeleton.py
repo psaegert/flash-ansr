@@ -99,6 +99,36 @@ def reset_non_finite_drops() -> None:
         _drops = 0
 
 
+_unencodable_lock = threading.Lock()
+_unencodable = 0
+
+
+def record_unencodable_drop() -> None:
+    """Count one candidate dropped because its SIMPLIFIED spelling could not be re-encoded.
+
+    simplipy's collect pass re-runs simplify after positional masking, so it can mint a bare
+    numeral (`pow x1 2`) that a v24 vocabulary -- which carries no numeral tokens -- cannot encode.
+    The candidate and its expression are both valid; only the spelling is unencodable. Counted for
+    the same reason non-finite drops are: a silent drop is a loss nobody can size.
+    """
+    global _unencodable
+    with _unencodable_lock:
+        _unencodable += 1
+
+
+def unencodable_drops() -> int:
+    """Number of candidates dropped as unencodable since the last reset."""
+    with _unencodable_lock:
+        return _unencodable
+
+
+def reset_unencodable_drops() -> None:
+    """Reset the unencodable drop count (per-run accounting)."""
+    global _unencodable
+    with _unencodable_lock:
+        _unencodable = 0
+
+
 def mask_all_literals(engine: "SimpliPyEngine", expression: list[str]) -> list[str]:
     """Mask every numeric literal in ``expression`` to ``<constant>``.
 

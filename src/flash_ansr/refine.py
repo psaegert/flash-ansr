@@ -593,22 +593,44 @@ class Refiner:
                 substituted = [str(v) for v in np.round(constants_values, precision).tolist()]
             constant_iter = iter(substituted)
 
-            for idx, token in enumerate(expression_tokens):
-                is_constant_token = (
-                    token == "<constant>"
-                    or token.startswith("C_")
-                    or token in self.constants_symbols
-                )
+            # Walk the SAME token list the fit was built from, position by position, instead of
+            # re-deciding here what a constant site looks like. identify_constants(
+            # convert_numbers_to_constant=True) turns plain numeric LITERALS into fitted degrees of
+            # freedom too, and the old test ('<constant>' / 'C_*' / in constants_symbols) did not
+            # recognise them: on ['+','*','2','x1','<constant>'] fitted to 7*x1 + 100 it skipped the
+            # '2', wrote C_0's value into C_1's slot and dropped the rest at the StopIteration --
+            # publishing 2*x1 + 7.0 for a function that had fitted EXACTLY as 7*x1 + 100.
+            fitted_sites = getattr(self, 'prefix_expression_with_constants', None) or []
+            if len(fitted_sites) == len(expression_tokens):
+                site_iter = zip(range(len(expression_tokens)), fitted_sites)
+            else:
+                # The caller passed a different expression than the one that was fitted (a legal use
+                # of transform). Fall back to the token test, which is right whenever no numeric
+                # literal was silently promoted to a constant.
+                site_iter = ((idx, token) for idx, token in enumerate(expression_tokens))
 
-                if not is_constant_token:
+            n_substituted = 0
+            for idx, site_token in site_iter:
+                is_constant_site = (
+                    site_token == "<constant>"
+                    or site_token.startswith("C_")
+                    or site_token in self.constants_symbols
+                )
+                if not is_constant_site:
                     continue
 
                 try:
                     value = next(constant_iter)
                 except StopIteration:
+                    # Fewer fitted values than sites: leave the remaining slots as the literal
+                    # '<constant>' placeholder. That IS the explicit marker -- an expression still
+                    # carrying '<constant>' cannot be mistaken for a finished one, so there is
+                    # nothing plausible-looking to guard against here. The defect this block fixes
+                    # was misALIGNMENT (a value written into the wrong slot), not truncation.
                     break
 
                 expression_tokens[idx] = value
+                n_substituted += 1
 
         expression_with_values = expression_tokens
 

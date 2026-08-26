@@ -46,7 +46,7 @@ from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig,
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
 from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS, replace_ieee754_spans_with_constants
-from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
+from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN, IEEE754_END_TOKEN, NIBBLE_TOKENS
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from flash_ansr.results import (
@@ -433,7 +433,7 @@ class FlashANSR(BaseEstimator):
         Apply constant-pruning refinement to the best beams after the initial
         refinement (ranked by FVU). If ``> 1`` treated as an absolute count; if
         ``0 < value <= 1`` treated as a fraction of beams (ceil). Set to 0 to
-        disable. Defaults to 16.
+        disable. Defaults to 0 (disabled): the pruning path does not run unless a budget is set, so ``Candidate.pruned_variant`` is False throughout.
     """
 
     FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
@@ -509,8 +509,23 @@ class FlashANSR(BaseEstimator):
         for i, seq in enumerate(full_sequences):
             input_tokens[i, :len(seq)] = torch.tensor(seq, device=device, dtype=torch.long)
 
+        # The numeric channel must be PRESENT, not None. A mixed-representation checkpoint was
+        # trained with input_num at full sequence length on every instance -- NaN at every
+        # non-payload position -- so the model added a learned constant vector there throughout.
+        # Passing None takes the `numeric_embeddings = None` branch and skips that addition at
+        # EVERY position, which scores a rescored candidate under a different model than the one
+        # that generated it. The prefix's own numeric payload (_base_num) was also being discarded.
+        input_num = None
+        if self.flash_ansr_model._has_numeric_channel():
+            input_num = torch.full((batch_size, max_len), float('nan'),
+                                   device=device, dtype=torch.float32)
+            if _base_num is not None:
+                prefix_numeric = torch.tensor(
+                    [float(value) for value in _base_num], device=device, dtype=torch.float32)
+                input_num[:, :prefix_numeric.shape[0]] = prefix_numeric
+
         with torch.no_grad():
-            logits = self.flash_ansr_model.forward(input_tokens=input_tokens, data=None, input_num=None, memory=memory)
+            logits = self.flash_ansr_model.forward(input_tokens=input_tokens, data=None, input_num=input_num, memory=memory)
             log_probs = torch.log_softmax(logits, dim=-1)
 
         # Sum from the first generated position (mirrors generation, which never scores the prompt prefix).
@@ -793,6 +808,10 @@ class FlashANSR(BaseEstimator):
         # forking a fresh pool per call; ``None`` keeps the legacy per-call-fork path (the default).
         self._refine_pool: RecoverableForkPool | None = None
 
+        # Load is the first moment both the generation config and the tokenizer are in hand, so a
+        # decoding option this vocabulary cannot serve is refused HERE, not after an encoder pass.
+        self._validate_generation_capability()
+
         # Set True by ``OverlappedEvaluationEngine`` for the duration of an overlapped run (inference-
         # speed Step 4). While True a GPU-owner thread runs generation concurrently with refinement, so
         # ``_fit_refine`` MUST keep all per-candidate work in forked pool workers (whose global-RNG
@@ -1034,6 +1053,27 @@ class FlashANSR(BaseEstimator):
         """Number of variables the model was trained on."""
         return self.flash_ansr_model.encoder_max_n_variables - 1
 
+    def _validate_generation_capability(self) -> None:
+        """Refuse a decoding option this checkpoint's vocabulary cannot serve, at LOAD time.
+
+        `BeamSearchConfig` already validates the compact/constrain/use_cache pairings at config
+        time, but nothing checked the vocabulary -- so `constrain_ieee754=True` on a v23 checkpoint
+        constructed happily, loaded happily, and failed inside `fit()` only after shape coercion,
+        the R1 scan, the prompt build and a full encoder forward. Load is the first moment both the
+        config and the tokenizer are in hand, so it is where this belongs (design principle 4).
+        """
+        config = getattr(self, 'generation_config', None)
+        if config is None:
+            return
+        wants_spans = bool(getattr(config, 'constrain_ieee754', False)
+                           or getattr(config, 'compact_ieee754', False))
+        if wants_spans and IEEE754_START_TOKEN not in self.tokenizer:
+            raise ValueError(
+                f"The generation config asks for ieee754-constrained decoding, but this "
+                f"checkpoint's vocabulary has no {IEEE754_START_TOKEN} token -- it is not a "
+                f"mixed-representation (v24) model. Drop constrain_ieee754/compact_ieee754, or "
+                f"load a v24 checkpoint.")
+
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         """Limit input features to the number of variables seen during training.
 
@@ -1203,6 +1243,7 @@ class FlashANSR(BaseEstimator):
             case 'beam_search':
                 beams, log_probs, completed, rewards = run_beam_search(
                     self.flash_ansr_model,
+                    memory=memory,
                     data=data,
                     verbose=verbose,
                     prompt_prefix=effective_prompt,
@@ -2286,19 +2327,16 @@ class FlashANSR(BaseEstimator):
         if not self._results:
             raise ConvergenceError("The optimization did not converge for any beam")
 
-        self.initial_length_penalty = getattr(self, 'length_penalty', 0.0)
-        self.initial_constants_penalty = getattr(self, 'constants_penalty', 0.0)
-        self.initial_likelihood_penalty = getattr(self, 'likelihood_penalty', 0.0)
-
-        if length_penalty is not None:
-            self.length_penalty = float(length_penalty)
-        if constants_penalty is not None:
-            self.constants_penalty = float(constants_penalty)
-        if likelihood_penalty is not None:
-            self.likelihood_penalty = float(likelihood_penalty)
+        # CALL-SCOPED overrides. These used to be written onto self, so a parsimony sweep
+        # (`for lp in (...): compile_results(length_penalty=lp)`) left the estimator permanently
+        # reconfigured at the last value swept, and every SUBSEQUENT fit() silently scored and
+        # ranked under it. Scoring parameters change ranking; they must not change by side effect.
+        effective_length = self.length_penalty if length_penalty is None else float(length_penalty)
+        effective_constants = self.constants_penalty if constants_penalty is None else float(constants_penalty)
+        effective_likelihood = self.likelihood_penalty if likelihood_penalty is None else float(likelihood_penalty)
 
         self._results, self.results = self._compile_results_pure(
-            self._results, self.length_penalty, self.constants_penalty, self.likelihood_penalty)
+            self._results, effective_length, effective_constants, effective_likelihood)
 
     def _compile_results_pure(
             self,
@@ -2752,9 +2790,18 @@ class FlashANSR(BaseEstimator):
         input_dim = int(metadata.get("input_dim", n_variables))
 
         self._input_dim = input_dim
-        self.length_penalty = length_penalty
-        self.constants_penalty = constants_penalty
-        self.likelihood_penalty = likelihood_penalty
+        # The file's penalties are USED to rescore the restored results, but they are not adopted:
+        # loading someone else's saved run must not silently reconfigure this estimator's scoring
+        # for every subsequent fit(). Warn when they differ so the difference is visible.
+        for name, restored_value in (("length_penalty", length_penalty),
+                                     ("constants_penalty", constants_penalty),
+                                     ("likelihood_penalty", likelihood_penalty)):
+            current = float(getattr(self, name, 0.0))
+            if restored_value != current:
+                warnings.warn(
+                    f"The loaded results were scored with {name}={restored_value} but this "
+                    f"estimator uses {name}={current}. The restored table keeps the file's value; "
+                    f"the estimator is unchanged.", RuntimeWarning, stacklevel=2)
         self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
 
         restored = deserialize_results_payload(

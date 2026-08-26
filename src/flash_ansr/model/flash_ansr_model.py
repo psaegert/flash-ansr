@@ -12,7 +12,8 @@ from simplipy import SimpliPyEngine
 
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
+from flash_ansr.utils.skeleton import (
+    NonFiniteExpressionError, record_non_finite_drop, record_unencodable_drop, simplify_and_mask)
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -778,6 +779,7 @@ class FlashANSRModel(nn.Module):
         input_num: list[float] | None = None,
         constrain_ieee754: bool = False,
         compact_ieee754: bool = False,
+        memory: torch.Tensor | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool]]:
         """Decode candidate expressions from ``data`` with beam search.
 
@@ -862,7 +864,12 @@ class FlashANSRModel(nn.Module):
         if prefix_length >= max_len:
             raise ValueError(f"Initial token prefix length ({prefix_length}) exceeds max_len ({max_len}).")
 
-        memory = self._create_memory(data)
+        # Reuse a caller-supplied encoder memory when there is one. `generate()` documents
+        # `memory=` and `_fit_generate` computes it once for scoring, but the beam-search arm
+        # never forwarded it, so every BeamSearchConfig fit ran the encoder TWICE (measured:
+        # 2 _create_memory calls for beam search against 1 for sampling).
+        if memory is None:
+            memory = self._create_memory(data)
 
         eos_token_id = self.tokenizer['<eos>']
         pad_token_id = self.tokenizer['<pad>']
@@ -2141,6 +2148,12 @@ class FlashANSRModel(nn.Module):
                     try:
                         expression_tokens = self.tokenizer.encode(expression)
                     except KeyError:
+                        # simplipy's collect pass re-runs simplify AFTER positional masking, so it
+                        # can mint a bare numeral (`pow x1 2`) that a v24 vocabulary -- which has no
+                        # numeral tokens -- cannot encode. The candidate is real and its expression
+                        # is valid; only its SIMPLIFIED spelling is unencodable. Counted rather than
+                        # dropped in silence, so the loss is a number someone can look at.
+                        record_unencodable_drop()
                         continue
 
                     reconstructed_sequence = before + expression_tokens + after
