@@ -283,10 +283,7 @@ def test_serialize_prompt_prefix(
         catalog=catalog,
     )
 
-    serialized = preprocessor.serialize_prompt_prefix(
-        complexity=5,
-        allowed_terms=[['+', 'x1']],
-    )
+    serialized = preprocessor.serialize_prompt_prefix(complexity=5)
 
     # This fixture is a v24 vocabulary (it carries <ieee754>), and v24 training emitted the
     # complexity block BARE -- `<complexity> <float> </complexity>` as a prefix element, never
@@ -311,10 +308,9 @@ def test_serialize_prompt_prefix(
     assert all(mask[i] is True for i in range(1, len(tokens) - 1))
     assert mask[-1] is False  # <expression>
 
-    metadata = serialized['prompt_metadata']
-    assert metadata['allowed_terms'] == [['+', 'x1']]
-    assert metadata['include_terms'] == []
-    assert metadata['exclude_terms'] == []
+    # The term collections are gone with v23 support: documented as constraining generation,
+    # emitting tokens no v24 checkpoint saw, enforced nowhere at decode time.
+    assert serialized['prompt_metadata'] == {}
 
 
 def test_serialize_prompt_prefix_without_prompt_tokens(
@@ -341,30 +337,18 @@ def test_serialize_prompt_prefix_without_prompt_tokens(
         catalog=catalog,
     )
 
-    serialized = preprocessor.serialize_prompt_prefix(
-        complexity=5,
-        allowed_terms=[['+', 'x1']],
-    )
+    serialized = preprocessor.serialize_prompt_prefix(complexity=5)
 
     tokens = [tokenizer[idx] for idx in serialized['input_ids']]
     assert tokens == ['<bos>', '<expression>']
 
     assert all(flag is False for flag in serialized['prompt_mask'])
     assert serialized['prompt_disabled'] is True
-    assert set(serialized['missing_tokens']) == {
-        '<prompt>',
-        '</prompt>',
-        '<complexity>',
-        '<float>',
-        '</complexity>',
-        '<allowed_term>',
-        '</allowed_term>',
-    }
+    # A vocabulary without the complexity trio simply gets no block; the <prompt> wrapper is
+    # no longer part of the contract, so it is not reported missing either.
+    assert serialized['missing_tokens'] == []
 
-    metadata = serialized['prompt_metadata']
-    assert metadata['allowed_terms'] == [['+', 'x1']]
-    assert metadata['include_terms'] == []
-    assert metadata['exclude_terms'] == []
+    assert serialized['prompt_metadata'] == {}
 
 
 def test_is_section_enabled_probability_distribution(

@@ -105,161 +105,46 @@ class PromptSerializer:
             },
         }
 
-    def serialize_prompt_prefix(
-        self,
-        *,
-        complexity: float | int | None = None,
-        allowed_terms: Iterable[Sequence[Any]] | None = None,
-        include_terms: Iterable[Sequence[Any]] | None = None,
-        exclude_terms: Iterable[Sequence[Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Serialize a decoding prompt prefix (prompt block plus the opening ``<expression>``).
+    def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
+        """Serialize a decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
 
-        Builds the prefix used to condition generation: ``<bos>``, an optional ``<prompt>`` block
-        (emitted only when there is prompt content and all required prompt tokens exist in the
-        vocabulary), and a trailing ``<expression>`` opener. Missing vocabulary tokens are reported
-        rather than raised, and the prompt block is skipped when any of its tokens are absent.
+        v24 training emitted the complexity block BARE, as a prefix element -- ``<complexity>``,
+        ``<float>`` carrying mu on the numeric channel, ``</complexity>`` -- never inside a
+        ``<prompt>`` wrapper. The wrapper, and the allowed/include/exclude term sections it carried,
+        are gone with v23 support: the terms were documented as constraining generation but emitted
+        tokens no v24 checkpoint saw and were enforced nowhere at decode time.
 
         Parameters
         ----------
         complexity : float or int, optional
-            Target expression complexity to encode, or ``None`` to omit it.
-        allowed_terms : Iterable[Sequence[Any]], optional
-            Allowed-term token sequences, or ``None``.
-        include_terms : Iterable[Sequence[Any]], optional
-            Required-term token sequences, or ``None``.
-        exclude_terms : Iterable[Sequence[Any]], optional
-            Forbidden-term token sequences, or ``None``.
+            Target complexity in **simplipy mu** (roughly 1e3-1e6, NOT a token count), or ``None``
+            to omit the block.
 
         Returns
         -------
         dict[str, Any]
-            A dict with ``input_ids``, ``input_num``, ``prompt_mask``, ``prompt_metadata``,
-            ``prompt_disabled`` (True when the prompt block was omitted) and ``missing_tokens``.
+            ``input_ids``, ``input_num``, ``prompt_mask``, ``prompt_metadata``, ``prompt_disabled``
+            and ``missing_tokens``.
 
         Raises
         ------
         KeyError
-            If a token that is emitted into ``input_ids`` is missing from the tokenizer vocabulary.
-        TypeError
-            If a term collection is passed as a raw string rather than a sequence of tokens.
+            If a token emitted into ``input_ids`` is missing from the tokenizer vocabulary.
         """
         tokens: list[str] = ["<bos>"]
         numeric_values: list[float] = [np.nan]
         prompt_mask: list[bool] = [False]
 
-        normalized_allowed = self._normalize_prompt_terms_collection(allowed_terms)
-        normalized_include = self._normalize_prompt_terms_collection(include_terms)
-        normalized_exclude = self._normalize_prompt_terms_collection(exclude_terms)
+        emit_complexity = complexity is not None and all(
+            token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>"))
+        if emit_complexity:
+            tokens.extend(["<complexity>", "<float>", "</complexity>"])
+            numeric_values.extend([np.nan, float(complexity), np.nan])
+            prompt_mask.extend([True, True, True])
 
-        metadata = {
-            "allowed_terms": normalized_allowed,
-            "include_terms": normalized_include,
-            "exclude_terms": normalized_exclude,
-        }
-
-        has_prompt_content = (
-            complexity is not None
-            or bool(normalized_allowed)
-            or bool(normalized_include)
-            or bool(normalized_exclude)
-        )
-
-        # v24 task-block checkpoints were trained with the complexity block as a BARE prefix
-        # element -- `<complexity> <float> </complexity>`, mu on the numeric channel -- and never
-        # inside a `<prompt>` wrapper. Emitting the v23 wrapper here spends two token ids that carry
-        # zero training signal for this checkpoint and measurably weakens the conditioning (~32%).
-        # `<ieee754>` is the marker: only the mixed-representation vocabularies carry it.
-        v24_task_blocks = IEEE754_START_TOKEN in self.tokenizer
-
-        if v24_task_blocks:
-            if complexity is not None and all(
-                    token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>")):
-                tokens.extend(["<complexity>", "<float>", "</complexity>"])
-                numeric_values.extend([np.nan, float(complexity), np.nan])
-                prompt_mask.extend([True, True, True])
-                emit_prompt = True
-            else:
-                emit_prompt = False
-
-            missing_tokens: list[str] = []
-            if "<bos>" not in self.tokenizer:
-                missing_tokens.append("<bos>")
-            if "<expression>" in self.tokenizer:
-                tokens.append("<expression>")
-                numeric_values.append(np.nan)
-                prompt_mask.append(False)
-            else:
-                missing_tokens.append("<expression>")
-
-            try:
-                input_ids = [self.tokenizer[token] for token in tokens]
-            except KeyError as exc:
-                raise KeyError(
-                    f"Token '{exc.args[0]}' missing from tokenizer vocabulary while serializing "
-                    f"prompt prefix.") from exc
-
-            return {
-                "input_ids": input_ids,
-                "input_num": numeric_values,
-                "prompt_mask": prompt_mask,
-                "prompt_metadata": metadata,
-                "prompt_disabled": not emit_prompt,
-                "missing_tokens": missing_tokens,
-            }
-
-        # --- v23 path below, unchanged: those checkpoints WERE trained with the wrapper. ---
-        required_prompt_tokens: set[str] = set()
-        if has_prompt_content:
-            required_prompt_tokens.update({"<prompt>", "</prompt>"})
-            if complexity is not None:
-                required_prompt_tokens.update({"<complexity>", "<float>", "</complexity>"})
-            if normalized_allowed:
-                required_prompt_tokens.update({"<allowed_term>", "</allowed_term>"})
-            if normalized_include:
-                required_prompt_tokens.update({"<include_term>", "</include_term>"})
-            if normalized_exclude:
-                required_prompt_tokens.update({"<exclude_term>", "</exclude_term>"})
-
-        missing_prompt_tokens = [token for token in required_prompt_tokens if token not in self.tokenizer]
-        emit_prompt = has_prompt_content and not missing_prompt_tokens
-
-        if emit_prompt:
-            tokens.append("<prompt>")
-            numeric_values.append(np.nan)
-            prompt_mask.append(True)
-
-            if complexity is not None:
-                tokens.extend(["<complexity>", "<float>", "</complexity>"])
-                numeric_values.extend([np.nan, float(complexity), np.nan])
-                prompt_mask.extend([True, True, True])
-
-            for section_token, terms in (
-                ("allowed_term", normalized_allowed),
-                ("include_term", normalized_include),
-                ("exclude_term", normalized_exclude),
-            ):
-                for term in terms:
-                    tokens.append(f"<{section_token}>")
-                    numeric_values.append(np.nan)
-                    prompt_mask.append(True)
-                    for token in term:
-                        tokens.append(token)
-                        numeric_values.append(np.nan)
-                        prompt_mask.append(True)
-                    tokens.append(f"</{section_token}>")
-                    numeric_values.append(np.nan)
-                    prompt_mask.append(True)
-
-            tokens.append("</prompt>")
-            numeric_values.append(np.nan)
-            prompt_mask.append(True)
-
-        missing_tokens: list[str] = list(missing_prompt_tokens)
-
+        missing_tokens: list[str] = []
         if "<bos>" not in self.tokenizer:
             missing_tokens.append("<bos>")
-
         if "<expression>" in self.tokenizer:
             tokens.append("<expression>")
             numeric_values.append(np.nan)
@@ -271,19 +156,18 @@ class PromptSerializer:
             input_ids = [self.tokenizer[token] for token in tokens]
         except KeyError as exc:
             raise KeyError(
-                f"Token '{exc.args[0]}' missing from tokenizer vocabulary while serializing prompt prefix."
-            ) from exc
+                f"Token '{exc.args[0]}' missing from tokenizer vocabulary while serializing "
+                f"prompt prefix.") from exc
 
         return {
             "input_ids": input_ids,
             "input_num": numeric_values,
             "prompt_mask": prompt_mask,
-            "prompt_metadata": metadata,
-            "prompt_disabled": not emit_prompt,
+            "prompt_metadata": {},
+            "prompt_disabled": not emit_complexity,
             "missing_tokens": missing_tokens,
         }
 
-    @staticmethod
     def _normalize_prompt_terms_collection(terms: Iterable[Sequence[Any]] | None) -> list[list[str]]:
         if not terms:
             return []
@@ -389,10 +273,7 @@ def apply_emission_flag(prefix: PromptPrefix, emission: str, tokenizer: Any) -> 
 def prepare_prompt_prefix(
         preprocessor: PromptSerializer | None,
         *,
-        complexity: int | float | None,
-        allowed_terms: Iterable[Sequence[Any]] | None = None,
-        include_terms: Iterable[Sequence[Any]] | None = None,
-        exclude_terms: Iterable[Sequence[Any]] | None = None) -> PromptPrefix | None:
+        complexity: int | float | None) -> PromptPrefix | None:
     """Serialize prompt metadata into tokens usable by the transformer.
 
     The three term collections are WITHDRAWN from the public inference surface: they were
@@ -403,12 +284,7 @@ def prepare_prompt_prefix(
     if preprocessor is None:
         return None
 
-    serialized = preprocessor.serialize_prompt_prefix(
-        complexity=complexity,
-        allowed_terms=allowed_terms,
-        include_terms=include_terms,
-        exclude_terms=exclude_terms,
-    )
+    serialized = preprocessor.serialize_prompt_prefix(complexity=complexity)
 
     tokens = list(serialized["input_ids"])
     numeric = [float(value) for value in serialized["input_num"]]

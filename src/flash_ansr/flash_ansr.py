@@ -810,7 +810,7 @@ class FlashANSR(BaseEstimator):
 
         # Load is the first moment both the generation config and the tokenizer are in hand, so a
         # decoding option this vocabulary cannot serve is refused HERE, not after an encoder pass.
-        self._validate_generation_capability()
+        self._validate_checkpoint()
 
         # Set True by ``OverlappedEvaluationEngine`` for the duration of an overlapped run (inference-
         # speed Step 4). While True a GPU-owner thread runs generation concurrently with refinement, so
@@ -1053,8 +1053,8 @@ class FlashANSR(BaseEstimator):
         """Number of variables the model was trained on."""
         return self.flash_ansr_model.encoder_max_n_variables - 1
 
-    def _validate_generation_capability(self) -> None:
-        """Refuse a decoding option this checkpoint's vocabulary cannot serve, at LOAD time.
+    def _validate_checkpoint(self) -> None:
+        """Refuse a checkpoint this harness does not serve, at LOAD time.
 
         `BeamSearchConfig` already validates the compact/constrain/use_cache pairings at config
         time, but nothing checked the vocabulary -- so `constrain_ieee754=True` on a v23 checkpoint
@@ -1062,17 +1062,16 @@ class FlashANSR(BaseEstimator):
         the R1 scan, the prompt build and a full encoder forward. Load is the first moment both the
         config and the tokenizer are in hand, so it is where this belongs (design principle 4).
         """
-        config = getattr(self, 'generation_config', None)
-        if config is None:
-            return
-        wants_spans = bool(getattr(config, 'constrain_ieee754', False)
-                           or getattr(config, 'compact_ieee754', False))
-        if wants_spans and IEEE754_START_TOKEN not in self.tokenizer:
+        # CLEAN CUT: this harness serves v24 checkpoints only. v23 support meant a second code
+        # path in the prompt serializer, the span mapper and the numeric channel, each carrying
+        # assumptions that leaked into the v24 path -- the span-drop bug (514810f) and the
+        # <prompt>-wrapper mis-emission (8dd418f) were both v23 assumptions surviving where they no
+        # longer applied. A vocabulary without <ieee754> is not a model this code can serve.
+        if IEEE754_START_TOKEN not in self.tokenizer:
             raise ValueError(
-                f"The generation config asks for ieee754-constrained decoding, but this "
-                f"checkpoint's vocabulary has no {IEEE754_START_TOKEN} token -- it is not a "
-                f"mixed-representation (v24) model. Drop constrain_ieee754/compact_ieee754, or "
-                f"load a v24 checkpoint.")
+                f"This checkpoint's vocabulary has no {IEEE754_START_TOKEN} token, so it is not a "
+                f"v24 (mixed-representation) model. flash-ansr serves v24+ only; use a 0.14.x "
+                f"release to run a v23 checkpoint.")
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         """Limit input features to the number of variables seen during training.

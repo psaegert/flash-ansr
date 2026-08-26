@@ -202,42 +202,20 @@ class FlashANSRPreprocessor:
 
         return batch
 
-    def serialize_prompt_prefix(
-        self,
-        *,
-        complexity: float | int | None = None,
-        allowed_terms: Iterable[Sequence[Any]] | None = None,
-        include_terms: Iterable[Sequence[Any]] | None = None,
-        exclude_terms: Iterable[Sequence[Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Serialize an explicit prompt prefix constraining generation.
-
-        Builds the token prefix (starting from ``<bos>``) that encodes the requested constraints,
-        emitting the ``<prompt>`` block only when the tokenizer defines the needed special tokens.
+    def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
+        """Serialize the decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
 
         Parameters
         ----------
         complexity : float or int, optional
-            Target expression complexity to encode in the prompt.
-        allowed_terms : iterable of sequences, optional
-            Terms the generated expression is restricted to.
-        include_terms : iterable of sequences, optional
-            Terms that must appear in the generated expression.
-        exclude_terms : iterable of sequences, optional
-            Terms that must not appear in the generated expression.
+            Target complexity in **simplipy mu** (roughly 1e3-1e6, NOT a token count), or ``None``.
 
         Returns
         -------
         dict[str, Any]
-            The serialized prefix with ``input_ids``, ``input_num``, ``prompt_mask`` and
-            ``prompt_metadata`` entries.
+            As :meth:`PromptSerializer.serialize_prompt_prefix`.
         """
-        return self._serializer.serialize_prompt_prefix(
-            complexity=complexity,
-            allowed_terms=allowed_terms,
-            include_terms=include_terms,
-            exclude_terms=exclude_terms,
-        )
+        return self._serializer.serialize_prompt_prefix(complexity=complexity)
 
     def _format_single(self, instance: dict[str, Any]) -> dict[str, Any]:
         if self._prompt_enabled and self._feature_extractor is not None and self._should_include("prompt"):
