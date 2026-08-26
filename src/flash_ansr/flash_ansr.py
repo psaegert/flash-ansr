@@ -38,8 +38,8 @@ from flash_ansr.preprocessing import (
     CapabilityUnavailable, EMISSION_FLAGS, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.tasks import (
-    ComplexityPrediction, ConstantPrediction, predict_complexity, predict_constants,
-    predict_y, score_outliers)
+    DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
+    predict_constants, predict_y, score_outliers)
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -2485,7 +2485,9 @@ class FlashANSR(BaseEstimator):
         """
         return score_outliers(self, X, y)
 
-    def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str) -> ConstantPrediction:
+    def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
+                          n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                          seed: int | None = None) -> list[ValueDistribution]:
         """Fill the ``'<constant>'`` slots of ``expression`` with the model's own predictions.
 
         The trained ``<predict_constants>`` block: the harness force-feeds the block openers and the
@@ -2503,9 +2505,10 @@ class FlashANSR(BaseEstimator):
 
         Returns
         -------
-        ConstantPrediction
-            ``.values`` in slot order, plus per-slot nibble log-probabilities, whether the model
-            chose to close each span, and a count of steps that would have left the nibble alphabet.
+        list[ValueDistribution]
+            One DISTRIBUTION per slot, in slot order -- not a float. Every nibble is a softmax
+            sample, so a single decode is a single draw; quote ``.median`` with ``.q05``/``.q95``,
+            and read ``.agreement`` to see whether any single number represents the draws at all.
 
         Raises
         ------
@@ -2525,9 +2528,12 @@ class FlashANSR(BaseEstimator):
         --------
         fit : refines constants numerically; this verb predicts them directly.
         """
-        return predict_constants(self, X, y, expression)
+        return predict_constants(self, X, y, expression, n_samples=n_samples,
+                                 temperature=temperature, seed=seed)
 
-    def predict_y(self, X: Any, y: Any, x_query: Any) -> np.ndarray:
+    def predict_y(self, X: Any, y: Any, x_query: Any, *,
+                  n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                  seed: int | None = None) -> list[ValueDistribution]:
         """Predict the target at held-out points using the trained ``<predict_y>`` block.
 
         No expression is involved: the model interpolates the point set it was given. The query
@@ -2544,8 +2550,8 @@ class FlashANSR(BaseEstimator):
 
         Returns
         -------
-        np.ndarray
-            Shape ``(n_queries,)``.
+        list[ValueDistribution]
+            One distribution per query point. A decode is a draw, not the model's answer.
 
         Raises
         ------
@@ -2558,9 +2564,12 @@ class FlashANSR(BaseEstimator):
         --------
         predict : evaluates a FITTED expression; this verb never forms one.
         """
-        return predict_y(self, X, y, x_query)
+        return predict_y(self, X, y, x_query, n_samples=n_samples,
+                         temperature=temperature, seed=seed)
 
-    def predict_complexity(self, X: Any, y: Any) -> ComplexityPrediction:
+    def predict_complexity(self, X: Any, y: Any, *,
+                           n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                           seed: int | None = None) -> ComplexityDistribution:
         """Ask the model how complex it thinks the generating expression is.
 
         Uses the trained hypothesis circumstance: the harness utters ``<hypothesize>`` and
@@ -2575,17 +2584,18 @@ class FlashANSR(BaseEstimator):
 
         Returns
         -------
-        ComplexityPrediction
-            ``.mu`` in simplipy complexity units -- the same quantity ``fit(complexity=...)``
-            consumes, NOT a token count. ``.self_initiated`` reports whether the model would have
-            opened the block unprompted.
+        ComplexityDistribution
+            Draws in simplipy complexity units -- the unit ``fit(complexity=...)`` consumes, NOT a
+            token count. ``.self_initiated_fraction`` reports how often the model would have opened
+            the block unprompted.
 
         Raises
         ------
         CapabilityUnavailable
             If this checkpoint lacks the ``<hypothesize>`` or ``<complexity>`` tokens.
         """
-        return predict_complexity(self, X, y)
+        return predict_complexity(self, X, y, n_samples=n_samples,
+                                  temperature=temperature, seed=seed)
 
     def _skeleton_mu(self, skeleton: Sequence[str] | None) -> float | None:
         """simplipy complexity of a skeleton, or None when the engine cannot price it.

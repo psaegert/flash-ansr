@@ -9,8 +9,10 @@ import torch
 
 from flash_ansr.preprocessing import CapabilityUnavailable
 from flash_ansr.tasks import (
+    DEFAULT_SAMPLES,
     NIBBLES_PER_SPAN,
-    ConstantPrediction,
+    ComplexityDistribution,
+    ValueDistribution,
     _encoder_batch,
     _normalize_expression,
     _require,
@@ -81,32 +83,59 @@ class TestEncoderBatch:
             _encoder_batch(np.zeros((8, 1)), y, 1, "cpu")
 
 
-class TestConstantPrediction:
-    def test_defaults_are_empty_not_none(self) -> None:
-        pred = ConstantPrediction()
-        assert pred.values == [] and pred.nibble_logprobs == []
-        assert pred.closed_cleanly == [] and pred.off_grammar_steps == 0
+class TestValueDistribution:
+    """A predicted value is a DISTRIBUTION: every nibble is a softmax draw."""
 
-    def test_a_float32_is_exactly_eight_nibbles(self) -> None:
-        assert NIBBLES_PER_SPAN == 8
+    def test_default_sample_count_is_not_one(self) -> None:
+        # The whole point: one decode is one sample, so no verb may default to a single draw.
+        assert DEFAULT_SAMPLES > 1
+
+    def test_summaries_over_finite_draws(self) -> None:
+        d = ValueDistribution(draws=[1.0, 2.0, 3.0, 4.0, 5.0])
+        assert d.n == 5
+        assert d.median == 3.0
+        assert d.q05 < d.median < d.q95
+
+    def test_non_finite_draws_are_counted_not_quantiled(self) -> None:
+        # A nibble pattern can decode to nan/inf. Those are real outcomes of the distribution, but
+        # they cannot enter a quantile without destroying it.
+        d = ValueDistribution(draws=[1.0, float("nan"), 3.0, float("inf")])
+        assert d.finite_draws == [1.0, 3.0]
+        assert d.non_finite_fraction == pytest.approx(0.5)
+        assert d.median == 2.0
+
+    def test_mode_and_agreement_describe_concentration(self) -> None:
+        d = ValueDistribution(draws=[2.0, 2.0, 2.0, 5.0])
+        assert d.mode == 2.0
+        assert d.agreement == pytest.approx(0.75)
+
+    def test_scattered_draws_have_low_agreement(self) -> None:
+        d = ValueDistribution(draws=[1.0, 2.0, 3.0, 4.0])
+        assert d.agreement == pytest.approx(0.25)
+
+    def test_all_non_finite_is_not_a_crash(self) -> None:
+        d = ValueDistribution(draws=[float("nan"), float("inf")])
+        assert np.isnan(d.median) and np.isnan(d.q05) and d.agreement == 0.0
+
+    def test_empty_distribution(self) -> None:
+        d = ValueDistribution()
+        assert d.n == 0 and np.isnan(d.median) and d.non_finite_fraction == 0.0
+
+    def test_complexity_carries_the_hypothesis_diagnostic(self) -> None:
+        d = ComplexityDistribution(draws=[146000.0, 150000.0], self_initiated_fraction=1.0)
+        assert d.median == pytest.approx(148000.0)
+        assert d.self_initiated_fraction == 1.0
+
+    def test_repr_summarises_rather_than_dumping_draws(self) -> None:
+        assert "median" in repr(ValueDistribution(draws=[1.0, 2.0]))
 
 
-class TestComplexityPrediction:
+class TestComplexityUnit:
     def test_mu_is_a_simplipy_unit_not_a_token_count(self) -> None:
         # The unit confusion the audit filed four findings against: mu runs 1e3-1e6, a token count
-        # runs ~1e1. A prediction shaped like a token count would mean the block is being misread.
-        from flash_ansr.tasks import ComplexityPrediction
-        pred = ComplexityPrediction(mu=342000.0)
-        assert pred.mu > 1e3
-        assert pred.nibble_logprobs == []
-        assert pred.self_initiated is False and pred.closed_cleanly is False
-
-    def test_diagnostics_are_carried(self) -> None:
-        from flash_ansr.tasks import ComplexityPrediction
-        pred = ComplexityPrediction(mu=1.0, nibble_logprobs=[-0.1] * 8,
-                                    self_initiated=True, closed_cleanly=True)
-        assert len(pred.nibble_logprobs) == NIBBLES_PER_SPAN
-        assert pred.self_initiated is True
+        # runs ~1e1. Draws shaped like a token count would mean the block is being misread.
+        d = ComplexityDistribution(draws=[234500.0, 76000.0, 454500.0])
+        assert d.median > 1e3
 
 
 class TestCandidateCarriesBothConstantSets:

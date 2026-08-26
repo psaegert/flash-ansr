@@ -6,6 +6,13 @@ data pipeline emitted during training -- the harness owns openers and flags, the
 nibbles and closing tags -- because a prompt that drifts from the training grammar produces
 confident, plausible, wrong output rather than an error.
 
+**Every value here is a DISTRIBUTION, never a float.** A value is spelled as eight hex nibbles and
+each nibble is drawn from a softmax, so one decode is one sample from a factorised distribution
+over values. Greedy decoding returns that distribution's mode, which is neither its centre nor any
+indication of its width -- and the width matters enormously here, because the leading nibbles carry
+the exponent, so a single flipped nibble moves the value by orders of magnitude. Conclusions drawn
+from a single decode are conclusions drawn from one sample.
+
 Scope note: srbf benchmarks the traditional SR task only. These verbs are driven by custom scripts,
 not by the benchmark driver.
 """
@@ -42,33 +49,111 @@ from flash_ansr.utils.tensor_ops import pad_input_set
 #: A float32 significand is 8 hex nibbles; the span is always exactly this long.
 NIBBLES_PER_SPAN = 8
 
+#: Draws taken by default whenever a verb reads a value out of the model. NOT 1: a single decode is
+#: one sample, and a sample quoted as an answer is how a wide belief gets reported as a point.
+DEFAULT_SAMPLES = 32
+
 _VARIABLE_ALIAS = re.compile(r"^v(\d+)$")
 
 
 @dataclass
-class ConstantPrediction:
-    """What :meth:`FlashANSR.predict_constants` returns.
+class ValueDistribution:
+    """Draws of one predicted value, plus the summaries that may legitimately be quoted from them.
 
     Attributes
     ----------
-    values : list[float]
-        The model's constants, in SLOT ORDER (order of appearance in the expression), as float32
-        values widened to Python floats.
-    nibble_logprobs : list[list[float]]
-        Per slot, the log-probability the model assigned to each nibble it emitted. Low values flag
-        a slot the model was unsure about -- the closest thing to a confidence the format affords.
-    closed_cleanly : list[bool]
-        Per slot, whether the model itself chose to close the span after 8 nibbles. ``False`` means
-        the grammar had to close it, i.e. the emission was drifting.
+    draws : list[float]
+        Every sampled value, in draw order.
     off_grammar_steps : int
-        How many decode steps would have left the nibble alphabet had the grammar not restricted
-        them. Non-zero means the prompt is out of distribution for this checkpoint.
+        Decode steps whose unrestricted argmax would have left the nibble alphabet, summed over
+        draws. Non-zero means the prompt is out of distribution for this checkpoint.
+    closed_cleanly_fraction : float
+        Fraction of draws where the model itself chose to close the span after 8 nibbles.
     """
 
-    values: list[float] = field(default_factory=list)
-    nibble_logprobs: list[list[float]] = field(default_factory=list)
-    closed_cleanly: list[bool] = field(default_factory=list)
+    draws: list[float] = field(default_factory=list)
     off_grammar_steps: int = 0
+    closed_cleanly_fraction: float = 0.0
+
+    @property
+    def n(self) -> int:
+        """Number of draws taken."""
+        return len(self.draws)
+
+    @property
+    def finite_draws(self) -> list[float]:
+        """Draws that are finite.
+
+        A nibble pattern can decode to nan or inf. Those are genuine outcomes of the model's
+        distribution -- ``non_finite_fraction`` reports how often -- but they cannot enter a
+        quantile, so the summaries below are taken over the finite draws only.
+        """
+        return [value for value in self.draws if np.isfinite(value)]
+
+    @property
+    def non_finite_fraction(self) -> float:
+        """Fraction of draws that decoded to nan or inf."""
+        if not self.draws:
+            return 0.0
+        return 1.0 - len(self.finite_draws) / len(self.draws)
+
+    @property
+    def median(self) -> float:
+        """Median of the finite draws -- the point summary to quote, if one must be."""
+        finite = self.finite_draws
+        return float(np.median(finite)) if finite else float("nan")
+
+    @property
+    def q05(self) -> float:
+        """5th percentile of the finite draws."""
+        finite = self.finite_draws
+        return float(np.quantile(finite, 0.05)) if finite else float("nan")
+
+    @property
+    def q95(self) -> float:
+        """95th percentile of the finite draws."""
+        finite = self.finite_draws
+        return float(np.quantile(finite, 0.95)) if finite else float("nan")
+
+    @property
+    def mode(self) -> float:
+        """The most frequently drawn exact value (what greedy decoding approximates)."""
+        finite = self.finite_draws
+        if not finite:
+            return float("nan")
+        values, counts = np.unique(np.asarray(finite), return_counts=True)
+        return float(values[int(np.argmax(counts))])
+
+    @property
+    def agreement(self) -> float:
+        """Fraction of finite draws equal to :attr:`mode` -- how concentrated the belief is.
+
+        Near 1.0 the model is effectively certain and the mode is a fair summary; near 0 the draws
+        disagree and no single number represents them.
+        """
+        finite = self.finite_draws
+        if not finite:
+            return 0.0
+        mode = self.mode
+        return float(sum(1 for value in finite if value == mode) / len(finite))
+
+    def __repr__(self) -> str:
+        return (f"ValueDistribution(n={self.n}, median={self.median:.6g}, "
+                f"q05={self.q05:.6g}, q95={self.q95:.6g}, agreement={self.agreement:.2f})")
+
+
+@dataclass
+class ComplexityDistribution(ValueDistribution):
+    """A :class:`ValueDistribution` over complexity, with the hypothesis diagnostic.
+
+    Attributes
+    ----------
+    self_initiated_fraction : float
+        Fraction of draws where the model, given only the ``<hypothesize>`` licence, would have
+        opened a ``<complexity>`` block on its own rather than needing the opener forced.
+    """
+
+    self_initiated_fraction: float = 0.0
 
 
 def _require(tokenizer: Any, token: str, verb: str) -> int:
@@ -76,8 +161,17 @@ def _require(tokenizer: Any, token: str, verb: str) -> int:
     if token not in tokenizer:
         raise CapabilityUnavailable(
             f"{verb}() needs the {token} token, which this checkpoint's vocabulary does not "
-            f"contain. Only v24 checkpoints trained on the task blocks carry it.")
+            f"contain. This harness serves v24 checkpoints only.")
     return int(tokenizer[token])
+
+
+def _seeded_generator(device: Any, seed: int | None) -> torch.Generator | None:
+    """A seeded generator so a published distribution reproduces; ``None`` means fresh entropy."""
+    if seed is None:
+        return None
+    generator = torch.Generator(device=device)
+    generator.manual_seed(int(seed))
+    return generator
 
 
 def _encoder_batch(X: np.ndarray, y: np.ndarray, n_variables: int,
@@ -99,8 +193,94 @@ def _encoder_batch(X: np.ndarray, y: np.ndarray, n_variables: int,
     return data, attn_mask
 
 
+def _start_state(prefix_tokens: list[int], prefix_numeric: list[float], n_samples: int,
+                 device: Any) -> tuple[torch.Tensor, torch.Tensor]:
+    """``n_samples`` identical rows of the prompt prefix, ready to diverge."""
+    sequences = torch.tensor([prefix_tokens], dtype=torch.long, device=device).repeat(n_samples, 1)
+    numerics = torch.tensor([prefix_numeric], dtype=torch.float32, device=device).repeat(n_samples, 1)
+    return sequences, numerics
+
+
+def _append(state: tuple[torch.Tensor, torch.Tensor], token_id: int,
+            numeric: float = float("nan")) -> tuple[torch.Tensor, torch.Tensor]:
+    """Append one harness-owned token to every row."""
+    sequences, numerics = state
+    rows = sequences.shape[0]
+    device = sequences.device
+    return (
+        torch.cat([sequences, torch.full((rows, 1), token_id, dtype=torch.long, device=device)], dim=1),
+        torch.cat([numerics, torch.full((rows, 1), numeric, dtype=torch.float32, device=device)], dim=1),
+    )
+
+
+def _sample_span(
+        model: Any,
+        state: tuple[torch.Tensor, torch.Tensor],
+        data: torch.Tensor,
+        attn_mask: torch.Tensor,
+        nibble_ids: list[int],
+        span_end: int,
+        temperature: float,
+        generator: torch.Generator | None,
+) -> tuple[ValueDistribution, tuple[torch.Tensor, torch.Tensor]]:
+    """Draw one ieee754 span for every row of ``state``, decoded in parallel.
+
+    Each row keeps its OWN history, so a multi-slot decode samples the joint distribution over
+    slots rather than a product of per-slot marginals. Each nibble is drawn from the softmax
+    restricted to the nibble alphabet -- the same restriction training imposed. The closing tag is
+    appended by the harness, but whether the model WANTED to close is measured first.
+    """
+    device = data.device
+    nibble_index = torch.tensor(nibble_ids, dtype=torch.long, device=device)
+    tokenizer = model.tokenizer
+    sequences, numerics = state
+    n_rows = sequences.shape[0]
+
+    off_grammar = 0
+    memory = None
+    for _ in range(NIBBLES_PER_SPAN):
+        if memory is None:
+            logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask)
+            memory = model.memory
+        else:
+            logits = model(sequences, None, input_num=numerics, memory=memory,
+                           data_attn_mask=attn_mask)
+
+        step = logits[:, -1]
+        off_grammar += int((~torch.isin(step.argmax(dim=-1), nibble_index)).sum().item())
+
+        restricted = step[:, nibble_index]
+        if temperature <= 0:
+            choice = restricted.argmax(dim=-1)
+        else:
+            probabilities = torch.softmax(restricted / float(temperature), dim=-1)
+            choice = torch.multinomial(probabilities, 1, generator=generator).squeeze(-1)
+
+        sequences = torch.cat([sequences, nibble_index[choice].unsqueeze(-1)], dim=1)
+        numerics = torch.cat(
+            [numerics, torch.full((n_rows, 1), float("nan"), device=device)], dim=1)
+
+    logits = model(sequences, None, input_num=numerics, memory=memory, data_attn_mask=attn_mask)
+    closed = (logits[:, -1].argmax(dim=-1) == span_end)
+
+    draws = [
+        float(nibble_tokens_to_float32([str(tokenizer[int(t)]) for t in row]))
+        for row in sequences[:, -NIBBLES_PER_SPAN:].tolist()
+    ]
+
+    distribution = ValueDistribution(
+        draws=draws,
+        off_grammar_steps=off_grammar,
+        closed_cleanly_fraction=float(closed.float().mean().item()),
+    )
+    return distribution, _append((sequences, numerics), span_end)
+
+
 def score_outliers(estimator: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Per-point outlier probability from the trained outlier head.
+
+    Unlike the other verbs this one is NOT a sampled decode -- it is a single deterministic forward
+    pass through a sigmoid head, so one call is the answer, not a draw.
 
     Parameters
     ----------
@@ -124,10 +304,9 @@ def score_outliers(estimator: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
     The head reads the DATA-SET ENCODER only, so a score conditions on ``(X, y)`` and never on any
     expression -- it asks "could a function have produced this point set", not "does this point fit
     that formula". Two measured caveats belong with any number it produces: the published
-    AUROC 0.9888 is POOLED over instances and in-distribution (the val catalog and noise process the
-    model trained on), while per-problem behaviour is far weaker -- a single lone outlier scores a
-    median P of about 0.42; and the head degrades sharply above roughly 10% contamination, the
-    ceiling it was trained under, collapsing to about 0.36 at 20%.
+    AUROC 0.9888 is POOLED over instances and in-distribution, while per-problem behaviour is far
+    weaker; and the head degrades sharply above roughly 10% contamination, the ceiling it was
+    trained under.
     """
     model = estimator.flash_ansr_model
     head = getattr(model, "outlier_head", None)
@@ -155,8 +334,7 @@ def score_outliers(estimator: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
             raise RuntimeError(
                 "The encoder did not expose point_representations; the checkpoint declares an "
                 "outlier head but the forward pass did not populate it.")
-        logits = head(representations).squeeze(-1)
-        probabilities = torch.sigmoid(logits)
+        probabilities = torch.sigmoid(head(representations).squeeze(-1))
 
     return probabilities.detach().cpu().numpy().reshape(-1)
 
@@ -178,16 +356,19 @@ def predict_constants(
         estimator: Any,
         X: np.ndarray,
         y: np.ndarray,
-        expression: Sequence[str] | str) -> ConstantPrediction:
-    """Infill the ``<constant>`` slots of ``expression`` with the model's own constant prediction.
+        expression: Sequence[str] | str,
+        *,
+        n_samples: int = DEFAULT_SAMPLES,
+        temperature: float = 1.0,
+        seed: int | None = None) -> list[ValueDistribution]:
+    """Infill the ``<constant>`` slots of ``expression`` from the model's own distribution.
 
     Force-feeds the training circumstance exactly::
 
         <bos> <mask_all> <expression> ...tokens... </expression> <predict_constants> <ieee754> ...
 
-    then greedy-decodes 8 nibbles per slot with the alphabet restricted to the nibble tokens, as in
-    training. The model owns the closing tag, so whether it CHOSE to close is reported rather than
-    hidden (:attr:`ConstantPrediction.closed_cleanly`).
+    then draws ``n_samples`` values per slot. Rows decode in parallel and each keeps its own
+    history, so the draws are JOINT across slots.
 
     Parameters
     ----------
@@ -197,12 +378,18 @@ def predict_constants(
         The support set the constants should explain.
     expression : sequence of str or str
         Prefix tokens or an infix string, with ``'<constant>'`` marking each slot to fill.
-        ``v1..vn`` variable names are accepted and mapped to ``x1..xN``.
+    n_samples : int, optional
+        Draws, by default :data:`DEFAULT_SAMPLES`.
+    temperature : float, optional
+        Softmax temperature, by default 1.0 (the training distribution). ``0`` decodes greedily,
+        which returns the mode of every slot and is only useful for a determinism check.
+    seed : int, optional
+        Seeds the sampling so a published distribution reproduces.
 
     Returns
     -------
-    ConstantPrediction
-        Values in slot order, plus per-slot nibble log-probabilities and grammar diagnostics.
+    list[ValueDistribution]
+        One distribution per slot, in slot order.
 
     Raises
     ------
@@ -235,115 +422,43 @@ def predict_constants(
             f"expression carries tokens this checkpoint's vocabulary lacks: {unknown}")
 
     body = tokenizer.encode(["<expression>", *tokens, "</expression>"], add_bos=False, add_eos=False)
-    sequence = [bos, mask_all, *body, pc_start, span_start]
+    prefix_tokens = [bos, mask_all, *body, pc_start, span_start]
 
-    device = model.device
-    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, device)
-
-    result = ConstantPrediction()
-    nibble_index = torch.tensor(nibble_ids, dtype=torch.long, device=device)
+    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    generator = _seeded_generator(model.device, seed)
 
     model.eval()
-    memory = None
+    results: list[ValueDistribution] = []
     with torch.no_grad():
+        state = _start_state(prefix_tokens, [float("nan")] * len(prefix_tokens),
+                             int(n_samples), model.device)
         for slot in range(n_slots):
-            emitted: list[str] = []
-            logprobs: list[float] = []
-            for _ in range(NIBBLES_PER_SPAN):
-                ids = torch.tensor([sequence], dtype=torch.long, device=device)
-                numeric = torch.full((1, len(sequence)), float("nan"), device=device)
-                if memory is None:
-                    logits = model(ids, data, input_num=numeric, data_attn_mask=attn_mask)
-                    memory = model.memory
-                else:
-                    logits = model(ids, None, input_num=numeric, memory=memory,
-                                   data_attn_mask=attn_mask)
-
-                step = logits[0, -1]
-                # Grammar restriction, as in training: only nibbles are legal here. Record when the
-                # unrestricted argmax would have left the alphabet -- that is the observable that
-                # says the prompt is out of distribution.
-                if int(torch.argmax(step)) not in nibble_ids:
-                    result.off_grammar_steps += 1
-                restricted = step[nibble_index]
-                choice = int(torch.argmax(restricted))
-                logprobs.append(float(torch.log_softmax(restricted, dim=-1)[choice]))
-
-                token_id = nibble_ids[choice]
-                emitted.append(str(tokenizer[token_id]))
-                sequence.append(token_id)
-
-            # The model owns the closing tag; ask whether it wanted to close before forcing it.
-            ids = torch.tensor([sequence], dtype=torch.long, device=device)
-            numeric = torch.full((1, len(sequence)), float("nan"), device=device)
-            logits = model(ids, None, input_num=numeric, memory=memory, data_attn_mask=attn_mask)
-            result.closed_cleanly.append(bool(int(torch.argmax(logits[0, -1])) == span_end))
-            sequence.append(span_end)
-
-            result.values.append(float(nibble_tokens_to_float32(emitted)))
-            result.nibble_logprobs.append(logprobs)
-
+            distribution, state = _sample_span(
+                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
+            results.append(distribution)
             if slot < n_slots - 1:
-                sequence.append(span_start)
+                state = _append(state, span_start)
 
-    return result
-
-
-def _decode_span(model: Any, sequence: list[int], numeric: list[float], data: torch.Tensor,
-                 attn_mask: torch.Tensor, nibble_ids: list[int], span_end: int,
-                 memory: torch.Tensor | None = None) -> tuple[float, list[float], bool, int]:
-    """Greedy-decode one 8-nibble ieee754 span, restricted to the nibble alphabet as in training.
-
-    Returns ``(value, per_nibble_logprobs, model_chose_to_close, off_grammar_steps)``. The caller
-    owns ``sequence``/``numeric``, which are extended in place: the span's nibbles are appended, and
-    the closing tag is NOT (the caller decides whether to force it).
-    """
-    device = data.device
-    nibble_index = torch.tensor(nibble_ids, dtype=torch.long, device=device)
-    tokenizer = model.tokenizer
-    emitted: list[str] = []
-    logprobs: list[float] = []
-    off_grammar = 0
-
-    for _ in range(NIBBLES_PER_SPAN):
-        ids = torch.tensor([sequence], dtype=torch.long, device=device)
-        nums = torch.tensor([numeric], dtype=torch.float32, device=device)
-        if memory is None:
-            logits = model(ids, data, input_num=nums, data_attn_mask=attn_mask)
-            memory = model.memory
-        else:
-            logits = model(ids, None, input_num=nums, memory=memory, data_attn_mask=attn_mask)
-
-        step = logits[0, -1]
-        if int(torch.argmax(step)) not in nibble_ids:
-            off_grammar += 1
-        restricted = step[nibble_index]
-        choice = int(torch.argmax(restricted))
-        logprobs.append(float(torch.log_softmax(restricted, dim=-1)[choice]))
-
-        token_id = nibble_ids[choice]
-        emitted.append(str(tokenizer[token_id]))
-        sequence.append(token_id)
-        numeric.append(float("nan"))
-
-    ids = torch.tensor([sequence], dtype=torch.long, device=device)
-    nums = torch.tensor([numeric], dtype=torch.float32, device=device)
-    logits = model(ids, None, input_num=nums, memory=memory, data_attn_mask=attn_mask)
-    closed = bool(int(torch.argmax(logits[0, -1])) == span_end)
-
-    return float(nibble_tokens_to_float32(emitted)), logprobs, closed, off_grammar
+    return results
 
 
-def predict_y(estimator: Any, X: np.ndarray, y: np.ndarray, x_query: np.ndarray) -> np.ndarray:
-    """Predict the target at held-out points, directly from the model's ``<predict_y>`` block.
+def predict_y(
+        estimator: Any,
+        X: np.ndarray,
+        y: np.ndarray,
+        x_query: np.ndarray,
+        *,
+        n_samples: int = DEFAULT_SAMPLES,
+        temperature: float = 1.0,
+        seed: int | None = None) -> list[ValueDistribution]:
+    """Predict the target at held-out points, from the model's ``<predict_y>`` block.
 
     The trained circumstance, unconditional variant::
 
         <bos> <predict_y> <point> <float>...<float> </point> <ieee754> [8 nibbles of y*] </ieee754>
 
-    The query coordinates ride the NUMERIC channel on ``<float>`` tokens, exactly as training wrote
-    them; the model emits the nibbles of ``y*``. No expression is involved -- this is the model
-    interpolating the point set it was given, not evaluating a formula.
+    The query coordinates ride the NUMERIC channel exactly as training wrote them. No expression is
+    involved -- this is the model interpolating the point set it was given.
 
     Parameters
     ----------
@@ -353,11 +468,17 @@ def predict_y(estimator: Any, X: np.ndarray, y: np.ndarray, x_query: np.ndarray)
         The support set the model conditions on.
     x_query : array-like
         Query coordinates, ``(n_queries, n_variables)`` or a single ``(n_variables,)`` point.
+    n_samples : int, optional
+        Draws per query point, by default :data:`DEFAULT_SAMPLES`.
+    temperature : float, optional
+        Softmax temperature, by default 1.0.
+    seed : int, optional
+        Seeds the sampling.
 
     Returns
     -------
-    np.ndarray
-        Shape ``(n_queries,)``, the predicted target at each query point.
+    list[ValueDistribution]
+        One distribution per query point, in query order.
 
     Raises
     ------
@@ -386,60 +507,42 @@ def predict_y(estimator: Any, X: np.ndarray, y: np.ndarray, x_query: np.ndarray)
             f"x_query has {queries.shape[-1]} coordinate(s) but X has {x_arr.shape[-1]} variable(s).")
 
     data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    generator = _seeded_generator(model.device, seed)
 
-    predictions: list[float] = []
     model.eval()
+    results: list[ValueDistribution] = []
     with torch.no_grad():
         for point in queries:
-            sequence = [bos, py_start, point_start]
-            numeric = [float("nan"), float("nan"), float("nan")]
+            prefix_tokens = [bos, py_start, point_start]
+            prefix_numeric = [float("nan"), float("nan"), float("nan")]
             for coordinate in point:
-                sequence.append(compact)
-                numeric.append(float(coordinate))
-            sequence += [point_end, span_start]
-            numeric += [float("nan"), float("nan")]
+                prefix_tokens.append(compact)
+                prefix_numeric.append(float(coordinate))
+            prefix_tokens += [point_end, span_start]
+            prefix_numeric += [float("nan"), float("nan")]
 
-            value, _, _, _ = _decode_span(
-                model, sequence, numeric, data, attn_mask, nibble_ids, span_end)
-            predictions.append(value)
+            state = _start_state(prefix_tokens, prefix_numeric, int(n_samples), model.device)
+            distribution, _ = _sample_span(
+                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
+            results.append(distribution)
 
-    return np.asarray(predictions, dtype=np.float64)
-
-
-@dataclass
-class ComplexityPrediction:
-    """What :meth:`FlashANSR.predict_complexity` returns.
-
-    Attributes
-    ----------
-    mu : float
-        The model's hypothesised simplipy complexity of the MASKED skeleton -- the same quantity
-        ``simplipy_engine.complexity(skeleton)`` returns, where a ``<constant>`` prices one symbol
-        unit. This is the unit ``fit(complexity=...)`` consumes; it is NOT a token count.
-    nibble_logprobs : list[float]
-        Per-nibble log-probability of the emitted value.
-    self_initiated : bool
-        Whether the model, given only the ``<hypothesize>`` licence, chose to open a
-        ``<complexity>`` block on its own. ``False`` means the opener had to be forced, so the
-        number is a weaker hypothesis than the format suggests.
-    closed_cleanly : bool
-        Whether the model chose to close the span after 8 nibbles.
-    """
-
-    mu: float
-    nibble_logprobs: list[float] = field(default_factory=list)
-    self_initiated: bool = False
-    closed_cleanly: bool = False
+    return results
 
 
-def predict_complexity(estimator: Any, X: np.ndarray, y: np.ndarray) -> ComplexityPrediction:
+def predict_complexity(
+        estimator: Any,
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        n_samples: int = DEFAULT_SAMPLES,
+        temperature: float = 1.0,
+        seed: int | None = None) -> ComplexityDistribution:
     """Ask the model how complex it thinks the generating expression is.
 
     Uses the trained HYPOTHESIS circumstance: the harness utters ``<hypothesize>`` -- a licence only
     it may give -- and everything after it is the model's own. Training supervised the opener too,
-    so this verb records whether the model would have opened ``<complexity>`` unprompted
-    (:attr:`ComplexityPrediction.self_initiated`) before forcing it, rather than presenting a forced
-    number as a spontaneous one.
+    so the verb records how often the model would have opened ``<complexity>`` unprompted before
+    forcing it, rather than presenting a forced number as a spontaneous one.
 
     Parameters
     ----------
@@ -447,11 +550,18 @@ def predict_complexity(estimator: Any, X: np.ndarray, y: np.ndarray) -> Complexi
         The loaded estimator.
     X, y : array-like
         The support set to judge.
+    n_samples : int, optional
+        Draws, by default :data:`DEFAULT_SAMPLES`.
+    temperature : float, optional
+        Softmax temperature, by default 1.0.
+    seed : int, optional
+        Seeds the sampling.
 
     Returns
     -------
-    ComplexityPrediction
-        ``.mu`` in simplipy complexity units.
+    ComplexityDistribution
+        Draws in simplipy complexity units -- the unit ``fit(complexity=...)`` consumes, running
+        roughly 1e3-1e6, NOT a token count.
 
     Raises
     ------
@@ -470,23 +580,23 @@ def predict_complexity(estimator: Any, X: np.ndarray, y: np.ndarray) -> Complexi
     nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
 
     data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
-    device = model.device
+    generator = _seeded_generator(model.device, seed)
 
     model.eval()
     with torch.no_grad():
-        sequence = [bos, hypothesize]
-        numeric = [float("nan"), float("nan")]
+        state = _start_state([bos, hypothesize], [float("nan"), float("nan")],
+                             int(n_samples), model.device)
+        sequences, numerics = state
+        logits = model(sequences, data, input_num=numerics, data_attn_mask=attn_mask)
+        self_initiated = float((logits[:, -1].argmax(dim=-1) == cx_start).float().mean().item())
 
-        ids = torch.tensor([sequence], dtype=torch.long, device=device)
-        nums = torch.tensor([numeric], dtype=torch.float32, device=device)
-        logits = model(ids, data, input_num=nums, data_attn_mask=attn_mask)
-        self_initiated = bool(int(torch.argmax(logits[0, -1])) == cx_start)
+        state = _append(_append(state, cx_start), span_start)
+        distribution, _ = _sample_span(
+            model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator)
 
-        sequence += [cx_start, span_start]
-        numeric += [float("nan"), float("nan")]
-
-        mu, logprobs, closed, _ = _decode_span(
-            model, sequence, numeric, data, attn_mask, nibble_ids, span_end)
-
-    return ComplexityPrediction(mu=mu, nibble_logprobs=logprobs,
-                                self_initiated=self_initiated, closed_cleanly=closed)
+    return ComplexityDistribution(
+        draws=distribution.draws,
+        off_grammar_steps=distribution.off_grammar_steps,
+        closed_cleanly_fraction=distribution.closed_cleanly_fraction,
+        self_initiated_fraction=self_initiated,
+    )
