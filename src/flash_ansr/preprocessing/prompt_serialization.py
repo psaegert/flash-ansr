@@ -269,6 +269,78 @@ class PromptSerializer:
             append_fn(close_token, is_prompt=True)
 
 
+class CapabilityUnavailable(ValueError):
+    """A verb was asked for a trained capability this checkpoint's vocabulary lacks.
+
+    Raised at CALL time, before the encoder runs -- a capability check that fires mid-decode
+    has already cost the caller the expensive part of the request.
+    """
+
+
+#: Emission format -> the promptable flag that selects it. ``"constants"`` is the UNFLAGGED
+#: default (90% of training instances): the model spells constants as ieee754 spans. The two
+#: flags are harness-owned emission-format directives, force-fed at the training position
+#: (immediately after ``<bos>``) and never sampled.
+EMISSION_FLAGS: dict[str, str | None] = {
+    "constants": None,
+    "skeleton": "<mask_all>",
+    "fittable": "<mask_fittable>",
+}
+
+
+def apply_emission_flag(prefix: PromptPrefix, emission: str, tokenizer: Any) -> PromptPrefix:
+    """Insert the emission-format flag for ``emission`` directly after ``<bos>``.
+
+    This is the public form of the monkeypatch every published T16 number was produced
+    through: the capability probes reached into ``_prepare_prompt_prefix`` on the instance
+    because no public verb could set the flag. Position matters -- training put the flag
+    immediately after ``<bos>``, so that is where it goes, with a NaN on the numeric channel
+    like every other non-payload position.
+
+    Parameters
+    ----------
+    prefix : PromptPrefix
+        The prefix built for this call; returned unchanged for the unflagged default.
+    emission : str
+        One of :data:`EMISSION_FLAGS`.
+    tokenizer : Any
+        The model tokenizer, used to resolve the flag and to check it exists.
+
+    Returns
+    -------
+    PromptPrefix
+        A new prefix carrying the flag, or ``prefix`` itself when ``emission`` needs none.
+
+    Raises
+    ------
+    ValueError
+        If ``emission`` is not a known mode.
+    CapabilityUnavailable
+        If the flag is absent from the vocabulary (a v23 checkpoint).
+    """
+    if emission not in EMISSION_FLAGS:
+        raise ValueError(
+            f"emission must be one of {sorted(EMISSION_FLAGS)}, got {emission!r}")
+
+    flag_token = EMISSION_FLAGS[emission]
+    if flag_token is None:
+        return prefix
+
+    if flag_token not in tokenizer:
+        raise CapabilityUnavailable(
+            f"emission={emission!r} needs the {flag_token} token, which this checkpoint's "
+            f"vocabulary does not contain. Only mixed-representation (v24) checkpoints carry "
+            f"the promptable emission flags; use emission='constants'.")
+
+    flag_id = int(tokenizer[flag_token])
+    return PromptPrefix(
+        tokens=[prefix.tokens[0], flag_id] + list(prefix.tokens[1:]),
+        numeric=[prefix.numeric[0], float("nan")] + list(prefix.numeric[1:]),
+        mask=[True] + list(prefix.mask),
+        metadata=prefix.metadata,
+    )
+
+
 def prepare_prompt_prefix(
         preprocessor: PromptSerializer | None,
         *,

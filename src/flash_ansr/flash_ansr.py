@@ -34,7 +34,8 @@ from flash_ansr._refine_pool import RecoverableForkPool
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
-from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
+from flash_ansr.preprocessing import (
+    CapabilityUnavailable, EMISSION_FLAGS, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
@@ -1551,7 +1552,8 @@ class FlashANSR(BaseEstimator):
             complexity: int | float | None,
             allowed_terms: Iterable[Sequence[Any]] | None,
             include_terms: Iterable[Sequence[Any]] | None,
-            exclude_terms: Iterable[Sequence[Any]] | None) -> PromptPrefix | None:
+            exclude_terms: Iterable[Sequence[Any]] | None,
+            emission: str = 'constants') -> PromptPrefix | None:
         preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
         prompt_prefix = prepare_prompt_prefix(
             preprocessor,
@@ -1560,6 +1562,18 @@ class FlashANSR(BaseEstimator):
             include_terms=include_terms,
             exclude_terms=exclude_terms,
         )
+
+        if emission != 'constants':
+            if prompt_prefix is None:
+                # No preprocessor -> no prefix was built, but an emission flag still has to reach
+                # the model. Materialize the bare generation prefix and flag that, which is what
+                # the capability probes did by hand.
+                tokens, numeric = self.flash_ansr_model._resolve_generation_prefix(prompt_prefix=None)
+                numeric_values = list(numeric) if numeric is not None else [float('nan')] * len(tokens)
+                prompt_prefix = PromptPrefix(
+                    tokens=list(tokens), numeric=numeric_values,
+                    mask=[True] * len(tokens), metadata={})
+            prompt_prefix = apply_emission_flag(prompt_prefix, emission, self.tokenizer)
 
         self._prompt_prefix = prompt_prefix
         return prompt_prefix
@@ -1684,6 +1698,7 @@ class FlashANSR(BaseEstimator):
             allowed_terms: Iterable[Sequence[Any]] | None = None,
             include_terms: Iterable[Sequence[Any]] | None = None,
             exclude_terms: Iterable[Sequence[Any]] | None = None,
+            emission: str = 'constants',
             refine_seed: int | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
 
@@ -1697,6 +1712,12 @@ class FlashANSR(BaseEstimator):
             Mapping from internal variable tokens to descriptive names.
         converge_error : {'raise', 'ignore', 'print'}, optional
             Handling strategy when the refiner fails to converge.
+        emission : {'constants', 'skeleton', 'fittable'}, optional
+            Emission FORMAT the model is directed to use, by default ``'constants'`` -- the
+            unflagged default the checkpoint saw on 90% of training instances, where constants
+            are spelled out as ieee754 spans. ``'skeleton'`` sends ``<mask_all>`` (placeholders
+            only; the refiner fits every slot) and ``'fittable'`` sends ``<mask_fittable>``.
+            Raises ``CapabilityUnavailable`` on a checkpoint whose vocabulary lacks the flag.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
         allowed_terms : Iterable[Sequence[str]] or None, optional
@@ -1739,6 +1760,7 @@ class FlashANSR(BaseEstimator):
         try:
             gen_state = self._fit_generate(
                 X, y, variable_names,
+                emission=emission,
                 complexity=complexity,
                 allowed_terms=allowed_terms,
                 include_terms=include_terms,
@@ -1770,6 +1792,7 @@ class FlashANSR(BaseEstimator):
             allowed_terms: Iterable[Sequence[Any]] | None = None,
             include_terms: Iterable[Sequence[Any]] | None = None,
             exclude_terms: Iterable[Sequence[Any]] | None = None,
+            emission: str = 'constants',
             verbose: bool = False) -> "GenState":
         """GPU generation phase of :meth:`fit`: prepare inputs, sample candidates, return a GenState.
 
@@ -1882,6 +1905,7 @@ class FlashANSR(BaseEstimator):
             memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
 
             prompt_prefix = self._prepare_prompt_prefix(
+                emission=emission,
                 complexity=complexity,
                 allowed_terms=allowed_terms,
                 include_terms=include_terms,
