@@ -1035,27 +1035,36 @@ class FlashANSRModel(nn.Module):
 
                                 tentative_simplified_tuple = simplify_cache.get(expr_key)
                                 if tentative_simplified_tuple is None:
-                                    candidate_expression_decoded = self.tokenizer.decode(candidate_expression, special_tokens='<constant>')
+                                    # v24: validity is judged on the span-mapped skeleton; a sound
+                                    # constant carrier keeps its RAW sequence -- the simplified
+                                    # re-encode would destroy the emitted values the refiner's
+                                    # verbatim init decodes from it (contract T11).
+                                    mapped_candidate, candidate_span_values = self._map_ieee754_spans(candidate_expression)
+                                    candidate_expression_decoded = self.tokenizer.decode(mapped_candidate, special_tokens='<constant>')
 
                                     if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
                                         n_pruned += 1
                                         continue
 
-                                    try:
-                                        simplified_tokens = self.tokenizer.encode(
-                                            simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
-                                        )
-                                    except NonFiniteExpressionError:
-                                        # Simplification folded this completion to inf/nan. Drop it
-                                        # like any other unusable completion (the `is_valid` and
-                                        # length rejections just above do the same) -- a sampled
-                                        # expression that folds to nan is a rejectable sample, not a
-                                        # programming error, and raising would abort a whole decode.
-                                        record_non_finite_drop()
-                                        n_pruned += 1
-                                        continue
-                                    simplified_tuple = tuple(before + simplified_tokens + after)
-                                    simplify_cache[expr_key] = simplified_tuple
+                                    if candidate_span_values is not None:
+                                        simplified_tuple = tuple(new_seq)
+                                        simplify_cache[expr_key] = simplified_tuple
+                                    else:
+                                        try:
+                                            simplified_tokens = self.tokenizer.encode(
+                                                simplify_and_mask(self.simplipy_engine, candidate_expression_decoded)
+                                            )
+                                        except NonFiniteExpressionError:
+                                            # Simplification folded this completion to inf/nan. Drop it
+                                            # like any other unusable completion (the `is_valid` and
+                                            # length rejections just above do the same) -- a sampled
+                                            # expression that folds to nan is a rejectable sample, not a
+                                            # programming error, and raising would abort a whole decode.
+                                            record_non_finite_drop()
+                                            n_pruned += 1
+                                            continue
+                                        simplified_tuple = tuple(before + simplified_tokens + after)
+                                        simplify_cache[expr_key] = simplified_tuple
                                 else:
                                     simplified_tuple = tentative_simplified_tuple
                         else:
@@ -1995,6 +2004,36 @@ class FlashANSRModel(nn.Module):
             eos_token=eos_token, verbose=verbose,
         )
 
+    def _map_ieee754_spans(self, encoded_expression: list[int]) -> tuple[list[int], list[float] | None]:
+        """Span-mapped view of an encoded expression for post-processing (contract T11).
+
+        Expanded ``<ieee754>`` spans collapse to ``'<constant>'`` ids so simplipy
+        validity/simplify/dedup judge the SKELETON the spans spell; the values are
+        non-None only for a sound constant carrier (see
+        :func:`flash_ansr.data.serialization.replace_ieee754_spans_with_constants`).
+        v23 vocabularies carry no span tokens and take the identity path.
+        """
+        span_ids = getattr(self, '_ieee754_span_ids', False)
+        if span_ids is False:
+            from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
+            if IEEE754_START_TOKEN in self.tokenizer:
+                span_ids = (
+                    int(self.tokenizer[IEEE754_START_TOKEN]),
+                    int(self.tokenizer[IEEE754_END_TOKEN]),
+                    tuple(int(self.tokenizer[token]) for token in NIBBLE_TOKENS),
+                    int(self.tokenizer['<constant>']),
+                )
+            else:
+                span_ids = None
+            self._ieee754_span_ids = span_ids
+        if span_ids is None or span_ids[0] not in encoded_expression:
+            return list(encoded_expression), None
+        from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+        start_id, end_id, nibble_ids, constant_id = span_ids
+        return replace_ieee754_spans_with_constants(
+            list(encoded_expression), start_id=start_id, end_id=end_id,
+            nibble_ids=list(nibble_ids), constant_id=constant_id)
+
     def _postprocess_sampled(
         self,
         completed_sequences: list[list[int]],
@@ -2032,7 +2071,14 @@ class FlashANSRModel(nn.Module):
             except (ValueError, IndexError):
                 continue
 
-            encoded_expression = self.tokenizer.constantify_expression(encoded_expression)
+            # v24 emissions carry expanded <ieee754> spans that simplipy validity rejects
+            # as raw tokens: judge validity/simplify/dedup on the span-MAPPED skeleton,
+            # and emit the ORIGINAL sequence for sound carriers so the constants survive
+            # to the refiner's verbatim init (contract T11). v23 vocabularies have no
+            # span tokens and take the identity path, byte-identical.
+            raw_expression = list(encoded_expression)
+            mapped_expression, span_values = self._map_ieee754_spans(encoded_expression)
+            encoded_expression = self.tokenizer.constantify_expression(mapped_expression)
             expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
@@ -2056,12 +2102,17 @@ class FlashANSRModel(nn.Module):
                 if unique and expression_tuple in seen_expressions:
                     continue
 
-                try:
-                    expression_tokens = self.tokenizer.encode(expression)
-                except KeyError:
-                    continue
+                if span_values is not None:
+                    # Sound v24 constant carrier: the simplified form served as the dedup
+                    # key only; re-encoding it would destroy the emitted values.
+                    reconstructed_sequence = before + raw_expression + after
+                else:
+                    try:
+                        expression_tokens = self.tokenizer.encode(expression)
+                    except KeyError:
+                        continue
 
-                reconstructed_sequence = before + expression_tokens + after
+                    reconstructed_sequence = before + expression_tokens + after
                 filtered_sequences.append(reconstructed_sequence)
                 filtered_scores.append(score)
                 filtered_is_valid.append(True)
@@ -2096,6 +2147,7 @@ class FlashANSRModel(nn.Module):
                 enc, _before, _after = self.tokenizer.extract_expression_from_beam(seq)
             except (ValueError, IndexError):
                 continue
+            enc, _span_values = self._map_ieee754_spans(enc)
             enc = self.tokenizer.constantify_expression(enc)
             expression = self.tokenizer.decode(enc, special_tokens='<constant>')
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
