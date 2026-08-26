@@ -156,12 +156,21 @@ class Attention(nn.Module):
 
         # Ensure K/V batch dim matches Q (handles encoder memory broadcast).
         #
-        # The `.contiguous()` looks like pure waste -- the encoder memory has batch 1, so every
-        # widened row is identical, and the static decode path at :250 keeps the stride-0 view.
-        # It was tried: dropping it here measured SLOWER on both decode paths (sampling c=256
-        # 5.63 -> 5.72 s, beam w=32 1.39 -> 1.42 s, min of 3, CPU/4 threads, 2026-08-26). SDPA
-        # takes a faster kernel on real contiguous storage than on a broadcast view, and that
-        # outweighs the copy at these shapes. Kept deliberately; re-measure before removing.
+        # The EXPAND is a correctness requirement, not an optimization (#52): cross-attention
+        # decodes `choices` rows against a single encoder memory, so K/V arrive with batch 1, and
+        # SDPA's contract pairs (N, ..., Hq, L, E) with (N, ..., H, S, E) -- the SAME N. Leaving
+        # the batch dim to broadcast is outside that contract and backends disagree: correct on
+        # CPU/CUDA, silently wrong on MPS once head_dim >= 64. Never drop the expand.
+        #
+        # The `.contiguous()` on top is a genuine trade-off, and the two sides were measured under
+        # different objectives. #58 made the STATIC path (:250) a stride-0 view for MEMORY: that
+        # path caches the expanded K/V for the whole chunk, so materializing costs 671 MB per layer
+        # (13.4 GB over 20) held for the life of the decode. This path expands per call, so the
+        # copy is transient -- and dropping it here measured SLOWER on both decode paths (sampling
+        # c=256 5.63 -> 5.72 s, beam w=32 1.39 -> 1.42 s, min of 3, CPU / 4 threads, 2026-08-26),
+        # because SDPA takes a faster kernel on contiguous storage than on a broadcast view.
+        # CPU wall-clock at modest shapes; the memory side is NOT measured here, and at GPU shapes
+        # (choices=512) the footprint argument may well win. Re-measure both before changing.
         if k.shape[0] != batch_size_q:
             k = k.expand(batch_size_q, -1, -1, -1).contiguous()
             v = v.expand(batch_size_q, -1, -1, -1).contiguous()
