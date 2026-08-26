@@ -24,6 +24,24 @@ class ConvergenceError(Exception):
     pass
 
 
+def fit_sort_key(fit: tuple) -> tuple[bool, float]:
+    """Order ``(constants, cov, loss)`` triples by loss, sinking non-finite losses LAST.
+
+    NaN compares False against everything, so ``sorted(key=loss)`` is a partial no-op on a
+    list containing one: a leading NaN stays at index 0 and the finite entries behind it are
+    not ordered either (``[nan, 3.0, nan, 1e-9, 0.5]`` sorts to ``[nan, 3.0, nan, 1e-9, 0.5]``).
+    Index 0 then holds a DIVERGENT restart while an exact fit sits further down -- measured on
+    the shipped Refiner: 73/298 refinements of `* <constant> log - x1 <constant>` reported
+    loss=NaN (fvu=+inf, score=+inf, ranked last) while holding a 0.0 fit in the same list.
+
+    A restart that diverges out of an operator's domain is a normal, expected outcome of
+    multi-start optimization; it must be ranked worst, not treated as an unorderable value.
+    """
+    loss = float(fit[-1])
+    finite = bool(np.isfinite(loss))
+    return (not finite, loss if finite else 0.0)
+
+
 class Refiner:
     '''
     Refine the constants of an expression to fit the data
@@ -113,12 +131,15 @@ class Refiner:
             cov_array = np.asarray(cov) if cov is not None else np.asarray([], dtype=float)
             filtered.append((constants_array, cov_array, float(loss)))
 
-        self._all_constants_values = sorted(filtered, key=lambda item: item[-1])
-        self.valid_fit = any(np.isfinite(entry[-1]) for entry in self._all_constants_values)
+        self._all_constants_values = sorted(filtered, key=fit_sort_key)
+        # valid_fit now describes INDEX 0, not "some entry somewhere": with non-finite losses
+        # sunk to the back, a finite best is at index 0 whenever one exists, so every consumer
+        # that reads `_all_constants_values[0]` after checking `valid_fit` gets a usable fit.
         if self._all_constants_values:
             self.loss = float(self._all_constants_values[0][-1])
         else:
             self.loss = np.inf
+        self.valid_fit = bool(self._all_constants_values) and bool(np.isfinite(self.loss))
 
     @classmethod
     def from_serialized(
@@ -533,7 +554,7 @@ class Refiner:
 
         return y.reshape(-1, 1)
 
-    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, variable_mapping: dict | None = None, **kwargs: Any) -> list[str] | str:
+    def transform(self, expression: list[str], nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, variable_mapping: dict | None = None, **kwargs: Any) -> list[str] | str:
         '''
         Insert the fitted constants to the expression
 
@@ -545,8 +566,13 @@ class Refiner:
             An index specifying which fitted constants to use. By default 0 (the best constants)
         return_prefix : bool, optional
             Whether to return the expression in prefix notation. By default False
-        precision : int, optional
-            The precision for rounding the constants. By default 2
+        precision : int or None, optional
+            Decimal places to round the substituted constants to, for DISPLAY. By default None,
+            which substitutes the round-trip-exact ``repr`` of each value and loses nothing.
+            The former default of 2 silently published the ZERO FUNCTION for any |c| < 0.005:
+            fitting ``6.674e-11 * x1 * x2`` produced ``'0.0 * (x1 * x2)'`` while the reported fvu
+            was ~0 and ``Candidate.constants`` held the true value. FastSRB constants span
+            |c| ~ 1e-30 .. 1e+8, so that is the common case, not a corner.
         variable_mapping : dict, optional
             A dictionary mapping the variables to their names. By default None (use the default variable names)
 
@@ -559,8 +585,13 @@ class Refiner:
 
         expression_tokens = list(expression)
         if constants_values.size:
-            rounded_constants = np.round(constants_values, precision)
-            constant_iter = iter(rounded_constants.tolist())
+            if precision is None:
+                # repr() of a float round-trips exactly; str() would too on py3, but repr states the
+                # intent (no information is dropped between the fit and the published expression).
+                substituted = [repr(float(v)) for v in constants_values.tolist()]
+            else:
+                substituted = [str(v) for v in np.round(constants_values, precision).tolist()]
+            constant_iter = iter(substituted)
 
             for idx, token in enumerate(expression_tokens):
                 is_constant_token = (
@@ -577,7 +608,7 @@ class Refiner:
                 except StopIteration:
                     break
 
-                expression_tokens[idx] = str(value)
+                expression_tokens[idx] = value
 
         expression_with_values = expression_tokens
 

@@ -35,7 +35,7 @@ from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mct
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocessing import PromptPrefix, prepare_prompt_prefix
-from flash_ansr.refine import Refiner, ConvergenceError
+from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -144,6 +144,12 @@ def _candidate_refine_seed(refine_seed: int | None, tokens: Sequence[Any]) -> in
     return int(np.random.SeedSequence([int(refine_seed), token_hash]).generate_state(1, dtype=np.uint32)[0])
 
 
+#: FVU at or below which a T11 verbatim (model-predicted) init is accepted as final and the
+#: multi-restart refinement is skipped. float32 eps is the same bar srbf's `is_perfect_fit` uses,
+#: so a skipped fallback can never cost a recovery the benchmark would have counted.
+_T11_ACCEPT_FVU: float = float(np.finfo(np.float32).eps)
+
+
 def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     simplipy_engine = payload.get('simplipy_engine') or _GLOBAL_SIMPLIPY_ENGINE
     if simplipy_engine is None:
@@ -165,6 +171,8 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     try:
         refiner = Refiner(simplipy_engine=simplipy_engine, n_variables=payload['n_variables'])
         p0_values = payload.get('p0')
+        verbatim_fits: list | None = None
+        verbatim_fvu = float('inf')
         if p0_values is not None:
             # v24 handshake (contract T11): the beam's predicted float32 constants are the
             # init, VERBATIM -- no noise, one restart (float32 embeds exactly in float64,
@@ -180,7 +188,20 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
                 p0_noise_kwargs=None,
                 converge_error='ignore',
             )
-        if p0_values is None or not refiner.valid_fit:
+            if refiner.valid_fit:
+                verbatim_fits = list(refiner._all_constants_values)
+                verbatim_fvu = FlashANSR._compute_fvu(
+                    float(refiner.loss), int(y.shape[0]), payload['y_variance'])
+
+        # T11 is an INIT, not a replacement for the search. The gate used to be finiteness alone,
+        # so any converged-but-catastrophic local optimum cancelled the 8-restart refinement:
+        # measured on y = 1 + 3*sin(2x) with the model predicting frequency 9 instead of 2, the
+        # single verbatim restart returned loss 4.64 (fvu 0.99954, score +0.3998) and the fallback
+        # never ran, while the same skeleton with the fallback reaches loss 0.0 (score -15.25) --
+        # and a strictly worse `<constant> * x1` decoy scored +0.2224 and was ranked FIRST.
+        # Skip the fallback only when the verbatim fit already explains the data to the bar the
+        # benchmark itself calls a perfect recovery; nothing downstream can improve on that.
+        if p0_values is None or not (verbatim_fvu <= _T11_ACCEPT_FVU):
             # The v23 refinement, unchanged -- and the T11 fallback on a bad init: the
             # verbatim attempt consumes no RNG, so this call sees the same stream a plain
             # v23 worker would and reproduces its fits exactly.
@@ -195,6 +216,10 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
                 p0_noise_kwargs=payload['p0_noise_kwargs'],
                 converge_error=payload['converge_error'],
             )
+            if verbatim_fits:
+                # Keep the BETTER of the two, never the last one: `fit` resets the fit list, so
+                # without this merge a good verbatim fit is discarded by a worse exploration.
+                refiner._assign_fits(list(refiner._all_constants_values) + verbatim_fits)
     except ConvergenceError:
         if payload['converge_error'] == 'raise':
             raise
@@ -1701,6 +1726,8 @@ class FlashANSR(BaseEstimator):
         # Reset per-fit instance state up front so a ConvergenceError mid-fit leaves a clean (not
         # stale) view for library callers; the eval adapter ignores self on the error path.
         self._results = []
+        self.results = pd.DataFrame()
+        self._input_dim = None
         self.variable_mapping = {}
         self._generation_time = 0.0
         self._refinement_time = 0.0
@@ -1816,15 +1843,36 @@ class FlashANSR(BaseEstimator):
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
+            # The R1 gate above ran on the caller's (often float64) array, but the cast to float32
+            # one line later can MANUFACTURE non-finite values: |x| > 3.4e38 overflows to inf and
+            # enters the encoder and the refiner as inf, which the gate was written to prevent.
+            # Check the post-cast tensor, and name the magnitude so the caller can rescale.
+            if not bool(torch.isfinite(X).all()):
+                raise ValueError(
+                    "X contains values that overflow float32 (|x| > 3.4e38) after the cast the model "
+                    "requires. Rescale the inputs before calling fit().")
+
             sample_count = y.shape[0]
-            if sample_count <= 1:
+            # Over the FINITE rows only -- the same mask the refiner fits under (refine.py `_r1`).
+            # A single non-finite y made `y.var()` nan, `_compute_fvu` return +inf for EVERY
+            # candidate, and `_compile_results_pure` rewrite every score to nan; the sort then fell
+            # through to its third key and ranked candidates ALPHABETICALLY while fit() still
+            # reported success (measured: one nan row in 64 destroyed the ranking silently).
+            y_finite_mask = torch.isfinite(y).all(dim=-1)
+            n_finite = int(y_finite_mask.sum().item())
+            if n_finite < sample_count:
+                warnings.warn(
+                    f"y contains {sample_count - n_finite} non-finite value(s); they are excluded "
+                    f"from the target variance and from every fit (the refiner masks them too).",
+                    RuntimeWarning, stacklevel=2)
+            if n_finite <= 1:
                 # Variance is undefined for a single sample; skip the reduction so downstream scoring
                 # quietly falls back to the residual loss via ``_compute_fvu``.
                 y_variance = float('nan')
             else:
                 # ddof=0 (biased) to match the residual loss mean(diff**2) and the eval metric
                 # numeric.fvu, so the selection FVU equals the evaluation FVU exactly.
-                y_variance = y.var(dim=0, unbiased=False).item()
+                y_variance = y[y_finite_mask].var(dim=0, unbiased=False).item()
 
             X = pad_input_set(X, self.n_variables)
 
@@ -1921,8 +1969,8 @@ class FlashANSR(BaseEstimator):
         else:
             beam_span_values = [None] * len(beams)
 
-        raw_beams_decoded = [self.tokenizer.decode(raw_beam, special_tokens='<constant>') for raw_beam in gs.raw_beams]
-        beams_decoded = [self.tokenizer.decode(beam, special_tokens='<constant>') for beam in beams]
+        raw_beams_decoded = [self.tokenizer.decode_expression(raw_beam) for raw_beam in gs.raw_beams]
+        beams_decoded = [self.tokenizer.decode_expression(beam) for beam in beams]
         beams_decoded = [self._ensure_explicit_dialect(b) or [] for b in beams_decoded]
 
         sample_count = int(gs.y_np.shape[0])
@@ -2306,7 +2354,9 @@ class FlashANSR(BaseEstimator):
         for result in sorted_results:
             fits_list = result.get('fits', [])
             if fits_list:
-                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], min(fits_list, key=lambda tpl: tpl[2]))
+                # fit_sort_key: a NaN loss anywhere in the list makes a bare-loss `min` return an
+                # arbitrary element, so fit_constants/fit_loss could report a divergent restart.
+                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], min(fits_list, key=fit_sort_key))
             else:
                 best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], (np.array([]), None, float('nan')))
             best_fit_payloads.append(best_fit)
@@ -2358,7 +2408,7 @@ class FlashANSR(BaseEstimator):
 
         return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
 
-    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int = 2, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
+    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         """Retrieve a formatted expression from the compiled results.
 
         Parameters
@@ -2454,7 +2504,7 @@ class FlashANSR(BaseEstimator):
 
         def _decode_expr(raw_beam: list[int]) -> list[str] | None:
             expr_ids = self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0]
-            return self._ensure_explicit_dialect(self.tokenizer.decode(expr_ids, special_tokens='<constant>'))
+            return self._ensure_explicit_dialect(self.tokenizer.decode_expression(expr_ids))
 
         ledger = build_candidate_ledger(
             gen_state.raw_beams, gen_state.log_probs, results,
