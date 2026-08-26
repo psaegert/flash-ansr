@@ -33,7 +33,8 @@ class Candidate:
     expression_prefix: list[str]        # constants substituted, x1..xN vars, raw PREFIX tokens (symbolic_data.token_ops.normalize_expression for canonical form)
     expression_infix: str               # human-readable prediction: constants substituted, vars MAPPED, INFIX str (== get_expression(map_variables=True))
     skeleton_prefix: list[str]          # normalized skeleton (constants as placeholders)
-    constants: list[float]              # best-fit constant values
+    constants: list[float]              # best-fit constant values (REFINED by the optimizer)
+    constants_emitted: list[float] | None    # what the MODEL predicted, before refinement; None for v23 beams
     log_prob: float
     score: float
     fvu: float

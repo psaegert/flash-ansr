@@ -19,8 +19,16 @@ import numpy as np
 import torch
 
 from flash_ansr.data.serialization import (
+    COMPACT_CONSTANT_TOKEN,
+    COMPLEXITY_END_TOKEN,
+    COMPLEXITY_START_TOKEN,
+    HYPOTHESIS_TOKEN,
+    POINT_END_TOKEN,
+    POINT_START_TOKEN,
     PREDICT_CONSTANTS_END_TOKEN,
     PREDICT_CONSTANTS_START_TOKEN,
+    PREDICT_Y_END_TOKEN,
+    PREDICT_Y_START_TOKEN,
 )
 from flash_ansr.preprocessing.prompt_serialization import CapabilityUnavailable
 from flash_ansr.utils.ieee754 import (
@@ -279,3 +287,206 @@ def predict_constants(
                 sequence.append(span_start)
 
     return result
+
+
+def _decode_span(model: Any, sequence: list[int], numeric: list[float], data: torch.Tensor,
+                 attn_mask: torch.Tensor, nibble_ids: list[int], span_end: int,
+                 memory: torch.Tensor | None = None) -> tuple[float, list[float], bool, int]:
+    """Greedy-decode one 8-nibble ieee754 span, restricted to the nibble alphabet as in training.
+
+    Returns ``(value, per_nibble_logprobs, model_chose_to_close, off_grammar_steps)``. The caller
+    owns ``sequence``/``numeric``, which are extended in place: the span's nibbles are appended, and
+    the closing tag is NOT (the caller decides whether to force it).
+    """
+    device = data.device
+    nibble_index = torch.tensor(nibble_ids, dtype=torch.long, device=device)
+    tokenizer = model.tokenizer
+    emitted: list[str] = []
+    logprobs: list[float] = []
+    off_grammar = 0
+
+    for _ in range(NIBBLES_PER_SPAN):
+        ids = torch.tensor([sequence], dtype=torch.long, device=device)
+        nums = torch.tensor([numeric], dtype=torch.float32, device=device)
+        if memory is None:
+            logits = model(ids, data, input_num=nums, data_attn_mask=attn_mask)
+            memory = model.memory
+        else:
+            logits = model(ids, None, input_num=nums, memory=memory, data_attn_mask=attn_mask)
+
+        step = logits[0, -1]
+        if int(torch.argmax(step)) not in nibble_ids:
+            off_grammar += 1
+        restricted = step[nibble_index]
+        choice = int(torch.argmax(restricted))
+        logprobs.append(float(torch.log_softmax(restricted, dim=-1)[choice]))
+
+        token_id = nibble_ids[choice]
+        emitted.append(str(tokenizer[token_id]))
+        sequence.append(token_id)
+        numeric.append(float("nan"))
+
+    ids = torch.tensor([sequence], dtype=torch.long, device=device)
+    nums = torch.tensor([numeric], dtype=torch.float32, device=device)
+    logits = model(ids, None, input_num=nums, memory=memory, data_attn_mask=attn_mask)
+    closed = bool(int(torch.argmax(logits[0, -1])) == span_end)
+
+    return float(nibble_tokens_to_float32(emitted)), logprobs, closed, off_grammar
+
+
+def predict_y(estimator: Any, X: np.ndarray, y: np.ndarray, x_query: np.ndarray) -> np.ndarray:
+    """Predict the target at held-out points, directly from the model's ``<predict_y>`` block.
+
+    The trained circumstance, unconditional variant::
+
+        <bos> <predict_y> <point> <float>...<float> </point> <ieee754> [8 nibbles of y*] </ieee754>
+
+    The query coordinates ride the NUMERIC channel on ``<float>`` tokens, exactly as training wrote
+    them; the model emits the nibbles of ``y*``. No expression is involved -- this is the model
+    interpolating the point set it was given, not evaluating a formula.
+
+    Parameters
+    ----------
+    estimator : FlashANSR
+        The loaded estimator.
+    X, y : array-like
+        The support set the model conditions on.
+    x_query : array-like
+        Query coordinates, ``(n_queries, n_variables)`` or a single ``(n_variables,)`` point.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_queries,)``, the predicted target at each query point.
+
+    Raises
+    ------
+    CapabilityUnavailable
+        If the checkpoint lacks the ``<predict_y>`` block.
+    ValueError
+        If a query point's dimensionality does not match ``X``.
+    """
+    model = estimator.flash_ansr_model
+    tokenizer = model.tokenizer
+
+    bos = _require(tokenizer, "<bos>", "predict_y")
+    py_start = _require(tokenizer, PREDICT_Y_START_TOKEN, "predict_y")
+    _require(tokenizer, PREDICT_Y_END_TOKEN, "predict_y")
+    point_start = _require(tokenizer, POINT_START_TOKEN, "predict_y")
+    point_end = _require(tokenizer, POINT_END_TOKEN, "predict_y")
+    compact = _require(tokenizer, COMPACT_CONSTANT_TOKEN, "predict_y")
+    span_start = _require(tokenizer, IEEE754_START_TOKEN, "predict_y")
+    span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_y")
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+
+    queries = np.atleast_2d(np.asarray(x_query, dtype=np.float64))
+    x_arr = np.atleast_2d(np.asarray(X, dtype=np.float64))
+    if queries.shape[-1] != x_arr.shape[-1]:
+        raise ValueError(
+            f"x_query has {queries.shape[-1]} coordinate(s) but X has {x_arr.shape[-1]} variable(s).")
+
+    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+
+    predictions: list[float] = []
+    model.eval()
+    with torch.no_grad():
+        for point in queries:
+            sequence = [bos, py_start, point_start]
+            numeric = [float("nan"), float("nan"), float("nan")]
+            for coordinate in point:
+                sequence.append(compact)
+                numeric.append(float(coordinate))
+            sequence += [point_end, span_start]
+            numeric += [float("nan"), float("nan")]
+
+            value, _, _, _ = _decode_span(
+                model, sequence, numeric, data, attn_mask, nibble_ids, span_end)
+            predictions.append(value)
+
+    return np.asarray(predictions, dtype=np.float64)
+
+
+@dataclass
+class ComplexityPrediction:
+    """What :meth:`FlashANSR.predict_complexity` returns.
+
+    Attributes
+    ----------
+    mu : float
+        The model's hypothesised simplipy complexity of the MASKED skeleton -- the same quantity
+        ``simplipy_engine.complexity(skeleton)`` returns, where a ``<constant>`` prices one symbol
+        unit. This is the unit ``fit(complexity=...)`` consumes; it is NOT a token count.
+    nibble_logprobs : list[float]
+        Per-nibble log-probability of the emitted value.
+    self_initiated : bool
+        Whether the model, given only the ``<hypothesize>`` licence, chose to open a
+        ``<complexity>`` block on its own. ``False`` means the opener had to be forced, so the
+        number is a weaker hypothesis than the format suggests.
+    closed_cleanly : bool
+        Whether the model chose to close the span after 8 nibbles.
+    """
+
+    mu: float
+    nibble_logprobs: list[float] = field(default_factory=list)
+    self_initiated: bool = False
+    closed_cleanly: bool = False
+
+
+def predict_complexity(estimator: Any, X: np.ndarray, y: np.ndarray) -> ComplexityPrediction:
+    """Ask the model how complex it thinks the generating expression is.
+
+    Uses the trained HYPOTHESIS circumstance: the harness utters ``<hypothesize>`` -- a licence only
+    it may give -- and everything after it is the model's own. Training supervised the opener too,
+    so this verb records whether the model would have opened ``<complexity>`` unprompted
+    (:attr:`ComplexityPrediction.self_initiated`) before forcing it, rather than presenting a forced
+    number as a spontaneous one.
+
+    Parameters
+    ----------
+    estimator : FlashANSR
+        The loaded estimator.
+    X, y : array-like
+        The support set to judge.
+
+    Returns
+    -------
+    ComplexityPrediction
+        ``.mu`` in simplipy complexity units.
+
+    Raises
+    ------
+    CapabilityUnavailable
+        If the checkpoint lacks the ``<hypothesize>`` or ``<complexity>`` tokens.
+    """
+    model = estimator.flash_ansr_model
+    tokenizer = model.tokenizer
+
+    bos = _require(tokenizer, "<bos>", "predict_complexity")
+    hypothesize = _require(tokenizer, HYPOTHESIS_TOKEN, "predict_complexity")
+    cx_start = _require(tokenizer, COMPLEXITY_START_TOKEN, "predict_complexity")
+    _require(tokenizer, COMPLEXITY_END_TOKEN, "predict_complexity")
+    span_start = _require(tokenizer, IEEE754_START_TOKEN, "predict_complexity")
+    span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_complexity")
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+
+    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
+    device = model.device
+
+    model.eval()
+    with torch.no_grad():
+        sequence = [bos, hypothesize]
+        numeric = [float("nan"), float("nan")]
+
+        ids = torch.tensor([sequence], dtype=torch.long, device=device)
+        nums = torch.tensor([numeric], dtype=torch.float32, device=device)
+        logits = model(ids, data, input_num=nums, data_attn_mask=attn_mask)
+        self_initiated = bool(int(torch.argmax(logits[0, -1])) == cx_start)
+
+        sequence += [cx_start, span_start]
+        numeric += [float("nan"), float("nan")]
+
+        mu, logprobs, closed, _ = _decode_span(
+            model, sequence, numeric, data, attn_mask, nibble_ids, span_end)
+
+    return ComplexityPrediction(mu=mu, nibble_logprobs=logprobs,
+                                self_initiated=self_initiated, closed_cleanly=closed)

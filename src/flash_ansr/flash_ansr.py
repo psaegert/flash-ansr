@@ -37,7 +37,9 @@ from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocessing import (
     CapabilityUnavailable, EMISSION_FLAGS, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
-from flash_ansr.tasks import ConstantPrediction, predict_constants, score_outliers
+from flash_ansr.tasks import (
+    ComplexityPrediction, ConstantPrediction, predict_complexity, predict_constants,
+    predict_y, score_outliers)
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -292,6 +294,11 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'valid_fit': refiner.valid_fit,
         'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
         'pruned_variant': bool(payload.get('pruned_variant', False)),
+        # The model's OWN constants (contract T11's verbatim init). They were decoded, used as the
+        # optimizer seed and then dropped on the floor -- so nothing downstream could compare what
+        # the model predicted against what the refiner made of it. Measured on FastSRB, refinement
+        # improves FVU on only 55% of comparable rows, so the emitted values are not a curiosity.
+        'constants_emitted': list(p0_values) if p0_values is not None else None,
     }
 
     return result, None
@@ -1614,6 +1621,7 @@ class FlashANSR(BaseEstimator):
             'fits': copy.deepcopy(refiner._all_constants_values),
             'prompt_metadata': copy.deepcopy(payload.get('prompt_metadata')) if payload.get('prompt_metadata') is not None else None,
             'pruned_variant': bool(payload.get('pruned_variant', False)),
+            'constants_emitted': payload.get('constants_emitted'),
         }
 
         return entry
@@ -2510,6 +2518,66 @@ class FlashANSR(BaseEstimator):
         """
         return predict_constants(self, X, y, expression)
 
+    def predict_y(self, X: Any, y: Any, x_query: Any) -> np.ndarray:
+        """Predict the target at held-out points using the trained ``<predict_y>`` block.
+
+        No expression is involved: the model interpolates the point set it was given. The query
+        coordinates ride the numeric channel exactly as training wrote them.
+
+        Parameters
+        ----------
+        X : array-like
+            Support-set features the model conditions on.
+        y : array-like
+            Support-set targets.
+        x_query : array-like
+            Query coordinates, ``(n_queries, n_variables)`` or one ``(n_variables,)`` point.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(n_queries,)``.
+
+        Raises
+        ------
+        CapabilityUnavailable
+            If this checkpoint lacks the ``<predict_y>`` block.
+        ValueError
+            If a query point's dimensionality does not match ``X``.
+
+        See Also
+        --------
+        predict : evaluates a FITTED expression; this verb never forms one.
+        """
+        return predict_y(self, X, y, x_query)
+
+    def predict_complexity(self, X: Any, y: Any) -> ComplexityPrediction:
+        """Ask the model how complex it thinks the generating expression is.
+
+        Uses the trained hypothesis circumstance: the harness utters ``<hypothesize>`` and
+        everything after it is the model's own.
+
+        Parameters
+        ----------
+        X : array-like
+            Support-set features.
+        y : array-like
+            Support-set targets.
+
+        Returns
+        -------
+        ComplexityPrediction
+            ``.mu`` in simplipy complexity units -- the same quantity ``fit(complexity=...)``
+            consumes, NOT a token count. ``.self_initiated`` reports whether the model would have
+            opened the block unprompted.
+
+        Raises
+        ------
+        CapabilityUnavailable
+            If this checkpoint lacks the ``<hypothesize>`` or ``<complexity>`` tokens.
+        """
+        return predict_complexity(self, X, y)
+
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         """Retrieve a formatted expression from the compiled results.
 
@@ -2636,6 +2704,8 @@ class FlashANSR(BaseEstimator):
                 expression_infix=str(expression_infix),
                 skeleton_prefix=list(skeleton_prefix) if skeleton_prefix is not None else [],
                 constants=_best_constants(r),
+                constants_emitted=(list(r['constants_emitted'])
+                                   if r.get('constants_emitted') is not None else None),
                 log_prob=float(r.get('log_prob', float('nan'))),
                 score=float(r.get('score', float('nan'))),
                 fvu=float(r.get('fvu', float('nan'))),
