@@ -80,7 +80,7 @@ def canonicalize_beam(
     except ValueError:
         return tuple(tokenizer.constantify_expression(seq0)), None
 
-    decoded_expression = tokenizer.decode(expression_tokens, special_tokens='<constant>')
+    decoded_expression = tokenizer.decode_expression(expression_tokens)
     simplified_seq = seq0
     non_finite = False
     if simplipy_engine.is_valid(decoded_expression) and len(decoded_expression) > 1:
@@ -106,7 +106,7 @@ def canonicalize_beam(
         canon_expr_tokens, _, _ = tokenizer.extract_expression_from_beam(canonical_seq)
     except ValueError:
         return key, None
-    expression = tokenizer.decode(canon_expr_tokens, special_tokens='<constant>')
+    expression = tokenizer.decode_expression(canon_expr_tokens)
     # Validity gate ONLY (matches the deploy refine gate `is_valid(beam_decoded)`); do NOT reject len<=1 --
     # a bare single-variable expression (e.g. 'x15') is a legitimate, refinable candidate. The len>1 guard
     # above governs only whether to SIMPLIFY, not validity. A non-finite fold leaves through the SAME
@@ -710,6 +710,19 @@ class FlashANSRModel(nn.Module):
             numeric.insert(1, float("nan"))
         return tokens, numeric
 
+    def _has_numeric_channel(self) -> bool:
+        """True when this checkpoint's vocabulary carries the ieee754 mixed representation.
+
+        Cached: it is asked once per generation call and the tokenizer never changes under a
+        loaded model.
+        """
+        cached = getattr(self, '_numeric_channel_flag', None)
+        if cached is None:
+            from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
+            cached = IEEE754_START_TOKEN in self.tokenizer
+            self._numeric_channel_flag = cached
+        return bool(cached)
+
     def _resolve_generation_prefix(
         self,
         *,
@@ -724,7 +737,19 @@ class FlashANSRModel(nn.Module):
 
         if initial_tokens is not None:
             tokens = list(initial_tokens)
-            numeric = [float(value) for value in input_num] if input_num is not None else None
+            if input_num is not None:
+                numeric = [float(value) for value in input_num]
+            elif self._has_numeric_channel():
+                # A mixed-representation checkpoint was trained with input_num on EVERY instance,
+                # NaN-filled at non-payload positions, so the constant vector W*bits(NaN)+b was added
+                # at every position of every training sequence. Passing None instead skips the numeric
+                # embedding entirely and silently changes the model: measured on T16 with the prefix
+                # [<bos>, <expression>], the numeric channel present gives a well-formed 8-nibble span
+                # at log-prob -5.45, absent gives a span that runs past 8 nibbles and never closes, at
+                # -15.64 (max |logit diff| 5.43 after a single step). Default to what training emitted.
+                numeric = [float('nan')] * len(tokens)
+            else:
+                numeric = None
             return tokens, numeric
 
         if self.preprocessor is None:
@@ -1040,7 +1065,7 @@ class FlashANSRModel(nn.Module):
                                     # re-encode would destroy the emitted values the refiner's
                                     # verbatim init decodes from it (contract T11).
                                     mapped_candidate, candidate_span_values = self._map_ieee754_spans(candidate_expression)
-                                    candidate_expression_decoded = self.tokenizer.decode(mapped_candidate, special_tokens='<constant>')
+                                    candidate_expression_decoded = self.tokenizer.decode_expression(mapped_candidate)
 
                                     if not self.simplipy_engine.is_valid(candidate_expression_decoded) or len(candidate_expression_decoded) <= 1:
                                         n_pruned += 1
@@ -2062,7 +2087,7 @@ class FlashANSRModel(nn.Module):
         filtered_sequences: list[list[int]] = []
         filtered_scores: list[float] = []
         filtered_is_valid: list[bool] = []
-        seen_expressions: set[tuple[str, ...]] = set()
+        seen_expressions: set[tuple[tuple[str, ...], tuple[float, ...] | None]] = set()
 
         pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing", smoothing=0.0)
         for seq, score in pbar_post:
@@ -2079,7 +2104,7 @@ class FlashANSRModel(nn.Module):
             raw_expression = list(encoded_expression)
             mapped_expression, span_values = self._map_ieee754_spans(encoded_expression)
             encoded_expression = self.tokenizer.constantify_expression(mapped_expression)
-            expression = self.tokenizer.decode(encoded_expression, special_tokens='<constant>')
+            expression = self.tokenizer.decode_expression(encoded_expression)
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 if simplify is True:
@@ -2098,7 +2123,13 @@ class FlashANSRModel(nn.Module):
                             record_non_finite_drop()
                             continue
 
-                expression_tuple = tuple(expression)
+                # The dedup key carries the EMITTED VALUES, not just the value-erased skeleton.
+                # Keyed on the skeleton alone, three beams emitting 2.0 / 3.7 / -11.25 for the same
+                # `* <constant> x1` collapse to ONE survivor -- and to the first-SAMPLED one, since
+                # the score sort runs afterwards, so the model's most likely constant hypothesis was
+                # routinely discarded in favour of an unlikelier one. v23 vocabularies have no spans,
+                # so `span_values is None` reproduces the old key exactly.
+                expression_tuple = (tuple(expression), tuple(span_values) if span_values is not None else None)
                 if unique and expression_tuple in seen_expressions:
                     continue
 
@@ -2149,7 +2180,7 @@ class FlashANSRModel(nn.Module):
                 continue
             enc, _span_values = self._map_ieee754_spans(enc)
             enc = self.tokenizer.constantify_expression(enc)
-            expression = self.tokenizer.decode(enc, special_tokens='<constant>')
+            expression = self.tokenizer.decode_expression(enc)
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 out.append(expression)
         return out

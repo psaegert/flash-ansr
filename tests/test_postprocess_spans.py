@@ -90,14 +90,31 @@ def test_malformed_span_still_dropped(tokenizer, engine):  # type: ignore[no-unt
     assert seqs == []
 
 
-def test_dedup_is_by_skeleton_across_constant_values(tokenizer, engine):  # type: ignore[no-untyped-def]
+def test_distinct_constant_hypotheses_are_distinct_candidates(tokenizer, engine):  # type: ignore[no-untyped-def]
+    """Dedup keys on (skeleton, emitted values) -- NOT on the value-erased skeleton.
+
+    Under contract T11 the emitted constants are the refiner's verbatim init, so two beams that
+    share a skeleton but predict different constants are genuinely different candidates: they seed
+    different optimizations and can reach different optima. Keyed on the skeleton alone they
+    collapsed to ONE survivor, and to the first-SAMPLED one -- the score sort runs afterwards -- so
+    the model's most likely constant hypothesis was routinely thrown away for an unlikelier one.
+    """
     host = _Host(tokenizer, engine)
     both = [_carrier(tokenizer, 2.0), _carrier(tokenizer, 3.0)]
     seqs, _, _ = host._postprocess_sampled(both, [-1.0, -2.0])
-    assert len(seqs) == 1  # same skeleton -> deduped, first (best-scored) survives
-    assert _recover_values(tokenizer, seqs[0]) == [2.0]
+    assert len(seqs) == 2
+    assert sorted(_recover_values(tokenizer, s)[0] for s in seqs) == [2.0, 3.0]
     seqs, _, _ = host._postprocess_sampled(both, [-1.0, -2.0], unique=False)
     assert len(seqs) == 2
+
+
+def test_identical_constant_hypotheses_still_collapse(tokenizer, engine):  # type: ignore[no-untyped-def]
+    """The dedup still fires -- it is the VALUE ERASURE that was wrong, not the dedup."""
+    host = _Host(tokenizer, engine)
+    twice = [_carrier(tokenizer, 2.0), _carrier(tokenizer, 2.0)]
+    seqs, _, _ = host._postprocess_sampled(twice, [-1.0, -2.0])
+    assert len(seqs) == 1
+    assert _recover_values(tokenizer, seqs[0]) == [2.0]
 
 
 def test_chunked_key_collector_maps_spans(tokenizer, engine):  # type: ignore[no-untyped-def]

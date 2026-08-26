@@ -221,7 +221,7 @@ def beam_search_with_compaction(
         mapped, _values = replace_ieee754_spans_with_constants(
             expression_tokens, start_id=open_id, end_id=close_id,
             nibble_ids=nibble_ids, constant_id=constant_id)
-        decoded = tokenizer.decode(mapped, special_tokens='<constant>')
+        decoded = tokenizer.decode_expression(mapped)
         registrable = bool(model.simplipy_engine.is_valid(decoded)) and len(decoded) > 1
         validity_cache[key] = registrable
         return registrable

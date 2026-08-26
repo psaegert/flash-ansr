@@ -19,6 +19,14 @@ class Tokenizer:
     special_tokens : list[str], optional
         The special tokens to add to the vocabulary, by default None
     '''
+    #: Vocabulary entries that sit in the SPECIAL-token section but are legitimate expression
+    #: CONTENT: the model is trained to emit them and simplipy accepts them as nullary operators.
+    #: `decode(..., special_tokens='<constant>')` silently deleted `np.pi`/`np.e` from every
+    #: candidate, leaving an arity-short token list that the validity gate then rejected without a
+    #: counter -- so the pipeline was structurally incapable of ever returning a pi- or e-bearing
+    #: expression, on any checkpoint or catalog.
+    EXPRESSION_SPECIAL_TOKENS: tuple[str, ...] = ('<constant>', 'np.pi', 'np.e')
+
     def __init__(self, vocab: list[str], special_tokens: list[str] | None = None) -> None:
         self.special_tokens = special_tokens or ["<pad>", "<bos>", "<eos>", "<unk>", "<cls>", "<mask>", "<constant>"]
         self.vocab = self.special_tokens + vocab
@@ -131,6 +139,16 @@ class Tokenizer:
         tokens = [token for token in tokens if token not in self.special_tokens or token in special_tokens]
 
         return tokens
+
+    def decode_expression(self, indices: list[int] | torch.Tensor) -> list[str]:
+        """Decode to an EXPRESSION token list, keeping every special that is expression content.
+
+        The right decode for anything that will be handed to simplipy (validity, simplification,
+        refinement): it keeps `<constant>` and, unlike ``decode(special_tokens='<constant>')``,
+        also `np.pi` / `np.e`, which the tokenizer files list among the special tokens.
+        """
+        keep = [token for token in self.EXPRESSION_SPECIAL_TOKENS if token in self.token2idx]
+        return self.decode(indices, special_tokens=keep)
 
     def __len__(self) -> int:
         '''
