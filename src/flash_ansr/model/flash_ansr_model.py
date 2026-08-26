@@ -1143,8 +1143,13 @@ class FlashANSRModel(nn.Module):
                         reindex = torch.cat([reindex, reindex.new_zeros(beam_width - len(reindex))])
                     kv_cache = [
                         (
-                            (lc[0][0][reindex].clone(), lc[0][1][reindex].clone()),
-                            (lc[1][0][reindex].clone(), lc[1][1][reindex].clone()),
+                            # No .clone(): indexing with a long tensor ALREADY allocates fresh
+                            # storage, so the clone copied a private tensor a second time -- 12
+                            # extra copies per step (4 tensors x 3 layers). At beam_width=64 /
+                            # max_len=236 the cross half alone is ~37.7 MB per gather, on every one
+                            # of up to 234 steps.
+                            (lc[0][0][reindex], lc[0][1][reindex]),
+                            (lc[1][0][reindex], lc[1][1][reindex]),
                         )
                         for lc in step_kv_cache
                     ]

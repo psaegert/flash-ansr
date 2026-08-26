@@ -154,7 +154,14 @@ class Attention(nn.Module):
         else:
             raise ValueError("Either key_value or past_key_value must be provided")
 
-        # Ensure K/V batch dim matches Q (handles encoder memory broadcast)
+        # Ensure K/V batch dim matches Q (handles encoder memory broadcast).
+        #
+        # The `.contiguous()` looks like pure waste -- the encoder memory has batch 1, so every
+        # widened row is identical, and the static decode path at :250 keeps the stride-0 view.
+        # It was tried: dropping it here measured SLOWER on both decode paths (sampling c=256
+        # 5.63 -> 5.72 s, beam w=32 1.39 -> 1.42 s, min of 3, CPU/4 threads, 2026-08-26). SDPA
+        # takes a faster kernel on real contiguous storage than on a broadcast view, and that
+        # outweighs the copy at these shapes. Kept deliberately; re-measure before removing.
         if k.shape[0] != batch_size_q:
             k = k.expand(batch_size_q, -1, -1, -1).contiguous()
             v = v.expand(batch_size_q, -1, -1, -1).contiguous()
