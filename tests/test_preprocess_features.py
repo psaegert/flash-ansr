@@ -308,7 +308,7 @@ def test_serialize_prompt_prefix(
     assert all(mask[i] is True for i in range(1, len(tokens) - 1))
     assert mask[-1] is False  # <expression>
 
-    # The term collections are gone with v23 support: documented as constraining generation,
+    # The term collections are withdrawn: documented as constraining generation,
     # emitting tokens no v24 checkpoint saw, enforced nowhere at decode time.
     assert serialized['prompt_metadata'] == {}
 

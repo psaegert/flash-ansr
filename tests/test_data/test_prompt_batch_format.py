@@ -4,6 +4,7 @@ import torch
 
 from flash_ansr.data import FlashANSRDataset
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
 
 
 class _DummyCatalog:
@@ -25,7 +26,8 @@ class _DummySource:
 def test_collate_preserves_prompt_metadata_alignment() -> None:
     tokenizer = Tokenizer(
         vocab=['x1', 'x2', 'x3'],
-        special_tokens=['<pad>', '<bos>', '<eos>', '<prompt>', '</prompt>', '<expression>'],
+        special_tokens=['<pad>', '<bos>', '<eos>', '<expression>', '</expression>',
+                        *IEEE754_SPECIAL_TOKENS, '<float>'],
     )
     with FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding='zero') as dataset:
 

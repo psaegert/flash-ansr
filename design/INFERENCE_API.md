@@ -51,10 +51,9 @@ benchmark nobody can check.
    tagged prefix tokens and user variable names; internally everything is the tagged
    canonical over `x1..xN`, and outputs map back.
 4. **v24 only, refused at load.** A checkpoint whose vocabulary lacks `<ieee754>` is refused by
-   `FlashANSR.load` with the reason. Supporting v23 meant a second path in the serializer, the
-   span mapper and the numeric channel, and the v23 branch repeatedly leaked into the v24 one.
-   Within v24, a verb whose block is absent raises `CapabilityUnavailable` at CALL time, before
-   the encoder runs — never mid-decode.
+   `FlashANSR.load` with the reason: one serialization, one span mapper, one numeric channel, no
+   second path for anything to leak across. Within v24, a verb whose block is absent raises
+   `CapabilityUnavailable` at CALL time, before the encoder runs — never mid-decode.
 5. **Every predicted value is a DISTRIBUTION.** A value is eight hex nibbles and each nibble is a
    softmax draw, so one decode is one sample. The verbs draw `n_samples` (default 32) and return
    `ValueDistribution` — median, q05/q95, mode, agreement — never a float. Greedy decoding returns
@@ -91,7 +90,7 @@ recoveries; it stays configurable because that can change with a better checkpoi
 `refine=False` returns the model's verbatim emitted constants with no optimizer pass, and
 selects candidates by support FVU.
 
-`Candidate` gains `.constants_emitted` — the verbatim span values, `None` for v23 beams —
+`Candidate` gains `.constants_emitted` — the verbatim span values, `None` for a span-free beam —
 alongside the refined `.constants`. The model's own constant prediction is currently
 decoded, used as an optimizer seed, and then discarded; this is the field that stops
 throwing it away.
@@ -133,8 +132,8 @@ plus per-slot nibble logits so callers can read confidence. Grammar-forced decod
 `complexity` is load-bearing in two places now — a `fit` option and its own verb — so the
 four defects against it are blocking, not cosmetic:
 
-* it emits a v23 `<prompt>` / `</prompt>` block carrying **zero training signal** in this
-  checkpoint (measured: ~32% weaker μ conditioning than the trained block);
+* it emitted a `<prompt>` / `</prompt>` wrapper carrying **zero training signal** in this
+  checkpoint (measured: ~32% weaker μ conditioning than the trained bare block);
 * it writes the caller's raw number onto the numeric channel where training wrote simplipy
   **μ**, which runs 6,000–1,000,000+ — a ~4-orders-of-magnitude unit mismatch;
 * the `complexity` a result REPORTS is a token count, so feeding a result back into a

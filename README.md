@@ -39,21 +39,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import (
   FlashANSR,
   SoftmaxSamplingConfig,
-  install_model,
-  get_path,
 )
 
-# Select a model from Hugging Face
-# https://huggingface.co/models?search=flash-ansr-v23.0
-MODEL = "psaegert/flash-ansr-v23.0-120M"
-
-# Download the latest snapshot of the model
-# By default, the model is downloaded to the directory `./models/` in the package root
-install_model(MODEL)
+# Point at a checkpoint directory
+CHECKPOINT = "path/to/checkpoint"
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
 model = FlashANSR.load(
-  directory=get_path('models', MODEL),
+  directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
   length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
@@ -84,7 +77,7 @@ print(len(result.ledger))                              # all candidates consider
 
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/demo.ipynb).
 
-**Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/) and browse the pretrained [model collection on Hugging Face](https://huggingface.co/models?search=flash-ansr-v23.0).
+**Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/).
 
 # Inference speed
 

@@ -247,9 +247,9 @@ class Attention(nn.Module):
         ca_holder: list,
     ) -> torch.Tensor:
         """Cross-attention against the STATIC encoder memory: K/V are computed once and cached in
-        ``ca_holder`` (a 1-element list), reused every decode step. v23.0 cross-attn uses no RoPE."""
+        ``ca_holder`` (a 1-element list), reused every decode step. Cross-attn uses no RoPE."""
         if self.use_rope:
-            raise NotImplementedError("static cross-attention with RoPE is not supported (v23.0 cross is RoPE-free)")
+            raise NotImplementedError("static cross-attention with RoPE is not supported (cross-attn is RoPE-free)")
         batch_size_q, seq_len_q, _ = query.shape
         cached = ca_holder[0]
         if cached is None:
@@ -387,7 +387,7 @@ class TransformerDecoderBlock(nn.Module):
         position: int,
         attn_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Pre-norm static decode step (v23.0 path only: pre-norm, RoPE-self; XSA supported;
+        """Pre-norm static decode step (pre-norm, RoPE-self only; XSA supported;
         the caller capability-gates the rest). Mirrors the pre-norm branch of ``_forward`` but with
         position-indexed in-place KV writes instead of the dynamic cat-grow + active-row gather."""
         if self.norm_position != "pre":

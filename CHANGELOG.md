@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`configs/VERSIONS.md` compatibility register.** Records that every shipped (pre-v24) config
-  works only with flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`) — this line targets v24
-  configs only — with the two concrete reasons (the retired `dev_7-3` engine pin, and the removal
-  of v23-era model support in 0.13.0), plus a note that the `v23.0-20M-A-Y{1,10,50K}` bundles are
-  now near-duplicates of the `-A-S*` arms after their SymPy arm was migrated to `simplify: true`.
-  No config is deleted. `docs/training.md` and `docs/evaluation.md` point at the register.
 - **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
   `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
   sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
@@ -44,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from now on.
 
 ### Fixed
+- **Raw batches held past their turn were a use-after-free, and it segfaulted.** The tensors
+  `FlashANSRDataset.iterate` yields VIEW the streaming pool's shared-memory ring and are valid only
+  until the pool refills that block. `Trainer` kept two of them by reference — `first_raw_batch` in
+  `_validate_step` and `_last_raw_train_batch` in `_train_step` — for the T12 paired constant-span
+  eval, then read them after the loop. That dereferences unmapped memory: a hard `SIGSEGV`,
+  reproducible in twenty lines (keep batch 0, iterate twice, read `batch["x_tensors"][0]`), not an
+  exception anything could catch. The paired eval now takes a copy at capture (`_detach_raw_batch`),
+  and `tests/test_data/test_raw_batch_lifetime.py` pins the contract. The crash was invisible
+  because the eval is gated on `constant_representation == 'ieee754_mixed'` and that was not the
+  default; making it the default made the segfault deterministic.
 - **Encoder padding masks are coerced to `bool` (with a warning) at the `SetTransformer` entry.**
   `scaled_dot_product_attention` interprets float masks as *additive logit biases*, so a float 0/1
   padding mask silently masked nothing. The standard pipeline (`FlashANSRDataset.collate`) already
@@ -53,6 +57,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
 
 ### Removed
+- **v23 is gone from this line entirely (owner ruling, 2026-08-26): one generation, one code path.**
+  `constant_representation` had `'v23'` as its DEFAULT in the data layer, so a training config that
+  omitted the key silently produced v23 data — the ieee754 format the whole v24 line rests on was
+  opt-in. `'ieee754_mixed'` is now the only legal value and the default; a tokenizer without the span
+  tokens is refused at dataset construction. The dead conditionals that guarded it are gone with it:
+  the byte-identical passthrough in `serialize_constant_tokens`, the four `!= 'ieee754_mixed'`
+  preconditions in `FlashANSRDataset.__init__`, the `mixed_constants` branches in the streaming
+  worker, and the unreachable `if IEEE754_START_TOKEN in self.tokenizer` span-mapping branch in
+  `_fit_refine` (`_validate_checkpoint` has refused such a vocabulary at load since it was added).
+- **The v23 model bundles and their register are deleted**: `configs/v23.0-*`, `configs/v23.2-120M`
+  and `configs/VERSIONS.md` — 177 files. They pinned the retired generation-1 `dev_7-3` engine and
+  produced checkpoints this line cannot load; `git` keeps them for anyone who needs the recipes under
+  a pinned `flash-ansr<0.13`. `configs/v24-template/tokenizer.yaml` drops the eight tokens no v24 run
+  ever trained on (`<prompt>`, `</prompt>`, and the six `<allowed_term>` / `<include_term>` /
+  `<exclude_term>` delimiters). Trained-run tokenizers (`v24.0-T13`..`T16`) are untouched: their
+  vocabularies are pinned by their checkpoints.
 - **The `simplify='sympy'` simplification path is gone (owner ruling, 2026-08-18).** SymPy
   simplification was an *ablation* of the product simplifier (SimpliPy), and the standing rule is that
   production code stays clean and minimal: experiments and ablations branch off it or patch it, they
@@ -69,9 +89,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `simplify` in a *catalog* config is symbolic-data's parameter, which flash-ansr only passes through;
   symbolic-data keeps its own `simplify='sympy'` path and is unchanged. `FlashANSRDataset.from_config`
   now raises rather than build a data source that routes into it.
-- **Shipped configs migrated**: `configs/v23.0-20M-A-Y{1,10,50K}/catalog_train.yaml` — the SymPy
-  ablation arms — move from `simplify: 'sympy'` to `simplify: true`. They are otherwise identical to
-  the corresponding `-A-S*` arms except for `max_tries`.
 
 ## [0.13.0] - 2026-08-18
 

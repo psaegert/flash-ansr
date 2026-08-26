@@ -285,9 +285,9 @@ class Refiner:
             self._all_constants_values.append((constants_values, constants_cov, self.loss))  # type: ignore
             # A constant-free candidate IS a completed fit: judge it by its loss. This
             # early return used to leave valid_fit at its __init__ False, so every
-            # zero-constant beam was silently discarded by the refinement workers --
-            # v23 masked the bug (its beams nearly always carry constants); v24's
-            # tagged emissions surface it as whole-problem ConvergenceErrors.
+            # zero-constant beam was silently discarded by the refinement workers.
+            # Beams that carry constants mask the bug; tagged emissions surface it as
+            # whole-problem ConvergenceErrors.
             self.valid_fit = bool(np.isfinite(self.loss))
 
             return self

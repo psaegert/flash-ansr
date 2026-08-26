@@ -1,8 +1,0 @@
-source:
-  catalog: "v23-val"
-  sampling:
-    n_support: prior
-    n_validation: 0
-    noise: 0.0
-tokenizer: './tokenizer.yaml'
-padding: 'zero'

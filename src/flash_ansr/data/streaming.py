@@ -24,7 +24,6 @@ from flash_ansr.data.serialization import (
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
-    CONSTANT_REPRESENTATION_V23,
     POINT_END_TOKEN,
     POINT_START_TOKEN,
     PREDICT_Y_END_TOKEN,
@@ -87,7 +86,7 @@ class WorkerConfig:
     max_seq_len: int
     preprocessor_prompt_config: dict[str, Any] | None
     unconditional_prob: float = 0.0
-    constant_representation: str = CONSTANT_REPRESENTATION_V23
+    constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED
     target_dialect: str = TARGET_DIALECT_EXPLICIT
     tail_zero_bits: int = 0
     complexity_block: dict[str, Any] | None = None
@@ -104,7 +103,7 @@ class SharedMemoryWorkerPool:
         source: ProblemSource,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
-        constant_representation: str = CONSTANT_REPRESENTATION_V23,
+        constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         tail_zero_bits: int = 0,
         complexity_block: dict[str, Any] | None = None,
@@ -356,18 +355,16 @@ def _producer_worker(
     eos_token_id = tokenizer["<eos>"]
     has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
 
-    # v24 ieee754_mixed constants representation: serialize each <constant> occurrence per-constant
-    # independently as an expanded <ieee754> hex-nibble span or a compact <float> (value on the numeric
-    # channel), driven by this worker's rng. 'v23' (default) keeps behavior byte-identical.
-    mixed_constants = worker_config.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED
-    if mixed_constants:
-        ieee754_start_id = int(tokenizer[IEEE754_START_TOKEN])
-        ieee754_end_id = int(tokenizer[IEEE754_END_TOKEN])
-    # v24 target dialect (contract A3): targets are the engine's TAGGED CANONICAL output,
+    # ieee754_mixed constants representation: serialize each <constant> occurrence per-constant
+    # independently as an expanded <ieee754> hex-nibble span or a compact <float> (value on the
+    # numeric channel), driven by this worker's rng.
+    ieee754_start_id = int(tokenizer[IEEE754_START_TOKEN])
+    ieee754_end_id = int(tokenizer[IEEE754_END_TOKEN])
+    # Target dialect (contract A3): targets are the engine's TAGGED CANONICAL output,
     # produced by simplify IN the tagged dialect per problem (literals fold canonically, so
     # it cannot be cached per skeleton). 'explicit' (default) keeps today's prefix targets.
     tagged_targets = worker_config.target_dialect == TARGET_DIALECT_TAGGED
-    # v24 task blocks: <complexity> conditioning/prediction and <predict_y> auxiliary
+    # Task blocks: <complexity> conditioning/prediction and <predict_y> auxiliary
     # blocks (validated at dataset init: mixed constants + wrapper/block tokens present).
     # The harness owns the grammar; the model owns the content: every opener / format
     # selector / <float> value position is loss-masked (task_mask True), supervision
@@ -569,56 +566,52 @@ def _producer_worker(
                 placeheld_values = ([float(v) for v, ph in zip(literals, placeheld) if ph]
                                     if collected_body is None else [])
 
-                if mixed_constants:
-                    if collected_body is not None:
-                        # Restructured flagged target: the engine's collected output IS
-                        # the emission format. mask_literals_positional is 1:1 and
-                        # leaves the engine's <constant> placeholders alone, so
-                        # position p tells the two kinds apart: a value slot (was a
-                        # kept literal) vs a placeholder (stays, as a None entry).
-                        try:
-                            skeleton_mm, kept = mask_literals_positional(
-                                simplipy_engine, collected_body, keep_specials=True)
-                        except (NonFiniteExpressionError, ValueError):
-                            # A collected body the extractor refuses (a masked fold
-                            # minting a non-finite spelling): fall back unmasked
-                            # rather than kill the worker (audit 2026-08-24).
-                            collected_body = None
-                            mask_mode = None
-                            placeheld = [False] * n_slots
-                    if collected_body is not None:
-                        kept_iter = iter(kept)
-                        collected_opt: list[float | None] = []
-                        for original, slot in zip(collected_body, skeleton_mm):
-                            if slot == "<constant>":
-                                collected_opt.append(None if original == "<constant>"
-                                                     else float(next(kept_iter)))
-                        assert next(kept_iter, None) is None, "positional value alignment broke"
-                        serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton_mm, collected_opt,
-                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                        )
-                    elif any(placeheld):
-                        # Placeholders ARE simplipy's <constant>: the serializer's
-                        # None entries keep them, value entries fill the kept slots.
-                        constants_opt: list[float | None] = [
-                            None if ph else float(v) for v, ph in zip(literals, placeheld)]
-                        serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton, constants_opt,
-                            representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                        )
-                    else:
-                        # Raises on non-finite constants: the generator must never emit them.
-                        serialized_tokens, body_numeric = serialize_constant_tokens(
-                            skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                            rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                        )
-                    tokens_to_encode = serialized_tokens
+                if collected_body is not None:
+                    # Restructured flagged target: the engine's collected output IS
+                    # the emission format. mask_literals_positional is 1:1 and
+                    # leaves the engine's <constant> placeholders alone, so
+                    # position p tells the two kinds apart: a value slot (was a
+                    # kept literal) vs a placeholder (stays, as a None entry).
+                    try:
+                        skeleton_mm, kept = mask_literals_positional(
+                            simplipy_engine, collected_body, keep_specials=True)
+                    except (NonFiniteExpressionError, ValueError):
+                        # A collected body the extractor refuses (a masked fold
+                        # minting a non-finite spelling): fall back unmasked
+                        # rather than kill the worker (audit 2026-08-24).
+                        collected_body = None
+                        mask_mode = None
+                        placeheld = [False] * n_slots
+                if collected_body is not None:
+                    kept_iter = iter(kept)
+                    collected_opt: list[float | None] = []
+                    for original, slot in zip(collected_body, skeleton_mm):
+                        if slot == "<constant>":
+                            collected_opt.append(None if original == "<constant>"
+                                                 else float(next(kept_iter)))
+                    assert next(kept_iter, None) is None, "positional value alignment broke"
+                    serialized_tokens, body_numeric = serialize_constant_tokens(
+                        skeleton_mm, collected_opt,
+                        representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                    )
+                elif any(placeheld):
+                    # Placeholders ARE simplipy's <constant>: the serializer's
+                    # None entries keep them, value entries fill the kept slots.
+                    constants_opt: list[float | None] = [
+                        None if ph else float(v) for v, ph in zip(literals, placeheld)]
+                    serialized_tokens, body_numeric = serialize_constant_tokens(
+                        skeleton, constants_opt,
+                        representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                    )
                 else:
-                    tokens_to_encode = list(skeleton)
-                    body_numeric = None
+                    # Raises on non-finite constants: the generator must never emit them.
+                    serialized_tokens, body_numeric = serialize_constant_tokens(
+                        skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
+                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
+                    )
+                tokens_to_encode = serialized_tokens
                 if has_expression_wrappers:
                     tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
                     if body_numeric is not None:
@@ -834,7 +827,7 @@ def _producer_worker(
                 body_ids = tokenizer.encode(tokens_to_encode, oov=tokenizer_oov)
                 input_ids = [bos_token_id, *body_ids, eos_token_id]
                 if len(input_ids) > max_seq_len:
-                    if mixed_constants and truncation_cuts_ieee754_span(
+                    if truncation_cuts_ieee754_span(
                             input_ids, max_seq_len, ieee754_start_id, ieee754_end_id):
                         # Truncation must never cut inside an <ieee754> span: drop the
                         # instance (like other rejected samples) and count it.
@@ -933,10 +926,9 @@ def _producer_worker(
                 payload["n_collection_restructured"] = n_collection_restructured
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
-            if mixed_constants:
-                # Instances dropped because truncation would have cut inside an <ieee754> span
-                # while filling THIS batch (mixed representation only).
-                payload["n_dropped_truncation"] = n_dropped_truncation
+            # Instances dropped because truncation would have cut inside an <ieee754> span
+            # while filling THIS batch.
+            payload["n_dropped_truncation"] = n_dropped_truncation
             if tagged_targets:
                 # Instances whose tagged canonicalization folded a degenerate sub-expression
                 # to a non-finite spelling while filling THIS batch (tagged targets only).

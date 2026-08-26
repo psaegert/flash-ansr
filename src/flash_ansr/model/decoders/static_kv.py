@@ -11,7 +11,7 @@ IN-PLACE at slot `position`, and attention reads the full buffer under an explic
 > position masked). Cross-attention K/V (from the static encoder memory) are computed once and reused.
 Shapes are then identical every step -> one CUDA graph captures the per-step forward (Stage 2).
 
-Scope: the deployed v23.0 decoder path only -- pre-norm, RoPE on self-attention (XSA supported). The
+Scope: the deployed decoder configuration only -- pre-norm, RoPE on self-attention (XSA supported). The
 static decode is gated by the model-config capability check (see the build
 plan `experimental/eval/quantization/DECODE_STATIC_GRAPH_PLAN.md`). Quality bar = logits-allclose to
 the dynamic cat-grow path at atol 1e-5 (Stage-1 gate).

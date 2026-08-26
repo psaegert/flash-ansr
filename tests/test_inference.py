@@ -20,13 +20,14 @@ from flash_ansr import (
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL = "psaegert/flash-ansr-v23.0-3M"
+#: The published checkpoint these end-to-end tests run against. None until a v24
+#: model is on the Hub; set it and the class below un-skips itself.
+PUBLISHED_MODEL: str | None = None
+MODEL = PUBLISHED_MODEL or ""
 
 
-# The published v23 models pin the generation-1 dev_7-3 engine, which every released
-# simplipy >= 0.12 refuses to load, and their vocabulary emits the retired hyper-operators
-# (pow2/mult2/...). Re-enable by pointing MODEL at a v24 checkpoint once published.
-@pytest.mark.skip(reason="no supported published model until flash-ansr v24.0; v23 models unsupported per owner ruling 2026-08-17")
+# This harness serves v24+ checkpoints only, and none is published yet.
+@pytest.mark.skipif(PUBLISHED_MODEL is None, reason="no published v24 checkpoint to run against")
 class TestInference(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

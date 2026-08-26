@@ -10,12 +10,12 @@ This also pulls in `symbolic-data` and `simplipy` automatically, so no manual se
 
 ## Download a checkpoint
 ```bash
-flash_ansr install psaegert/flash-ansr-v23.0-120M
+flash_ansr install <hf-repo>
 ```
 By default models are cached under `./models/` relative to the package root and can be uninstalled with `flash_ansr remove <repo>`.
-Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`.
+Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`, and `flash_ansr.get_path('models', repo)` resolves the cached directory.
 
-See [all available models on Hugging Face](https://huggingface.co/models?search=flash-ansr-v23.0):
+`FlashANSR.load` serves v24 checkpoints: a checkpoint whose vocabulary lacks the `<ieee754>` constant-span tokens is refused at load.
 
 ## Minimal inference Example
 ```python
@@ -26,21 +26,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from flash_ansr import (
   FlashANSR,
   SoftmaxSamplingConfig,
-  install_model,
-  get_path,
 )
 
-# Select a model from Hugging Face
-# https://huggingface.co/models?search=flash-ansr-v23.0
-MODEL = "psaegert/flash-ansr-v23.0-120M"
-
-# Download the latest snapshot of the model
-# By default, the model is downloaded to the directory `./models/` in the package root
-install_model(MODEL)
+# Point at a checkpoint directory
+CHECKPOINT = "path/to/checkpoint"
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default in v0.5)
 model = FlashANSR.load(
-  directory=get_path('models', MODEL),
+  directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
   length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)

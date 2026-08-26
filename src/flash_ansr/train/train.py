@@ -276,6 +276,30 @@ def _binary_auprc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     return float((precision * hits).sum() / hits.sum())
 
 
+def _detach_raw_batch(batch: "dict[str, Any]") -> "dict[str, Any]":
+    """Copy the raw-batch fields the paired constant eval reads, off the worker ring.
+
+    ``FlashANSRDataset.iterate`` yields tensors that VIEW the streaming pool's shared-memory
+    ring: they are valid only until the pool refills that block. Holding the reference and
+    reading it after the loop dereferences unmapped memory -- a hard SIGSEGV, reproducible in
+    twenty lines (keep batch 0, iterate twice, read ``batch["x_tensors"][0]``). The paired
+    eval is the only consumer that outlives its batch, so it takes a copy at capture time.
+    """
+    kept: dict[str, Any] = {}
+    for key in ("skeleton", "constants", "x_tensors", "y_tensors", "data_attn_mask"):
+        value = batch.get(key)
+        if value is None:
+            continue
+        if torch.is_tensor(value):
+            kept[key] = value.detach().clone()
+        elif isinstance(value, (list, tuple)):
+            kept[key] = [item.detach().clone() if torch.is_tensor(item) else copy.deepcopy(item)
+                         for item in value]
+        else:
+            kept[key] = copy.deepcopy(value)
+    return kept
+
+
 class Trainer:
     """Manage end-to-end training for a ``FlashANSRModel``.
 
@@ -910,8 +934,9 @@ class Trainer:
         self.model.train()
 
         # kept for the SYMMETRIC train-side paired-constant eval at validation time (owner ruling:
-        # every val metric has a train counterpart and vice versa)
-        self._last_raw_train_batch = batch
+        # every val metric has a train counterpart and vice versa). COPIED off the worker ring:
+        # the raw tensors are views the pool recycles (see _detach_raw_batch).
+        self._last_raw_train_batch = _detach_raw_batch(batch)
 
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
@@ -1078,8 +1103,9 @@ class Trainer:
                     max_seq_len=self.decoder_max_seq_len):
                 if first_raw_batch is None:
                     # Kept RAW (pre-collate) for the paired constant-span eval below: it rebuilds
-                    # both serialization views from the skeleton/constants metadata.
-                    first_raw_batch = batch
+                    # both serialization views from the skeleton/constants metadata. COPIED, never
+                    # referenced -- the tensors view the worker ring (see _detach_raw_batch).
+                    first_raw_batch = _detach_raw_batch(batch)
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
                 self._apply_task_mask(batch)
@@ -1088,7 +1114,7 @@ class Trainer:
 
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
                     # val keeps unconditional_prob=0.0 -> condition_mask is all-True (== None == fully
-                    # conditioned), so val CE stays a pure conditioned metric comparable to prior v23 runs.
+                    # conditioned), so val CE stays a pure conditioned metric comparable across runs.
                     logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device), condition_mask=batch.get('condition_mask', None))
                     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                     flat_labels = batch['labels'].reshape(-1)

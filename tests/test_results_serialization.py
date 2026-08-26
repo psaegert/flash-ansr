@@ -108,9 +108,13 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     assert entry["fits"] == [(np.array([3.0]), None, 0.0)]
 
 
-@pytest.mark.skip(reason="no supported published model until flash-ansr v24.0; v23 models unsupported per owner ruling 2026-08-17")
+#: See tests/test_inference.py: no v24 checkpoint is published yet.
+PUBLISHED_MODEL: str | None = None
+
+
+@pytest.mark.skipif(PUBLISHED_MODEL is None, reason="no published v24 checkpoint to run against")
 def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
-    model_repo = "psaegert/flash-ansr-v23.0-3M"
+    model_repo = PUBLISHED_MODEL or ""
     install_model(model_repo)
     model_dir = get_path("models", model_repo)
 

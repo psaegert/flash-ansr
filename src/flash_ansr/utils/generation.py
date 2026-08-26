@@ -482,7 +482,7 @@ def suggest_batch_size_dims(
     (``free_bytes is None``) -> a conservative floor (<=128). An explicit int ``batch_size`` bypasses this.
     """
     # analytic self-attn static-KV bytes per candidate row (K and V, all layers/heads, full max_len).
-    # dtype_bytes defaults to 4 (fp32) -- the deployed v23.0 dtype; under half/autocast pass dtype_bytes=2.
+    # dtype_bytes defaults to 4 (fp32) -- the deployed dtype; under half/autocast pass dtype_bytes=2.
     kv_floor = 2 * n_layers * n_heads * head_dim * max_len * dtype_bytes
     # Empirical overhead over the KV floor (the floor under-counts cross-attn KV + activations + workspace).
     # CALIBRATED AT A SINGLE POINT (GATE-1e, fp32 1B: static 37/26~=1.4 -> 1.6; dynamic 107/26~=4.1 -> 4.2).

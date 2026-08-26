@@ -1,8 +1,8 @@
-"""Acceptance tests T0/T2/T3/T4 for the v24 `ieee754_mixed` constants representation.
+"""Acceptance tests T2/T3/T4 for the `ieee754_mixed` constants representation.
 
 Pre-registered integration contract, lane C1 (vocabulary + data serialization with
-per-constant 50/50 mixing + loss mask), gated behind the `constant_representation`
-config key ('v23' default = byte-identical to current behavior).
+per-constant 50/50 mixing + loss mask). `ieee754_mixed` is the only representation
+this generation serves, and the default of the `constant_representation` config key.
 
 T1 (codec round-trip) lives in tests/test_ieee754.py.
 
@@ -250,22 +250,6 @@ def test_v24_template_encodes_a_tagged_target_end_to_end(gen2_engine, v24_config
     assert saw_span, "the probes must exercise at least one literal-bearing span"
 
 
-def test_v23_tokenizer_configs_are_untouched() -> None:
-    """Rule 4: v23-era behavior stays byte-identical -- the new format lives ONLY in the
-    v24 template."""
-    for name in ("v23.0-120M", "v23.0-20M", "v23.0-3M", "v23.0-1B"):
-        config = load_config(get_path("configs", name, "tokenizer.yaml"))
-        specials = list(config["special_tokens"])
-        # The retired literals are still there ...
-        for literal in ("0", "1", "(-1)"):
-            assert literal in specials, (name, literal)
-        # ... and no v24 constants-format token ever entered a v23 config.
-        for token in (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS, "<b0>", "<b1>"):
-            assert token not in specials, (name, token)
-        # v23 keeps its generation-1 sugar operator set.
-        assert "pow2" in config["operators"] and "mult3" in config["operators"]
-
-
 # ---------------------------------------------------------------------------
 # T3 — mixing policy (per-constant independent Bernoulli(0.5), seeded RNG)
 # ---------------------------------------------------------------------------
@@ -400,21 +384,12 @@ def test_t3_constant_count_mismatch_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# T0 — regression: absent / 'v23' representation is byte-identical to today
+# The representation gate, and collation under it
 # ---------------------------------------------------------------------------
 
-def test_t0_serialize_v23_is_identity() -> None:
-    from flash_ansr.data.serialization import serialize_constant_tokens
 
-    skeleton = ["+", "<constant>", "*", "<constant>", "x2"]
-    constants = [1.5, -2.5]
-    for kwargs in ({}, {"representation": "v23"}):
-        serialized, numeric = serialize_constant_tokens(skeleton, constants, **kwargs)
-        assert serialized == skeleton
-        assert all(math.isnan(v) for v in numeric)  # v23 numeric channel stays out-of-band
-
-
-def test_t0_dataset_defaults_to_v23() -> None:
+def test_representation_gate() -> None:
+    """ieee754_mixed is the default and the only legal value, and it demands its tokens."""
     tokenizer = Tokenizer(
         vocab=["x1", "x2", "x3"],
         special_tokens=["<pad>", "<bos>", "<eos>", "<constant>", "<expression>", "</expression>"],
@@ -429,42 +404,14 @@ def test_t0_dataset_defaults_to_v23() -> None:
         max_n_support = 4
         catalog = _DummyCatalog()
 
-    with FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero") as dataset:
-        assert dataset.constant_representation == "v23"
-
     with pytest.raises(ValueError):
         FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero",
                          constant_representation="not_a_representation")
 
-    # ieee754_mixed requires the new special tokens: fail fast on a v23 tokenizer.
-    with pytest.raises(ValueError):
-        FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed")
-
-
-def test_t0_streaming_output_unchanged_without_config_key(tokenizer: Tokenizer) -> None:
-    """With `constant_representation` absent the stream must look exactly like today."""
-    new_token_ids = {tokenizer[token] for token in NEW_SPECIAL_TOKENS}
-    float_id = tokenizer[COMPACT_TOKEN]
-    constant_id = tokenizer["<constant>"]
-    expected_keys = {"x_tensors", "y_tensors", "data_attn_mask", "input_ids", "constants",
-                     "skeleton", "skeleton_hash", "expression", "n_support", "input_num"}
-
-    with FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero") as dataset:
-        for batch in dataset.iterate(steps=2, batch_size=8):
-            assert set(batch.keys()) == expected_keys
-            for row, numeric, constants in zip(batch["input_ids"], batch["input_num"], batch["constants"]):
-                ids = [int(t) for t in row.tolist()]
-                # No v24 token ever appears in a v23 stream.
-                assert not (set(ids) & new_token_ids)
-                assert float_id not in ids
-                # The numeric channel carries the fitted values exactly at <constant>
-                # positions, in order — current (v23) behavior.
-                const_positions = [p for p, t in enumerate(ids) if t == constant_id]
-                finite_positions = [p for p, v in enumerate(numeric) if not math.isnan(v)]
-                assert finite_positions == const_positions
-                values = [numeric[p] for p in const_positions]
-                assert values == pytest.approx([float(c) for c in constants])
+    # The default IS ieee754_mixed, so a tokenizer without the span tokens is refused
+    # outright -- there is no older serialization to fall back to.
+    with pytest.raises(ValueError, match="ieee754_mixed"):
+        FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero")
 
 
 def test_t0_collate_labels_are_unmasked_shifted_inputs(tokenizer: Tokenizer) -> None:

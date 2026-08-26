@@ -1,12 +1,8 @@
-"""Constant serialization for training sequences (the v24 ``constant_representation`` gate).
+"""Constant serialization for training sequences (the ``constant_representation`` gate).
 
-``'v23'`` (the default) keeps today's behavior byte-identical: ``<constant>`` placeholder
-tokens stay in the sequence and the fitted values ride out-of-band on the parallel numeric
-channel (``input_num``), injected downstream by
-:func:`flash_ansr.utils.numeric.build_numeric_sequence`.
-
-``'ieee754_mixed'`` replaces each constant occurrence -- per constant independently with
-probability ``expanded_probability`` (default 0.5, seeded RNG) -- with one of two forms:
+``'ieee754_mixed'``, the only representation, replaces each constant occurrence -- per
+constant independently with probability ``expanded_probability`` (default 0.5, seeded RNG)
+-- with one of two forms:
 
 * EXPANDED (10 tokens): ``<ieee754>`` + 8 hex-nibble tokens + ``</ieee754>``; the numeric channel
   is NaN across the whole span (the value lives in the nibbles).
@@ -39,8 +35,8 @@ COMPACT_CONSTANT_TOKEN = "<float>"
 
 # v24 task-block grammar (owner ruling 2026-08-24): the harness owns the structure --
 # every opener/selector below is force-fed and loss-masked; the model owns content
-# nibbles and closing tags. <complexity>/<float> already exist in the v24 vocabulary
-# (v23 prompt lane); the predict_y tokens are new with this feature.
+# nibbles and closing tags. <complexity>/<float> already exist in the v24 vocabulary;
+# the predict_y tokens are new with this feature.
 COMPLEXITY_START_TOKEN = "<complexity>"
 COMPLEXITY_END_TOKEN = "</complexity>"
 PREDICT_Y_START_TOKEN = "<predict_y>"
@@ -79,9 +75,8 @@ PREDICT_CONSTANTS_TOKENS = (PREDICT_CONSTANTS_START_TOKEN, PREDICT_CONSTANTS_END
 COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
 
 #: Legal values of the ``constant_representation`` config key.
-CONSTANT_REPRESENTATION_V23 = "v23"
 CONSTANT_REPRESENTATION_IEEE754_MIXED = "ieee754_mixed"
-CONSTANT_REPRESENTATIONS = (CONSTANT_REPRESENTATION_V23, CONSTANT_REPRESENTATION_IEEE754_MIXED)
+CONSTANT_REPRESENTATIONS = (CONSTANT_REPRESENTATION_IEEE754_MIXED,)
 
 #: The tagged canonical dialect's delimiter set (verified against a live generation-2
 #: engine by the v24 template tests). ``<sub>`` and ``<div>`` are role markers inside
@@ -107,7 +102,7 @@ def serialize_constant_tokens(
     tokens: Sequence[str],
     constants: "Sequence[float] | np.ndarray",
     *,
-    representation: str = CONSTANT_REPRESENTATION_V23,
+    representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
     rng: np.random.Generator | None = None,
     expanded_probability: float = 0.5,
     expanded_mask: "Sequence[bool] | None" = None,
@@ -125,8 +120,7 @@ def serialize_constant_tokens(
         numeric channel, no rng draw consumed) -- the promptable-mask target format,
         where the policy's placeholders survive serialization while kept structural
         literals still ride the ieee754 spelling.
-    representation : str, default 'v23'
-        ``'v23'`` returns the tokens unchanged (values stay out-of-band);
+    representation : str, default 'ieee754_mixed'
         ``'ieee754_mixed'`` applies the per-constant 50/50 expanded/compact mixing.
     rng : numpy.random.Generator, optional
         The (seeded) RNG driving the per-constant coin flips. Required for
@@ -161,10 +155,6 @@ def serialize_constant_tokens(
         )
 
     tokens = list(tokens)
-
-    if representation == CONSTANT_REPRESENTATION_V23:
-        # Byte-identical passthrough: placeholders stay, values stay out-of-band.
-        return tokens, [float("nan")] * len(tokens)
 
     if rng is None and expanded_mask is None:
         raise ValueError("The 'ieee754_mixed' representation requires a (seeded) rng "
@@ -300,7 +290,7 @@ def replace_ieee754_spans_with_constants(
         init is sound: at least one span, every span well-formed, every value finite, and
         no pre-existing ``constant_id`` in the input (a bare placeholder -- e.g.
         constantified sugar -- would break the slot alignment; the skeleton is still
-        mapped, the init is withheld and refinement takes the v23 path). Any MALFORMED
+        mapped, the init is withheld and refinement falls back to its own seed). Any MALFORMED
         span returns the input unchanged with ``None`` (the beam is not a v24 carrier;
         downstream validity checks dispose of it as today).
     """

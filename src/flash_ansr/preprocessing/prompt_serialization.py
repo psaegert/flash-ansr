@@ -4,7 +4,6 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
 from flash_ansr.preprocessing.schemas import PromptFeatures, PromptPrefix
 
 
@@ -108,11 +107,9 @@ class PromptSerializer:
     def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
         """Serialize a decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
 
-        v24 training emitted the complexity block BARE, as a prefix element -- ``<complexity>``,
+Training emits the complexity block BARE, as a prefix element -- ``<complexity>``,
         ``<float>`` carrying mu on the numeric channel, ``</complexity>`` -- never inside a
-        ``<prompt>`` wrapper. The wrapper, and the allowed/include/exclude term sections it carried,
-        are gone with v23 support: the terms were documented as constraining generation but emitted
-        tokens no v24 checkpoint saw and were enforced nowhere at decode time.
+        ``<prompt>`` wrapper.
 
         Parameters
         ----------
@@ -245,7 +242,7 @@ def apply_emission_flag(prefix: PromptPrefix, emission: str, tokenizer: Any) -> 
     ValueError
         If ``emission`` is not a known mode.
     CapabilityUnavailable
-        If the flag is absent from the vocabulary (a v23 checkpoint).
+        If the flag is absent from the vocabulary.
     """
     if emission not in EMISSION_FLAGS:
         raise ValueError(
@@ -274,13 +271,7 @@ def prepare_prompt_prefix(
         preprocessor: PromptSerializer | None,
         *,
         complexity: int | float | None) -> PromptPrefix | None:
-    """Serialize prompt metadata into tokens usable by the transformer.
-
-    The three term collections are WITHDRAWN from the public inference surface: they were
-    documented as constraining generation, emit tokens a v24 checkpoint never saw, and are enforced
-    nowhere at decode time. They remain here, defaulted off, only for v23 checkpoints whose training
-    did emit the `<prompt>` block -- the v24 path ignores them entirely.
-    """
+    """Serialize the prompt prefix into tokens usable by the transformer."""
     if preprocessor is None:
         return None
 

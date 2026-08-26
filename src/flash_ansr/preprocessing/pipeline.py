@@ -2,7 +2,7 @@
 from __future__ import annotations  # necessary for type annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 import numpy as np
 from simplipy import SimpliPyEngine

@@ -30,7 +30,8 @@ class _Tok:
 
 
 V24 = _Tok({"<bos>": 1, "<mask_all>": 14, "<mask_fittable>": 15})
-V23 = _Tok({"<bos>": 1})
+#: A vocabulary that predates the flags -- the tokens simply are not there.
+NO_FLAGS = _Tok({"<bos>": 1})
 
 
 def _prefix() -> PromptPrefix:
@@ -67,14 +68,14 @@ class TestEmissionFlag:
         with pytest.raises(ValueError, match="emission must be one of"):
             apply_emission_flag(_prefix(), "mask_everything", V24)
 
-    def test_v23_vocabulary_refuses_at_call_time(self) -> None:
+    def test_missing_flag_token_refuses_at_call_time(self) -> None:
         # Principle 4: raise BEFORE the encoder runs, not mid-decode.
         with pytest.raises(CapabilityUnavailable, match="<mask_all>"):
-            apply_emission_flag(_prefix(), "skeleton", V23)
+            apply_emission_flag(_prefix(), "skeleton", NO_FLAGS)
 
-    def test_v23_still_serves_the_default(self) -> None:
+    def test_missing_flag_token_still_serves_the_default(self) -> None:
         prefix = _prefix()
-        assert apply_emission_flag(prefix, "constants", V23) is prefix
+        assert apply_emission_flag(prefix, "constants", NO_FLAGS) is prefix
 
     def test_every_declared_mode_is_reachable(self) -> None:
         for mode in EMISSION_FLAGS:

@@ -25,7 +25,6 @@ from flash_ansr.data.serialization import (
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
     CONSTANT_REPRESENTATION_IEEE754_MIXED,
-    CONSTANT_REPRESENTATION_V23,
     CONSTANT_REPRESENTATIONS,
     COMPACT_CONSTANT_TOKEN,
     TAGGED_DELIMITER_TOKENS,
@@ -114,7 +113,7 @@ class FlashANSRDataset:
         padding: Literal["random", "zero"],
         preprocessor: FlashANSRPreprocessor | None = None,
         unconditional_prob: float = 0.0,
-        constant_representation: str = CONSTANT_REPRESENTATION_V23,
+        constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
         condition_dropout: float | None = None,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         tail_zero_bits: int = 0,
@@ -147,40 +146,30 @@ class FlashANSRDataset:
             self.unconditional_prob = condition_dropout
         else:
             self.unconditional_prob = float(unconditional_prob)
-        # v24 constants representation gate: 'v23' (default) keeps serialization byte-identical to
-        # current behavior; 'ieee754_mixed' serializes constants per-constant 50/50 as expanded
-        # <ieee754> hex-nibble spans or compact <float> tokens (see flash_ansr.data.serialization).
+        # Constants representation: 'ieee754_mixed' serializes constants per-constant 50/50 as
+        # expanded <ieee754> hex-nibble spans or compact <float> tokens (see
+        # flash_ansr.data.serialization). It is the only representation this generation serves.
         if constant_representation not in CONSTANT_REPRESENTATIONS:
             raise ValueError(
                 f"Unknown constant_representation {constant_representation!r}; "
                 f"expected one of {CONSTANT_REPRESENTATIONS}."
             )
-        if constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED:
-            required_tokens = (*IEEE754_SPECIAL_TOKENS, COMPACT_CONSTANT_TOKEN)
-            missing_tokens = [token for token in required_tokens if token not in tokenizer]
-            if missing_tokens:
-                raise ValueError(
-                    f"constant_representation 'ieee754_mixed' requires the special tokens "
-                    f"{list(required_tokens)}, but the tokenizer is missing {missing_tokens}."
-                )
+        required_tokens = (*IEEE754_SPECIAL_TOKENS, COMPACT_CONSTANT_TOKEN)
+        missing_tokens = [token for token in required_tokens if token not in tokenizer]
+        if missing_tokens:
+            raise ValueError(
+                f"constant_representation 'ieee754_mixed' requires the special tokens "
+                f"{list(required_tokens)}, but the tokenizer is missing {missing_tokens}."
+            )
         self.constant_representation = constant_representation
-        # v24 target-dialect gate: 'explicit' (default) targets the binary-prefix
-        # expression exactly as today; 'tagged' targets the engine's TAGGED CANONICAL
-        # output (contract A3) and therefore REQUIRES 'ieee754_mixed' (the tagged target
-        # carries no maskable vocabulary -- every numeric literal rides an ieee754 span)
-        # and the tagged delimiter tokens in the tokenizer.
+        # Target-dialect gate: 'explicit' (default) targets the binary-prefix expression;
+        # 'tagged' targets the engine's TAGGED CANONICAL output (contract A3) and requires
+        # the tagged delimiter tokens in the tokenizer.
         if target_dialect not in TARGET_DIALECTS:
             raise ValueError(
                 f"Unknown target_dialect {target_dialect!r}; expected one of {TARGET_DIALECTS}."
             )
         if target_dialect == TARGET_DIALECT_TAGGED:
-            if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
-                raise ValueError(
-                    "target_dialect 'tagged' is the v24 target path (contract A3/A5) and "
-                    "requires constant_representation='ieee754_mixed': the tagged canonical "
-                    "form has no explicit number tokens, so every numeric literal must ride "
-                    "the ieee754 constants format."
-                )
             missing_delimiters = [token for token in TAGGED_DELIMITER_TOKENS if token not in tokenizer]
             if missing_delimiters:
                 raise ValueError(
@@ -193,8 +182,6 @@ class FlashANSRDataset:
         # zero the low n mantissa bits of every EXPANDED span spelling. 0 = full precision.
         if not 0 <= int(tail_zero_bits) <= 23:
             raise ValueError(f"tail_zero_bits must lie in the float32 mantissa (0..23), got {tail_zero_bits}.")
-        if tail_zero_bits and constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
-            raise ValueError("tail_zero_bits only applies to constant_representation='ieee754_mixed'.")
         self.tail_zero_bits = int(tail_zero_bits)
         # v24 task blocks (owner ruling 2026-08-24): the optional <complexity> block
         # (50/25/25 absent/nibbles/<float> at the ruled priors) and the <predict_y>
@@ -237,10 +224,6 @@ class FlashANSRDataset:
                     "diverge on np.pi/np.e and would break slot alignment).")
         if (self.complexity_block is not None or self.predict_y_block is not None
                 or self.mask_block is not None):
-            if constant_representation != CONSTANT_REPRESENTATION_IEEE754_MIXED:
-                raise ValueError(
-                    "task blocks (complexity_block / predict_y_block / mask_block) ride the "
-                    "ieee754 machinery and require constant_representation='ieee754_mixed'.")
             missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
             if missing_wrappers:
                 raise ValueError(f"task blocks require the expression wrappers, missing {missing_wrappers}.")
@@ -273,7 +256,10 @@ class FlashANSRDataset:
         )
 
     def __del__(self) -> None:  # pragma: no cover - defensive cleanup
-        if self._stream.is_initialized:
+        # __init__ validates before it builds the stream, so a rejected config leaves the
+        # instance without `_stream`; the destructor must not raise on top of that.
+        stream = getattr(self, "_stream", None)
+        if stream is not None and stream.is_initialized:
             warnings.warn(
                 "FlashANSRDataset was not explicitly shut down. "
                 "Call `dataset.shutdown()` for cleaner resource management. Shutting down in destructor.",
@@ -385,7 +371,7 @@ class FlashANSRDataset:
             padding=config_["padding"],
             preprocessor=preprocessor,
             unconditional_prob=config_.get("unconditional_prob", 0.0),
-            constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_V23),
+            constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_IEEE754_MIXED),
             # v24 canonical key for the same probability; the constructor rejects a conflict.
             condition_dropout=config_.get("condition_dropout"),
             target_dialect=config_.get("target_dialect", TARGET_DIALECT_EXPLICIT),
@@ -711,14 +697,13 @@ class FlashANSRDataset:
 
         tqdm_kwargs = dict(tqdm_kwargs) if tqdm_kwargs else {}
 
-        if preprocess and self.constant_representation == CONSTANT_REPRESENTATION_IEEE754_MIXED:
+        if preprocess:
             # The prompt serializer rebuilds the expression body from the RAW skeleton
             # (PromptFeatures.expression_tokens), which would silently discard the mixed
             # constant serialization. Refuse loudly until the prompt path is threaded.
             raise NotImplementedError(
-                "preprocess=True is not supported with constant_representation='ieee754_mixed' yet: "
-                "prompt serialization would rebuild the expression body from the raw skeleton and "
-                "drop the mixed constant forms."
+                "preprocess=True is not supported yet: prompt serialization would rebuild the "
+                "expression body from the raw skeleton and drop the mixed constant forms."
             )
 
         use_worker_preprocess = False

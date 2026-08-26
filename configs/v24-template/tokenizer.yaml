@@ -25,8 +25,7 @@
 #     16-symbol <h0>..<hf> alphabet + </ieee754> = 10 tokens (was 34 with bit tokens).
 #     The compact form is the existing <float> token, value on the numeric channel.
 #
-# This is a TEMPLATE: `variables` mirrors the v23.0-120M run config (x1..x17) so vocabulary
-# sizes compare like for like; a concrete v24 run config copies it and adjusts.
+# This is a TEMPLATE: `variables` covers x1..x17; a concrete run config copies it and adjusts.
 #
 # The tagged delimiters live under `operators` rather than `special_tokens` deliberately:
 # they are EXPRESSION tokens and must survive `Tokenizer.decode(..., special_tokens=...)`,
@@ -40,10 +39,8 @@ special_tokens:
   - "<cls>"
   - "<mask>"
   # Kept for the refiner handshake: expanded spans map back to '<constant>' skeleton slots
-  # (contract T11). It never appears in a v24 training target.
+  # (contract T11). It never appears in a training target.
   - "<constant>"
-  - "<prompt>"
-  - "</prompt>"
   - "<expression>"
   - "</expression>"
   - "<complexity>"
@@ -71,12 +68,6 @@ special_tokens:
   # The compact-constant summary token (loss-masked as a target; carries its value on the
   # numeric channel). The per-constant 50/50 expanded/compact mixing is unchanged.
   - "<float>"
-  - "<allowed_term>"
-  - "</allowed_term>"
-  - "<include_term>"
-  - "</include_term>"
-  - "<exclude_term>"
-  - "</exclude_term>"
   # Symbolic constants: NOT numeric literals in the tagged canonical dialect.
   - 'np.pi'
   - 'np.e'

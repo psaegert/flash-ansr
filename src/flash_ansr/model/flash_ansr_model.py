@@ -311,7 +311,7 @@ class FlashANSRModel(nn.Module):
 
         Returns ``(ok, reason)``; ``reason`` names the first failing precondition (empty when ok). The
         static path was VALIDATED (greedy bit-identical + stochastic-logit gate) ONLY for the deployed
-        v23.0 config: every decoder layer pre-norm, RoPE-self / no-cross-RoPE. XSA is supported (its
+        config: every decoder layer pre-norm, RoPE-self / no-cross-RoPE. XSA is supported (its
         own-value orthogonalization is bit-identical static-vs-dynamic; see test_xsa_static.py).
         The static forward enforces some of these (cross-RoPE raises inside ``forward_static_*``;
         self-RoPE is applied conditionally on ``use_rope``), but a post-norm or otherwise-untested config
@@ -616,7 +616,7 @@ class FlashANSRModel(nn.Module):
         """Static-shape (graph-capturable) single-token decode step. Mirrors ``forward`` (numeric
         embedding routing identical) but the decoder writes K/V into ``static_cache`` at ``position``
         and reads the full buffer under a causal mask, instead of the dynamic cat-grow path. Returns
-        logits only (the cache is mutated in place). v23.0 decoder path only (see static_kv.py)."""
+        logits only (the cache is mutated in place). Deployed decoder configuration only (see static_kv.py)."""
         self.memory = memory
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
@@ -1841,7 +1841,7 @@ class FlashANSRModel(nn.Module):
         Quality bar = the ``gate_overlap`` pinned-seed FLOOR, NOT bit-identity: full-width + active-subset
         sampling shifts the RNG trajectory vs serial's shrinking batch (greedy/top_k=1 IS bit-identical --
         argmax of per-row-independent logits -- which is the cheapest loop-wiring falsifier). Deployed
-        v23.0 path only: pre-norm, RoPE-self (XSA supported; cross-RoPE still asserted off).
+        Deployed configuration only: pre-norm, RoPE-self (XSA supported; cross-RoPE still asserted off).
 
         ``early_stop_every``: check ``all-finished`` every K steps (K=1 mirrors the dynamic path's
         per-step sync for an apples-to-apples Stage-1b measurement; Stage 2 bumps it for the graph).
@@ -2048,7 +2048,7 @@ class FlashANSRModel(nn.Module):
         validity/simplify/dedup judge the SKELETON the spans spell; the values are
         non-None only for a sound constant carrier (see
         :func:`flash_ansr.data.serialization.replace_ieee754_spans_with_constants`).
-        v23 vocabularies carry no span tokens and take the identity path.
+        A vocabulary without span tokens takes the identity path.
         """
         span_ids = getattr(self, '_ieee754_span_ids', False)
         if span_ids is False:
@@ -2111,8 +2111,7 @@ class FlashANSRModel(nn.Module):
             # v24 emissions carry expanded <ieee754> spans that simplipy validity rejects
             # as raw tokens: judge validity/simplify/dedup on the span-MAPPED skeleton,
             # and emit the ORIGINAL sequence for sound carriers so the constants survive
-            # to the refiner's verbatim init (contract T11). v23 vocabularies have no
-            # span tokens and take the identity path, byte-identical.
+            # to the refiner's verbatim init (contract T11).
             raw_expression = list(encoded_expression)
             mapped_expression, span_values = self._map_ieee754_spans(encoded_expression)
             encoded_expression = self.tokenizer.constantify_expression(mapped_expression)
@@ -2139,8 +2138,8 @@ class FlashANSRModel(nn.Module):
                 # Keyed on the skeleton alone, three beams emitting 2.0 / 3.7 / -11.25 for the same
                 # `* <constant> x1` collapse to ONE survivor -- and to the first-SAMPLED one, since
                 # the score sort runs afterwards, so the model's most likely constant hypothesis was
-                # routinely discarded in favour of an unlikelier one. v23 vocabularies have no spans,
-                # so `span_values is None` reproduces the old key exactly.
+                # routinely discarded in favour of an unlikelier one. `span_values is None`
+                # (a span-free beam) reproduces the value-erased key exactly.
                 expression_tuple = (tuple(expression), tuple(span_values) if span_values is not None else None)
                 if unique and expression_tuple in seen_expressions:
                     continue

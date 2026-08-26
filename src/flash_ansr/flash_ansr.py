@@ -34,8 +34,7 @@ from flash_ansr._refine_pool import RecoverableForkPool
 from flash_ansr.generation import run_beam_search, run_softmax_sampling, run_mcts_generation
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.decoding.mcts import MCTSConfig
-from flash_ansr.preprocessing import (
-    CapabilityUnavailable, EMISSION_FLAGS, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
+from flash_ansr.preprocessing import PromptPrefix, apply_emission_flag, prepare_prompt_prefix
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
@@ -206,9 +205,9 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         # Skip the fallback only when the verbatim fit already explains the data to the bar the
         # benchmark itself calls a perfect recovery; nothing downstream can improve on that.
         if p0_values is None or not (verbatim_fvu <= _T11_ACCEPT_FVU):
-            # The v23 refinement, unchanged -- and the T11 fallback on a bad init: the
-            # verbatim attempt consumes no RNG, so this call sees the same stream a plain
-            # v23 worker would and reproduces its fits exactly.
+            # Exploratory refinement -- and the T11 fallback on a bad init: the verbatim
+            # attempt consumes no RNG, so this call sees the same stream an init-free
+            # worker would and reproduces its fits exactly.
             refiner.fit(
                 expression=payload['expression'],
                 X=X,
@@ -230,8 +229,8 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         warning = f"Failed to converge for beam: {payload['expression']}" if payload['converge_error'] == 'print' else None
     except (NameError, KeyError) as exc:
         # An UNREALIZABLE candidate, not a failed optimization: the expression names an
-        # operator the loaded engine's realization does not define (measured: a v23
-        # model's `pow1_5` sugar under an acj-4 engine -> NameError from lambdify;
+        # operator the loaded engine's realization does not define (measured: a
+        # `pow1_5` sugar operator under an acj-4 engine -> NameError from lambdify;
         # KeyError from the realization table). One such candidate must not kill the
         # whole problem's refinement -- it is dropped like any invalid fit.
         if payload['converge_error'] == 'raise':
@@ -1057,21 +1056,19 @@ class FlashANSR(BaseEstimator):
         """Refuse a checkpoint this harness does not serve, at LOAD time.
 
         `BeamSearchConfig` already validates the compact/constrain/use_cache pairings at config
-        time, but nothing checked the vocabulary -- so `constrain_ieee754=True` on a v23 checkpoint
-        constructed happily, loaded happily, and failed inside `fit()` only after shape coercion,
-        the R1 scan, the prompt build and a full encoder forward. Load is the first moment both the
-        config and the tokenizer are in hand, so it is where this belongs (design principle 4).
+        time, but nothing checked the vocabulary -- so `constrain_ieee754=True` on a checkpoint
+        without the span tokens constructed happily, loaded happily, and failed inside `fit()` only
+        after shape coercion, the R1 scan, the prompt build and a full encoder forward. Load is the
+        first moment both the config and the tokenizer are in hand, so it is where this belongs
+        (design principle 4).
         """
-        # CLEAN CUT: this harness serves v24 checkpoints only. v23 support meant a second code
-        # path in the prompt serializer, the span mapper and the numeric channel, each carrying
-        # assumptions that leaked into the v24 path -- the span-drop bug (514810f) and the
-        # <prompt>-wrapper mis-emission (8dd418f) were both v23 assumptions surviving where they no
-        # longer applied. A vocabulary without <ieee754> is not a model this code can serve.
+        # This harness serves mixed-representation (v24+) checkpoints only: a vocabulary without
+        # <ieee754> is not a model this code can serve. Earlier generations need a 0.14.x release.
         if IEEE754_START_TOKEN not in self.tokenizer:
             raise ValueError(
                 f"This checkpoint's vocabulary has no {IEEE754_START_TOKEN} token, so it is not a "
                 f"v24 (mixed-representation) model. flash-ansr serves v24+ only; use a 0.14.x "
-                f"release to run a v23 checkpoint.")
+                f"release to run an earlier checkpoint.")
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         """Limit input features to the number of variables seen during training.
@@ -1756,8 +1753,7 @@ class FlashANSR(BaseEstimator):
             ``simplipy_engine.complexity(skeleton)`` returns, where a ``<constant>`` prices one
             symbol unit. It runs roughly 1e3-1e6, NOT a token count. :meth:`predict_complexity`
             produces a value on this scale and ``Candidate.mu`` reports it back, so a value can
-            round-trip. On a v24 checkpoint this emits the trained bare ``<complexity>`` block; a
-            v23 checkpoint keeps its own ``<prompt>`` wrapper.
+            round-trip. Emitted as the trained bare ``<complexity>`` block.
         refine_seed : int or None, optional
             Keyword-only seed for the constant-refinement ``p0`` noise. When
             provided, the per-candidate refiner seeds are derived deterministically
@@ -1992,26 +1988,21 @@ class FlashANSR(BaseEstimator):
 
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
-        # v24 refiner handshake (contract T11): expanded <ieee754> spans become '<constant>'
-        # skeleton slots and their decoded float32 values the verbatim init. v23 tokenizers
-        # lack the span tokens and v23 beams carry none, so the mapping is the identity and
-        # refinement stays byte-identical there.
-        beam_span_values: list[list[float] | None]
-        if IEEE754_START_TOKEN in self.tokenizer:
-            mapped_beams = [
-                replace_ieee754_spans_with_constants(
-                    beam,
-                    start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
-                    end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
-                    nibble_ids=[int(self.tokenizer[token]) for token in NIBBLE_TOKENS],
-                    constant_id=int(self.tokenizer['<constant>']),
-                )
-                for beam in beams
-            ]
-            beams = [mapped_beam for mapped_beam, _ in mapped_beams]
-            beam_span_values = [values for _, values in mapped_beams]
-        else:
-            beam_span_values = [None] * len(beams)
+        # Refiner handshake (contract T11): expanded <ieee754> spans become '<constant>' skeleton
+        # slots and their decoded float32 values the verbatim init. The span tokens are guaranteed
+        # present -- _validate_checkpoint refuses a vocabulary without them at load.
+        mapped_beams = [
+            replace_ieee754_spans_with_constants(
+                beam,
+                start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
+                end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
+                nibble_ids=[int(self.tokenizer[token]) for token in NIBBLE_TOKENS],
+                constant_id=int(self.tokenizer['<constant>']),
+            )
+            for beam in beams
+        ]
+        beams = [mapped_beam for mapped_beam, _ in mapped_beams]
+        beam_span_values: list[list[float] | None] = [values for _, values in mapped_beams]
 
         raw_beams_decoded = [self.tokenizer.decode_expression(raw_beam) for raw_beam in gs.raw_beams]
         beams_decoded = [self.tokenizer.decode_expression(beam) for beam in beams]

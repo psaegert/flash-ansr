@@ -5,7 +5,7 @@ set -euo pipefail
 # Check if an argument was passed
 if [ $# -eq 0 ]; then
     echo "Usage: train.sh <CONFIG> [extra flash_ansr train args...]"
-    echo "  e.g. train.sh v23.0-120M-B2-16bit --resume-from models/ansr-models/v23.0-120M-B2-16bit/checkpoint_2000000"
+    echo "  e.g. train.sh v24.0-T16 --resume-from runs/v24.0-T16/checkpoint_650000"
     exit 1
 else
     CONFIG=$1

@@ -127,7 +127,7 @@ class TransformerDecoder(nn.Module):
     ) -> torch.Tensor:
         """Static-shape (graph-capturable) single-token decode step. `tokens` is the one new token
         (B, 1); its K/V are written into `static_cache` at absolute `position` and the full buffer is
-        read under a causal mask. v23.0 path only (pre-norm, RoPE-self; XSA not yet supported here).
+        read under a causal mask. Pre-norm, RoPE-self only (XSA not yet supported here).
         Cross-attn K/V must already be seeded (from a dynamic prefill) or are computed once here."""
         h = self.tok_embeddings(tokens)
         if extra_parallel_embeddings is not None:

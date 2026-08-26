@@ -1,8 +1,0 @@
-source:
-  catalog: './catalog_train.yaml'
-  sampling:
-    n_support: prior
-    n_validation: 0
-    noise: 0.0
-tokenizer: '../v23.0-20M/tokenizer.yaml'
-padding: 'zero'

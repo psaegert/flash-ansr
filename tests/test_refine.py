@@ -92,7 +92,8 @@ def test_fit_supports_multiple_optimizers(method: str) -> None:
 
 def test_constant_free_candidate_is_a_valid_fit() -> None:
     # The zero-constant early path returned with valid_fit still at its __init__ False,
-    # so every constant-free beam was discarded by the refinement workers. v23 masked it
+    # so every constant-free beam was discarded by the refinement workers. Beams that
+    # carry constants mask it
     # (beams nearly always carry constants); v24's tagged emissions surfaced it as
     # whole-problem ConvergenceErrors.
     engine = SimpliPyEngine.load('acj-4-3', install=True)

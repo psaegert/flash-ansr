@@ -13,12 +13,6 @@
 	- `model.yaml`: architecture, precision, and simplifier config.
 - Keep paths relative; `load_config(...)` normalizes `./` and `{{ROOT}}`.
 
-> **Config compatibility.** The bundles shipped in `configs/` are all pre-v24 and work only with
-> flash-ansr <= 0.12.1 (`pip install "flash-ansr<0.13"`); this line (>= 0.13.0) targets v24 configs
-> only. They are kept, not deleted, as the record of the v23.x training runs. See
-> [`configs/VERSIONS.md`](https://github.com/psaegert/flash-ansr/blob/main/configs/VERSIONS.md) for
-> the register and the reasons.
-
 ### How a dataset config consumes a catalog
 `FlashANSRDataset.from_config` reads a `source:` block and hands it to a `symbolic_data.ProblemSource`. The source samples a catalog into ready-to-use problems under a usage policy (`sampling:`):
 
@@ -43,7 +37,7 @@ padding: 'zero'
 
 `sampling:` keys: `n_support` (`prior` for generative recipes, or an integer), `n_validation`, `noise`, and `problems_per_expression`.
 
-The `catalog_*.yaml` itself is a generative recipe; for the shipped v23 bundles its `type: lample_charton` recipe carries the operator weights, the expression-length distribution, and the literal/support priors. This `catalog_train.yaml` *is* the v23 training recipe (there is no shortcut "name" for it; it ships in the bundle).
+The `catalog_*.yaml` itself is a generative recipe; its `type: lample_charton` recipe carries the operator weights, the expression-length distribution, and the literal/support priors. This `catalog_train.yaml` *is* the training recipe (there is no shortcut "name" for it; it ships in the bundle).
 
 ## Minimal runnable example
 ```bash
@@ -63,10 +57,10 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
     type: lample_charton
     # ... operator weights, priors ...
     holdout_pools:
-      - "v23-val"                            # a curated catalog NAME (resolved from the HF asset repo)
+      - "fastsrb"                            # a curated catalog NAME (resolved from the HF asset repo)
       - "./data/my_model/fastsrb_holdout"    # ...or a path to a saved catalog directory to exclude
     ```
-    Each entry is a curated catalog **name** (`v23-val`, `fastsrb`, ..., or a `name@version` resolved from the HF asset repo — the shipped bundles use names), a **path** to a saved catalog directory, or a `LampleChartonCatalog` instance when building in Python; the catalog caches those skeletons and drops any generated expression that matches one. Matching is structural and constant-agnostic, so a generated `x1..` skeleton is excluded if it matches a held-out benchmark expression's structure. Use `holdout_pools: []` (or omit it) for non-benchmark use; if you skip it, benchmark eval numbers (e.g. FastSRB / Feynman) may be contaminated. Build the holdout catalog with the `symbolic_data` API (see step 3) and save it to the directory you reference here.
+    Each entry is a curated catalog **name** (`fastsrb`, `feynman`, ..., or a `name@version` resolved from the HF asset repo — the shipped bundles use names), a **path** to a saved catalog directory, or a `LampleChartonCatalog` instance when building in Python; the catalog caches those skeletons and drops any generated expression that matches one. Matching is structural and constant-agnostic, so a generated `x1..` skeleton is excluded if it matches a held-out benchmark expression's structure. Use `holdout_pools: []` (or omit it) for non-benchmark use; if you skip it, benchmark eval numbers (e.g. FastSRB / Feynman) may be contaminated. Build the holdout catalog with the `symbolic_data` API (see step 3) and save it to the directory you reference here.
 2. **Configure the catalog and dataset**: adjust `catalog_*.yaml` (operator priors, expression-length distribution, literal/support priors) and `dataset_*.yaml` (the `source:` block) inside your chosen bundle.
 3. **Prepare a held-out validation set** (optional if reusing a shipped one): build a fixed catalog with the `symbolic_data` Python API and save it to disk, then point `dataset_val.yaml`'s `source.catalog` at that directory. Run from the project root so relative paths resolve:
     ```python
@@ -117,9 +111,7 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 - Training uses [automatic mixed precision (AMP)](https://docs.pytorch.org/docs/stable/amp.html) and [torch.compile](https://huggingface.co/docs/transformers/en/perf_torch_compile)
 
 ## Adding a new config
-- Copy an existing bundle (e.g., `configs/v23.0-3M-pma-k1/`). The shipped bundles are pre-v24: on
-  flash-ansr >= 0.13.0 replace the retired `simplipy_engine: 'dev_7-3'` pin with a current `acj-*`
-  engine (see [`configs/VERSIONS.md`](https://github.com/psaegert/flash-ansr/blob/main/configs/VERSIONS.md)).
+- Start from `configs/v24-template/` for the tokenizer, or copy a full run bundle (e.g. `configs/v24.0-T16/`).
 - Update paths and tokenizer/operator choices; ensure special prompt tokens exist before enabling prompt features.
 - Prefer cloning configs instead of mutating in-place to keep saved YAMLs portable.
 

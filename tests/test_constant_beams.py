@@ -5,7 +5,7 @@ Pre-registered integration contract, lane C3: per-beam KV compaction under beam 
 compact at DIFFERENT steps), mid-span safety (T10: a beam pruned mid-expansion leaves no
 orphaned state; compaction fires only on a closed, finite-valued tag), and the refiner
 handshake (T11: the predicted float32 reaches the Refiner as its init VERBATIM, bit-exact,
-with refiner failure falling back exactly to the v23 path).
+with refiner failure falling back exactly to the init-free path).
 
 NOTE on the test engine: models are constructed directly from the configs/test model
 kwargs with the generation-2 'base' engine (the lane C1/C2 pattern); refiner-level tests
@@ -440,7 +440,7 @@ def test_t10_nonfinite_span_is_left_expanded(tokenizer: Tokenizer, engine, monke
 
 # ---------------------------------------------------------------------------
 # T11 — refiner handshake: the predicted float32 reaches the Refiner as its init
-# VERBATIM (bit-exact); refiner failure falls back exactly as v23 does
+# VERBATIM (bit-exact); refiner failure falls back exactly to the init-free path
 # ---------------------------------------------------------------------------
 
 def _span_ids(tokenizer: Tokenizer, value: float) -> list[int]:
@@ -491,7 +491,7 @@ def test_t11_mapping_degenerate_cases(tokenizer: Tokenizer) -> None:
     )
     plain = [int(tokenizer["*"]), int(tokenizer["x1"]), int(tokenizer["x2"])]
 
-    # No spans: identity, no init (the v23 path stays byte-identical).
+    # No spans: identity, no init (the init-free path stays byte-identical).
     mapped, values = replace_ieee754_spans_with_constants(plain, **kwargs)
     assert mapped == plain and values is None
 
@@ -593,7 +593,7 @@ def test_t11_worker_uses_predicted_init_verbatim(tokenizer: Tokenizer, refine_en
 
     assert warning is None and result is not None
     # ONE fit, from the predicted init, VERBATIM: p0 bit-equals the predicted float32,
-    # no noise, a single restart (v23 restarts exist only as the failure fallback).
+    # no noise, a single restart (exploratory restarts exist only as the failure fallback).
     assert len(_RecordingRefiner.calls) == 1
     call = _RecordingRefiner.calls[0]
     assert call['n_restarts'] == 1
@@ -605,7 +605,7 @@ def test_t11_worker_uses_predicted_init_verbatim(tokenizer: Tokenizer, refine_en
     assert float(best_constants[0]) == pytest.approx(value, abs=1e-6)
 
 
-def test_t11_worker_failure_falls_back_exactly_to_v23(tokenizer: Tokenizer, refine_engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_t11_worker_failure_falls_back_exactly_to_the_init_free_path(tokenizer: Tokenizer, refine_engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     import flash_ansr.flash_ansr as flash_ansr_module
     from flash_ansr.flash_ansr import _refine_candidate_worker
 
@@ -622,32 +622,32 @@ def test_t11_worker_failure_falls_back_exactly_to_v23(tokenizer: Tokenizer, refi
                               p0=[-1.0], X=X, y=y)
     result_fallback, _warning = _refine_candidate_worker(payload)
 
-    assert len(_RecordingRefiner.calls) == 2, "expected the verbatim attempt AND the v23 fallback"
+    assert len(_RecordingRefiner.calls) == 2, "expected the verbatim attempt AND the init-free fallback"
     verbatim, fallback = _RecordingRefiner.calls
     assert verbatim['n_restarts'] == 1 and verbatim['p0_noise'] is None
-    # The fallback IS the v23 call: same restarts, same noise policy, no carried p0.
+    # The fallback IS the plain call: same restarts, same noise policy, no carried p0.
     assert fallback['n_restarts'] == payload['n_restarts']
     assert fallback['p0_noise'] == payload['p0_noise']
     assert fallback['p0_noise_kwargs'] == payload['p0_noise_kwargs']
     assert fallback.get('p0') is None
 
-    # ... and it reproduces the v23 refinement EXACTLY: the verbatim attempt consumes no
-    # RNG, so a plain v23 worker run with the same seed yields bit-identical fits.
+    # ... and it reproduces the init-free refinement EXACTLY: the verbatim attempt consumes
+    # no RNG, so a plain worker run with the same seed yields bit-identical fits.
     _RecordingRefiner.calls = []
-    payload_v23 = _worker_payload(tokenizer, refine_engine, expression, raw_beam=[4, 5, 6],
-                                  p0=None, X=X, y=y)
-    result_v23, _warning = _refine_candidate_worker(payload_v23)
+    payload_plain = _worker_payload(tokenizer, refine_engine, expression, raw_beam=[4, 5, 6],
+                                    p0=None, X=X, y=y)
+    result_plain, _warning = _refine_candidate_worker(payload_plain)
 
     assert len(_RecordingRefiner.calls) == 1
-    assert (result_fallback is None) == (result_v23 is None)
-    if result_fallback is not None and result_v23 is not None:
-        assert len(result_fallback['fits']) == len(result_v23['fits'])
-        for (c_a, cov_a, loss_a), (c_b, cov_b, loss_b) in zip(result_fallback['fits'], result_v23['fits']):
+    assert (result_fallback is None) == (result_plain is None)
+    if result_fallback is not None and result_plain is not None:
+        assert len(result_fallback['fits']) == len(result_plain['fits'])
+        for (c_a, cov_a, loss_a), (c_b, cov_b, loss_b) in zip(result_fallback['fits'], result_plain['fits']):
             assert np.array_equal(np.asarray(c_a), np.asarray(c_b))
             assert (loss_a == loss_b) or (math.isnan(loss_a) and math.isnan(loss_b))
 
 
-def test_t11_worker_without_p0_is_byte_identical_v23(tokenizer: Tokenizer, refine_engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+def test_t11_worker_without_p0_is_byte_identical(tokenizer: Tokenizer, refine_engine, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     import flash_ansr.flash_ansr as flash_ansr_module
     from flash_ansr.flash_ansr import _refine_candidate_worker
 
@@ -662,7 +662,7 @@ def test_t11_worker_without_p0_is_byte_identical_v23(tokenizer: Tokenizer, refin
     result, _warning = _refine_candidate_worker(payload)
 
     assert result is not None
-    # Exactly the v23 call and nothing else: default OFF means byte-identical behavior.
+    # Exactly the plain call and nothing else: default OFF means byte-identical behavior.
     assert len(_RecordingRefiner.calls) == 1
     call = _RecordingRefiner.calls[0]
     assert call.get('p0') is None
@@ -716,4 +716,4 @@ def test_t11_fit_refine_wires_beam_constants_into_p0(tokenizer: Tokenizer, refin
     # The span slot holds the predicted float32, bit-exactly.
     assert p0.shape == (1,)
     assert _bits(float(p0[0])) == _bits(value)
-    assert len(_RecordingRefiner.calls) == 1, "the converged verbatim fit must not trigger v23 restarts"
+    assert len(_RecordingRefiner.calls) == 1, "the converged verbatim fit must not trigger restarts"

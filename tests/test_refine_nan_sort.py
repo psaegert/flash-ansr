@@ -6,7 +6,6 @@ unordered. Every consumer downstream reads `_all_constants_values[0]`, so a dive
 was published as the answer while an exact fit sat in the same list.
 """
 import numpy as np
-import pytest
 
 from flash_ansr.refine import Refiner, fit_sort_key
 

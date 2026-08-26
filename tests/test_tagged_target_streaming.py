@@ -86,12 +86,6 @@ def _placeholder_source():  # type: ignore[no-untyped-def]
 # Fail-fast configuration guards
 # ---------------------------------------------------------------------------
 
-def test_tagged_requires_ieee754_mixed(v24_tokenizer: Tokenizer) -> None:
-    with pytest.raises(ValueError, match="ieee754_mixed"):
-        FlashANSRDataset(source=_placeholder_source(), tokenizer=v24_tokenizer, padding="zero",
-                         target_dialect="tagged")
-
-
 def test_unknown_target_dialect_rejected(v24_tokenizer: Tokenizer) -> None:
     with pytest.raises(ValueError, match="target_dialect"):
         FlashANSRDataset(source=_placeholder_source(), tokenizer=v24_tokenizer, padding="zero",

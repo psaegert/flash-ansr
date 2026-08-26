@@ -5,12 +5,10 @@ loops themselves are exercised against a real checkpoint in the capability scrip
 """
 import numpy as np
 import pytest
-import torch
 
 from flash_ansr.preprocessing import CapabilityUnavailable
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES,
-    NIBBLES_PER_SPAN,
     ComplexityDistribution,
     ValueDistribution,
     _encoder_batch,
@@ -78,7 +76,8 @@ class TestEncoderBatch:
             _encoder_batch(np.zeros((16, 1)), np.ones(8), 1, "cpu")
 
     def test_non_finite_target_is_refused(self) -> None:
-        y = np.ones(8); y[3] = np.nan
+        y = np.ones(8)
+        y[3] = np.nan
         with pytest.raises(ValueError, match="non-finite"):
             _encoder_batch(np.zeros((8, 1)), y, 1, "cpu")
 
@@ -152,7 +151,7 @@ class TestCandidateCarriesBothConstantSets:
         assert c.constants == [2.5]
         assert c.constants_emitted == [2.0]
 
-    def test_v23_beams_carry_no_emitted_constants(self) -> None:
+    def test_beams_without_spans_carry_no_emitted_constants(self) -> None:
         from flash_ansr.inference import Candidate
         c = Candidate(
             raw_beam=[1], expression=['x1'], expression_prefix=['x1'], expression_infix='x1',

@@ -22,6 +22,7 @@ import torch
 
 from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
 
 
 @pytest.fixture(scope="module")
@@ -114,9 +115,11 @@ class _DummySource:
 
 
 def _dummy_tokenizer() -> Tokenizer:
+    # The span tokens are mandatory: 'ieee754_mixed' is the only constant representation.
     return Tokenizer(
         vocab=["x1", "x2", "x3"],
-        special_tokens=["<pad>", "<bos>", "<eos>", "<constant>", "<expression>", "</expression>"],
+        special_tokens=["<pad>", "<bos>", "<eos>", "<constant>", "<expression>", "</expression>",
+                        *IEEE754_SPECIAL_TOKENS, "<float>"],
     )
 
 
