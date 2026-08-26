@@ -1,4 +1,23 @@
-"""Prompt serialization helpers shared across preprocessing and inference."""
+"""Prompt serialization helpers shared across preprocessing and inference.
+
+LEGACY LANE (owner ruling 2026-08-26: keep, mark, revisit). :meth:`PromptSerializer.
+serialize_prompt` and the term sections below are the FIRST-GENERATION promptable-property
+mechanism: one ``<prompt>`` ... ``</prompt>`` wrapper enclosing typed sections, with the
+allowed/include/exclude term lists carried out-of-band in ``prompt_metadata``. It is superseded
+in spirit by the v24 grammar, where each property is a BARE prefix element the harness
+force-feeds and loss-masks (``<complexity> <float> </complexity>``, ``<mask_all>``,
+``<hypothesize>``) -- elements that permute per instance rather than nesting inside a wrapper.
+
+No v24 config reaches this path: v24 datasets set no preprocessor, and the term arguments are
+withdrawn from the public inference surface (they emitted tokens no v24 checkpoint saw and were
+enforced nowhere at decode time). :meth:`PromptSerializer.serialize_prompt_prefix` -- the lane
+inference actually uses -- already emits the bare v24 form.
+
+WHEN MORE PROMPTABLE PROPERTIES LAND, RECONCILE THE TWO RATHER THAN EXTENDING THIS ONE. A new
+property added as another ``<prompt>`` section inherits a wrapper the model was never trained to
+read, a metadata side-channel with no decode-time meaning, and a fixed section order. The v24
+element grammar is the target shape; this code is what the migration has to absorb or delete.
+"""
 from typing import Any, Iterable, Sequence
 
 import numpy as np
@@ -17,7 +36,7 @@ class PromptSerializer:
         self,
         features: PromptFeatures,
         *,
-        include_complexity: bool,
+        include_complexity: bool,   # LEGACY <prompt>-wrapper lane -- see the module docstring
         include_allowed_terms: bool,
         include_include_terms: bool,
         include_exclude_terms: bool,

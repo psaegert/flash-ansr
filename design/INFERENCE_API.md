@@ -147,9 +147,21 @@ document the unit at every entry point, and report μ on results so the value ro
 
 `allowed_terms`, `include_terms` and `exclude_terms` are removed from the public surface.
 They are documented as constraining generation, emit tokens this checkpoint never saw, and
-have no decode-time enforcement whatsoever. Under principle 5 the choice is to implement or
+have no decode-time enforcement whatsoever. Under principle 6 the choice is to implement or
 withdraw, and the owner ruled withdraw. The grammar machinery that would implement them
 (`constrain_ieee754`) stays, so they can return as real constraints if they earn it.
+
+The training-side machinery behind them — the `<prompt>` wrapper, the term sampling in
+`PromptFeatureExtractor`, the `prompt_metadata` side-channel — also **stays, marked as legacy**
+(owner ruling 2026-08-26). It is the first-generation promptable-property mechanism: typed
+sections nested in one wrapper, in fixed order, with the payload out-of-band. v24 replaced that
+shape with bare prefix ELEMENTS the harness force-feeds and permutes per instance
+(`<complexity>`, `<mask_all>`, `<hypothesize>`). Nothing in a v24 config reaches the old lane.
+
+**This is the refactor trigger.** The next promptable property must not be added as another
+`<prompt>` section — that inherits a wrapper the model was never trained to read and a metadata
+channel with no decode-time meaning. Adding promptable properties is the moment to reconcile the
+two lanes: absorb the term sampling into the element grammar, or delete it.
 
 ## Not in this document
 

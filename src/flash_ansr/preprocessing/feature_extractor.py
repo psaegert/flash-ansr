@@ -1,4 +1,9 @@
-"""Prompt feature extraction and configuration helpers."""
+"""Prompt feature extraction and configuration helpers.
+
+The term sections (``allowed_terms`` / ``include_terms`` / ``exclude_terms``) sample for the
+LEGACY ``<prompt>``-wrapper lane and are kept, not extended -- see the module docstring of
+:mod:`flash_ansr.preprocessing.prompt_serialization` for what supersedes them and why.
+"""
 import math
 from dataclasses import dataclass, field, replace
 from numbers import Real
@@ -443,6 +448,9 @@ class PromptFeatureExtractorConfig:
 
     prompt_probability: float = 1.0
     complexity: ComplexitySectionConfig = field(default_factory=ComplexitySectionConfig)
+    # The three term sections belong to the legacy <prompt>-wrapper lane (prompt_serialization
+    # module docstring): no v24 config reaches them, and a new promptable property must NOT be
+    # added here -- it belongs in the v24 element grammar.
     allowed_terms: AllowedTermsConfig = field(default_factory=AllowedTermsConfig)
     include_terms: IncludeTermsConfig = field(default_factory=IncludeTermsConfig)
     exclude_terms: ExcludeTermsConfig = field(default_factory=ExcludeTermsConfig)

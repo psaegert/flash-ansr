@@ -18,6 +18,7 @@ class PromptFeatures:
 
     expression_tokens: list[str]
     complexity: int
+    #: Legacy <prompt>-wrapper sections; see the prompt_serialization module docstring.
     allowed_terms: list[list[str]]
     include_terms: list[list[str]]
     exclude_terms: list[list[str]]

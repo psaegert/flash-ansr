@@ -243,6 +243,9 @@ class FlashANSRPreprocessor:
         return self._format_single_fallback(instance)
 
     def _serialize_prompt(self, features: PromptFeatures) -> dict[str, Any]:
+        # The one seam into the legacy <prompt>-wrapper lane (see the prompt_serialization
+        # module docstring). Reached only with a configured preprocessor, which no v24
+        # dataset config sets.
         include_complexity = self._should_include("complexity")
         include_allowed = self._should_include("allowed_terms")
         include_include = self._should_include("include_terms")
