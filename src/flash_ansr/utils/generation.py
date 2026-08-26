@@ -69,6 +69,8 @@ class BeamSearchConfig(GenerationConfigBase):
         'unique',
         'limit_expansions',
         'use_cache',
+        'constrain_ieee754',
+        'compact_ieee754',
     )
 
     method: Literal['beam_search']
@@ -78,6 +80,8 @@ class BeamSearchConfig(GenerationConfigBase):
     unique: bool
     limit_expansions: bool
     use_cache: bool
+    constrain_ieee754: bool
+    compact_ieee754: bool
 
     def __init__(
         self,
@@ -88,7 +92,21 @@ class BeamSearchConfig(GenerationConfigBase):
         unique: bool = True,
         limit_expansions: bool = True,
         use_cache: bool = True,   # KV cache ON by default (quality-equivalent; the inference speed win)
+        constrain_ieee754: bool = False,   # v24 grammar mask over <ieee754> spans (T6/T7)
+        compact_ieee754: bool = False,     # v24 per-beam KV compaction of closed spans (T9/T10)
     ) -> None:
+        # Fail at CONFIG time, not mid-decode: the model raises the same two rules deep
+        # inside beam_search, where the traceback tells a user nothing about what to change.
+        if compact_ieee754 and not constrain_ieee754:
+            raise ValueError(
+                "compact_ieee754=True requires constrain_ieee754=True: compaction relies on "
+                "the grammar guaranteeing well-formed spans."
+            )
+        if compact_ieee754 and not use_cache:
+            raise ValueError(
+                "compact_ieee754=True requires use_cache=True: compaction is KV surgery on "
+                "the dynamic cache."
+            )
         self.method = 'beam_search'
         self.beam_width = beam_width
         self.max_len = max_len
@@ -96,6 +114,8 @@ class BeamSearchConfig(GenerationConfigBase):
         self.unique = unique
         self.limit_expansions = limit_expansions
         self.use_cache = use_cache
+        self.constrain_ieee754 = constrain_ieee754
+        self.compact_ieee754 = compact_ieee754
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return the beam-search keyword arguments (``beam_width``, ``max_len``, ...)."""
@@ -106,6 +126,8 @@ class BeamSearchConfig(GenerationConfigBase):
             'unique': self.unique,
             'limit_expansions': self.limit_expansions,
             'use_cache': self.use_cache,
+            'constrain_ieee754': self.constrain_ieee754,
+            'compact_ieee754': self.compact_ieee754,
         }
 
 
@@ -125,6 +147,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         'use_cache',
         'static_decode',
         'guidance_weight',
+        'constrain_ieee754',
     )
 
     method: Literal['softmax_sampling']
@@ -140,6 +163,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     use_cache: bool
     static_decode: bool | None
     guidance_weight: float | None
+    constrain_ieee754: bool
 
     def __init__(
         self,
@@ -156,6 +180,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         use_cache: bool = True,   # KV cache ON by default (quality-equivalent; the inference speed win)
         static_decode: bool | None = None,   # tri-state: None=deployed default for capable models, True/False explicit
         guidance_weight: float | None = None,   # classifier-free guidance (optcond models only); None=plain conditioned decode
+        constrain_ieee754: bool = False,   # v24 grammar mask over <ieee754> spans (T6/T7)
     ) -> None:
         self.method = 'softmax_sampling'
         self.choices = choices
@@ -170,6 +195,10 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.use_cache = use_cache
         self.static_decode = static_decode
         self.guidance_weight = guidance_weight
+        # NB no compact_ieee754 here: in-decode compaction is implemented for BEAM
+        # SEARCH only (decoding/beam_compaction.py). The sampling loop can carry the
+        # grammar but not the KV surgery, so offering the flag would be a lie.
+        self.constrain_ieee754 = constrain_ieee754
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return the softmax-sampling keyword arguments (``choices``, ``top_k``, ``top_p``, ...)."""
@@ -186,6 +215,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
             'use_cache': self.use_cache,
             'static_decode': self.static_decode,
             'guidance_weight': self.guidance_weight,
+            'constrain_ieee754': self.constrain_ieee754,
         }
 
 
