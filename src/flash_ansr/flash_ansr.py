@@ -37,6 +37,7 @@ from flash_ansr.decoding.mcts import MCTSConfig
 from flash_ansr.preprocessing import (
     CapabilityUnavailable, EMISSION_FLAGS, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
+from flash_ansr.tasks import ConstantPrediction, predict_constants, score_outliers
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -2431,6 +2432,83 @@ class FlashANSR(BaseEstimator):
             raise ValueError("The model has not been fitted yet. Please call the fit method first.")
 
         return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
+
+    def score_outliers(self, X: Any, y: Any) -> np.ndarray:
+        """Per-point outlier probability from the trained outlier head.
+
+        Parameters
+        ----------
+        X : array-like
+            Support-set features, ``(n_points, n_variables)``.
+        y : array-like
+            Support-set targets, ``(n_points,)``.
+
+        Returns
+        -------
+        np.ndarray
+            One probability in ``[0, 1]`` per point, in input order.
+
+        Raises
+        ------
+        CapabilityUnavailable
+            If this checkpoint was built without an outlier head.
+
+        Notes
+        -----
+        The head reads the DATA-SET ENCODER only: a score conditions on ``(X, y)`` and never on any
+        expression. It asks "could a function have produced this point set", not "does this point
+        fit that formula". The published AUROC 0.9888 is POOLED and in-distribution; per-problem
+        behaviour is much weaker (a single lone outlier scores a median P around 0.42), and the head
+        degrades above roughly 10% contamination -- the ceiling it was trained under.
+
+        Examples
+        --------
+        >>> p = ansr.score_outliers(X, y)          # doctest: +SKIP
+        >>> suspicious = np.argsort(p)[-3:]        # doctest: +SKIP
+        """
+        return score_outliers(self, X, y)
+
+    def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str) -> ConstantPrediction:
+        """Fill the ``'<constant>'`` slots of ``expression`` with the model's own predictions.
+
+        The trained ``<predict_constants>`` block: the harness force-feeds the block openers and the
+        model emits the 8 hex nibbles of each float32, exactly as in training.
+
+        Parameters
+        ----------
+        X : array-like
+            Support-set features the constants should explain.
+        y : array-like
+            Support-set targets.
+        expression : sequence of str or str
+            Prefix tokens or an infix string, with ``'<constant>'`` at each slot to fill.
+            ``v1..vn`` variable names are mapped to ``x1..xN`` at the boundary.
+
+        Returns
+        -------
+        ConstantPrediction
+            ``.values`` in slot order, plus per-slot nibble log-probabilities, whether the model
+            chose to close each span, and a count of steps that would have left the nibble alphabet.
+
+        Raises
+        ------
+        CapabilityUnavailable
+            If this checkpoint lacks the ``<predict_constants>`` block or the ieee754 vocabulary.
+        ValueError
+            If the expression has no ``'<constant>'`` slots or names an unknown token.
+
+        Examples
+        --------
+        >>> pred = ansr.predict_constants(X, y, ['+', '*', '<constant>', 'x1', '<constant>'])
+        ... # doctest: +SKIP
+        >>> pred.values                                       # doctest: +SKIP
+        [2.5, 1.0]
+
+        See Also
+        --------
+        fit : refines constants numerically; this verb predicts them directly.
+        """
+        return predict_constants(self, X, y, expression)
 
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         """Retrieve a formatted expression from the compiled results.
