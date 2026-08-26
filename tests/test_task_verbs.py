@@ -119,7 +119,7 @@ class TestCandidateCarriesBothConstantSets:
             raw_beam=[1, 2], expression=['+', '<constant>', 'x1'], expression_prefix=['+', '2.0', 'x1'],
             expression_infix='2.0 + x1', skeleton_prefix=['+', '<constant>', 'x1'],
             constants=[2.5], constants_emitted=[2.0], log_prob=-1.0, score=-3.0, fvu=1e-15,
-            complexity=3, constant_count=1, pruned_variant=False)
+            complexity=3, mu=146000.0, constant_count=1, pruned_variant=False)
         assert c.constants == [2.5]
         assert c.constants_emitted == [2.0]
 
@@ -128,5 +128,5 @@ class TestCandidateCarriesBothConstantSets:
         c = Candidate(
             raw_beam=[1], expression=['x1'], expression_prefix=['x1'], expression_infix='x1',
             skeleton_prefix=['x1'], constants=[], constants_emitted=None, log_prob=-1.0,
-            score=-1.0, fvu=0.5, complexity=1, constant_count=0, pruned_variant=False)
+            score=-1.0, fvu=0.5, complexity=1, mu=None, constant_count=0, pruned_variant=False)
         assert c.constants_emitted is None

@@ -4,6 +4,7 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
 from flash_ansr.preprocessing.schemas import PromptFeatures, PromptPrefix
 
 
@@ -164,6 +165,50 @@ class PromptSerializer:
             or bool(normalized_exclude)
         )
 
+        # v24 task-block checkpoints were trained with the complexity block as a BARE prefix
+        # element -- `<complexity> <float> </complexity>`, mu on the numeric channel -- and never
+        # inside a `<prompt>` wrapper. Emitting the v23 wrapper here spends two token ids that carry
+        # zero training signal for this checkpoint and measurably weakens the conditioning (~32%).
+        # `<ieee754>` is the marker: only the mixed-representation vocabularies carry it.
+        v24_task_blocks = IEEE754_START_TOKEN in self.tokenizer
+
+        if v24_task_blocks:
+            if complexity is not None and all(
+                    token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>")):
+                tokens.extend(["<complexity>", "<float>", "</complexity>"])
+                numeric_values.extend([np.nan, float(complexity), np.nan])
+                prompt_mask.extend([True, True, True])
+                emit_prompt = True
+            else:
+                emit_prompt = False
+
+            missing_tokens: list[str] = []
+            if "<bos>" not in self.tokenizer:
+                missing_tokens.append("<bos>")
+            if "<expression>" in self.tokenizer:
+                tokens.append("<expression>")
+                numeric_values.append(np.nan)
+                prompt_mask.append(False)
+            else:
+                missing_tokens.append("<expression>")
+
+            try:
+                input_ids = [self.tokenizer[token] for token in tokens]
+            except KeyError as exc:
+                raise KeyError(
+                    f"Token '{exc.args[0]}' missing from tokenizer vocabulary while serializing "
+                    f"prompt prefix.") from exc
+
+            return {
+                "input_ids": input_ids,
+                "input_num": numeric_values,
+                "prompt_mask": prompt_mask,
+                "prompt_metadata": metadata,
+                "prompt_disabled": not emit_prompt,
+                "missing_tokens": missing_tokens,
+            }
+
+        # --- v23 path below, unchanged: those checkpoints WERE trained with the wrapper. ---
         required_prompt_tokens: set[str] = set()
         if has_prompt_content:
             required_prompt_tokens.update({"<prompt>", "</prompt>"})
@@ -345,10 +390,16 @@ def prepare_prompt_prefix(
         preprocessor: PromptSerializer | None,
         *,
         complexity: int | float | None,
-        allowed_terms: Iterable[Sequence[Any]] | None,
-        include_terms: Iterable[Sequence[Any]] | None,
-        exclude_terms: Iterable[Sequence[Any]] | None) -> PromptPrefix | None:
-    """Serialize prompt metadata into tokens usable by the transformer."""
+        allowed_terms: Iterable[Sequence[Any]] | None = None,
+        include_terms: Iterable[Sequence[Any]] | None = None,
+        exclude_terms: Iterable[Sequence[Any]] | None = None) -> PromptPrefix | None:
+    """Serialize prompt metadata into tokens usable by the transformer.
+
+    The three term collections are WITHDRAWN from the public inference surface: they were
+    documented as constraining generation, emit tokens a v24 checkpoint never saw, and are enforced
+    nowhere at decode time. They remain here, defaulted off, only for v23 checkpoints whose training
+    did emit the `<prompt>` block -- the v24 path ignores them entirely.
+    """
     if preprocessor is None:
         return None
 

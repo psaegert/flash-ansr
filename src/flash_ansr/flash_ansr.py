@@ -1197,13 +1197,7 @@ class FlashANSR(BaseEstimator):
         effective_prompt = prompt_prefix
         if effective_prompt is None and complexity is not None:
             preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
-            effective_prompt = prepare_prompt_prefix(
-                preprocessor,
-                complexity=complexity,
-                allowed_terms=None,
-                include_terms=None,
-                exclude_terms=None,
-            )
+            effective_prompt = prepare_prompt_prefix(preprocessor, complexity=complexity)
 
         match self.generation_config.method:
             case 'beam_search':
@@ -1558,18 +1552,9 @@ class FlashANSR(BaseEstimator):
             self,
             *,
             complexity: int | float | None,
-            allowed_terms: Iterable[Sequence[Any]] | None,
-            include_terms: Iterable[Sequence[Any]] | None,
-            exclude_terms: Iterable[Sequence[Any]] | None,
             emission: str = 'constants') -> PromptPrefix | None:
         preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
-        prompt_prefix = prepare_prompt_prefix(
-            preprocessor,
-            complexity=complexity,
-            allowed_terms=allowed_terms,
-            include_terms=include_terms,
-            exclude_terms=exclude_terms,
-        )
+        prompt_prefix = prepare_prompt_prefix(preprocessor, complexity=complexity)
 
         if emission != 'constants':
             if prompt_prefix is None:
@@ -1704,9 +1689,6 @@ class FlashANSR(BaseEstimator):
             verbose: bool = False,
             *,
             complexity: int | float | None = None,
-            allowed_terms: Iterable[Sequence[Any]] | None = None,
-            include_terms: Iterable[Sequence[Any]] | None = None,
-            exclude_terms: Iterable[Sequence[Any]] | None = None,
             emission: str = 'constants',
             refine_seed: int | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
@@ -1729,15 +1711,13 @@ class FlashANSR(BaseEstimator):
             Raises ``CapabilityUnavailable`` on a checkpoint whose vocabulary lacks the flag.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
-        allowed_terms : Iterable[Sequence[str]] or None, optional
-            Keyword-only list of term token sequences that may appear in the
-            generated expression.
-        include_terms : Iterable[Sequence[str]] or None, optional
-            Keyword-only subset of allowed terms that the expression should
-            prioritise using.
-        exclude_terms : Iterable[Sequence[str]] or None, optional
-            Keyword-only list of term token sequences that should be discouraged
-            during generation.
+        complexity : int or float or None, optional
+            Keyword-only target complexity in **simplipy mu** -- the unit
+            ``simplipy_engine.complexity(skeleton)`` returns, where a ``<constant>`` prices one
+            symbol unit. It runs roughly 1e3-1e6, NOT a token count. :meth:`predict_complexity`
+            produces a value on this scale and ``Candidate.mu`` reports it back, so a value can
+            round-trip. On a v24 checkpoint this emits the trained bare ``<complexity>`` block; a
+            v23 checkpoint keeps its own ``<prompt>`` wrapper.
         refine_seed : int or None, optional
             Keyword-only seed for the constant-refinement ``p0`` noise. When
             provided, the per-candidate refiner seeds are derived deterministically
@@ -1771,9 +1751,6 @@ class FlashANSR(BaseEstimator):
                 X, y, variable_names,
                 emission=emission,
                 complexity=complexity,
-                allowed_terms=allowed_terms,
-                include_terms=include_terms,
-                exclude_terms=exclude_terms,
                 verbose=verbose,
             )
             # Generation-phase state, applied so callers see it even if refinement raises.
@@ -1798,9 +1775,6 @@ class FlashANSR(BaseEstimator):
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             *,
             complexity: int | float | None = None,
-            allowed_terms: Iterable[Sequence[Any]] | None = None,
-            include_terms: Iterable[Sequence[Any]] | None = None,
-            exclude_terms: Iterable[Sequence[Any]] | None = None,
             emission: str = 'constants',
             verbose: bool = False) -> "GenState":
         """GPU generation phase of :meth:`fit`: prepare inputs, sample candidates, return a GenState.
@@ -1916,9 +1890,6 @@ class FlashANSR(BaseEstimator):
             prompt_prefix = self._prepare_prompt_prefix(
                 emission=emission,
                 complexity=complexity,
-                allowed_terms=allowed_terms,
-                include_terms=include_terms,
-                exclude_terms=exclude_terms,
             )
 
             metadata_snapshot: dict[str, list[list[str]]] | None
@@ -2578,6 +2549,19 @@ class FlashANSR(BaseEstimator):
         """
         return predict_complexity(self, X, y)
 
+    def _skeleton_mu(self, skeleton: Sequence[str] | None) -> float | None:
+        """simplipy complexity of a skeleton, or None when the engine cannot price it.
+
+        Never raises: a candidate whose dialect the engine will not parse still has a valid
+        expression and a valid fit, and losing it over a reporting field would be absurd.
+        """
+        if not skeleton:
+            return None
+        try:
+            return float(self.simplipy_engine.complexity(list(skeleton)))
+        except Exception:
+            return None
+
     def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
         """Retrieve a formatted expression from the compiled results.
 
@@ -2710,6 +2694,11 @@ class FlashANSR(BaseEstimator):
                 score=float(r.get('score', float('nan'))),
                 fvu=float(r.get('fvu', float('nan'))),
                 complexity=int(r.get('complexity', len(r['expression']))),
+                # mu, NOT the token count: fit(complexity=) consumes simplipy mu (1e3-1e6) while
+                # `complexity` above is a token count (~1e1). Reporting only the latter is why
+                # feeding a result's complexity back into a prompt was measurably worse than
+                # passing nothing. Computed here (bounded by the refined survivors), never per beam.
+                mu=self._skeleton_mu(skeleton_prefix),
                 constant_count=int(r.get('constant_count', 0)),
                 pruned_variant=bool(r.get('pruned_variant', False)),
                 y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),

@@ -288,18 +288,22 @@ def test_serialize_prompt_prefix(
         allowed_terms=[['+', 'x1']],
     )
 
+    # This fixture is a v24 vocabulary (it carries <ieee754>), and v24 training emitted the
+    # complexity block BARE -- `<complexity> <float> </complexity>` as a prefix element, never
+    # inside a `<prompt>` wrapper. The wrapper costs two token ids that carry no training signal
+    # for such a checkpoint. The term sections are withdrawn from the surface and emit nothing.
     tokens = [tokenizer[idx] for idx in serialized['input_ids']]
-    assert tokens[:5] == ['<bos>', '<prompt>', '<complexity>', '<float>', '</complexity>']
-    assert tokens[5:9] == ['<allowed_term>', '+', 'x1', '</allowed_term>']
-    assert tokens[9:] == ['</prompt>', '<expression>']
+    assert tokens == ['<bos>', '<complexity>', '<float>', '</complexity>', '<expression>']
+    assert '<prompt>' not in tokens
+    assert '<allowed_term>' not in tokens
     assert serialized['prompt_disabled'] is False
     assert serialized['missing_tokens'] == []
 
     numeric = serialized['input_num']
     assert len(numeric) == len(tokens)
     assert math.isnan(numeric[0])
-    assert numeric[3] == pytest.approx(5.0)
-    assert all(math.isnan(value) for idx, value in enumerate(numeric) if idx != 3)
+    assert numeric[2] == pytest.approx(5.0)   # mu rides the <float> position, as in training
+    assert all(math.isnan(value) for idx, value in enumerate(numeric) if idx != 2)
 
     mask = serialized['prompt_mask']
     assert len(mask) == len(tokens)

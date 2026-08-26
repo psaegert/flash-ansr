@@ -38,7 +38,8 @@ class Candidate:
     log_prob: float
     score: float
     fvu: float
-    complexity: int
+    complexity: int                     # TOKEN COUNT of the expression (what the length penalty prices)
+    mu: float | None                    # simplipy complexity of the skeleton -- the unit fit(complexity=) consumes
     constant_count: int
     pruned_variant: bool                # synthesized during constant-pruning (not from generation)
     y_pred: np.ndarray | None = None        # on support X -- populated only for the top_k (opt-in; OOM otherwise)

@@ -181,9 +181,6 @@ def test_flash_ansr_fit_uses_prompt_prefix(
         X,
         y,
         complexity=7,
-        allowed_terms=[["x1"]],
-        include_terms=[["x1"]],
-        exclude_terms=[["x2"]],
     )
 
     assert captured.get('prompt_prefix') is not None
@@ -193,36 +190,25 @@ def test_flash_ansr_fit_uses_prompt_prefix(
     assert prompt_prefix is not None
 
     prompt_tokens = [tokenizer[idx] for idx in prompt_prefix.tokens]
+    # v24 training emitted the complexity block BARE, as a prefix element -- no `<prompt>`
+    # wrapper (two ids with no training signal for this checkpoint) and no term sections
+    # (withdrawn from the surface: documented as constraining, enforced nowhere).
     expected_prefix = [
         '<bos>',
-        '<prompt>',
         '<complexity>',
         '<float>',
         '</complexity>',
-        '<allowed_term>',
-        'x1',
-        '</allowed_term>',
-        '<include_term>',
-        'x1',
-        '</include_term>',
-        '<exclude_term>',
-        'x2',
-        '</exclude_term>',
-        '</prompt>',
         '<expression>',
     ]
     assert prompt_tokens[: len(expected_prefix)] == expected_prefix
+    assert '<prompt>' not in prompt_tokens
+    assert '<allowed_term>' not in prompt_tokens
 
     prompt_numeric = prompt_prefix.numeric
-    assert prompt_numeric[3] == pytest.approx(7.0)
+    assert prompt_numeric[2] == pytest.approx(7.0)
     assert all(
-        np.isnan(value) for idx, value in enumerate(prompt_numeric) if idx != 3
+        np.isnan(value) for idx, value in enumerate(prompt_numeric) if idx != 2
     )
-
-    assert ansr._prompt_metadata is not None
-    assert ansr._prompt_metadata['allowed_terms'] == [['x1']]
-    assert ansr._prompt_metadata['include_terms'] == [['x1']]
-    assert ansr._prompt_metadata['exclude_terms'] == [['x2']]
 
     assert 'prompt_metadata' in ansr.results
     assert not ansr.results['prompt_metadata'].isnull().all()
