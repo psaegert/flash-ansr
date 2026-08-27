@@ -1,0 +1,56 @@
+# v24.0-T17 train dataset: T14's format plus HYPOTHESIS MODE (the <hypothesize>
+# flag licenses self-initiated complexity blocks; three-way mix 0.2 hypothesis /
+# 0.4 prompted / 0.4 absent) -- T13's format plus the four ruled task extensions
+# (2026-08-24): the noise mixture (post-accept, one definition with evaluation),
+# the complexity block (50%% absent / 25%% nibbles / 25%% <float> summary), and the
+# predict_y auxiliary block (1/3 of instances, a/b 50/50, clean holdout from the
+# accepted support). Priors are pinned explicitly, never defaulted.
+source:
+  catalog: './catalog_train.yaml'
+  sampling:
+    n_support: prior
+    n_validation: 0
+    noise:
+      p_clean: 0.30
+      types: {additive: 0.5, multiplicative: 0.5}
+      level: [1.0e-4, 0.3]
+      # Outlier prior, re-derived 2026-08-27 against the literature (see the
+      # symbolic_data.noise docstring). T17's prior placed every outlier at a median of
+      # ~3,000 RESIDUAL sigma, because kappa was measured against the spread of the
+      # SIGNAL rather than against what the neighbouring points fail to predict.
+      outliers:
+        p_instance: 0.10                    # no literature analogue; owner's choice, unchanged
+        rate: {name: beta, a: 1.0, b: 9.0}  # Kennedy et al. 2017; Oztuerk & Karabatsos 2017;
+                                            # matches ADBench's 47 real datasets (p50 6.3%)
+        magnitude: {name: lognormal, median: 5.0, sigma: 1.4}   # smooth, unbounded, fades
+                                            # both ends; log-scaling per Hogg, Bovy & Lang 2010
+        scale: neighbour                    # kappa vs what the nearest neighbour in x misses
+        sign: {mixed: 0.5, up: 0.25, down: 0.25}   # per problem; ours, unsourced
+        min_count: 1                        # Hoeting, Raftery & Madigan 1996
+tokenizer: './tokenizer.yaml'
+padding: 'zero'
+constant_representation: 'ieee754_mixed'
+target_dialect: 'tagged'
+condition_dropout: 0.1
+complexity_block:
+  p_present: 0.4
+  p_nibbles: 0.5
+  p_hypothesize: 0.2
+# Promptable masking + constant infilling (owner rulings 2026-08-24, audited):
+# flags 5/5/90 all/fittable/unmasked; partial on 10% of unflagged instances with
+# per-slot 50/25/25 placeheld/expanded/compact; <predict_constants> attaches at
+# 0.5 after flagged skeletons and 0.9 on partial instances (>=1 placeholder,
+# CFG-conditioned, collection-stable only -- the gate withholds engine-internal
+# values). Prompt elements permute per instance; suffix pair swaps 50/50.
+mask_block:
+  p_mask_all: 0.05
+  p_mask_fittable: 0.05
+  p_partial: 0.1
+  p_placeheld: 0.5
+  p_predict_constants_flagged: 0.5
+  p_predict_constants_partial: 0.9
+
+predict_y_block:
+  p_present: 0.3333333333333333
+  p_conditional: 0.5
+  min_n_support: 8

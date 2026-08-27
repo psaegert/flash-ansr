@@ -72,7 +72,10 @@ def test_mixture_streams_masks_noisy_targets_and_realized_draws() -> None:
         assert batch["outlier_mask"].shape == batch["y_tensors"].shape[:2]
         assert "noise" in batch
         for draw in batch["noise"]:
-            assert set(draw) == {"type", "level", "outlier_rate", "scale"}
+            # `outlier_scale` records the ruler kappa was measured against and
+            # `outlier_sign` the per-problem direction (symbolic-data 2026-08-27).
+            assert set(draw) == {"type", "level", "outlier_rate", "scale",
+                                 "outlier_scale", "outlier_sign"}
             assert draw["type"] == "clean" and draw["level"] == 0.0
         for row in range(batch["y_tensors"].shape[0]):
             n = int(batch["data_attn_mask"][row].sum())
