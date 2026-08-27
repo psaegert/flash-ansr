@@ -12,7 +12,29 @@ simplipy_engine: 'acj-4'
 # is a fresh stream from THIS catalog (see dataset_val.yaml). The v24 line gets its
 # own frozen val artifact at the symbolic-data 0.15 freeze; it joins this list then.
 holdout_pools: [
-  "fastsrb"]
+  # Every benchmark srbf may evaluate on. The training run must never see any of them, and
+  # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
+  # suite -- widening the benchmark later means retraining.
+  #
+  # Measured 2026-08-27 (3,000 draws replayed against nested pools): widening from fastsrb
+  # alone to all 29 costs over-rejection but nothing in time -- `is_held_out` is a hash lookup,
+  # O(1) in pool size, and the per-draw cost is dominated by evaluating the candidate, which
+  # the one-catalog pool already paid.
+  #
+  # Not listed: `fastsrb.v2` (ResolverError -- the asset exists but does not resolve by name).
+  # `srsd-dummy` is listed for provenance though it adds ZERO keys: it is the same law set with
+  # dummy variables, and the structure layer already generalizes over variable relabeling.
+  "fastsrb",
+  # classical SR suites
+  "feynman", "feynman-bonus", "nguyen", "keijzer", "korns", "koza", "livermore", "livermore2",
+  "vladislavleva", "jin", "neat", "pagie", "poly", "nonic", "sine", "meier", "r-rationals",
+  "constant", "grammarvae",
+  # physics / SRSD
+  "physo-astro", "physo-class", "srsd-dummy",
+  # SOOSE
+  "soose-fc", "soose-nc", "soose-wc",
+  # ERBench
+  "erbench-densities", "erbench-phybench", "erbench-syneq"]
 
 sample_strategy:
   n_operator_distribution: "length_exponential"
