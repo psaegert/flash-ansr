@@ -9,7 +9,7 @@ from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.train.train import Trainer
 from flash_ansr.utils.config_io import load_config
-from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, nibble_tokens_to_float32
+from flash_ansr.utils.ieee754 import IEEE754_N_BYTES, byte_tokens_to_float64
 
 COMPLEXITY_FLOAT = {"p_present": 1.0, "p_hypothesize": 0.0}
 PREDICT_A = {"p_present": 1.0, "p_conditional": 0.0, "min_n_support": 1}
@@ -99,9 +99,9 @@ def test_predict_y_unconditional_before_expression(tokenizer) -> None:  # type: 
                     float(np.float32(draw["x"][k])), rel=0, abs=0)
             tail = tokens[3 + n_dims:3 + n_dims + 2]
             assert tail == ["</point>", "<ieee754>"]
-            nibbles = tokens[5 + n_dims:5 + n_dims + IEEE754_N_NIBBLES]
-            assert nibble_tokens_to_float32(nibbles) == draw["y"]
-            assert tokens[5 + n_dims + IEEE754_N_NIBBLES:8 + n_dims + IEEE754_N_NIBBLES] == \
+            nibbles = tokens[5 + n_dims:5 + n_dims + IEEE754_N_BYTES]
+            assert byte_tokens_to_float64(nibbles) == draw["y"]
+            assert tokens[5 + n_dims + IEEE754_N_BYTES:8 + n_dims + IEEE754_N_BYTES] == \
                 ["</ieee754>", "</predict_y>", "<expression>"]
             # the held-out point is REMOVED from the encoder set (prior-exact holdout)
             n = int(batch["data_attn_mask"][row].sum())
@@ -241,13 +241,13 @@ def test_hypothesis_mode_supervises_the_whole_block_after_the_flag(tokenizer, en
         for row, tokens in _rows(batch, tokenizer):
             assert tokens[:4] == ["<bos>", "<hypothesize>", "<complexity>", "<ieee754>"]
             assert batch["complexity_variant"][row] == "hypothesis"
-            nibbles = tokens[4:4 + IEEE754_N_NIBBLES]
+            nibbles = tokens[4:4 + IEEE754_N_BYTES]
             mu = batch["complexity_mu"][row]
-            assert nibble_tokens_to_float32(nibbles) == float(np.float32(mu))
+            assert byte_tokens_to_float64(nibbles) == float(np.float32(mu))
             assert mu == engine.complexity(list(batch["skeleton"][row]))
             mask = batch["task_mask"][row].tolist()
             assert mask[1], "the flag itself is NEVER supervised (harness-only)"
-            block_end = 4 + IEEE754_N_NIBBLES + 2   # through </ieee754> </complexity>
+            block_end = 4 + IEEE754_N_BYTES + 2   # through </ieee754> </complexity>
             assert not any(mask[2:block_end]), \
                 "opener, selector, nibbles and closers are the model's own hypothesis: all supervised"
 

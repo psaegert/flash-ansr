@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, float32_to_ieee754_bits
-from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES
+from flash_ansr.utils.ieee754 import IEEE754_N_BYTES
 
 
 def test_bit_decomposition_refuses_a_non_float32_tensor():
@@ -46,14 +46,14 @@ def test_tasks_uses_the_shared_span_constant():
     """tasks.py carried its own NIBBLES_PER_SPAN = 8 ten lines after importing the real one."""
     import flash_ansr.tasks as tasks
     assert not hasattr(tasks, "NIBBLES_PER_SPAN")
-    assert tasks.IEEE754_N_NIBBLES == IEEE754_N_NIBBLES
+    assert tasks.IEEE754_N_BYTES == IEEE754_N_BYTES
 
 
 def test_is_constant_token_uses_a_set_not_a_scan():
     from flash_ansr import scoring
-    assert isinstance(scoring._NIBBLE_TOKEN_SET, frozenset)
-    from flash_ansr.utils.ieee754 import NIBBLE_TOKENS
-    assert scoring._NIBBLE_TOKEN_SET == frozenset(NIBBLE_TOKENS)
+    assert isinstance(scoring._BYTE_TOKEN_SET, frozenset)
+    from flash_ansr.utils.ieee754 import BYTE_TOKENS
+    assert scoring._BYTE_TOKEN_SET == frozenset(BYTE_TOKENS)
 
 
 # ---------------------------------------------------------------------------

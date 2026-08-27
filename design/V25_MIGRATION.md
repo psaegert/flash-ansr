@@ -1,12 +1,19 @@
 # v25: float64 numerics + byte constant tokens — migration plan
 
-**Status: owner-approved 2026-08-27.** Mapped by a 7-way parallel audit of the four repos,
+**Status: owner-approved 2026-08-27. S4 LANDED.** Mapped by a 7-way parallel audit of the four repos,
 then synthesized; every line number was verified against the working tree. Steps **S1, S2 and
-S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164). Next: S4.
+S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164), and **S4 is
+LANDED** on the flash-ansr side. Next: S5 (the rest of the configs), S6, S7.
 
-**Do not launch a training run between S3 and S4.** Between them the tree carries
-float32-representable values in float64 containers -- self-consistent, but not the target
-format, and a checkpoint trained there would be neither v24 nor v25.
+~~**Do not launch a training run between S3 and S4.**~~ LIFTED: S4 closed that window. The
+nibble lane is preserved at the `compat/v24-nibbles` tag, which is what T13-T18 and the T16
+checkpoint describe.
+
+**Measured at the S4 landing:** 411 constants drawn from the test catalog round-trip
+bit-exactly through the stream, and **191 of them (46.5%) are not float32-representable** --
+they were being silently narrowed before (e.g. 3.0616814935142074 stored as
+3.0616815090179443). That is what the migration bought, on real streamed data rather than
+a unit test.
 
 ### The numeric-representation doctrine — RULED 2026-08-27
 

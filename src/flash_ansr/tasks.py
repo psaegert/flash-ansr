@@ -3,14 +3,15 @@
 `FlashANSR` exposes these as thin methods; the work lives here so the estimator does not grow a
 second implementation of the training grammar. Each verb force-feeds exactly the circumstance the
 data pipeline emitted during training -- the harness owns openers and flags, the model owns content
-nibbles and closing tags -- because a prompt that drifts from the training grammar produces
+content bytes and closing tags -- because a prompt that drifts from the training grammar produces
 confident, plausible, wrong output rather than an error.
 
-**Every value here is a DISTRIBUTION, never a float.** A value is spelled as eight hex nibbles and
-each nibble is drawn from a softmax, so one decode is one sample from a factorised distribution
+**Every value here is a DISTRIBUTION, never a float.** A value is spelled as eight BYTES and
+each byte is drawn from a 256-way softmax, so one decode is one sample from a factorised distribution
 over values. Greedy decoding returns that distribution's mode, which is neither its centre nor any
-indication of its width -- and the width matters enormously here, because the leading nibbles carry
-the exponent, so a single flipped nibble moves the value by orders of magnitude. Conclusions drawn
+indication of its width -- and the width matters enormously here, because the leading byte carries
+the sign and seven exponent bits, so a single flipped leading byte moves the value across most of the
+binary64 exponent range, roughly 1e+-308 rather than binary32's 1e+-38. Conclusions drawn
 from a single decode are conclusions drawn from one sample.
 
 Scope note: srbf benchmarks the traditional SR task only. These verbs are driven by custom scripts,
@@ -40,12 +41,10 @@ from flash_ansr.data.serialization import (
 from flash_ansr.preprocessing.prompt_serialization import CapabilityUnavailable
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
-    IEEE754_N_NIBBLE_SYMBOLS,
+    IEEE754_N_BYTES,
     IEEE754_START_TOKEN,
-    NIBBLE_TOKENS,
-    nibble_tokens_to_float32,
-    nibble_values_to_float32,
+    BYTE_TOKENS,
+    byte_tokens_to_float64,
 )
 from flash_ansr.utils.numeric import NUMERIC_DTYPE, NUMERIC_DTYPE_NP
 from flash_ansr.utils.tensor_ops import pad_input_set
@@ -66,10 +65,10 @@ class ValueDistribution:
     draws : list[float]
         Every sampled value, in draw order.
     off_grammar_steps : int
-        Decode steps whose unrestricted argmax would have left the nibble alphabet, summed over
+        Decode steps whose unrestricted argmax would have left the byte alphabet, summed over
         draws. Non-zero means the prompt is out of distribution for this checkpoint.
     closed_cleanly_fraction : float
-        Fraction of draws where the model itself chose to close the span after 8 nibbles.
+        Fraction of draws where the model itself chose to close the span after 8 bytes.
     """
 
     draws: list[float] = field(default_factory=list)
@@ -85,7 +84,7 @@ class ValueDistribution:
     def finite_draws(self) -> list[float]:
         """Draws that are finite.
 
-        A nibble pattern can decode to nan or inf. Those are genuine outcomes of the model's
+        A byte pattern can decode to nan or inf. Those are genuine outcomes of the model's
         distribution -- ``non_finite_fraction`` reports how often -- but they cannot enter a
         quantile, so the summaries below are taken over the finite draws only.
         """
@@ -249,7 +248,7 @@ def _sample_span(
         state: tuple[torch.Tensor, torch.Tensor],
         data: torch.Tensor,
         attn_mask: torch.Tensor,
-        nibble_ids: list[int],
+        byte_ids: list[int],
         span_end: int,
         temperature: float,
         generator: torch.Generator | None,
@@ -258,19 +257,21 @@ def _sample_span(
     """Draw one ieee754 span for every row of ``state``, decoded in parallel.
 
     Each row keeps its OWN history, so a multi-slot decode samples the joint distribution over
-    slots rather than a product of per-slot marginals. Each nibble is drawn from the softmax
-    restricted to the nibble alphabet -- the same restriction training imposed. The closing tag is
+    slots rather than a product of per-slot marginals. Each byte is drawn from the softmax
+    restricted to the 256-token byte alphabet -- the same restriction training imposed. NOTE that a
+    given `temperature` now shapes 256 logits rather than 16, so it is NOT comparable to a nibble-lane
+    setting at the same number. The closing tag is
     appended by the harness, but whether the model WANTED to close is measured first.
     """
     device = data.device
-    nibble_index = torch.tensor(nibble_ids, dtype=torch.long, device=device)
+    byte_index = torch.tensor(byte_ids, dtype=torch.long, device=device)
     tokenizer = model.tokenizer
     sequences, numerics = state
     n_rows = sequences.shape[0]
 
     off_grammar = 0
     memory = None
-    for _ in range(IEEE754_N_NIBBLES):
+    for _ in range(IEEE754_N_BYTES):
         if memory is None:
             # The mask applies on the FIRST pass only: forward substitutes null_memory into
             # `model.memory` in place, so the cached memory below is already the routed one.
@@ -282,16 +283,16 @@ def _sample_span(
                            data_attn_mask=attn_mask)
 
         step = logits[:, -1]
-        off_grammar += int((~torch.isin(step.argmax(dim=-1), nibble_index)).sum().item())
+        off_grammar += int((~torch.isin(step.argmax(dim=-1), byte_index)).sum().item())
 
-        restricted = step[:, nibble_index]
+        restricted = step[:, byte_index]
         if temperature <= 0:
             choice = restricted.argmax(dim=-1)
         else:
             probabilities = torch.softmax(restricted / float(temperature), dim=-1)
             choice = torch.multinomial(probabilities, 1, generator=generator).squeeze(-1)
 
-        sequences = torch.cat([sequences, nibble_index[choice].unsqueeze(-1)], dim=1)
+        sequences = torch.cat([sequences, byte_index[choice].unsqueeze(-1)], dim=1)
         numerics = torch.cat(
             [numerics, torch.full((n_rows, 1), float("nan"), device=device)], dim=1)
 
@@ -299,8 +300,8 @@ def _sample_span(
     closed = (logits[:, -1].argmax(dim=-1) == span_end)
 
     draws = [
-        float(nibble_tokens_to_float32([str(tokenizer[int(t)]) for t in row]))
-        for row in sequences[:, -IEEE754_N_NIBBLES:].tolist()
+        float(byte_tokens_to_float64([str(tokenizer[int(t)]) for t in row]))
+        for row in sequences[:, -IEEE754_N_BYTES:].tolist()
     ]
 
     distribution = ValueDistribution(
@@ -372,100 +373,6 @@ def score_outliers(estimator: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         probabilities = torch.sigmoid(head(representations).squeeze(-1))
 
     return probabilities.detach().cpu().numpy().reshape(-1)
-
-
-def predict_residuals(
-        estimator: Any,
-        X: "np.ndarray",
-        y: "np.ndarray",
-        *,
-        n_samples: int = 32,
-        temperature: float = 1.0,
-        seed: int | None = None) -> list[ValueDistribution]:
-    """Per-point residual ``y_i - f(x_i)``: how far each observation sits off the true curve.
-
-    One deterministic encoder pass produces, per point, eight independent 16-way softmaxes over
-    the IEEE-754 nibbles of the residual. Sampling those softmaxes gives ``n_samples`` float32
-    draws per point, so -- like every other predicted value on this surface -- the answer is a
-    DISTRIBUTION, not a number.
-
-    Parameters
-    ----------
-    X, y : np.ndarray
-        The observed support set. ``y`` is the NOISY target; the residual is what separates it
-        from the curve.
-    n_samples : int, default=32
-        Draws per point. All draws come from the single forward pass, so this is nearly free.
-    temperature : float, default=1.0
-        Softmax temperature applied to the nibble logits before sampling.
-    seed : int, optional
-        Seed for the nibble sampling.
-
-    Returns
-    -------
-    list[ValueDistribution]
-        One distribution per support point, in input order.
-
-    Raises
-    ------
-    CapabilityUnavailable
-        If the checkpoint was built without a residual head.
-
-    Notes
-    -----
-    Unlike a decoded span this head cannot go off-grammar or fail to close: it emits exactly 8
-    nibble positions structurally, so those two ``ValueDistribution`` fields are always 0 and 1.0.
-    A nibble pattern CAN still decode to nan or inf -- ``non_finite_fraction`` reports how often.
-
-    The head reads the data-set encoder only, so it conditions on ``(X, y)`` and never on an
-    expression. Measured on the training prior (2026-08-27): the residual is invisible to
-    model-free methods -- a nearest-neighbour smoother recovers ``|residual|`` at Spearman
-    rho = +0.06 -- because the noise sits ~69x below how much f moves between neighbouring
-    points. Predicting it well therefore REQUIRES the encoder to have internalized the curve,
-    which is the point of the task and also the reason to check it against a baseline before
-    quoting any number from it.
-    """
-    model = estimator.flash_ansr_model
-    head = getattr(model, "residual_head", None)
-    if head is None:
-        raise CapabilityUnavailable(
-            "predict_residuals() needs a checkpoint trained with a residual head; this model.yaml "
-            "declares residual_head: false (or omits it).")
-
-    tokenizer = model.tokenizer
-    bos = _require(tokenizer, "<bos>", "predict_residuals")
-    eos = _require(tokenizer, "<eos>", "predict_residuals")
-
-    device = model.device
-    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, device)
-    ids = torch.tensor([[bos, eos]], dtype=torch.long, device=device)
-
-    model.eval()
-    with torch.no_grad():
-        model(ids, data, data_attn_mask=attn_mask)
-        representations = model.point_representations
-        if representations is None:
-            raise RuntimeError(
-                "The encoder did not expose point_representations; the checkpoint declares a "
-                "residual head but the forward pass did not populate it.")
-        logits = head(representations)
-        logits = logits.view(*logits.shape[:-1], IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS)
-        logits = logits[0] / max(float(temperature), 1e-6)          # (n_points, 8, 16)
-        probabilities = torch.softmax(logits.float(), dim=-1)
-
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=probabilities.device).manual_seed(int(seed))
-        n_points = probabilities.shape[0]
-        flat = probabilities.reshape(-1, IEEE754_N_NIBBLE_SYMBOLS)
-        drawn = torch.multinomial(flat, int(n_samples), replacement=True, generator=generator)
-        drawn = drawn.view(n_points, IEEE754_N_NIBBLES, int(n_samples))
-
-    nibbles = drawn.permute(0, 2, 1).cpu().numpy().astype(np.uint8)  # (points, samples, 8)
-    values = nibble_values_to_float32(nibbles)
-    return [ValueDistribution(draws=[float(v) for v in values[index]],
-                              off_grammar_steps=0, closed_cleanly_fraction=1.0)
-            for index in range(n_points)]
 
 
 def _normalize_expression(estimator: Any, expression: Sequence[str] | str) -> list[str]:
@@ -540,7 +447,7 @@ def predict_constants(
     span_start = _require(tokenizer, IEEE754_START_TOKEN, "predict_constants")
     span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_constants")
     mask_all = _require(tokenizer, "<mask_all>", "predict_constants")
-    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    byte_ids = [int(tokenizer[token]) for token in BYTE_TOKENS]
 
     tokens = _normalize_expression(estimator, expression)
     n_slots = sum(1 for token in tokens if token == "<constant>")
@@ -568,7 +475,7 @@ def predict_constants(
                              int(n_samples), model.device)
         for slot in range(n_slots):
             distribution, state = _sample_span(
-                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+                model, state, data, attn_mask, byte_ids, span_end, float(temperature), generator,
                 condition_mask=condition_mask)
             results.append(distribution)
             if slot < n_slots - 1:
@@ -593,7 +500,7 @@ def predict_y(
     Training writes this block in two placements, and both are reachable here. Without an
     expression the block sits in the PREFIX -- the model interpolates the point set it was given::
 
-        <bos> <predict_y> <point> <float>...<float> </point> <ieee754> [8 nibbles of y*] </ieee754>
+        <bos> <predict_y> <point> <float>...<float> </point> <ieee754> [8 bytes of y*] </ieee754>
 
     With one it sits in the SUFFIX, after the expression, so the expression is in scope::
 
@@ -654,7 +561,7 @@ def predict_y(
     compact = _require(tokenizer, COMPACT_CONSTANT_TOKEN, "predict_y")
     span_start = _require(tokenizer, IEEE754_START_TOKEN, "predict_y")
     span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_y")
-    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    byte_ids = [int(tokenizer[token]) for token in BYTE_TOKENS]
 
     queries = np.atleast_2d(np.asarray(x_query, dtype=np.float64))
     if X is not None:
@@ -696,7 +603,7 @@ def predict_y(
 
             state = _start_state(prefix_tokens, prefix_numeric, int(n_samples), model.device)
             distribution, _ = _sample_span(
-                model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+                model, state, data, attn_mask, byte_ids, span_end, float(temperature), generator,
                 condition_mask=condition_mask)
             results.append(distribution)
 
@@ -756,7 +663,7 @@ def predict_complexity(
     _require(tokenizer, COMPLEXITY_END_TOKEN, "predict_complexity")
     span_start = _require(tokenizer, IEEE754_START_TOKEN, "predict_complexity")
     span_end = _require(tokenizer, IEEE754_END_TOKEN, "predict_complexity")
-    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    byte_ids = [int(tokenizer[token]) for token in BYTE_TOKENS]
 
     data, attn_mask, condition_mask = _conditioning(
         estimator, X, y, conditioned=conditioned, n_rows=int(n_samples), verb="predict_complexity")
@@ -773,7 +680,7 @@ def predict_complexity(
 
         state = _append(_append(state, cx_start), span_start)
         distribution, _ = _sample_span(
-            model, state, data, attn_mask, nibble_ids, span_end, float(temperature), generator,
+            model, state, data, attn_mask, byte_ids, span_end, float(temperature), generator,
             condition_mask=condition_mask)
 
     return ComplexityDistribution(

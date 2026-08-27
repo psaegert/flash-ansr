@@ -51,9 +51,6 @@ null_memory_init_seed: 0
 # generative contamination labels (see train.yaml: outlier_loss_weight).
 outlier_head: true
 
-# Per-point RESIDUAL head (owner ruling 2026-08-27): predicts y_observed - f(x) at every
 # support point as the 8 IEEE-754 hex nibbles of that float32 -- one numeric format across
 # the whole stack, so zero and sign are native to the encoding. Reads the same pre-pooling
 # representations as the outlier head, from the same encoder pass. Measured cost: +6% encoder
-# wall-clock, 61.8k params (1.8% of the model). See train.yaml: residual_loss_weight.
-residual_head: true

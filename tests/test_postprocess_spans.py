@@ -14,7 +14,7 @@ from flash_ansr import get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.flash_ansr_model import FlashANSRModel
 from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
-from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN, IEEE754_END_TOKEN, NIBBLE_TOKENS, wrap_float32
+from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN, IEEE754_END_TOKEN, BYTE_TOKENS, wrap_float64
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +42,7 @@ class _Host:
 
 
 def _span_ids(tokenizer: Tokenizer, value: float) -> list[int]:
-    return [int(tokenizer[token]) for token in wrap_float32(value)]
+    return [int(tokenizer[token]) for token in wrap_float64(value)]
 
 
 def _seq(tokenizer: Tokenizer, body: list[int]) -> list[int]:
@@ -60,7 +60,7 @@ def _recover_values(tokenizer: Tokenizer, seq: list[int]) -> list[float] | None:
         expr,
         start_id=int(tokenizer[IEEE754_START_TOKEN]),
         end_id=int(tokenizer[IEEE754_END_TOKEN]),
-        nibble_ids=[int(tokenizer[t]) for t in NIBBLE_TOKENS],
+        byte_ids=[int(tokenizer[t]) for t in BYTE_TOKENS],
         constant_id=int(tokenizer["<constant>"]),
     )
     return values

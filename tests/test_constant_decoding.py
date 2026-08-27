@@ -29,12 +29,12 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    NIBBLE_TOKENS,
-    nibble_tokens_to_float32,
-    wrap_float32,
+    BYTE_TOKENS,
+    byte_tokens_to_float64,
+    wrap_float64,
 )
 
 COMPACT_TOKEN = "<float>"
@@ -81,7 +81,7 @@ def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
     close), no nibble/close token strays outside a span, and return the decoded values."""
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
-    id_to_nibble = {int(tokenizer[token]): token for token in NIBBLE_TOKENS}
+    id_to_byte = {int(tokenizer[token]): token for token in BYTE_TOKENS}
 
     values = []
     i = 0
@@ -89,15 +89,15 @@ def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
         token = ids[i]
         if token == open_id:
             assert i + IEEE754_SPAN_LENGTH <= len(ids), f"unterminated span at {i}: {ids}"
-            inner = ids[i + 1:i + 1 + IEEE754_N_NIBBLES]
-            assert all(x in id_to_nibble for x in inner), f"non-nibble token inside span at {i}: {ids}"
+            inner = ids[i + 1:i + 1 + IEEE754_N_BYTES]
+            assert all(x in id_to_byte for x in inner), f"non-nibble token inside span at {i}: {ids}"
             assert ids[i + IEEE754_SPAN_LENGTH - 1] == close_id, f"span at {i} not closed after 8 nibbles: {ids}"
-            value = nibble_tokens_to_float32([id_to_nibble[x] for x in inner])
+            value = byte_tokens_to_float64([id_to_byte[x] for x in inner])
             assert isinstance(value, float)
             values.append(value)
             i += IEEE754_SPAN_LENGTH
         else:
-            assert token not in id_to_nibble and token != close_id, f"stray nibble/close outside span at {i}: {ids}"
+            assert token not in id_to_byte and token != close_id, f"stray nibble/close outside span at {i}: {ids}"
             i += 1
     return values
 
@@ -210,10 +210,10 @@ def test_t6_mask_forbids_float_in_every_state(tokenizer: Tokenizer) -> None:
     float_id = tokenizer[COMPACT_TOKEN]
     open_id = tokenizer[IEEE754_START_TOKEN]
     close_id = tokenizer[IEEE754_END_TOKEN]
-    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    byte_ids = [int(tokenizer[token]) for token in BYTE_TOKENS]
 
     outside = tokenizer.encode(["<bos>", "<expression>", "x1"])
-    span_nibbles = [int(tokenizer[token]) for token in wrap_float32(0.5)[1:-1]]
+    span_nibbles = [int(tokenizer[token]) for token in wrap_float64(0.5)[1:-1]]
     prefixes = {
         "empty": [],
         "outside": outside,
@@ -234,7 +234,7 @@ def test_t6_mask_forbids_float_in_every_state(tokenizer: Tokenizer) -> None:
         forbidden = g.forbidden(tensor, remaining=100)[0]
         # Outside a span: nibbles and the close tag are forbidden, the open tag and
         # ordinary expression tokens are allowed.
-        for forbidden_id in (*nibble_ids, close_id):
+        for forbidden_id in (*byte_ids, close_id):
             assert bool(forbidden[forbidden_id]), (name, forbidden_id)
         for allowed_token in (IEEE754_START_TOKEN, "x2", "+", "sin", "<eos>"):
             assert not bool(forbidden[tokenizer[allowed_token]]), (name, allowed_token)
@@ -244,7 +244,7 @@ def test_t6_mask_forbids_float_in_every_state(tokenizer: Tokenizer) -> None:
         forbidden = g.forbidden(tensor, remaining=100)[0]
         allowed_ids = (~forbidden).nonzero().flatten().tolist()
         # Inside the tags, before 8 nibbles: EXACTLY the 16 nibbles are admissible.
-        assert sorted(allowed_ids) == sorted(nibble_ids), (name, allowed_ids)
+        assert sorted(allowed_ids) == sorted(byte_ids), (name, allowed_ids)
 
     tensor = torch.tensor([prefixes["inside_8_nibbles"]], dtype=torch.long)
     forbidden = g.forbidden(tensor, remaining=100)[0]

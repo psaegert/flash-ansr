@@ -19,12 +19,12 @@ from typing import Iterable
 
 import numpy as np
 
-from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, NIBBLE_TOKENS
+from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, BYTE_TOKENS
 
 #: Membership set for the expanded-span content alphabet. A frozenset, not the source tuple:
 #: is_constant_token runs per token on the scoring hot path, where a linear scan costs 16
 #: comparisons today and 256 once the alphabet becomes bytes.
-_NIBBLE_TOKEN_SET = frozenset(NIBBLE_TOKENS)
+_BYTE_TOKEN_SET = frozenset(BYTE_TOKENS)
 
 #: Floor used to keep variance and FVU strictly positive before a division / log.
 FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
@@ -108,14 +108,14 @@ def is_constant_token(token: str) -> bool:
     Recognises the ``<constant>`` placeholder, generated ``C_i`` symbols, a small set of named
     literals (signed/unsigned ``0``/``1``, ``np.pi``, ``np.e``, the float specials), any token
     that parses as a Python ``float``, and the v24 ``ieee754_mixed`` constant forms: the compact
-    ``<float>`` token and the ``<ieee754>`` span OPENING tag. The hex-nibble tokens
+    ``<float>`` token and the ``<ieee754>`` span OPENING tag. The byte tokens
     ``<h0>``..``<hf>`` and the closing ``</ieee754>`` tag deliberately do NOT count, so a whole
     10-token expanded span contributes exactly ONE constant to any per-token sum (the count
     that feeds ``constants_penalty`` in :func:`score_from_fvu` must see one per span, not 10).
     """
     if token in ('<constant>', '<float>', '<ieee754>'):
         return True
-    if token == IEEE754_END_TOKEN or token in _NIBBLE_TOKEN_SET:
+    if token == IEEE754_END_TOKEN or token in _BYTE_TOKEN_SET:
         return False
     if token.startswith('C_') and token[2:].isdigit():
         return True

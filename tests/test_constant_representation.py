@@ -32,15 +32,15 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    NIBBLE_TOKENS,
-    nibble_tokens_to_float32,
+    BYTE_TOKENS,
+    byte_tokens_to_float64,
 )
 
 
-NEW_SPECIAL_TOKENS = [IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS]
+NEW_SPECIAL_TOKENS = [IEEE754_START_TOKEN, IEEE754_END_TOKEN, *BYTE_TOKENS]
 COMPACT_TOKEN = "<float>"
 
 
@@ -112,15 +112,18 @@ def test_t2_tokens_disjoint_from_expression_tokens(tokenizer: Tokenizer) -> None
     assert not (set(NEW_SPECIAL_TOKENS) | {COMPACT_TOKEN}) & expression_tokens
 
 
-def test_t2_nibble_tokens_are_not_the_literals(tokenizer: Tokenizer) -> None:
-    # <h0>..<hf> are DEDICATED hex-nibble tokens, never the literals they spell.
-    assert len(NEW_SPECIAL_TOKENS) == 2 + 16
-    for value, token in enumerate(NIBBLE_TOKENS):
-        literal = f"{value:x}"
-        assert token != literal
-        if literal in tokenizer:
-            assert tokenizer[token] != tokenizer[literal]
-    assert tokenizer.encode(["<h0>", "<h1>"]) != tokenizer.encode(["0", "1"])
+def test_t2_byte_tokens_are_not_the_literals(tokenizer: Tokenizer) -> None:
+    # <b00>..<bff> are DEDICATED byte tokens, never the literals they spell.
+    assert len(NEW_SPECIAL_TOKENS) == 2 + 256
+    for value, token in enumerate(BYTE_TOKENS):
+        for literal in (f"{value:x}", f"{value:02x}", str(value)):
+            assert token != literal
+            if literal in tokenizer:
+                assert tokenizer[token] != tokenizer[literal]
+    assert tokenizer.encode(["<b00>", "<b01>"]) != tokenizer.encode(["0", "1"])
+    # The retired nibble alphabet must be GONE, not merely shadowed: <b0> was a bit token
+    # and <h0> a nibble token, and two-digit spelling is what keeps them distinguishable.
+    assert "<h0>" not in tokenizer and "<b0>" not in tokenizer
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +223,7 @@ def test_v24_template_has_no_explicit_number_tokens(v24_config) -> None:  # type
 
 def test_v24_template_carries_the_constants_format(v24_config) -> None:  # type: ignore[no-untyped-def]
     specials = list(v24_config["special_tokens"])
-    for token in (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS, COMPACT_TOKEN):
+    for token in (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *BYTE_TOKENS, COMPACT_TOKEN):
         assert token in specials, f"missing constants-format token {token!r}"
     # '<constant>' survives for the refiner handshake (spans map back to skeleton slots).
     assert "<constant>" in specials
@@ -230,7 +233,7 @@ def test_v24_template_encodes_a_tagged_target_end_to_end(gen2_engine, v24_config
     """The whole point: a canonical tagged expression, with every numeric literal ridden
     out on the ieee754 hex-nibble format, encodes under the v24 vocabulary -- no masking
     step, no number tokens, no `<unk>`."""
-    from flash_ansr.utils.ieee754 import wrap_float32
+    from flash_ansr.utils.ieee754 import wrap_float64
 
     v24_tokenizer = Tokenizer.from_config(v24_config)
     unk_id = v24_tokenizer["<unk>"]
@@ -240,7 +243,7 @@ def test_v24_template_encodes_a_tagged_target_end_to_end(gen2_engine, v24_config
         serialized: list[str] = []
         for token in output:
             if _parses_as_number(token):
-                serialized.extend(wrap_float32(float(token)))
+                serialized.extend(wrap_float64(float(token)))
                 saw_span = True
             else:
                 serialized.append(token)
@@ -306,7 +309,7 @@ def test_t3_expanded_nibbles_encode_the_constant() -> None:
     start = serialized.index("<ieee754>")
     end = serialized.index("</ieee754>")
     assert end - start == IEEE754_SPAN_LENGTH - 1  # 8 nibbles + tags span 10 tokens
-    assert nibble_tokens_to_float32(serialized[start + 1:end]) == value
+    assert byte_tokens_to_float64(serialized[start + 1:end]) == value
     assert all(math.isnan(v) for v in numeric[start:end + 1])  # numeric NaN across the span
     assert COMPACT_TOKEN not in serialized
 
@@ -389,8 +392,8 @@ def _spans(ids: list[int], start_id: int, end_id: int) -> list[tuple[int, int]]:
 
 def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
     start_id, end_id = tokenizer["<ieee754>"], tokenizer["</ieee754>"]
-    id_to_nibble = {int(tokenizer[token]): token for token in NIBBLE_TOKENS}
-    nibble_ids = set(id_to_nibble)
+    id_to_byte = {int(tokenizer[token]): token for token in BYTE_TOKENS}
+    byte_ids = set(id_to_byte)
     float_id = tokenizer[COMPACT_TOKEN]
     constant_id = tokenizer["<constant>"]
     pad_id = tokenizer["<pad>"]
@@ -408,14 +411,17 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
                 for start, end in spans:
                     assert end - start == IEEE754_SPAN_LENGTH - 1  # 10-token span, never cut
                     inner = ids[start + 1:end]
-                    assert len(inner) == IEEE754_N_NIBBLES and set(inner) <= nibble_ids
+                    assert len(inner) == IEEE754_N_BYTES and set(inner) <= byte_ids
                     # input_num is NaN across the whole expanded span.
                     assert all(math.isnan(numeric[p]) for p in range(start, end + 1))
                     # The nibbles decode to a finite float32 (big-endian hex spelling).
-                    hex_string = "".join(id_to_nibble[t][2] for t in inner)
-                    value = struct.unpack(">f", int(hex_string, 16).to_bytes(4, "big"))[0]
+                    # An INDEPENDENT decode: read the big-endian hex spelling straight off
+                    # the token bodies ('<bXX>' -> 'XX') rather than calling the codec, so
+                    # this cross-checks the codec instead of restating it.
+                    hex_string = "".join(id_to_byte[t][2:-1] for t in inner)
+                    value = struct.unpack(">d", int(hex_string, 16).to_bytes(8, "big"))[0]
                     assert math.isfinite(value)
-                    assert value == nibble_tokens_to_float32([id_to_nibble[t] for t in inner])
+                    assert value == byte_tokens_to_float64([id_to_byte[t] for t in inner])
 
                 # No dangling tags or bits outside complete spans.
                 in_span = set()
@@ -423,7 +429,7 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
                     in_span.update(range(start, end + 1))
                 for p, t in enumerate(ids):
                     if p not in in_span:
-                        assert t not in nibble_ids and t != start_id and t != end_id
+                        assert t not in byte_ids and t != start_id and t != end_id
 
                 compact_positions = [p for p, t in enumerate(ids) if t == float_id]
                 n_compact += len(compact_positions)
@@ -453,7 +459,7 @@ def test_mixed_streaming_drops_instances_instead_of_cutting_spans(tokenizer: Tok
     never fill a batch and the suite hangs instead of failing.
     """
     start_id, end_id = tokenizer["<ieee754>"], tokenizer["</ieee754>"]
-    nibble_ids = {int(tokenizer[token]) for token in NIBBLE_TOKENS}
+    byte_ids = {int(tokenizer[token]) for token in BYTE_TOKENS}
 
     saw_drop_counter = False
     saw_intact_span = False
@@ -465,13 +471,13 @@ def test_mixed_streaming_drops_instances_instead_of_cutting_spans(tokenizer: Tok
                 spans = _spans(ids, start_id, end_id)
                 for start, end in spans:
                     assert end - start == IEEE754_SPAN_LENGTH - 1
-                    assert set(ids[start + 1:end]) <= nibble_ids
+                    assert set(ids[start + 1:end]) <= byte_ids
                     saw_intact_span = True
                 # No tag or nibble survives outside a complete span.
                 inside = {p for start, end in spans for p in range(start, end + 1)}
                 for position, token in enumerate(ids):
                     if position not in inside:
-                        assert token not in nibble_ids
+                        assert token not in byte_ids
                         assert token != start_id and token != end_id
             pool = dataset._stream.metadata_pool
             for payload in list(pool):
@@ -534,9 +540,9 @@ def _tiny_model(tokenizer: Tokenizer):
 def _t4_batch(tokenizer: Tokenizer) -> dict[str, Any]:
     """Two sequences; row 0 carries BOTH a prompt-span <float> and a compact-constant
     <float> inside the expression, plus an expanded <ieee754> span."""
-    from flash_ansr.utils.ieee754 import wrap_float32
+    from flash_ansr.utils.ieee754 import wrap_float64
 
-    span = wrap_float32(0.25)
+    span = wrap_float64(0.25)
     tokens_row0 = [
         "<bos>",
         "<prompt>", "<complexity>", "<float>", "</complexity>", "</prompt>",
@@ -660,7 +666,7 @@ def test_t4_mask_is_keyed_on_shifted_targets_not_inputs(tokenizer: Tokenizer) ->
 
 def test_scoring_counts_each_constant_form_as_one() -> None:
     from flash_ansr.scoring import count_constants, is_constant_token
-    from flash_ansr.utils.ieee754 import wrap_float32
+    from flash_ansr.utils.ieee754 import wrap_float64
 
     # Compact form: one constant.
     assert is_constant_token("<float>") is True
@@ -670,12 +676,12 @@ def test_scoring_counts_each_constant_form_as_one() -> None:
     # nibbles and the closing tag never count on their own, keeping naive per-token
     # sums over a span exact).
     assert is_constant_token("<ieee754>") is True
-    for token in (*NIBBLE_TOKENS, "</ieee754>"):
+    for token in (*BYTE_TOKENS, "</ieee754>"):
         assert is_constant_token(token) is False
-    assert count_constants(["*", *wrap_float32(2.5), "x1"]) == 1
+    assert count_constants(["*", *wrap_float64(2.5), "x1"]) == 1
 
     # Mixed expression: compact + expanded + legacy placeholder = three constants.
-    expression = ["+", "*", "<float>", "x1", "+", "*", *wrap_float32(-1.5), "x2", "<constant>"]
+    expression = ["+", "*", "<float>", "x1", "+", "*", *wrap_float64(-1.5), "x2", "<constant>"]
     assert count_constants(expression) == 3
 
 

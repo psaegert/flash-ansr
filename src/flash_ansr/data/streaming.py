@@ -37,10 +37,10 @@ from flash_ansr.utils.numeric import NUMERIC_DTYPE_NP
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    float32_to_nibble_tokens,
+    float64_to_byte_tokens,
 )
 from flash_ansr.utils.skeleton import (
     NonFiniteExpressionError, fittable_slots, mask_literals_positional,
@@ -357,7 +357,7 @@ def _producer_worker(
     has_expression_wrappers = "<expression>" in tokenizer and "</expression>" in tokenizer
 
     # ieee754_mixed constants representation: serialize each <constant> occurrence per-constant
-    # independently as an expanded <ieee754> hex-nibble span or a compact <float> (value on the
+    # as an <ieee754> byte span, or -- for a CALLER-supplied number -- a compact <float> (value on the
     # numeric channel), driven by this worker's rng.
     ieee754_start_id = int(tokenizer[IEEE754_START_TOKEN])
     ieee754_end_id = int(tokenizer[IEEE754_END_TOKEN])
@@ -369,7 +369,7 @@ def _producer_worker(
     # blocks (validated at dataset init: mixed constants + wrapper/block tokens present).
     # The harness owns the grammar; the model owns the content: every opener / format
     # selector / <float> value position is loss-masked (task_mask True), supervision
-    # lands on content nibbles and closing tags only.
+    # lands on content bytes and closing tags only.
     complexity_cfg = worker_config.complexity_block
     mask_cfg = worker_config.mask_block
     predict_y_cfg = worker_config.predict_y_block
@@ -473,7 +473,7 @@ def _producer_worker(
                 else:
                     skeleton, literal_values = mask_literals_positional(
                         simplipy_engine, expression)
-                literals = np.asarray(literal_values, dtype=np.float32)
+                literals = np.asarray(literal_values, dtype=NUMERIC_DTYPE_NP)
 
                 mask_unused_variable_columns(
                     arrays=(x_support,),
@@ -492,7 +492,7 @@ def _producer_worker(
 
                 # Promptable-mask machinery (owner rulings 2026-08-24). Every decision
                 # is PER SLOT over the tagged canonical's literal sites -- exactly the
-                # slots the nibble serialization fills (an exact rational spells
+                # slots the byte serialization fills (an exact rational spells
                 # structurally and contributes one slot per literal) -- so the
                 # placeheld values stay recoverable for the <predict_constants> block
                 # (a collect-style re-mask would lose them).
@@ -662,19 +662,19 @@ def _producer_worker(
                         # mu of the MASKED target (a <constant> prices one symbol unit): the
                         # only complexity a user can state at inference without knowing the
                         # constants. complexity() measures the canonical form, so the target
-                        # dialect does not matter. Exact in float32 (mu < 2**24 in practice).
+                        # dialect does not matter. Exact in float64 (mu < 2**53 with room to spare).
                         mu = int(simplipy_engine.complexity(list(skeleton)))
                         if complexity_mode == "hypothesis":
                             # The harness-inserted flag LICENSES self-initiated property
                             # blocks: the flag itself is never supervised (only the harness
                             # may utter it), but everything after it -- opener, format
-                            # selector, nibbles, closers -- is the model's own hypothesis
+                            # selector, bytes, closers -- is the model's own hypothesis
                             # and carries loss.
                             # The flag is NOT part of this block: it is the BOUNDARY, emitted
                             # once (below) after every given element. Everything from it to
                             # </expression> is the model's, so the opener carries loss too.
                             block_tokens = [COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
-                                            *float32_to_nibble_tokens(float(mu)),
+                                            *float64_to_byte_tokens(float(mu)),
                                             IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
                             block_numeric = [float("nan")] * len(block_tokens)
                             block_masked = [False] * len(block_tokens)
@@ -709,10 +709,10 @@ def _producer_worker(
                             # Prior-exactness: the held-out point is one of the ALREADY-ACCEPTED
                             # support rows (box acceptance is untouched), never an extra draw;
                             # y* is the CLEAN value -- the task supervises the function, not the
-                            # noise. Full-precision nibbles (v24 ruling: no tail zeroing).
+                            # noise. Full precision: no narrowing, no tail zeroing.
                             j = int(worker_rng.integers(x_support.shape[0]))
                             point = x_support[j].astype(NUMERIC_DTYPE_NP)
-                            y_star = float(np.float32(y_support[j].reshape(-1)[0]))
+                            y_star = float(y_support[j].reshape(-1)[0])
                             # Placement decides WHAT the model may condition on:
                             #   suffix (after </expression>) -> the data AND the expression;
                             #   prefix (before <expression>) -> the data alone.
@@ -739,10 +739,10 @@ def _producer_worker(
                                 block_numeric.append(float(value))
                                 block_masked.append(True)
                             block_tokens += [POINT_END_TOKEN, IEEE754_START_TOKEN,
-                                             *float32_to_nibble_tokens(y_star),
+                                             *float64_to_byte_tokens(y_star),
                                              IEEE754_END_TOKEN, PREDICT_Y_END_TOKEN]
-                            block_numeric += [float("nan")] * (4 + IEEE754_N_NIBBLES)
-                            block_masked += [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
+                            block_numeric += [float("nan")] * (4 + IEEE754_N_BYTES)
+                            block_masked += [True, True, *[False] * IEEE754_N_BYTES, False, False]
                             budget -= len(block_tokens)
                             element = ("predict_y", block_tokens, block_numeric, block_masked,
                                        [TASK_SEGMENT_PREDICT_Y] * len(block_tokens))
@@ -759,7 +759,7 @@ def _producer_worker(
                     # the harness-opened continuation stay in-distribution. One span per
                     # placeholder, POSITIONAL order -- the binding needs no indices, and a
                     # fixed constant is simply spelled inline in the expression instead.
-                    # Loss discipline as everywhere: openers force-fed, nibbles and closing
+                    # Loss discipline as everywhere: openers force-fed, bytes and closing
                     # tags are the model's.
                     if (placeheld_values and mask_cfg is not None
                             and condition_mask_value is not False):
@@ -777,10 +777,10 @@ def _producer_worker(
                                 block_masked = [True]
                                 for value in placeheld_values:
                                     block_tokens += [IEEE754_START_TOKEN,
-                                                     *float32_to_nibble_tokens(float(value)),
+                                                     *float64_to_byte_tokens(float(value)),
                                                      IEEE754_END_TOKEN]
                                     block_numeric += [float("nan")] * IEEE754_SPAN_LENGTH
-                                    block_masked += [True, *[False] * IEEE754_N_NIBBLES, False]
+                                    block_masked += [True, *[False] * IEEE754_N_BYTES, False]
                                 block_tokens.append(PREDICT_CONSTANTS_END_TOKEN)
                                 block_numeric.append(float("nan"))
                                 block_masked.append(False)

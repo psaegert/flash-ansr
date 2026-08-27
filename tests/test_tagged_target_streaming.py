@@ -12,11 +12,11 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    NIBBLE_TOKENS,
-    nibble_tokens_to_float32,
+    BYTE_TOKENS,
+    byte_tokens_to_float64,
 )
 from flash_ansr.utils.skeleton import mask_literals_positional
 
@@ -98,7 +98,7 @@ def test_tagged_requires_the_delimiter_tokens() -> None:
     tokenizer = Tokenizer(
         vocab=["x1", "x2", "x3", "sin"],
         special_tokens=["<pad>", "<bos>", "<eos>", "<unk>", "<constant>", COMPACT_TOKEN,
-                        IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS],
+                        IEEE754_START_TOKEN, IEEE754_END_TOKEN, *BYTE_TOKENS],
     )
     with pytest.raises(ValueError, match="<add>"):
         FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero",
@@ -146,8 +146,8 @@ def _spans(ids: list[int], start_id: int, end_id: int) -> list[tuple[int, int]]:
 
 def test_tagged_streaming_end_to_end(v24_tokenizer: Tokenizer) -> None:
     start_id, end_id = v24_tokenizer[IEEE754_START_TOKEN], v24_tokenizer[IEEE754_END_TOKEN]
-    id_to_nibble = {int(v24_tokenizer[token]): token for token in NIBBLE_TOKENS}
-    nibble_ids = set(id_to_nibble)
+    id_to_byte = {int(v24_tokenizer[token]): token for token in BYTE_TOKENS}
+    byte_ids = set(id_to_byte)
     float_id = v24_tokenizer[COMPACT_TOKEN]
     constant_id = v24_tokenizer["<constant>"]
     unk_id = v24_tokenizer["<unk>"]
@@ -178,14 +178,14 @@ def test_tagged_streaming_end_to_end(v24_tokenizer: Tokenizer) -> None:
                 for start, end in spans:
                     assert end - start == IEEE754_SPAN_LENGTH - 1
                     inner = ids[start + 1:end]
-                    assert len(inner) == IEEE754_N_NIBBLES and set(inner) <= nibble_ids
-                    assert math.isfinite(nibble_tokens_to_float32([id_to_nibble[t] for t in inner]))
+                    assert len(inner) == IEEE754_N_BYTES and set(inner) <= byte_ids
+                    assert math.isfinite(byte_tokens_to_float64([id_to_byte[t] for t in inner]))
                 in_span = set()
                 for start, end in spans:
                     in_span.update(range(start, end + 1))
                 for position, token_id in enumerate(ids):
                     if position not in in_span:
-                        assert token_id not in nibble_ids and token_id != start_id and token_id != end_id
+                        assert token_id not in byte_ids and token_id != start_id and token_id != end_id
 
                 # Numeric channel: finite exactly at compact <float> positions.
                 compact_positions = [p for p, t in enumerate(ids) if t == float_id]

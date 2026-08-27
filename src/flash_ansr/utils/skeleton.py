@@ -220,7 +220,7 @@ def fittable_slots(engine: "SimpliPyEngine", expression: "list[str]") -> "list[b
 
     The v24 promptable-mask worker decides placeholding PER SLOT with this, rather
     than re-running ``engine.mask`` with collection: the slots are exactly the ones
-    the nibble serialization fills, and per-slot decisions keep the placeheld values
+    the byte serialization fills, and per-slot decisions keep the placeheld values
     recoverable for the ``<predict_constants>`` block. Note the slot granularity is
     the LITERAL SITE, not the degree of freedom: the tagged canonical spells an exact
     rational structurally (``2.5`` is ``5 <div> 2``, two sites), so such a

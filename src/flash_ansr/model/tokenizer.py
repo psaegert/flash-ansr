@@ -6,6 +6,7 @@ from typing import Iterator, Any, Literal
 import torch
 
 from flash_ansr.utils.config_io import load_config
+from flash_ansr.utils.ieee754 import CONSTANTS_FORMAT
 
 
 class Tokenizer:
@@ -53,6 +54,18 @@ class Tokenizer:
 
         if "tokenizer" in config_.keys():
             config_ = config_["tokenizer"]
+
+        # Lane check (Q3, owner ruling 2026-08-27). The byte tokens are two hex digits, so a
+        # nibble-lane vocabulary shares NO content token with this one; without this the
+        # mismatch surfaces much later as an out-of-vocabulary error naming a single token.
+        # Absent key = an older config that predates the lane split; the span-token check
+        # downstream still catches a genuinely wrong vocabulary.
+        declared = config_.get("constants_format")
+        if declared is not None and declared != CONSTANTS_FORMAT:
+            raise ValueError(
+                f"This tokenizer declares constants_format {declared!r}, but this build serves "
+                f"{CONSTANTS_FORMAT!r}. A {declared!r} vocabulary spells constants over a "
+                f"different alphabet; regenerate the config or use a matching release.")
 
         return cls(vocab=config_["operators"] + config_["variables"], special_tokens=config_["special_tokens"])
 

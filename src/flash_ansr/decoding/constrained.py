@@ -1,4 +1,4 @@
-"""Constrained decoding for the v24 ``ieee754_mixed`` constants representation.
+"""Constrained decoding for the IEEE-754 constants representation.
 
 A small state machine over the vocabulary mask (contract tests T6/T7):
 
@@ -6,11 +6,11 @@ A small state machine over the vocabulary mask (contract tests T6/T7):
   token only ever enters a sequence by pipeline compaction, never by model emission.
   This is the decode-time (belt-and-braces) half of the T6 anti-training contract; the
   trained-model half (the logit's rank is suppressed after warmup) is T13.
-* Outside an ``<ieee754>`` span: nibble tokens and the closing tag are forbidden; the
+* Outside an ``<ieee754>`` span: byte tokens and the closing tag are forbidden; the
   opening tag is additionally forbidden when fewer than 10 slots remain, so an opened
   span can ALWAYS terminate within the length budget.
-* Inside a span: exactly the 16 hex nibbles ``<h0>``..``<hf>`` are admissible until 8
-  nibbles are down, then exactly ``</ieee754>`` -- every emission parses to a float (T7).
+* Inside a span: exactly the 256 byte tokens ``<b00>``..``<bff>`` are admissible until 8
+  bytes are down, then exactly ``</ieee754>`` -- every emission parses to a float (T7).
 
 The mask is STATELESS per step: the per-row grammar state is recomputed from the token
 prefix by a vectorized scan. That makes it trivially correct under KV-cached decoding,
@@ -26,10 +26,10 @@ import torch
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
-    NIBBLE_TOKENS,
+    BYTE_TOKENS,
 )
 
 #: The compact-constant token the mask forbids outright (see data.serialization).
@@ -46,7 +46,7 @@ class IEEE754GrammarConstraint:
     """Vocabulary mask implementing the expanded-constant grammar over ``<ieee754>`` spans."""
 
     def __init__(self, tokenizer: Tokenizer) -> None:
-        required = (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *NIBBLE_TOKENS,
+        required = (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *BYTE_TOKENS,
                     COMPACT_CONSTANT_TOKEN)
         missing = [token for token in required if token not in tokenizer]
         if missing:
@@ -56,9 +56,9 @@ class IEEE754GrammarConstraint:
             )
         self.open_id = int(tokenizer[IEEE754_START_TOKEN])
         self.close_id = int(tokenizer[IEEE754_END_TOKEN])
-        #: The 16 in-span alphabet ids, in nibble-value order.
-        self.nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
-        self._nibble_id_tensor = torch.tensor(self.nibble_ids, dtype=torch.long)
+        #: The 256 in-span alphabet ids, in byte-value order.
+        self.byte_ids = [int(tokenizer[token]) for token in BYTE_TOKENS]
+        self._byte_id_tensor = torch.tensor(self.byte_ids, dtype=torch.long)
         self.float_id = int(tokenizer[COMPACT_CONSTANT_TOKEN])
         #: Openers under the at-most-once rule. Not required: a checkpoint without
         #: property blocks is decoded by exactly the span grammar and nothing else.
@@ -91,20 +91,20 @@ class IEEE754GrammarConstraint:
         n_rows, length = prefixes.shape
         device = prefixes.device
 
-        nibble_ids = self._nibble_id_tensor.to(device)
+        byte_ids = self._byte_id_tensor.to(device)
 
         if length == 0:
             inside = torch.zeros(n_rows, dtype=torch.bool, device=device)
-            n_nibbles = torch.zeros(n_rows, dtype=torch.long, device=device)
+            n_bytes = torch.zeros(n_rows, dtype=torch.long, device=device)
         else:
             positions = torch.arange(length, device=device)
             no_match = positions.new_full((n_rows, length), -1)
             last_open = torch.where(prefixes == self.open_id, positions, no_match).amax(dim=1)
             last_close = torch.where(prefixes == self.close_id, positions, no_match).amax(dim=1)
             inside = last_open > last_close
-            is_nibble = torch.isin(prefixes, nibble_ids)
+            is_content = torch.isin(prefixes, byte_ids)
             after_open = positions.unsqueeze(0) > last_open.unsqueeze(1)
-            n_nibbles = (is_nibble & after_open).sum(dim=1)
+            n_bytes = (is_content & after_open).sum(dim=1)
 
         mask = torch.zeros(n_rows, self.vocab_size, dtype=torch.bool, device=device)
 
@@ -121,20 +121,20 @@ class IEEE754GrammarConstraint:
             mask[:, open_id] |= (prefixes == open_id).any(dim=1)
 
         outside = ~inside
-        # Outside a span: nibbles and the close tag are grammar violations.
-        mask[outside.nonzero().flatten().unsqueeze(1), nibble_ids.unsqueeze(0)] = True
+        # Outside a span: content bytes and the close tag are grammar violations.
+        mask[outside.nonzero().flatten().unsqueeze(1), byte_ids.unsqueeze(0)] = True
         mask[outside, self.close_id] = True
-        # Budget rule: a span needs 10 slots (open + 8 nibbles + close) to terminate.
+        # Budget rule: a span needs 10 slots (open + 8 bytes + close) to terminate.
         if remaining is not None and remaining < IEEE754_SPAN_LENGTH:
             mask[outside, self.open_id] = True
 
-        # Inside, fewer than 8 nibbles: EXACTLY the 16 nibbles are admissible.
-        nibbles_pending = inside & (n_nibbles < IEEE754_N_NIBBLES)
-        mask[nibbles_pending, :] = True
-        mask[nibbles_pending.nonzero().flatten().unsqueeze(1), nibble_ids.unsqueeze(0)] = False
+        # Inside, fewer than 8 bytes: EXACTLY the 256 byte tokens are admissible.
+        bytes_pending = inside & (n_bytes < IEEE754_N_BYTES)
+        mask[bytes_pending, :] = True
+        mask[bytes_pending.nonzero().flatten().unsqueeze(1), byte_ids.unsqueeze(0)] = False
 
-        # Inside, 8 nibbles down: EXACTLY </ieee754> is admissible.
-        close_pending = inside & (n_nibbles >= IEEE754_N_NIBBLES)
+        # Inside, 8 bytes down: EXACTLY </ieee754> is admissible.
+        close_pending = inside & (n_bytes >= IEEE754_N_BYTES)
         mask[close_pending, :] = True
         mask[close_pending, self.close_id] = False
 

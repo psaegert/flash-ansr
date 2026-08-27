@@ -5,7 +5,6 @@ from typing import Any, Callable, Literal, Tuple, TypeAlias
 
 import torch
 
-from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
 from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
@@ -114,7 +113,6 @@ class FlashANSRModel(nn.Module):
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
         outlier_head: bool = False,
-        residual_head: bool = False,
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
@@ -208,17 +206,10 @@ class FlashANSRModel(nn.Module):
                 nn.GELU(),
                 nn.Linear(encoder_dim, 1))
         # Per-point RESIDUAL head: predicts y_observed - f(x) at every support point, as the
-        # 8 IEEE-754 hex nibbles of that float32 (owner ruling 2026-08-27: one numeric format
+        # 8 IEEE-754 bytes of that float64 (owner ruling 2026-08-27: one numeric format
         # everywhere). Reads the same pre-pooling representations as the outlier head, from the
         # same encoder pass. The two are NOT redundant -- the outlier mask is the GENERATIVE
         # contamination label, and a kappa < 1 outlier is labelled while barely displaced.
-        # 8 positions x 16 symbols; reshaped to (..., 8, 16) at the loss.
-        self.residual_head: nn.Sequential | None = None
-        if residual_head:
-            self.residual_head = nn.Sequential(
-                nn.Linear(encoder_dim, encoder_dim),
-                nn.GELU(),
-                nn.Linear(encoder_dim, IEEE754_N_NIBBLES * IEEE754_N_NIBBLE_SYMBOLS))
         self.point_representations: torch.Tensor | None = None
 
         self.preprocessor = FlashANSRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
@@ -426,7 +417,6 @@ class FlashANSRModel(nn.Module):
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
             outlier_head=config_.get("outlier_head", False),
-            residual_head=config_.get("residual_head", False),
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),
@@ -454,10 +444,10 @@ class FlashANSRModel(nn.Module):
             noise = torch.randn_like(data_pre_encodings) * self.pre_encoder_noise_scale
             data_pre_encodings = data_pre_encodings + noise
 
-        # Encoder forward pass; with either per-point head enabled, the per-point (pre-pooling)
-        # representations are captured from the SAME pass for both heads -- no recompute.
+        # Encoder forward pass; with the outlier head enabled, the per-point (pre-pooling)
+        # representations are captured from the SAME pass -- no recompute.
         flat_pre_encodings = data_pre_encodings.view(B, M, D * E)
-        if self.outlier_head is not None or self.residual_head is not None:
+        if self.outlier_head is not None:
             memory, self.point_representations = self.encoder(
                 flat_pre_encodings, data_attn_mask, return_point_representations=True)
         else:
@@ -715,9 +705,11 @@ class FlashANSRModel(nn.Module):
                 # NaN-filled at non-payload positions, so the constant vector W*bits(NaN)+b was added
                 # at every position of every training sequence. Passing None instead skips the numeric
                 # embedding entirely and silently changes the model: measured on T16 with the prefix
-                # [<bos>, <expression>], the numeric channel present gives a well-formed 8-nibble span
-                # at log-prob -5.45, absent gives a span that runs past 8 nibbles and never closes, at
-                # -15.64 (max |logit diff| 5.43 after a single step). Default to what training emitted.
+                # [<bos>, <expression>], the numeric channel present gave a well-formed 8-content span
+                # at log-prob -5.45, absent gave a span that ran past 8 positions and never closed, at
+                # -15.64 (max |logit diff| 5.43 after a single step). T16 is a NIBBLE-lane
+                # checkpoint, so those two numbers illustrate the failure mode rather than
+                # measuring v25; the reason to default to what training emitted is unchanged.
                 numeric = [float('nan')] * len(tokens)
             else:
                 numeric = None
@@ -1325,12 +1317,12 @@ class FlashANSRModel(nn.Module):
         """
         span_ids = getattr(self, '_ieee754_span_ids', False)
         if span_ids is False:
-            from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, NIBBLE_TOKENS
+            from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, BYTE_TOKENS
             if IEEE754_START_TOKEN in self.tokenizer:
                 span_ids = (
                     int(self.tokenizer[IEEE754_START_TOKEN]),
                     int(self.tokenizer[IEEE754_END_TOKEN]),
-                    tuple(int(self.tokenizer[token]) for token in NIBBLE_TOKENS),
+                    tuple(int(self.tokenizer[token]) for token in BYTE_TOKENS),
                     int(self.tokenizer['<constant>']),
                 )
             else:
@@ -1339,10 +1331,10 @@ class FlashANSRModel(nn.Module):
         if span_ids is None or span_ids[0] not in encoded_expression:
             return list(encoded_expression), None
         from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
-        start_id, end_id, nibble_ids, constant_id = span_ids
+        start_id, end_id, byte_ids, constant_id = span_ids
         return replace_ieee754_spans_with_constants(
             list(encoded_expression), start_id=start_id, end_id=end_id,
-            nibble_ids=list(nibble_ids), constant_id=constant_id)
+            byte_ids=list(byte_ids), constant_id=constant_id)
 
     def _postprocess_sampled(
         self,

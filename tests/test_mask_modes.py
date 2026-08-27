@@ -26,9 +26,9 @@ from flash_ansr.data.serialization import (
 )
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import (
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_START_TOKEN,
-    nibble_tokens_to_float32,
+    byte_tokens_to_float64,
 )
 
 
@@ -122,13 +122,13 @@ class TestPredictConstantsBlock:
                 assert block.count(IEEE754_START_TOKEN) == k
                 # first span decodes to the first placeheld value, positional binding
                 first = block.index(IEEE754_START_TOKEN)
-                nibbles = block[first + 1:first + 1 + IEEE754_N_NIBBLES]
-                assert nibble_tokens_to_float32(nibbles) == float(np.float32(draw["values"][0]))
+                nibbles = block[first + 1:first + 1 + IEEE754_N_BYTES]
+                assert byte_tokens_to_float64(nibbles) == float(np.float32(draw["values"][0]))
                 # loss discipline: openers force-fed, nibbles + closers supervised
                 mask = batch["task_mask"][row].tolist()
                 assert mask[start], "the block opener is harness-owned"
                 assert mask[start + 1], "each span opener is harness-owned"
-                assert not any(mask[start + 2:start + 2 + IEEE754_N_NIBBLES]), \
+                assert not any(mask[start + 2:start + 2 + IEEE754_N_BYTES]), \
                     "the nibbles are the model's"
                 assert not mask[end], "the closing tag is the model's"
                 seg = batch["task_segments"][row].tolist()

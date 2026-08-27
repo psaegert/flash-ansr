@@ -1,8 +1,8 @@
 """Constant serialization for training sequences.
 
-Every constant occurrence becomes an ``<ieee754>`` span: the open tag, 8 hex-nibble
-tokens, the close tag. The numeric channel is NaN across the whole span -- the value
-lives in the nibbles.
+Every constant occurrence becomes an ``<ieee754>`` span: the open tag, the 8 BYTES of
+its IEEE-754 binary64 encoding, the close tag. The numeric channel is NaN across the whole
+span -- the value lives in the bytes.
 
 There is no second form. Under the owner's 2026-08-27 ruling a number the model PREDICTS
 is spelled in bits everywhere, and the constants of an expression are predicted. The
@@ -19,11 +19,11 @@ from typing import Sequence
 import numpy as np
 
 from flash_ansr.utils.ieee754 import (
-    IEEE754_N_NIBBLES,
+    IEEE754_N_BYTES,
     IEEE754_SPAN_LENGTH,
-    NIBBLE_TOKENS,
-    nibble_tokens_to_float32,
-    wrap_float32,
+    BYTE_TOKENS,
+    byte_tokens_to_float64,
+    wrap_float64,
 )
 
 #: The compact-constant token. Deliberately the EXISTING ``<float>`` special (it already
@@ -32,7 +32,7 @@ COMPACT_CONSTANT_TOKEN = "<float>"
 
 # v24 task-block grammar (owner ruling 2026-08-24): the harness owns the structure --
 # every opener/selector below is force-fed and loss-masked; the model owns content
-# nibbles and closing tags. <complexity>/<float> already exist in the v24 vocabulary;
+# content bytes and closing tags. <complexity>/<float> already exist in the vocabulary;
 # the predict_y tokens are new with this feature.
 COMPLEXITY_START_TOKEN = "<complexity>"
 COMPLEXITY_END_TOKEN = "</complexity>"
@@ -160,8 +160,10 @@ def serialize_constant_tokens(
                 f"Non-finite constant {value!r} at placeholder {constant_index - 1}: the data "
                 f"generator must never emit inf/nan constants."
             )
-        # raises if the value overflowed float32 to non-finite
-        span = wrap_float32(float(np.float32(value)))
+        # No narrowing: the value is serialized at the precision it was fitted at.
+        # Until S4 this read float(np.float32(value)) and could refuse a finite float64
+        # for overflowing binary32 -- the refusal the migration removes.
+        span = wrap_float64(float(value))
         serialized.extend(span)
         numeric.extend([float("nan")] * len(span))
 
@@ -208,10 +210,10 @@ def replace_ieee754_spans_with_constants(
     *,
     start_id: int,
     end_id: int,
-    nibble_ids: Sequence[int],
+    byte_ids: Sequence[int],
     constant_id: int,
 ) -> tuple[list[int], list[float] | None]:
-    """Map expanded ``<ieee754>`` spans to ``<constant>`` slots + their float32 values (T11).
+    """Map ``<ieee754>`` spans to ``<constant>`` slots + their float64 values (T11).
 
     The DESERIALIZATION half of the refiner handshake: each well-formed 10-token span in a
     generated beam collapses to one ``constant_id`` token, and the decoded values (exact,
@@ -220,14 +222,14 @@ def replace_ieee754_spans_with_constants(
 
     Parameters
     ----------
-    nibble_ids : Sequence[int]
-        The 16 hex-nibble token ids IN NIBBLE-VALUE ORDER (``nibble_ids[10]`` is ``<ha>``),
-        i.e. ``[int(tokenizer[token]) for token in NIBBLE_TOKENS]``.
+    byte_ids : Sequence[int]
+        The 256 byte token ids IN BYTE-VALUE ORDER (``byte_ids[10]`` is ``<b0a>``),
+        i.e. ``[int(tokenizer[token]) for token in BYTE_TOKENS]``.
 
     Returns
     -------
     tuple[list[int], list[float] | None]
-        ``(mapped_ids, values)``. ``values`` is the per-span float32 list ONLY when the
+        ``(mapped_ids, values)``. ``values`` is the per-span float64 list ONLY when the
         init is sound: at least one span, every span well-formed, every value finite, and
         no pre-existing ``constant_id`` in the input (a bare placeholder -- e.g.
         constantified sugar -- would break the slot alignment; the skeleton is still
@@ -235,11 +237,11 @@ def replace_ieee754_spans_with_constants(
         span returns the input unchanged with ``None`` (the beam is not a v24 carrier;
         downstream validity checks dispose of it as today).
     """
-    if len(nibble_ids) != len(NIBBLE_TOKENS):
+    if len(byte_ids) != len(BYTE_TOKENS):
         raise ValueError(
-            f"Expected {len(NIBBLE_TOKENS)} nibble ids in nibble-value order, got {len(nibble_ids)}."
+            f"Expected {len(BYTE_TOKENS)} byte ids in byte-value order, got {len(byte_ids)}."
         )
-    id_to_nibble = {token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)}
+    id_to_byte = {token_id: BYTE_TOKENS[value] for value, token_id in enumerate(byte_ids)}
 
     ids = list(token_ids)
     mapped: list[int] = []
@@ -248,20 +250,20 @@ def replace_ieee754_spans_with_constants(
     while index < len(ids):
         token = ids[index]
         if token == start_id:
-            inner = ids[index + 1:index + 1 + IEEE754_N_NIBBLES]
+            inner = ids[index + 1:index + 1 + IEEE754_N_BYTES]
             closed = (
                 index + IEEE754_SPAN_LENGTH <= len(ids)
                 and ids[index + IEEE754_SPAN_LENGTH - 1] == end_id
-                and all(nibble in id_to_nibble for nibble in inner)
+                and all(byte in id_to_byte for byte in inner)
             )
             if not closed:
                 return ids, None
-            values.append(nibble_tokens_to_float32([id_to_nibble[nibble] for nibble in inner]))
+            values.append(byte_tokens_to_float64([id_to_byte[byte] for byte in inner]))
             mapped.append(constant_id)
             index += IEEE754_SPAN_LENGTH
             continue
-        if token == end_id or token in id_to_nibble:
-            # A stray close/nibble outside a span: not a v24-well-formed carrier.
+        if token == end_id or token in id_to_byte:
+            # A stray close/content byte outside a span: not a well-formed carrier.
             return ids, None
         mapped.append(token)
         index += 1
