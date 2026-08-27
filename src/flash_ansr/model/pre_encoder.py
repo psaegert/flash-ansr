@@ -8,7 +8,15 @@ def float32_to_ieee754_bits(x: torch.Tensor) -> torch.Tensor:
 
     Output bit order is most-significant-first: ``[sign, exp[7:0], mantissa[22:0]]``.
     """
-    # reinterpret bits as int32
+    # reinterpret bits as int32. The dtype assert is not defensive noise: Tensor.view(dtype)
+    # does NOT validate, it RESIZES the last dimension. 18 float32 values viewed as int64 and
+    # expanded to 64 bits each is 576 -- exactly the width a 32-bit encoder expects -- so a
+    # width mismatch here produces a correctly-shaped tensor of scrambled bits and raises
+    # nothing, anywhere. Assert the contract at the only place that can still see it.
+    if x.dtype is not torch.float32:
+        raise TypeError(
+            f"float32_to_ieee754_bits expects a float32 tensor, got {x.dtype}. view(dtype) would "
+            f"silently reinterpret and resize rather than convert.")
     i = x.view(torch.int32)
 
     # build indices [31, 30, …, 0]
@@ -26,7 +34,9 @@ def float16_to_ieee754_bits(x: torch.Tensor) -> torch.Tensor:
     Input tensor is cast to float16 (lossy) before bit reinterpretation.
     Output bit order is most-significant-first: ``[sign, exp[4:0], mantissa[9:0]]``.
     """
-    # cast to fp16 then reinterpret bits as int16
+    # cast to fp16 then reinterpret bits as int16 (the cast is explicit and lossy BY DESIGN
+    # here, so unlike the 32-bit sibling there is no dtype to assert -- but the same
+    # view(dtype) resize hazard applies to the result).
     i = x.to(torch.float16).view(torch.int16)
 
     # build indices [15, 14, …, 0]

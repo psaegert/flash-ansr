@@ -21,6 +21,11 @@ import numpy as np
 
 from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, NIBBLE_TOKENS
 
+#: Membership set for the expanded-span content alphabet. A frozenset, not the source tuple:
+#: is_constant_token runs per token on the scoring hot path, where a linear scan costs 16
+#: comparisons today and 256 once the alphabet becomes bytes.
+_NIBBLE_TOKEN_SET = frozenset(NIBBLE_TOKENS)
+
 #: Floor used to keep variance and FVU strictly positive before a division / log.
 FLOAT64_EPS: float = float(np.finfo(np.float64).eps)
 
@@ -110,7 +115,7 @@ def is_constant_token(token: str) -> bool:
     """
     if token in ('<constant>', '<float>', '<ieee754>'):
         return True
-    if token == IEEE754_END_TOKEN or token in NIBBLE_TOKENS:
+    if token == IEEE754_END_TOKEN or token in _NIBBLE_TOKEN_SET:
         return False
     if token.startswith('C_') and token[2:].isdigit():
         return True

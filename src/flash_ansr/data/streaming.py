@@ -965,6 +965,22 @@ def _producer_worker(
                 payload["n_dropped_nonfinite"] = n_dropped_nonfinite
             metadata_list[slot_idx] = payload
             result_queue.put(slot_idx)
+    except Exception as exc:  # noqa: BLE001 - a dead worker must not become a silent hang
+        # Without this the loop was `try: while True: ... finally: shm.close()` with NO except.
+        # Any raise from serialization killed the worker, and the pool then blocked forever in
+        # FlashANSRDataset.get_completed_slot() with no error message anywhere -- indistinguishable
+        # from slow generation. Report the slot as failed so the consumer sees a cause, then let
+        # the worker die; the pool's own supervision decides what to do about a missing producer.
+        import traceback
+        try:
+            metadata_list[slot_idx] = {
+                "worker_error": f"{type(exc).__name__}: {exc}",
+                "worker_traceback": traceback.format_exc(),
+            }
+            result_queue.put(slot_idx)
+        except Exception:  # noqa: BLE001 - the slot index may not exist yet; nothing left to do
+            pass
+        raise
     finally:
         for shm in shms.values():
             shm.close()

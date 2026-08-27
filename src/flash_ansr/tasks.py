@@ -49,9 +49,6 @@ from flash_ansr.utils.ieee754 import (
 )
 from flash_ansr.utils.tensor_ops import pad_input_set
 
-#: A float32 significand is 8 hex nibbles; the span is always exactly this long.
-NIBBLES_PER_SPAN = 8
-
 #: Draws taken by default whenever a verb reads a value out of the model. NOT 1: a single decode is
 #: one sample, and a sample quoted as an answer is how a wide belief gets reported as a point.
 DEFAULT_SAMPLES = 32
@@ -272,7 +269,7 @@ def _sample_span(
 
     off_grammar = 0
     memory = None
-    for _ in range(NIBBLES_PER_SPAN):
+    for _ in range(IEEE754_N_NIBBLES):
         if memory is None:
             # The mask applies on the FIRST pass only: forward substitutes null_memory into
             # `model.memory` in place, so the cached memory below is already the routed one.
@@ -302,7 +299,7 @@ def _sample_span(
 
     draws = [
         float(nibble_tokens_to_float32([str(tokenizer[int(t)]) for t in row]))
-        for row in sequences[:, -NIBBLES_PER_SPAN:].tolist()
+        for row in sequences[:, -IEEE754_N_NIBBLES:].tolist()
     ]
 
     distribution = ValueDistribution(

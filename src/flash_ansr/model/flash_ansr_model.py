@@ -499,6 +499,15 @@ class FlashANSRModel(nn.Module):
         # Pre-process input data
         data_pre_encodings: torch.Tensor = self.pre_encoder(data)
         B, M, D, E = data_pre_encodings.size()
+        # Read-and-trust was how a scrambled pre-encoding stayed invisible: D and E come off the
+        # tensor, so a pre-encoder whose width disagrees with this model's is absorbed silently.
+        # Check them against what this model was BUILT for.
+        if D != self.encoder_max_n_variables or E != self.pre_encoder.encoding_size:
+            raise ValueError(
+                f"pre-encoding shape (D={D}, E={E}) disagrees with the model "
+                f"(encoder_max_n_variables={self.encoder_max_n_variables}, "
+                f"pre_encoder.encoding_size={self.pre_encoder.encoding_size}). A dtype/width "
+                f"mismatch upstream reshapes rather than converts; refusing to encode.")
 
         # If in training, add a small amount of noise to the pre-encodings for regularization
         if self.training:
