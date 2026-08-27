@@ -40,9 +40,12 @@ from flash_ansr.data.serialization import (
 from flash_ansr.preprocessing.prompt_serialization import CapabilityUnavailable
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
+    IEEE754_N_NIBBLES,
+    IEEE754_N_NIBBLE_SYMBOLS,
     IEEE754_START_TOKEN,
     NIBBLE_TOKENS,
     nibble_tokens_to_float32,
+    nibble_values_to_float32,
 )
 from flash_ansr.utils.tensor_ops import pad_input_set
 
@@ -371,6 +374,100 @@ def score_outliers(estimator: Any, X: np.ndarray, y: np.ndarray) -> np.ndarray:
         probabilities = torch.sigmoid(head(representations).squeeze(-1))
 
     return probabilities.detach().cpu().numpy().reshape(-1)
+
+
+def predict_residuals(
+        estimator: Any,
+        X: "np.ndarray",
+        y: "np.ndarray",
+        *,
+        n_samples: int = 32,
+        temperature: float = 1.0,
+        seed: int | None = None) -> list[ValueDistribution]:
+    """Per-point residual ``y_i - f(x_i)``: how far each observation sits off the true curve.
+
+    One deterministic encoder pass produces, per point, eight independent 16-way softmaxes over
+    the IEEE-754 nibbles of the residual. Sampling those softmaxes gives ``n_samples`` float32
+    draws per point, so -- like every other predicted value on this surface -- the answer is a
+    DISTRIBUTION, not a number.
+
+    Parameters
+    ----------
+    X, y : np.ndarray
+        The observed support set. ``y`` is the NOISY target; the residual is what separates it
+        from the curve.
+    n_samples : int, default=32
+        Draws per point. All draws come from the single forward pass, so this is nearly free.
+    temperature : float, default=1.0
+        Softmax temperature applied to the nibble logits before sampling.
+    seed : int, optional
+        Seed for the nibble sampling.
+
+    Returns
+    -------
+    list[ValueDistribution]
+        One distribution per support point, in input order.
+
+    Raises
+    ------
+    CapabilityUnavailable
+        If the checkpoint was built without a residual head.
+
+    Notes
+    -----
+    Unlike a decoded span this head cannot go off-grammar or fail to close: it emits exactly 8
+    nibble positions structurally, so those two ``ValueDistribution`` fields are always 0 and 1.0.
+    A nibble pattern CAN still decode to nan or inf -- ``non_finite_fraction`` reports how often.
+
+    The head reads the data-set encoder only, so it conditions on ``(X, y)`` and never on an
+    expression. Measured on the training prior (2026-08-27): the residual is invisible to
+    model-free methods -- a nearest-neighbour smoother recovers ``|residual|`` at Spearman
+    rho = +0.06 -- because the noise sits ~69x below how much f moves between neighbouring
+    points. Predicting it well therefore REQUIRES the encoder to have internalized the curve,
+    which is the point of the task and also the reason to check it against a baseline before
+    quoting any number from it.
+    """
+    model = estimator.flash_ansr_model
+    head = getattr(model, "residual_head", None)
+    if head is None:
+        raise CapabilityUnavailable(
+            "predict_residuals() needs a checkpoint trained with a residual head; this model.yaml "
+            "declares residual_head: false (or omits it).")
+
+    tokenizer = model.tokenizer
+    bos = _require(tokenizer, "<bos>", "predict_residuals")
+    eos = _require(tokenizer, "<eos>", "predict_residuals")
+
+    device = model.device
+    data, attn_mask = _encoder_batch(X, y, estimator.n_variables, device)
+    ids = torch.tensor([[bos, eos]], dtype=torch.long, device=device)
+
+    model.eval()
+    with torch.no_grad():
+        model(ids, data, data_attn_mask=attn_mask)
+        representations = model.point_representations
+        if representations is None:
+            raise RuntimeError(
+                "The encoder did not expose point_representations; the checkpoint declares a "
+                "residual head but the forward pass did not populate it.")
+        logits = head(representations)
+        logits = logits.view(*logits.shape[:-1], IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS)
+        logits = logits[0] / max(float(temperature), 1e-6)          # (n_points, 8, 16)
+        probabilities = torch.softmax(logits.float(), dim=-1)
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=probabilities.device).manual_seed(int(seed))
+        n_points = probabilities.shape[0]
+        flat = probabilities.reshape(-1, IEEE754_N_NIBBLE_SYMBOLS)
+        drawn = torch.multinomial(flat, int(n_samples), replacement=True, generator=generator)
+        drawn = drawn.view(n_points, IEEE754_N_NIBBLES, int(n_samples))
+
+    nibbles = drawn.permute(0, 2, 1).cpu().numpy().astype(np.uint8)  # (points, samples, 8)
+    values = nibble_values_to_float32(nibbles)
+    return [ValueDistribution(draws=[float(v) for v in values[index]],
+                              off_grammar_steps=0, closed_cleanly_fraction=1.0)
+            for index in range(n_points)]
 
 
 def _normalize_expression(estimator: Any, expression: Sequence[str] | str) -> list[str]:

@@ -182,6 +182,15 @@ class SharedMemoryWorkerPool:
                 "shape": (self.pool_size, batch_size, max_n_support),
                 "dtype": np.float32,
             },
+            "residual": {
+                # per-point y_observed - f(x): what the residual head predicts. Exactly zero
+                # everywhere when the source runs without a noise spec (y_noisy IS y_clean),
+                # which is the correct target, not a missing one. Stored RAW and unscaled --
+                # any ruler is a train-side choice (see Trainer.residual_scale), so the buffer
+                # never bakes one in.
+                "shape": (self.pool_size, batch_size, max_n_support),
+                "dtype": np.float32,
+            },
             "data_attn_mask": {
                 "shape": (self.pool_size, batch_size, max_n_support),
                 "dtype": np.float32,
@@ -418,6 +427,7 @@ def _producer_worker(
             y_tensors_batch = pools["y_tensors"][slot_idx]
             data_attn_mask_batch = pools["data_attn_mask"][slot_idx]
             outlier_mask_batch = pools["outlier_mask"][slot_idx]
+            residual_batch = pools["residual"][slot_idx]
             input_ids_batch = pools["input_ids"][slot_idx]
 
             constants_batch = []
@@ -914,6 +924,15 @@ def _producer_worker(
                 outlier_mask_batch[i, : y_encoder.shape[0]] = (
                     outlier_mask.reshape(-1).astype(np.float32) if outlier_mask is not None else 0)
                 outlier_mask_batch[i, y_encoder.shape[0]:] = 0
+
+                # The residual the model would have to explain: observed minus truth, in the
+                # float32 the encoder actually reads. Differenced in float32 (not float64) so
+                # the target is exactly the displacement present in the data, cancellation and
+                # all -- see y_encoder above for why the clean array stays local.
+                residual_batch[i, : y_encoder.shape[0]] = (
+                    y_encoder.reshape(-1).astype(np.float32)
+                    - y_support.reshape(-1).astype(np.float32))
+                residual_batch[i, y_encoder.shape[0]:] = 0
 
                 data_attn_mask_batch[i, : x_support.shape[0]] = 1
                 data_attn_mask_batch[i, x_support.shape[0]:] = 0

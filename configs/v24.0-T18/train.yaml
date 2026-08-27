@@ -1,0 +1,67 @@
+# v24.0-T18: T17 plus the per-point RESIDUAL head (owner ruling 2026-08-27). Every other
+# config value is identical to T17, so the pair is a clean single-variable ablation.
+# THE FULL v24.0 RUN (3M params, 1.5M steps, solomon RTX 4090) -- the
+# complete audited task set: noise mixture, outlier head, complexity block with
+# hypothesis mode, predict_y, promptable masking and the <predict_constants>
+# infilling block (collection-stability gated). T13/T15 architecture and batch;
+# the house 10/70/20 trapezoid stretched to 1.5M steps (v23 trained 1M; the v24
+# task mixture is harder -- owner ruling 2026-08-24). acj-4 pinned throughout.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [150_000, 1e-4]  # 10% of steps warmup
+  - [1_200_000, 1e-4]
+  - [1_500_000, 0.0]  # 20% of steps cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+# 4x the T13 val size: the pilot's read is the per-task val curves, and 2,048
+# instances left too much variance on them (owner request 2026-08-24).
+val_size: 8_192
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 1_500_000
+
+# Outlier-head auxiliary loss (small: the head must not distort the encoder);
+# pos_weight 1.0 = calibrated suspicion scores (ruling 2026-08-24).
+outlier_loss_weight: 0.05
+
+# Residual head. The loss is MEAN-reduced (over nibbles, then over points within an instance,
+# then over instances), so the head's 32.5x CE-term count does not inflate it -- this weight is
+# a straight 5% against the decoder CE gradient into the shared encoder. It is set low because
+# nibbles 3-7 are the low 20 mantissa bits of the displacement and measure at 99% of pure
+# chance on the T17 prior: 5/8 of this head's CE is irreducible, and weighting it heavily
+# spends encoder capacity on noise.
+#
+# The per-instance reduction matters on its own: pooling flat across the batch would give a
+# 512-point problem 512x the pull of an 8-point one.
+#
+# WHAT TO WATCH. residual_nibble_acc/*/nonzero_n0..n7, not the pooled keys. About a third of
+# points are exactly +0.0 (clean instances), which is all-zero nibbles, so a head can score
+# well on the pooled accuracy by learning nothing but "is this instance clean". If the nonzero
+# split shows n0-n2 climbing while n3-n7 sit at 1/16 = 0.0625, the IEEE parameterization is
+# spending most of its width on noise -- fall back via residual_scale plus a log-magnitude
+# target (measured alternative: 34 outputs/point, ~1.8 nats, all of it learnable).
+residual_loss_weight: 0.05
+# 'none' = raw float32 residual. IEEE is an absolute encoding whose exponent byte already
+# carries the magnitude, so no ruler is needed; 'mad' and 'y_plus_mad' are the alternatives.
+residual_scale: 'none'
+outlier_pos_weight: 1.0
+device: cuda

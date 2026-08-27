@@ -12,6 +12,7 @@ from typing import Any, Literal, Sequence
 
 import torch
 
+from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
 from flash_ansr.utils.weights import load_weights
 
 from torch.optim.lr_scheduler import LRScheduler
@@ -255,6 +256,39 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
     return out
 
 
+#: Rulers a residual may be divided by before it is encoded as nibbles. See Trainer.residual_scale.
+_RESIDUAL_SCALES = ("none", "mad", "y_plus_mad")
+
+
+def _masked_median(values: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Row-wise median of ``values`` over ``valid`` entries only, shape ``(batch,)``.
+
+    Matches ``numpy.median`` on even counts (mean of the two central order statistics), so the
+    ruler here is the same quantity ``symbolic_data.noise`` computes.
+    """
+    masked = values.masked_fill(~valid, float("inf"))
+    ordered, _ = masked.sort(dim=1)
+    counts = valid.sum(dim=1)
+    safe = counts.clamp(min=1)
+    lower = ordered.gather(1, ((safe - 1) // 2).unsqueeze(1)).squeeze(1)
+    upper = ordered.gather(1, (safe // 2).unsqueeze(1)).squeeze(1)
+    median = 0.5 * (lower + upper)
+    return torch.where(counts > 0, median, torch.zeros_like(median))
+
+
+def _float32_to_nibbles_torch(values: torch.Tensor) -> torch.Tensor:
+    """``(...)`` float32 -> ``(..., 8)`` int64 nibble values, big-endian.
+
+    The torch sibling of :func:`flash_ansr.utils.ieee754.float32_to_nibble_values`, kept
+    bit-identical to it by test. Arithmetic right-shift on signed int32 sign-extends, but the
+    trailing ``& 0xF`` still recovers the original four bits, so no unsigned cast is needed.
+    """
+    patterns = values.to(torch.float32).contiguous().view(torch.int32)
+    shifts = torch.arange(
+        4 * (IEEE754_N_NIBBLES - 1), -1, -4, device=values.device, dtype=torch.int32)
+    return ((patterns.unsqueeze(-1) >> shifts) & 0xF).to(torch.long)
+
+
 def _binary_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     """Rank-based AUROC (Mann-Whitney U). Ties in float logits are vanishingly rare, so
     average-rank tie correction is deliberately omitted."""
@@ -384,6 +418,28 @@ class Trainer:
             raise ValueError(
                 "outlier_loss_weight > 0 but the model has no outlier head "
                 "(set outlier_head: true in the model config)")
+
+        # Residual-head auxiliary loss. weight 0.0 <=> off. The target is y_observed - f(x)
+        # encoded as its 8 IEEE-754 hex nibbles (owner ruling 2026-08-27: one numeric format
+        # across the stack), so zero and sign are native to the encoding -- no zero class and
+        # no sign logit. `residual_scale` picks the RULER the residual is divided by first:
+        #   'none'       -- raw float32 residual. IEEE is an absolute encoding; its exponent
+        #                   byte already carries the magnitude, so no ruler is needed.
+        #   'mad'        -- divide by 1.4826 * MAD(y), one number per problem.
+        #   'y_plus_mad' -- divide by |y_i| + MAD(y), per point.
+        # Measured 2026-08-27: a global ruler sits at the irreducible floor for ADDITIVE noise
+        # but leaves ~0.73 decades of |y_i| scaling in the target for MULTIPLICATIVE; the
+        # per-point form fixes that and costs ~0.3 decades on additive. Both mismatches are
+        # LEARNABLE (the head sees y_i), so this is a preconditioner, not a constraint.
+        self.residual_loss_weight = float(self.config.get('residual_loss_weight', 0.0))
+        self.residual_scale = str(self.config.get('residual_scale', 'none'))
+        if self.residual_scale not in _RESIDUAL_SCALES:
+            raise ValueError(
+                f"Unknown residual_scale {self.residual_scale!r}; expected one of {_RESIDUAL_SCALES}.")
+        if self.residual_loss_weight > 0.0 and self.model.residual_head is None:
+            raise ValueError(
+                "residual_loss_weight > 0 but the model has no residual head "
+                "(set residual_head: true in the model config)")
 
         self.total_pflops = 0.0
         self.encoder_parameters = sum(p.numel() for p in self.model.encoder.parameters() if p.requires_grad)
@@ -918,6 +974,75 @@ class Trainer:
         return nn.functional.binary_cross_entropy_with_logits(
             logits, labels.to(logits.dtype), pos_weight=pos_weight)
 
+    def _scaled_residual(self, batch: dict[str, Any]) -> torch.Tensor | None:
+        """The per-point residual after ``residual_scale``, shape ``(batch, n_points)``.
+
+        Returns the VALUE, not the nibbles, so the caller masks non-finite entries on the
+        quantity actually encoded: under a ruler the division itself can overflow, and masking
+        the raw residual instead would let a garbage nibble target through.
+        """
+        residual = batch.get('residual')
+        if residual is None:
+            return None
+        residual = residual.to(self.device, dtype=torch.float32)
+        if self.residual_scale == 'none':
+            return residual
+        y = batch['y_tensors'].to(self.device, dtype=torch.float32).squeeze(-1)
+        valid = batch['data_attn_mask'].to(self.device)
+        # Robust spread of the OBSERVED targets, per problem, over valid points only.
+        median = _masked_median(y, valid)
+        mad = 1.4826 * _masked_median((y - median.unsqueeze(1)).abs(), valid)
+        # A degenerate problem (every y identical) has MAD 0 and nothing to measure against.
+        # Fall back to NO scaling for it rather than clamping to float32 tiny, which would turn
+        # an ordinary residual into ~1e38 -- absurd, yet finite, so it would encode as a
+        # perfectly legitimate nibble target instead of being masked out.
+        mad = torch.where(mad > 0, mad, torch.ones_like(mad))
+        scale = mad.unsqueeze(1) if self.residual_scale == 'mad' else y.abs() + mad.unsqueeze(1)
+        return residual / scale
+
+    def _residual_scores(
+            self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        """``(logits, labels, instance_index)`` over valid support points.
+
+        ``logits`` is ``(n_valid, 8, 16)``, ``labels`` ``(n_valid, 8)``, and ``instance_index``
+        maps each row back to its problem so the loss can reduce PER INSTANCE. Pooling flat
+        across the batch would weight a 512-point problem 512x an 8-point one.
+        """
+        head = self.model.residual_head
+        if head is None or 'residual' not in batch:
+            return None
+        point_representations = self.model.point_representations
+        if point_representations is None:
+            return None
+        residual = self._scaled_residual(batch)
+        if residual is None:
+            return None
+        labels = _float32_to_nibbles_torch(residual)
+        logits = head(point_representations)
+        logits = logits.view(*logits.shape[:-1], IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS)
+        # A non-finite residual has no meaningful nibble target. Checked on the SCALED value,
+        # which is what gets encoded -- a ruler can push a finite residual to inf.
+        valid = batch['data_attn_mask'].to(logits.device) & torch.isfinite(residual)
+        instance_index = torch.arange(
+            valid.shape[0], device=valid.device).unsqueeze(1).expand_as(valid)[valid]
+        return logits[valid], labels[valid], instance_index
+
+    def _residual_loss(self, scored: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        """Mean nibble CE, reduced within each instance BEFORE averaging across instances."""
+        logits, labels, instance_index = scored
+        if logits.numel() == 0:
+            return torch.zeros((), device=logits.device)
+        per_point = nn.functional.cross_entropy(
+            logits.reshape(-1, IEEE754_N_NIBBLE_SYMBOLS), labels.reshape(-1),
+            reduction='none').view(labels.shape).mean(dim=-1)
+        n_instances = int(instance_index.max().item()) + 1
+        sums = torch.zeros(n_instances, device=logits.device, dtype=per_point.dtype)
+        counts = torch.zeros(n_instances, device=logits.device, dtype=per_point.dtype)
+        sums.index_add_(0, instance_index, per_point)
+        counts.index_add_(0, instance_index, torch.ones_like(per_point))
+        present = counts > 0
+        return (sums[present] / counts[present]).mean()
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -942,6 +1067,11 @@ class Trainer:
 
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
+        total_residual_loss = 0.0
+        residual_hits = torch.zeros(IEEE754_N_NIBBLES, device=self.device)
+        residual_count = 0.0
+        residual_hits_nonzero = torch.zeros(IEEE754_N_NIBBLES, device=self.device)
+        residual_count_nonzero = 0.0
         total_loss = 0.0
         task_ce_sums: dict[str, list[float]] = {}
         split_ce_sums: dict[str, list[float]] = {}
@@ -998,7 +1128,34 @@ class Trainer:
                         train_outlier_scores.append(scored[0].detach().float().cpu())
                         train_outlier_labels.append(scored[1].detach().cpu())
 
-                loss = (ce_loss + self.outlier_loss_weight * outlier_loss) / self.gradient_accumulation_steps + zero_loss
+                residual_loss = torch.zeros((), device=self.device, dtype=ce_loss.dtype)
+                if self.residual_loss_weight > 0.0:
+                    scored_residual = self._residual_scores(micro_batch)
+                    if scored_residual is not None:
+                        residual_loss = self._residual_loss(scored_residual)
+                        with torch.no_grad():
+                            logits_r, labels_r, _ = scored_residual
+                            if logits_r.numel():
+                                # per-NIBBLE accuracy: the diagnostic that decides whether the
+                                # IEEE parameterization is earning its width. Positions 3-7 are
+                                # the low 20 mantissa bits; measured at 99% of pure chance in the
+                                # DATA, so if they sit at 1/16 here the head is spending 5/8 of
+                                # its budget on noise and a log-magnitude target is the fix.
+                                correct = (logits_r.argmax(-1) == labels_r).float()
+                                residual_hits += correct.sum(0)
+                                residual_count += float(labels_r.shape[0])
+                                # A clean point is +0.0, i.e. all-zero nibbles. Roughly a third
+                                # of points are that, and a head can score well on the pooled
+                                # accuracy by learning only "is this instance clean" and
+                                # emitting zeros. The NONZERO split is the number that says
+                                # whether it learned anything about displacement.
+                                nonzero = ~(labels_r == 0).all(dim=-1)
+                                residual_hits_nonzero += correct[nonzero].sum(0)
+                                residual_count_nonzero += float(int(nonzero.sum()))
+
+                loss = (ce_loss
+                        + self.outlier_loss_weight * outlier_loss
+                        + self.residual_loss_weight * residual_loss) / self.gradient_accumulation_steps + zero_loss
 
             # If the loss is nan or inf, stop the training
             if not torch.isfinite(loss):
@@ -1007,6 +1164,7 @@ class Trainer:
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_outlier_loss += outlier_loss.item()
+            total_residual_loss += residual_loss.item()
             with torch.no_grad():
                 if 'task_segments' in micro_batch:
                     for name, (ce_sum, count) in _per_task_ce(
@@ -1048,6 +1206,21 @@ class Trainer:
                     if outlier_labels.any() and (~outlier_labels).any():
                         extra["train_outlier_auroc"] = _binary_auroc(scores, outlier_labels)
                         extra["train_outlier_auprc"] = _binary_auprc(scores, outlier_labels)
+            if self.residual_loss_weight > 0.0:
+                extra["train_residual_loss"] = total_residual_loss
+                if residual_count > 0:
+                    accuracy = (residual_hits / residual_count).tolist()
+                    for position, value in enumerate(accuracy):
+                        extra[f"residual_nibble_acc/train/n{position}"] = value
+                    extra["train_residual_nibble_acc"] = sum(accuracy) / len(accuracy)
+                    extra["residual_nibble_acc/train/zero_fraction"] = (
+                        1.0 - residual_count_nonzero / residual_count)
+                    if residual_count_nonzero > 0:
+                        nonzero_accuracy = (residual_hits_nonzero / residual_count_nonzero).tolist()
+                        for position, value in enumerate(nonzero_accuracy):
+                            extra[f"residual_nibble_acc/train/nonzero_n{position}"] = value
+                        extra["train_residual_nibble_acc_nonzero"] = (
+                            sum(nonzero_accuracy) / len(nonzero_accuracy))
             for name, sums in task_ce_sums.items():
                 extra[f"train_ce_{name}"] = sums[0] / sums[1]
             for name, sums in split_ce_sums.items():
@@ -1085,6 +1258,12 @@ class Trainer:
         total_items = 0
         val_outlier_scores: list[torch.Tensor] = []
         val_outlier_labels: list[torch.Tensor] = []
+        val_residual_loss = 0.0
+        val_residual_batches = 0
+        val_residual_hits = torch.zeros(IEEE754_N_NIBBLES, device=self.device)
+        val_residual_count = 0.0
+        val_residual_hits_nonzero = torch.zeros(IEEE754_N_NIBBLES, device=self.device)
+        val_residual_count_nonzero = 0.0
         val_task_ce_sums: dict[str, list[float]] = {}
         val_split_ce_sums: dict[str, list[float]] = {}
         first_raw_batch: dict[str, Any] | None = None
@@ -1130,6 +1309,18 @@ class Trainer:
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
                     total_items += flat_labels.shape[0]
 
+                    if self.residual_loss_weight > 0.0:
+                        scored_residual = self._residual_scores(batch)
+                        if scored_residual is not None and scored_residual[0].numel():
+                            val_residual_loss += float(self._residual_loss(scored_residual))
+                            val_residual_batches += 1
+                            logits_r, labels_r, _ = scored_residual
+                            correct = (logits_r.argmax(-1) == labels_r).float()
+                            val_residual_hits += correct.sum(0)
+                            val_residual_count += float(labels_r.shape[0])
+                            nonzero = ~(labels_r == 0).all(dim=-1)
+                            val_residual_hits_nonzero += correct[nonzero].sum(0)
+                            val_residual_count_nonzero += float(int(nonzero.sum()))
                     if self.outlier_loss_weight > 0.0:
                         scored = self._outlier_scores(batch)
                         if scored is not None:
@@ -1195,9 +1386,28 @@ class Trainer:
                 outlier_metrics["val_outlier_auprc"] = _binary_auprc(scores, labels)
 
         # Composite val_loss mirrors train_loss (ce + weighted auxiliary terms).
+        if val_residual_batches > 0:
+            outlier_metrics = dict(outlier_metrics or {})
+            outlier_metrics["val_residual_loss"] = val_residual_loss / val_residual_batches
+            accuracy = (val_residual_hits / val_residual_count).tolist()
+            for position, value in enumerate(accuracy):
+                outlier_metrics[f"residual_nibble_acc/val/n{position}"] = value
+            outlier_metrics["val_residual_nibble_acc"] = sum(accuracy) / len(accuracy)
+            outlier_metrics["residual_nibble_acc/val/zero_fraction"] = (
+                1.0 - val_residual_count_nonzero / val_residual_count)
+            if val_residual_count_nonzero > 0:
+                nonzero_accuracy = (val_residual_hits_nonzero / val_residual_count_nonzero).tolist()
+                for position, value in enumerate(nonzero_accuracy):
+                    outlier_metrics[f"residual_nibble_acc/val/nonzero_n{position}"] = value
+                outlier_metrics["val_residual_nibble_acc_nonzero"] = (
+                    sum(nonzero_accuracy) / len(nonzero_accuracy))
+
         val_composite = avg_val_ce_loss
         if outlier_metrics is not None and "val_outlier_loss" in outlier_metrics:
             val_composite = avg_val_ce_loss + self.outlier_loss_weight * outlier_metrics["val_outlier_loss"]
+        if outlier_metrics is not None and "val_residual_loss" in outlier_metrics:
+            # the checkpoint-selection composite tracks the objective actually optimized
+            val_composite = val_composite + self.residual_loss_weight * outlier_metrics["val_residual_loss"]
         outlier_metrics = dict(outlier_metrics or {})
         outlier_metrics["val_loss"] = val_composite
         if train_paired_metrics:

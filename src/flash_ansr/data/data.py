@@ -815,6 +815,12 @@ class FlashANSRDataset:
                 if getattr(self._stream.source, "noise_spec", None) is not None:
                     batch_dict["outlier_mask"] = torch.from_numpy(
                         self._stream.buffers["outlier_mask"][completed_slot_idx]).to(torch.bool)
+                    # clone(), NOT .to(): float32 -> float32 is a no-op that would hand back a
+                    # VIEW onto the worker ring, which the pool recycles on refill (see
+                    # train._detach_raw_batch). outlier_mask escapes this only because its bool
+                    # cast copies.
+                    batch_dict["residual"] = torch.from_numpy(
+                        self._stream.buffers["residual"][completed_slot_idx]).clone()
                 batch_dict.update(metadata_fields)
 
                 preprocessed_batch = metadata_and_constants.get("preprocessed")

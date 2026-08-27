@@ -6,6 +6,7 @@ from typing import Any, Callable, Literal, Optional, Tuple, TypeAlias
 
 import torch
 
+from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
 from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
 from tqdm import tqdm
@@ -173,6 +174,7 @@ class FlashANSRModel(nn.Module):
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
         outlier_head: bool = False,
+        residual_head: bool = False,
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
@@ -265,6 +267,18 @@ class FlashANSRModel(nn.Module):
                 nn.Linear(encoder_dim, encoder_dim),
                 nn.GELU(),
                 nn.Linear(encoder_dim, 1))
+        # Per-point RESIDUAL head: predicts y_observed - f(x) at every support point, as the
+        # 8 IEEE-754 hex nibbles of that float32 (owner ruling 2026-08-27: one numeric format
+        # everywhere). Reads the same pre-pooling representations as the outlier head, from the
+        # same encoder pass. The two are NOT redundant -- the outlier mask is the GENERATIVE
+        # contamination label, and a kappa < 1 outlier is labelled while barely displaced.
+        # 8 positions x 16 symbols; reshaped to (..., 8, 16) at the loss.
+        self.residual_head: nn.Sequential | None = None
+        if residual_head:
+            self.residual_head = nn.Sequential(
+                nn.Linear(encoder_dim, encoder_dim),
+                nn.GELU(),
+                nn.Linear(encoder_dim, IEEE754_N_NIBBLES * IEEE754_N_NIBBLE_SYMBOLS))
         self.point_representations: torch.Tensor | None = None
 
         self.preprocessor = FlashANSRPreprocessor(simplipy_engine=simplipy_engine, tokenizer=tokenizer)
@@ -472,6 +486,7 @@ class FlashANSRModel(nn.Module):
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
             outlier_head=config_.get("outlier_head", False),
+            residual_head=config_.get("residual_head", False),
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),
@@ -490,10 +505,10 @@ class FlashANSRModel(nn.Module):
             noise = torch.randn_like(data_pre_encodings) * self.pre_encoder_noise_scale
             data_pre_encodings = data_pre_encodings + noise
 
-        # Encoder forward pass; with the outlier head enabled, the per-point (pre-pooling)
-        # representations are captured from the SAME pass for the head -- no recompute.
+        # Encoder forward pass; with either per-point head enabled, the per-point (pre-pooling)
+        # representations are captured from the SAME pass for both heads -- no recompute.
         flat_pre_encodings = data_pre_encodings.view(B, M, D * E)
-        if self.outlier_head is not None:
+        if self.outlier_head is not None or self.residual_head is not None:
             memory, self.point_representations = self.encoder(
                 flat_pre_encodings, data_attn_mask, return_point_representations=True)
         else:

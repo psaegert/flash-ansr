@@ -108,6 +108,11 @@ Each is a separate public method, out of srbf's scope for now.
 # Per-point outlier scores. NOT sampled: one deterministic forward through a sigmoid head.
 p = ansr.score_outliers(X, y)                                   # -> np.ndarray
 
+# Per-point residual y_i - f(x_i): how far each observation sits off the true curve.
+# One encoder pass; the 8 IEEE-754 nibble softmaxes per point are SAMPLED, so this is a
+# distribution per point like every other predicted value.
+residuals = ansr.predict_residuals(X, y)                        # -> list[ValueDistribution]
+
 # The sampled verbs. n_samples / temperature / seed on each; all return distributions.
 y_star = ansr.predict_y(X, y, x_star)                           # -> list[ValueDistribution]
 mu = ansr.predict_complexity(X, y)                              # -> ComplexityDistribution
@@ -133,6 +138,25 @@ measured, and the measured per-problem behaviour is much weaker (median P ≈ 0.
 single lone outlier). Two caveats belong in the docstring: the head reads the data-set
 encoder only, so scores condition on `(X, y)` and never on any expression; and it degrades
 above roughly 10% contamination, the ceiling it was trained under.
+
+`predict_residuals` needs a checkpoint with `residual_head: true` (v24.0-T18 onward) and
+raises `CapabilityUnavailable` otherwise. Two things distinguish it from `score_outliers`,
+which reads the same per-point representations:
+
+* **different target.** `score_outliers` predicts the GENERATIVE contamination label; the
+  residual is the displacement. A kappa < 1 outlier is labelled while barely displaced, so
+  neither head subsumes the other and both are trained.
+* **it cannot go off-grammar.** The head emits exactly 8 nibble positions structurally, so
+  `off_grammar_steps` is always 0 and `closed_cleanly_fraction` always 1.0. A pattern can
+  still decode to nan/inf — `non_finite_fraction` reports how often.
+
+The honest framing for any number it produces: measured on the training prior (2026-08-27)
+the residual is invisible to model-free methods — a nearest-neighbour smoother recovers
+`|residual|` at Spearman rho = +0.06, and robust noise-level estimation off the neighbour
+ruler is biased ~81x — because the noise sits ~69x below how much f moves between
+neighbouring points. Predicting it therefore REQUIRES the encoder to have internalized the
+curve. That is the point of the task, and the reason nothing may be quoted from this head
+until it is measured against that baseline.
 
 `predict_constants` accepts prefix tokens (explicit or tagged) or an infix string, any
 variable names, with `'<constant>'` marking the slots. It returns values in slot order
@@ -205,3 +229,12 @@ never saw, and the measured floor reflects that, not a limit of the approach.
 Per-instance outlier AUROC/AUPRC, and the same metric on FastSRB with synthetic
 contamination, must be measured before the outlier head is presented as a shipped
 capability. Exposing the verb does not require them; claiming the head works does.
+
+**The baseline they must beat is now measured** (2026-08-27, 600 problems off the T17 train
+prior): per-problem AUROC of |nearest-neighbour difference| on contaminated problems is
+**0.822** median — 0.997 with a single outlier, 0.942 with 2-5, 0.803 with 6+. So the bar is
+~0.82 per problem, not 0.5, and the lone-outlier case is exactly where the trivial baseline
+is strongest and the head's measured median P ~ 0.42 looked weakest.
+
+The same applies to `predict_residuals`: its per-instance accuracy must be reported against
+the smoother baseline above, split by noise level, before any claim is made for it.

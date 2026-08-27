@@ -82,9 +82,46 @@ def float32_to_nibble_tokens(value: float) -> list[str]:
             f"be serialized."
         )
 
-    (pattern,) = struct.unpack(">I", struct.pack(">f", value32))
-    return [NIBBLE_TOKENS[(pattern >> shift) & 0xF]
-            for shift in range(4 * (IEEE754_N_NIBBLES - 1), -1, -4)]
+    return [NIBBLE_TOKENS[nibble]
+            for nibble in float32_to_nibble_values(np.float32(value32))]
+
+
+def float32_to_nibble_values(values: "np.ndarray") -> "np.ndarray":
+    """Vectorized encoder: ``(...)`` float array -> ``(..., 8)`` uint8 nibble VALUES, big-endian.
+
+    The array-level sibling of :func:`float32_to_nibble_tokens`, sharing this module's single
+    definition of the bit layout. It returns nibble VALUES (``0..15``), not tokens: per-point
+    heads own a 16-way softmax per nibble position and never touch the decoder vocabulary.
+
+    Unlike the scalar token encoder this does NOT refuse non-finite input. That guard protects
+    a serialization contract into the token stream; a head target is not serialized, and inf/nan
+    have perfectly well-defined bit patterns. Callers mask invalid points by their own validity
+    mask (for the residual head, ``data_attn_mask``).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Any shape. Cast to ``float32`` (numpy semantics) before decomposition.
+
+    Returns
+    -------
+    np.ndarray
+        ``uint8`` array of shape ``values.shape + (8,)``, most-significant nibble first, so
+        ``[..., 0]`` carries bits ``31..28`` and ``[..., 7]`` carries bits ``3..0``.
+    """
+    patterns = np.asarray(values, dtype=np.float32).view(np.uint32)
+    shifts = np.arange(4 * (IEEE754_N_NIBBLES - 1), -1, -4, dtype=np.uint32)
+    return ((patterns[..., None] >> shifts) & np.uint32(0xF)).astype(np.uint8)
+
+
+def nibble_values_to_float32(nibbles: "np.ndarray") -> "np.ndarray":
+    """Vectorized decoder: ``(..., 8)`` nibble values -> ``(...)`` float32. Inverse of the above."""
+    nibbles = np.asarray(nibbles, dtype=np.uint32)
+    if nibbles.shape[-1] != IEEE754_N_NIBBLES:
+        raise ValueError(
+            f"Expected a trailing axis of {IEEE754_N_NIBBLES} nibbles, got {nibbles.shape[-1]}.")
+    shifts = np.arange(4 * (IEEE754_N_NIBBLES - 1), -1, -4, dtype=np.uint32)
+    return (((nibbles & np.uint32(0xF)) << shifts).sum(axis=-1, dtype=np.uint32)).view(np.float32)
 
 
 def nibble_tokens_to_float32(tokens: Sequence[str]) -> float:

@@ -41,7 +41,7 @@ from flash_ansr.preprocessing import (
 from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
-    predict_constants, predict_y, score_outliers)
+    predict_constants, predict_residuals, predict_y, score_outliers)
 from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -2495,6 +2495,27 @@ class FlashANSR(BaseEstimator):
         >>> suspicious = np.argsort(p)[-3:]        # doctest: +SKIP
         """
         return score_outliers(self, X, y)
+
+    def predict_residuals(self, X: Any, y: Any, *, n_samples: int = 32,
+                          temperature: float = 1.0, seed: int | None = None) -> list:
+        """Per-point residual ``y_i - f(x_i)`` as a distribution over float32 values.
+
+        Asks, for every observed point, how far it sits off the curve the data implies. One
+        encoder pass; the eight IEEE-754 nibble softmaxes per point are sampled ``n_samples``
+        times, so the answer is a distribution (design principle 5), never a float.
+
+        Examples
+        --------
+        >>> residuals = ansr.predict_residuals(X, y)      # doctest: +SKIP
+        >>> residuals[0].median, residuals[0].q05, residuals[0].q95   # doctest: +SKIP
+
+        See Also
+        --------
+        score_outliers : the GENERATIVE contamination question, a different target -- a point
+            can be labelled an outlier and barely displaced.
+        """
+        return predict_residuals(self, X, y, n_samples=n_samples,
+                                 temperature=temperature, seed=seed)
 
     def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
                           conditioned: bool = True, n_samples: int = DEFAULT_SAMPLES,
