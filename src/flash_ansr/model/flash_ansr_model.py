@@ -18,7 +18,7 @@ from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import (
     NonFiniteExpressionError, record_non_finite_drop, record_unencodable_drop, simplify_and_mask)
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.model.pre_encoder import IEEE75432PreEncoder, IEEE75416PreEncoder
+from flash_ansr.model.pre_encoder import IEEE754PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
 from flash_ansr.model.encoders import SetTransformer
 from flash_ansr.model.decoders import TransformerDecoder
@@ -191,17 +191,17 @@ class FlashANSRModel(nn.Module):
         # position and must keep receiving it.
         self.sanitize_input_num = sanitize_input_num
 
-        if pre_encoder_bits == 32:
-            pre_encoder_cls = IEEE75432PreEncoder
-        elif pre_encoder_bits == 16:
-            pre_encoder_cls = IEEE75416PreEncoder
-        else:
-            raise ValueError(f"pre_encoder_bits must be 16 or 32, got {pre_encoder_bits}")
+        # 64 joins 16 and 32 (v25). The DEFAULT stays 32: `runs/v24.0-T16/checkpoint_*/model.yaml`
+        # omits the key entirely and relies on it, so flipping the default would silently rebuild
+        # those checkpoints at the wrong width. Every new config pins the value explicitly.
+        if pre_encoder_bits not in (16, 32, 64):
+            raise ValueError(f"pre_encoder_bits must be 16, 32 or 64, got {pre_encoder_bits}")
         self.pre_encoder_bits = pre_encoder_bits
 
-        self.pre_encoder = pre_encoder_cls(input_size=encoder_max_n_variables)
+        self.pre_encoder = IEEE754PreEncoder(
+            input_size=encoder_max_n_variables, bits=pre_encoder_bits)
 
-        self.pre_encoder_numeric_tokens = pre_encoder_cls(input_size=1)
+        self.pre_encoder_numeric_tokens = IEEE754PreEncoder(input_size=1, bits=pre_encoder_bits)
         self.pre_encoder_noise_scale = pre_encoder_noise_scale
         self.numeric_embedding = nn.Linear(self.pre_encoder_numeric_tokens.output_size, decoder_input_dim)
 
