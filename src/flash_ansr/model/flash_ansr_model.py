@@ -603,78 +603,82 @@ class FlashANSRModel(nn.Module):
         return self.next_token_head(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
-                          predict: bool = False, hypothesize: bool = False,
+                          hypothesize: bool = False,
                           mask: "str | None" = None) -> tuple[list[int], list[float]]:
-        """The v24 ``<complexity>``-block generation prefix.
+        """The generation prompt, up to the point where the model takes over.
 
-        With ``mu`` given -- the one-token conditioning interface: ``<bos> <complexity>
-        <float> </complexity>`` with ``mu`` riding the numeric channel; generation then
-        starts at ``<expression>`` under the requested complexity (sweep ``mu`` over a
-        grid for an accuracy-complexity front from one model). With ``predict=True``
-        (and no ``mu``) -- the prefix stops after ``<ieee754>``, so the model first
-        PREDICTS the complexity nibbles of its own answer and then conditions on that
-        estimate: the self-conditioning default, under which beams naturally diversify
-        over complexity.
+        The prompt is everything GIVEN, in canonical order, and it ends at the boundary
+        (owner ruling 2026-08-27)::
 
-        ``mask`` selects the promptable target format (owner ruling 2026-08-24):
-        ``'all'`` or ``'fittable'`` insert the harness-owned flag directly after
-        ``<bos>`` (the canonical prompt order), so the model emits the expression under
-        simplipy's corresponding masking policy -- constants as ``<constant>``
-        placeholders for a downstream fitter instead of predicted values. ``None`` (the
-        default) is the unmasked format. ``mask`` composes with any of the three
-        complexity modes and may also be used alone (a mask-only prompt).
+            <bos> [mask flag] [<complexity> <float> </complexity>] <hypothesize>
+            <bos> [mask flag] [<complexity> <float> </complexity>] <expression>
+
+        With ``<hypothesize>`` the model authors the property blocks it wants and then
+        opens the expression itself; without it the harness opens ``<expression>`` and the
+        model writes only the body. Either way generation starts at the LAST token here.
+
+        ``mu`` conditions on a stated complexity: it rides the numeric channel of a compact
+        ``<float>``, because a number the CALLER supplies is compact. Sweep it over a grid
+        for an accuracy-complexity front from one model. ``mu`` is simplipy's integer
+        measure of the MASKED target (``engine.complexity``), exactly as trained.
+
+        ``mu`` and ``hypothesize`` COMPOSE: state what you know, let the model hypothesize
+        the rest. What you stated may not be hypothesized again -- the decode grammar bans
+        re-opening a block already in the prefix, so the two never contradict each other.
+
+        ``mask`` selects the promptable target format (owner ruling 2026-08-24): ``'all'``
+        or ``'fittable'`` insert the harness-owned flag directly after ``<bos>``, so the
+        model emits the expression under simplipy's corresponding masking policy --
+        constants as ``<constant>`` placeholders for a downstream fitter instead of
+        predicted values. ``None`` (the default) is the unmasked format. It composes with
+        everything and may be used alone.
 
         Returns ``(initial_tokens, input_num)`` for generation.
-        ``mu`` is simplipy's integer measure of the MASKED target
-        (``engine.complexity``), exactly as trained.
         """
-        n_modes = sum([mu is not None, predict, hypothesize])
-        if n_modes != 1 and not (n_modes == 0 and mask is not None):
-            raise ValueError("give exactly one of mu=<value> (condition), predict=True (prompted "
-                             "prediction), or hypothesize=True (self-initiated hypothesis mode) "
-                             "-- or mask=... alone for a mask-only prompt")
+        if mu is None and not hypothesize and mask is None:
+            raise ValueError("give at least one of mu=<value> (condition on a stated "
+                             "complexity), hypothesize=True (let the model author property "
+                             "blocks), or mask=... (promptable target format)")
         # Deferred import: flash_ansr.data imports the model package, not the other way around.
         from flash_ansr.data.serialization import (
             COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN, COMPLEXITY_START_TOKEN,
             HYPOTHESIS_TOKEN, MASK_MODE_TOKENS)
-        from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
-        mask_token: str | None = None
+
+        required: list[str] = []
         if mask is not None:
             if mask not in MASK_MODE_TOKENS:
                 raise ValueError(f"mask must be one of {sorted(MASK_MODE_TOKENS)} or None, got {mask!r}")
-            mask_token = MASK_MODE_TOKENS[mask]
-            if mask_token not in self.tokenizer:
-                raise ValueError(f"this tokenizer has no promptable-mask flags (missing {mask_token})")
-        if n_modes == 0:
-            assert mask_token is not None
-            return ([self.tokenizer['<bos>'], self.tokenizer[mask_token]],
-                    [float("nan"), float("nan")])
+            required.append(MASK_MODE_TOKENS[mask])
+        if mu is not None:
+            required += [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
         if hypothesize:
-            required = [HYPOTHESIS_TOKEN]
-        else:
-            required = [COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN,
-                        IEEE754_START_TOKEN if predict else COMPACT_CONSTANT_TOKEN]
+            required.append(HYPOTHESIS_TOKEN)
         missing = [token for token in required if token not in self.tokenizer]
         if missing:
-            raise ValueError(f"this tokenizer has no complexity block (missing {missing})")
+            raise ValueError(f"this checkpoint's vocabulary is missing {missing}")
+
+        tokens = [self.tokenizer['<bos>']]
+        numeric = [float("nan")]
+        if mask is not None:
+            tokens.append(self.tokenizer[MASK_MODE_TOKENS[mask]])
+            numeric.append(float("nan"))
+        if mu is not None:
+            tokens += [self.tokenizer[COMPLEXITY_START_TOKEN],
+                       self.tokenizer[COMPACT_CONSTANT_TOKEN],
+                       self.tokenizer[COMPLEXITY_END_TOKEN]]
+            numeric += [float("nan"), float(mu), float("nan")]
         if hypothesize:
-            # The harness-inserted flag licenses the model to open and fill property
-            # blocks on its own; the model was never trained to emit the flag itself.
-            tokens = [self.tokenizer['<bos>'], self.tokenizer[HYPOTHESIS_TOKEN]]
-            numeric = [float("nan")] * 2
-        elif predict:
-            tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
-                      self.tokenizer[IEEE754_START_TOKEN]]
-            numeric = [float("nan")] * 3
-        else:
-            assert mu is not None  # the n_modes guard above admits exactly this mode
-            tokens = [self.tokenizer['<bos>'], self.tokenizer[COMPLEXITY_START_TOKEN],
-                      self.tokenizer[COMPACT_CONSTANT_TOKEN], self.tokenizer[COMPLEXITY_END_TOKEN]]
-            numeric = [float("nan"), float("nan"), float(mu), float("nan")]
-        if mask_token is not None:
-            # Canonical prompt order: <bos>, mask flag, complexity/hypothesis block.
-            tokens.insert(1, self.tokenizer[mask_token])
-            numeric.insert(1, float("nan"))
+            # The boundary. The model was never trained to utter it -- only the harness may
+            # hand over the pen -- and everything after it carries loss.
+            tokens.append(self.tokenizer[HYPOTHESIS_TOKEN])
+            numeric.append(float("nan"))
+        elif '<expression>' in self.tokenizer:
+            # No boundary, so generation starts after <expression> and the model writes the
+            # body only. Force-feeding a token it would have emitted anyway removes a step
+            # where it could emit something else. Vocabularies without the wrappers (the
+            # pre-v24 lane) simply end the prompt earlier, as they always did.
+            tokens.append(self.tokenizer['<expression>'])
+            numeric.append(float("nan"))
         return tokens, numeric
 
     def _has_numeric_channel(self) -> bool:

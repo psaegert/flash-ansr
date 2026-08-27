@@ -670,11 +670,14 @@ def _producer_worker(
                             # may utter it), but everything after it -- opener, format
                             # selector, nibbles, closers -- is the model's own hypothesis
                             # and carries loss.
-                            block_tokens = [HYPOTHESIS_TOKEN, COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
+                            # The flag is NOT part of this block: it is the BOUNDARY, emitted
+                            # once (below) after every given element. Everything from it to
+                            # </expression> is the model's, so the opener carries loss too.
+                            block_tokens = [COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
                                             *float32_to_nibble_tokens(float(mu)),
                                             IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
                             block_numeric = [float("nan")] * len(block_tokens)
-                            block_masked = [True, *[False] * (len(block_tokens) - 1)]
+                            block_masked = [False] * len(block_tokens)
                             variant = "hypothesis"
                         else:
                             # PROMPTED: the caller states the complexity, so it is compact and
@@ -684,8 +687,10 @@ def _producer_worker(
                             block_numeric = [float("nan"), float(mu), float("nan")]
                             block_masked = [True, True, True]
                             variant = "float"
-                        if len(block_tokens) <= budget:
-                            budget -= len(block_tokens)
+                        # +1 for the standalone <hypothesize> boundary this variant needs.
+                        need = len(block_tokens) + (1 if variant == "hypothesis" else 0)
+                        if need <= budget:
+                            budget -= need
                             element = ("complexity", block_tokens, block_numeric, block_masked,
                                        [TASK_SEGMENT_COMPLEXITY] * len(block_tokens))
                             if variant == "hypothesis":
@@ -790,6 +795,14 @@ def _producer_worker(
                         prefix_elements = [prefix_elements[int(k)]
                                            for k in worker_rng.permutation(len(prefix_elements))]
                     if hypothesis_element is not None:
+                        # THE BOUNDARY (owner ruling 2026-08-27). Everything before it is
+                        # given -- fixed, compact, harness-owned -- and may not recur after
+                        # it; everything after it is the model's, spelled in bits. It is a
+                        # marker of its own, not part of any block, so it carries no task
+                        # segment: with a second hypothesizable property the flag is uttered
+                        # ONCE and licenses the whole run that follows.
+                        prefix_elements.append(("hypothesize", [HYPOTHESIS_TOKEN], [float("nan")],
+                                                [True], [TASK_SEGMENT_EXPRESSION]))
                         prefix_elements.append(hypothesis_element)
                     if len(suffix_elements) > 1 and worker_rng.random() < 0.5:
                         suffix_elements.reverse()

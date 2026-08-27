@@ -35,6 +35,12 @@ from flash_ansr.utils.ieee754 import (
 #: The compact-constant token the mask forbids outright (see data.serialization).
 COMPACT_CONSTANT_TOKEN = "<float>"
 
+#: Property-block openers that may appear AT MOST ONCE in a sequence (owner ruling
+#: 2026-08-27): a property stated before ``<hypothesize>`` is given and may not be
+#: hypothesized after it. Add noise sigma / the outlier rate here when they land.
+#: Absent tokens are skipped, so an older vocabulary simply carries no such rule.
+PROPERTY_OPEN_TOKENS = ("<complexity>",)
+
 
 class IEEE754GrammarConstraint:
     """Vocabulary mask implementing the expanded-constant grammar over ``<ieee754>`` spans."""
@@ -54,6 +60,10 @@ class IEEE754GrammarConstraint:
         self.nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
         self._nibble_id_tensor = torch.tensor(self.nibble_ids, dtype=torch.long)
         self.float_id = int(tokenizer[COMPACT_CONSTANT_TOKEN])
+        #: Openers under the at-most-once rule. Not required: a checkpoint without
+        #: property blocks is decoded by exactly the span grammar and nothing else.
+        self.property_open_ids = [int(tokenizer[token]) for token in PROPERTY_OPEN_TOKENS
+                                  if token in tokenizer]
         self.vocab_size = len(tokenizer)
 
     def forbidden(self, prefixes: torch.Tensor, remaining: int | None = None) -> torch.Tensor:
@@ -100,6 +110,15 @@ class IEEE754GrammarConstraint:
 
         # Anti-training, decode-time half (T6): <float> is forbidden in EVERY state.
         mask[:, self.float_id] = True
+
+        # A property block opens at most once (owner ruling 2026-08-27). This is what
+        # enforces "given before <hypothesize> may not recur after it": the given block is
+        # in the prefix, so its opener is banned for the rest of the decode. It also stops
+        # the model re-opening a block it opened itself. Stateless, like everything here --
+        # recomputed from the prefix, so it survives KV caching and the static path. Applied
+        # BEFORE the in-span rules, which overwrite whole rows.
+        for open_id in self.property_open_ids:
+            mask[:, open_id] |= (prefixes == open_id).any(dim=1)
 
         outside = ~inside
         # Outside a span: nibbles and the close tag are grammar violations.

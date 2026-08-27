@@ -54,12 +54,19 @@ force-fed x stays compact wherever the block sits, and the supervised answer is 
 positional rule applies to the scalar attributes -- complexity today, noise sigma and the
 outlier rate when they land.
 
-`streaming.py:810-814` already permutes the given prefix elements and appends the hypothesis
-element last, so the layout exists for one property. What is missing: extracting
-`<hypothesize>` from inside the complexity block into a standalone boundary marker; relaxing
-the mutually-exclusive `n_modes` guard at `flash_ansr_model.py:631`, which today forbids
-exactly the given-plus-hypothesize combination the rule licenses; and enforcing
-non-recurrence in the decode grammar.
+**LANDED.** `<hypothesize>` is now a standalone element emitted after every given one, so
+one flag licenses the whole run of blocks that follows (the token stream is unchanged for a
+single property -- only the element structure is). `complexity_prefix` composes rather than
+excludes: `mu`, `hypothesize` and `mask` may be given in any combination, and the prompt
+ends at the boundary -- `<hypothesize>` when present, `<expression>` otherwise, so
+generation always starts at the last prompt token. Non-recurrence is a new grammar rule,
+at-most-once per property opener (`PROPERTY_OPEN_TOKENS` in `constrained.py`), stateless
+like the rest and therefore correct under KV caching and the static path.
+
+**`predict=True` is gone.** It prefixed `<complexity> <ieee754>` and let the model fill the
+nibbles -- which was exactly the `p_nibbles` prompted-nibbles training circumstance. That
+circumstance no longer exists, so the mode had no training distribution behind it.
+`hypothesize=True` replaces it.
 
 **The conflict:** `<predict_y>`'s x is *given* (force-fed, loss-masked) but sits in the
 suffix, after the boundary. Read strictly, the rule spells it in bytes — 18 dims x 10 tokens

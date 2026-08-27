@@ -41,10 +41,18 @@ PREDICT_Y_END_TOKEN = "</predict_y>"
 POINT_START_TOKEN = "<point>"
 POINT_END_TOKEN = "</point>"
 PREDICT_Y_TOKENS = (PREDICT_Y_START_TOKEN, PREDICT_Y_END_TOKEN, POINT_START_TOKEN, POINT_END_TOKEN)
-# Hypothesis mode (owner ruling 2026-08-24): a harness-inserted flag that LICENSES the
-# model to open and fill property blocks on its own (opener + content supervised). The
-# flag itself is never supervised -- only the harness may put the model into hypothesis
-# mode; without it, openers stay force-fed and loss-masked.
+# The BOUNDARY (owner rulings 2026-08-24, refined 2026-08-27). A harness-inserted marker,
+# uttered at most once, that hands the pen over: everything BEFORE it is given -- fixed,
+# compact, force-fed and loss-masked -- and everything after it is the model's own, spelled
+# in ieee754 bits and supervised (opener, content and closers alike). A property stated
+# before the flag may not be hypothesized after it; the decode grammar enforces that as
+# at-most-once per opener (decoding/constrained.py). The flag is never supervised: only the
+# harness may put the model into hypothesis mode.
+#
+# It is a marker of its own, NOT part of any block, so one flag licenses the whole run of
+# property blocks that follows it. The query/answer blocks (<predict_y>, and <predict_
+# residual> when it lands) are EXEMPT from the positional rule: inside them the loss mask
+# decides, so their force-fed x coordinates stay compact wherever the block sits.
 HYPOTHESIS_TOKEN = "<hypothesize>"
 
 #: Promptable-mask flags (owner ruling 2026-08-24): harness-owned, never supervised.

@@ -379,3 +379,38 @@ def test_t7_constrained_sampling_emissions_parse(tokenizer: Tokenizer, engine) -
             n_spans += len(_scan_spans(seq, tokenizer))
         # The biased model must actually have opened spans, or the test is vacuous.
         assert n_spans >= 5, f"use_cache={use_cache}: only {n_spans} spans sampled"
+
+
+def test_the_grammar_bans_reopening_a_property_block() -> None:
+    """Owner ruling 2026-08-27: a property stated before <hypothesize> is GIVEN and may not
+    be hypothesized after it. The grammar enforces it as at-most-once per sequence, which
+    also stops the model re-opening a block it opened itself.
+
+    Stateless like every other rule here -- recomputed from the prefix -- so it holds under
+    KV caching, mini-batching and the static path without any carried state to reindex."""
+    from flash_ansr.decoding.constrained import IEEE754GrammarConstraint
+
+    # The v24 template rather than this file's configs/test tokenizer: only the template
+    # carries <hypothesize>, and the rule exists to serve the boundary.
+    tokenizer = Tokenizer.from_config(load_config(get_path("configs", "v24-template", "tokenizer.yaml")))
+    grammar = IEEE754GrammarConstraint(tokenizer)
+    bos = int(tokenizer["<bos>"])
+    cx_open, cx_close = int(tokenizer["<complexity>"]), int(tokenizer["</complexity>"])
+    float_id = int(tokenizer["<float>"])
+    hypothesize = int(tokenizer["<hypothesize>"])
+
+    assert cx_open in grammar.property_open_ids
+
+    # A prefix with the block GIVEN, then the boundary: it may not be opened again.
+    given = torch.tensor([[bos, cx_open, float_id, cx_close, hypothesize]])
+    assert bool(grammar.forbidden(given)[0, cx_open])
+
+    # The same prefix WITHOUT the given block leaves it open to hypothesize.
+    free = torch.tensor([[bos, hypothesize]])
+    assert not bool(grammar.forbidden(free)[0, cx_open])
+
+    # Per row, not per batch: one row's history must not constrain another's.
+    batch = torch.tensor([[bos, cx_open, float_id, cx_close, hypothesize],
+                          [bos, hypothesize, bos, bos, bos]])
+    mask = grammar.forbidden(batch)
+    assert bool(mask[0, cx_open]) and not bool(mask[1, cx_open])

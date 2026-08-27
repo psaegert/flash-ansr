@@ -147,19 +147,15 @@ def test_complexity_prefix_for_generation(tokenizer, engine) -> None:  # type: i
     kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
     model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
 
+    # A STATED complexity is compact, and with no <hypothesize> the prompt runs to
+    # <expression>: generation starts at the body (owner ruling 2026-08-27).
     tokens, numeric = model.complexity_prefix(76000)
     names = [tokenizer.vocab[i] for i in tokens]
-    assert names == ["<bos>", "<complexity>", "<float>", "</complexity>"]
+    assert names == ["<bos>", "<complexity>", "<float>", "</complexity>", "<expression>"]
     assert numeric[2] == 76000.0 and all(np.isnan(v) for i, v in enumerate(numeric) if i != 2)
 
-    tokens, numeric = model.complexity_prefix(predict=True)
-    assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", "<complexity>", "<ieee754>"]
-    assert all(np.isnan(v) for v in numeric)
-
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="at least one"):
         model.complexity_prefix()
-    with pytest.raises(ValueError, match="exactly one"):
-        model.complexity_prefix(42.0, predict=True)
 
 
 def test_task_segments_label_the_blocks(tokenizer) -> None:  # type: ignore[no-untyped-def]
@@ -278,10 +274,17 @@ def test_complexity_prefix_hypothesize_mode(tokenizer, engine) -> None:  # type:
     kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
     model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
     tokens, numeric = model.complexity_prefix(hypothesize=True)
+    # The prompt STOPS at the boundary: past it the model opens its own blocks, and it
+    # opens <expression> itself rather than being handed it.
     assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", "<hypothesize>"]
     assert all(np.isnan(v) for v in numeric)
-    with pytest.raises(ValueError, match="exactly one"):
-        model.complexity_prefix(42.0, hypothesize=True)
+
+    # mu and hypothesize COMPOSE now: state what you know, hypothesize the rest. The
+    # stated block sits BEFORE the boundary and is compact.
+    tokens, numeric = model.complexity_prefix(42.0, hypothesize=True)
+    assert [tokenizer.vocab[i] for i in tokens] == [
+        "<bos>", "<complexity>", "<float>", "</complexity>", "<hypothesize>"]
+    assert numeric[2] == 42.0
 
 
 def test_ce_split_anchor_is_the_cross_arm_common_ground(tokenizer) -> None:  # type: ignore[no-untyped-def]
@@ -337,3 +340,40 @@ def test_a_prompted_complexity_is_never_spelled_in_bytes(tokenizer) -> None:  # 
             assert batch["complexity_variant"][row] == "float"
             assert tokens[1:4] == ["<complexity>", "<float>", "</complexity>"]
             assert "<hypothesize>" not in tokens
+
+
+def test_the_boundary_splits_compact_from_bytes_except_in_query_blocks(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """Owner ruling 2026-08-27. Before <hypothesize> everything is GIVEN, so a number there
+    is compact; after it everything is the model's, so a number there is bytes.
+
+    <predict_y> is exempt: it is a query/answer block, not a property, so its force-fed x
+    coordinates stay compact wherever the block sits. Without the exemption the rule would
+    spell 18 dimensions of caller-supplied coordinates in 10 tokens each."""
+    seen_boundary = seen_query_float = 0
+    for batch in _iterate(tokenizer, complexity_block=HYPOTHESIS_ONLY,
+                          predict_y_block=PREDICT_B):
+        for row, tokens in _rows(batch, tokenizer):
+            if "<hypothesize>" not in tokens:
+                continue
+            seen_boundary += 1
+            boundary = tokens.index("<hypothesize>")
+
+            in_query = False
+            for position, token in enumerate(tokens):
+                if token == "<predict_y>":
+                    in_query = True
+                elif token == "</predict_y>":
+                    in_query = False
+                if token == "<float>":
+                    # Compact: either given (before the boundary) or a query argument.
+                    assert position < boundary or in_query, \
+                        f"a compact <float> after the boundary, outside a query block: {tokens}"
+                    if in_query:
+                        seen_query_float += 1
+                if token == "<ieee754>":
+                    # Bytes: only ever what the model authors, so only after the boundary.
+                    assert position > boundary, \
+                        f"an ieee754 span BEFORE the boundary: {tokens}"
+
+    assert seen_boundary > 0, "vacuous: no instance carried the boundary"
+    assert seen_query_float > 0, "vacuous: the exemption was never exercised"

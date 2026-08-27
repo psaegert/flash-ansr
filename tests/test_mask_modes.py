@@ -183,8 +183,11 @@ class TestOrderRandomization:
                               mask_block=_mask_cfg(p_mask_all=1.0),
                               complexity_block={"p_present": 0.0, "p_hypothesize": 1.0}):
             for order in batch["block_order"]:
-                assert order["prefix"][-1] == "complexity", \
-                    "from the flag on, the pen is the model's until <expression>"
+                # The boundary is its OWN element and it is uttered exactly once, after
+                # every given element (owner ruling 2026-08-27). From it on, the pen is
+                # the model's until </expression>.
+                assert order["prefix"][-2:] == ["hypothesize", "complexity"], order["prefix"]
+                assert order["prefix"].count("hypothesize") == 1
 
     def test_suffix_blocks_swap(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         orders = set()
@@ -239,13 +242,19 @@ class TestPromptSurface:
         model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
 
         tokens, numeric = model.complexity_prefix(mask="all")
-        assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", MASK_ALL_TOKEN]
+        assert [tokenizer.vocab[i] for i in tokens] == ["<bos>", MASK_ALL_TOKEN, "<expression>"]
         assert all(np.isnan(v) for v in numeric)
 
         tokens, numeric = model.complexity_prefix(76000, mask="fittable")
         names = [tokenizer.vocab[i] for i in tokens]
-        assert names == ["<bos>", MASK_FITTABLE_TOKEN, "<complexity>", "<float>", "</complexity>"]
+        assert names == ["<bos>", MASK_FITTABLE_TOKEN, "<complexity>", "<float>",
+                         "</complexity>", "<expression>"]
         assert numeric[3] == 76000.0
+
+        # The flag stays first and the boundary stays last, whatever is given between them.
+        tokens, _ = model.complexity_prefix(76000, mask="all", hypothesize=True)
+        assert [tokenizer.vocab[i] for i in tokens] == [
+            "<bos>", MASK_ALL_TOKEN, "<complexity>", "<float>", "</complexity>", "<hypothesize>"]
 
         with pytest.raises(ValueError, match="mask"):
             model.complexity_prefix(mask="everything")
