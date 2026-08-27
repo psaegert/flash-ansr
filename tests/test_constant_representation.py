@@ -261,126 +261,70 @@ def _skeleton_with_k_constants(k: int) -> list[str]:
     return tokens
 
 
-def _form_pattern(serialized: list[str]) -> tuple[str, ...]:
-    """Per-constant E(xpanded)/C(ompact) pattern, in sequence order."""
-    pattern = []
-    i = 0
-    while i < len(serialized):
-        token = serialized[i]
-        if token == "<ieee754>":
-            pattern.append("E")
-            end = serialized.index("</ieee754>", i)
-            i = end + 1
-        elif token == COMPACT_TOKEN:
-            pattern.append("C")
-            i += 1
-        else:
-            i += 1
-    return tuple(pattern)
-
-
-def test_t3_mixing_policy_10k_instances() -> None:
+def test_t3_every_constant_is_a_span_over_10k_instances() -> None:
+    """The T3 slot, re-aimed. It used to certify the 50/50 mixing -- per-slot rate,
+    independence, and the rate at which a compact constant preceded an expanded one, which
+    is the history pattern inference produced. Under the owner's 2026-08-27 doctrine there
+    is no second form to mix, so the same 10k instances now certify the stronger claim:
+    across every arity, EVERY constant is a span and no <float> reaches an expression."""
     from flash_ansr.data.serialization import serialize_constant_tokens
 
     rng = np.random.default_rng(0x24C1)
     counts = {1: 3000, 2: 3500, 3: 3500}  # 10k instances total
-    patterns: dict[int, list[tuple[str, ...]]] = {k: [] for k in counts}
+    n_spans = 0
 
     for k, n in counts.items():
         skeleton = _skeleton_with_k_constants(k)
-        for i in range(n):
+        for _ in range(n):
             constants = [float(np.float32(c)) for c in rng.normal(0, 5, size=k)]
-            serialized, numeric = serialize_constant_tokens(
-                skeleton, constants, representation="ieee754_mixed", rng=rng)
-            pattern = _form_pattern(serialized)
-            assert len(pattern) == k
-            patterns[k].append(pattern)
+            serialized, numeric = serialize_constant_tokens(skeleton, constants)
 
-            # Structural: numeric channel aligned per token; values only at compact positions.
+            assert COMPACT_TOKEN not in serialized
+            assert "<constant>" not in serialized  # every placeholder was serialized away
+
+            # k spans, each intact, and the numeric channel is NaN at every position:
+            # nothing in an expression rides the numeric channel any more.
             assert len(numeric) == len(serialized)
-            compact_positions = [p for p, t in enumerate(serialized) if t == COMPACT_TOKEN]
-            finite_positions = [p for p, v in enumerate(numeric) if not math.isnan(v)]
-            assert finite_positions == compact_positions
+            assert all(math.isnan(v) for v in numeric)
+            spans = [i for i, t in enumerate(serialized) if t == "<ieee754>"]
+            assert len(spans) == k
+            for start in spans:
+                assert serialized[start + IEEE754_SPAN_LENGTH - 1] == "</ieee754>"
+                n_spans += 1
 
-    tol = 0.05
+            # Length is now a deterministic function of arity, not a coin flip.
+            assert len(serialized) == len(skeleton) - k + k * IEEE754_SPAN_LENGTH
 
-    # (a) per-constant expansion rate ~ 0.5 for every slot of every k.
-    for k in counts:
-        arr = np.array([[1 if f == "E" else 0 for f in p] for p in patterns[k]], dtype=float)
-        for slot in range(k):
-            assert abs(arr[:, slot].mean() - 0.5) < tol, (k, slot, arr[:, slot].mean())
-
-    # (b) per-constant independence: joint pattern frequencies match the product law.
-    arr2 = patterns[2]
-    n2 = len(arr2)
-    for joint in (("E", "E"), ("E", "C"), ("C", "E"), ("C", "C")):
-        freq = sum(1 for p in arr2 if p == joint) / n2
-        assert abs(freq - 0.25) < tol, (joint, freq)
-
-    # (c) both forms present within single sequences at the expected Bernoulli rate.
-    for k, expected in ((2, 0.5), (3, 0.75)):
-        freq = sum(1 for p in patterns[k] if len(set(p)) == 2) / len(patterns[k])
-        assert abs(freq - expected) < tol, (k, freq)
-
-    # (d) compact-history-then-expanded (a compact constant strictly before an expanded one).
-    def has_compact_before_expanded(p: tuple[str, ...]) -> bool:
-        return any(a == "C" and b == "E" for i, a in enumerate(p) for b in p[i + 1:])
-
-    for k, expected in ((2, 0.25), (3, 0.5)):
-        freq = sum(1 for p in patterns[k] if has_compact_before_expanded(p)) / len(patterns[k])
-        assert abs(freq - expected) < tol, (k, freq)
-
-    # (e) the inference pattern (all-compact history + current constant expanded) is
-    # in-distribution: it occurs at its expected rate 2^-k.
-    for k in counts:
-        target = tuple(["C"] * (k - 1) + ["E"])
-        freq = sum(1 for p in patterns[k] if p == target) / len(patterns[k])
-        assert abs(freq - 0.5 ** k) < tol, (k, freq)
+    assert n_spans == 3000 * 1 + 3500 * 2 + 3500 * 3
 
 
 def test_t3_expanded_nibbles_encode_the_constant() -> None:
     from flash_ansr.data.serialization import serialize_constant_tokens
 
-    rng = np.random.default_rng(7)
     value = float(np.float32(-3.75))
-    # Deterministically obtain one of each form by redrawing until both were seen.
-    seen = set()
-    for _ in range(64):
-        serialized, numeric = serialize_constant_tokens(
-            ["*", "<constant>", "x1"], [value], representation="ieee754_mixed", rng=rng)
-        if "<ieee754>" in serialized:
-            seen.add("E")
-            start = serialized.index("<ieee754>")
-            end = serialized.index("</ieee754>")
-            assert end - start == IEEE754_SPAN_LENGTH - 1  # 8 nibbles + tags span 10 tokens
-            assert nibble_tokens_to_float32(serialized[start + 1:end]) == value
-            assert all(math.isnan(v) for v in numeric[start:end + 1])  # numeric NaN across the span
-        else:
-            seen.add("C")
-            pos = serialized.index(COMPACT_TOKEN)
-            assert numeric[pos] == value
-        if seen == {"E", "C"}:
-            break
-    assert seen == {"E", "C"}
+    serialized, numeric = serialize_constant_tokens(["*", "<constant>", "x1"], [value])
+    start = serialized.index("<ieee754>")
+    end = serialized.index("</ieee754>")
+    assert end - start == IEEE754_SPAN_LENGTH - 1  # 8 nibbles + tags span 10 tokens
+    assert nibble_tokens_to_float32(serialized[start + 1:end]) == value
+    assert all(math.isnan(v) for v in numeric[start:end + 1])  # numeric NaN across the span
+    assert COMPACT_TOKEN not in serialized
 
 
 def test_t3_generator_never_emits_nonfinite_constants() -> None:
     # Assert, don't assume: non-finite constants must raise at serialization time.
     from flash_ansr.data.serialization import serialize_constant_tokens
 
-    rng = np.random.default_rng(0)
     for bad in (float("inf"), float("-inf"), float("nan")):
         with pytest.raises(ValueError):
-            serialize_constant_tokens(["*", "<constant>", "x1"], [bad],
-                                      representation="ieee754_mixed", rng=rng)
+            serialize_constant_tokens(["*", "<constant>", "x1"], [bad])
 
 
 def test_t3_constant_count_mismatch_raises() -> None:
     from flash_ansr.data.serialization import serialize_constant_tokens
 
-    rng = np.random.default_rng(0)
     with pytest.raises(ValueError):
-        serialize_constant_tokens(["*", "<constant>", "x1"], [], representation="ieee754_mixed", rng=rng)
+        serialize_constant_tokens(["*", "<constant>", "x1"], [])
 
 
 # ---------------------------------------------------------------------------
@@ -404,13 +348,9 @@ def test_representation_gate() -> None:
         max_n_support = 4
         catalog = _DummyCatalog()
 
-    with pytest.raises(ValueError):
-        FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero",
-                         constant_representation="not_a_representation")
-
-    # The default IS ieee754_mixed, so a tokenizer without the span tokens is refused
-    # outright -- there is no older serialization to fall back to.
-    with pytest.raises(ValueError, match="ieee754_mixed"):
+    # A tokenizer without the span tokens is refused outright -- there is no older
+    # serialization to fall back to.
+    with pytest.raises(ValueError, match="numeric format"):
         FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero")
 
 
@@ -457,7 +397,7 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
 
     n_expanded = n_compact = 0
     with FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed") as dataset:
+                          ) as dataset:
         for batch in dataset.iterate(steps=3, batch_size=16):
             for row, numeric in zip(batch["input_ids"], batch["input_num"]):
                 ids = [int(t) for t in row.tolist()]
@@ -496,33 +436,49 @@ def test_mixed_streaming_end_to_end(tokenizer: Tokenizer) -> None:
 
                 assert ids[0] != pad_id  # sanity: rows are populated
 
-    # Both forms must be present across the stream (48 sequences, >=1 constant each).
-    assert n_expanded > 0 and n_compact > 0
+    # Every constant is a span and NO expression carries a compact <float> (owner ruling
+    # 2026-08-27): the compact token is reserved for numbers the caller supplies.
+    assert n_expanded > 0 and n_compact == 0
 
 
 def test_mixed_streaming_drops_instances_instead_of_cutting_spans(tokenizer: Tokenizer) -> None:
     """Truncation must never cut inside an <ieee754> span: offending instances are
-    dropped (and counted); surviving sequences contain only intact spans."""
+    dropped (and counted); surviving sequences contain only intact spans.
+
+    max_seq_len is chosen against the pinned catalog, which is four fixed skeletons. Only
+    ("*", "<constant>", "x1") fits -- 1 constant, so <bos> <expression> * <span x10> x1
+    </expression> <eos> = 16 tokens; the other three carry 2-3 constants and run 27-40, so
+    every draw of them straddles the cut and must be dropped. A bound that fits NOTHING
+    would be worse than a failing assertion: with no compact fallback left, the worker can
+    never fill a batch and the suite hangs instead of failing.
+    """
     start_id, end_id = tokenizer["<ieee754>"], tokenizer["</ieee754>"]
     nibble_ids = {int(tokenizer[token]) for token in NIBBLE_TOKENS}
 
     saw_drop_counter = False
-    with FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed") as dataset:
-        # max_seq_len=12 cannot hold any expanded span intact (10 tokens, and the body
-        # never starts before index 2, so a span always straddles the truncation point):
-        # every instance whose serialization expands a constant must be dropped, so
-        # surviving sequences are all-compact and structurally intact.
-        for batch in dataset.iterate(steps=2, batch_size=8, max_seq_len=12):
+    saw_intact_span = False
+    with FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer,
+                          padding="zero") as dataset:
+        for batch in dataset.iterate(steps=2, batch_size=8, max_seq_len=24):
             for row in batch["input_ids"]:
                 ids = [int(t) for t in row.tolist()]
-                assert start_id not in ids and end_id not in ids
-                assert not (set(ids) & nibble_ids)
+                spans = _spans(ids, start_id, end_id)
+                for start, end in spans:
+                    assert end - start == IEEE754_SPAN_LENGTH - 1
+                    assert set(ids[start + 1:end]) <= nibble_ids
+                    saw_intact_span = True
+                # No tag or nibble survives outside a complete span.
+                inside = {p for start, end in spans for p in range(start, end + 1)}
+                for position, token in enumerate(ids):
+                    if position not in inside:
+                        assert token not in nibble_ids
+                        assert token != start_id and token != end_id
             pool = dataset._stream.metadata_pool
             for payload in list(pool):
                 if isinstance(payload, dict) and payload.get("n_dropped_truncation", 0) > 0:
                     saw_drop_counter = True
     assert saw_drop_counter, "expected the worker to count dropped mid-span instances"
+    assert saw_intact_span, "vacuous: no surviving sequence carried a span to check"
 
 
 def test_truncation_span_cut_detector() -> None:
@@ -554,7 +510,7 @@ def test_mixed_dataset_with_preprocessor_prompting_is_guarded(tokenizer: Tokeniz
     )
     with FlashANSRDataset(source=source, tokenizer=tokenizer, padding="zero",
                           preprocessor=preprocessor,
-                          constant_representation="ieee754_mixed") as dataset:
+                          ) as dataset:
         with pytest.raises(NotImplementedError):
             next(iter(dataset.iterate(steps=1, batch_size=2, preprocess=True)))
 

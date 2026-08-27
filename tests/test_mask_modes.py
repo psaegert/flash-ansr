@@ -17,7 +17,6 @@ from test_task_blocks import _iterate, _rows, _source, engine, tokenizer  # noqa
 
 from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.data.serialization import (
-    CONSTANT_REPRESENTATION_IEEE754_MIXED,
     MASK_ALL_TOKEN,
     MASK_FITTABLE_TOKEN,
     MASKED_CONSTANT_TOKEN,
@@ -90,16 +89,14 @@ class TestPerSlotPolicies:
         slots = fittable_slots(engine, list(concrete))
         assert sorted(slots) == [False, True, True]
 
-    def test_serializer_none_entries_consume_no_draws(self) -> None:
+    def test_serializer_keeps_none_entries_as_placeholders(self) -> None:
         tokens = ["+", "<constant>", "<constant>"]
-        out_a, num_a = serialize_constant_tokens(
-            tokens, [None, 2.5], representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-            rng=np.random.default_rng(7))
-        out_b, num_b = serialize_constant_tokens(
-            ["+", "<constant>"], [2.5], representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-            rng=np.random.default_rng(7))
+        out_a, num_a = serialize_constant_tokens(tokens, [None, 2.5])
+        out_b, num_b = serialize_constant_tokens(["+", "<constant>"], [2.5])
         assert out_a[1] == "<constant>" and math.isnan(num_a[1])
         assert out_a[2:] == out_b[1:]
+        # The kept value is a span, never a <float>: it is part of the expression.
+        assert out_a[2] == "<ieee754>" and "<float>" not in out_a
 
 
 class TestPredictConstantsBlock:
@@ -174,8 +171,7 @@ class TestOrderRandomization:
         orders = set()
         for batch in _iterate(tokenizer, steps=2, batch_size=16,
                               mask_block=_mask_cfg(p_mask_all=1.0),
-                              complexity_block={"p_present": 1.0, "p_nibbles": 0.0,
-                                                "p_hypothesize": 0.0},
+                              complexity_block={"p_present": 1.0, "p_hypothesize": 0.0},
                               predict_y_block={"p_present": 1.0, "p_conditional": 0.0,
                                                "min_n_support": 1}):
             for order in batch["block_order"]:
@@ -185,8 +181,7 @@ class TestOrderRandomization:
     def test_hypothesis_element_is_pinned_last(self, tokenizer) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         for batch in _iterate(tokenizer, steps=1, batch_size=16,
                               mask_block=_mask_cfg(p_mask_all=1.0),
-                              complexity_block={"p_present": 0.0, "p_nibbles": 0.0,
-                                                "p_hypothesize": 1.0}):
+                              complexity_block={"p_present": 0.0, "p_hypothesize": 1.0}):
             for order in batch["block_order"]:
                 assert order["prefix"][-1] == "complexity", \
                     "from the flag on, the pen is the model's until <expression>"
@@ -215,7 +210,6 @@ class TestConfigValidation:
     def test_malformed_blocks_refuse(self, tokenizer, bad) -> None:  # type: ignore[no-untyped-def]  # noqa: F811
         with pytest.raises(ValueError):
             FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                             constant_representation="ieee754_mixed",
                              target_dialect="tagged", mask_block=bad)
 
 
@@ -305,7 +299,7 @@ class TestAuditRegressions:
         import math as _math
         cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
         with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              target_dialect="tagged",
                               mask_block=cfg) as ds:
             for batch in ds.iterate(steps=2, batch_size=16):
                 vocab = list(tokenizer.vocab)
@@ -322,7 +316,7 @@ class TestAuditRegressions:
         # cut </expression>; surviving rows carry task channels at input length.
         cfg = _mask_cfg(p_mask_all=1.0)
         with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              target_dialect="tagged",
                               mask_block=cfg) as ds:
             pad_id = int(tokenizer["<pad>"])
             for batch in ds.iterate(steps=3, batch_size=16, max_seq_len=12):
@@ -344,7 +338,7 @@ class TestAuditRegressions:
         # infilling block: the values are unknowable from the prompt.
         cfg = _mask_cfg(p_partial=1.0, p_placeheld=1.0, p_predict_constants_partial=1.0)
         with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                              constant_representation="ieee754_mixed", target_dialect="tagged",
+                              target_dialect="tagged",
                               condition_dropout=1.0, mask_block=cfg) as ds:
             for batch in ds.iterate(steps=1, batch_size=16):
                 assert all(draw is None for draw in batch["predict_constants"])
@@ -354,5 +348,4 @@ class TestAuditRegressions:
     def test_explicit_dialect_refuses_mask_block(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
         with pytest.raises(ValueError, match="tagged"):
             FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                             constant_representation="ieee754_mixed",
                              target_dialect="explicit", mask_block=_mask_cfg(p_mask_all=1.0))

@@ -8,6 +8,5 @@ source:
     noise: 0.0
 tokenizer: './tokenizer.yaml'
 padding: 'zero'
-constant_representation: 'ieee754_mixed'
 target_dialect: 'tagged'
 condition_dropout: 0.1

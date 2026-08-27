@@ -17,11 +17,9 @@ source:
         magnitude: [3.0, 100.0]
 tokenizer: './tokenizer.yaml'
 padding: 'zero'
-constant_representation: 'ieee754_mixed'
 target_dialect: 'tagged'
 complexity_block:
   p_present: 0.4
-  p_nibbles: 0.5
   p_hypothesize: 0.2
 predict_y_block:
   p_present: 0.3333333333333333

@@ -11,8 +11,7 @@ from flash_ansr.train.train import Trainer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, nibble_tokens_to_float32
 
-COMPLEXITY_NIBBLES = {"p_present": 1.0, "p_nibbles": 1.0, "p_hypothesize": 0.0}
-COMPLEXITY_FLOAT = {"p_present": 1.0, "p_nibbles": 0.0, "p_hypothesize": 0.0}
+COMPLEXITY_FLOAT = {"p_present": 1.0, "p_hypothesize": 0.0}
 PREDICT_A = {"p_present": 1.0, "p_conditional": 0.0, "min_n_support": 1}
 PREDICT_B = {"p_present": 1.0, "p_conditional": 1.0, "min_n_support": 1}
 
@@ -63,7 +62,6 @@ def _source():  # type: ignore[no-untyped-def]
 
 def _iterate(tokenizer, steps=2, batch_size=8, **blocks):  # type: ignore[no-untyped-def]
     with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed",
                           target_dialect="tagged", **blocks) as dataset:
         for batch in dataset.iterate(steps=steps, batch_size=batch_size):
             yield dataset.collate(batch, device=torch.device("cpu"))
@@ -75,27 +73,6 @@ def _rows(batch, tokenizer):  # type: ignore[no-untyped-def]
         ids = batch["input_ids"][row].tolist()
         tokens = [vocab[i] for i in ids]
         yield row, tokens
-
-
-def test_complexity_nibbles_block(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
-    for batch in _iterate(tokenizer, complexity_block=COMPLEXITY_NIBBLES):
-        assert "task_mask" in batch and batch["task_mask"].dtype == torch.bool
-        for row, tokens in _rows(batch, tokenizer):
-            assert tokens[:3] == ["<bos>", "<complexity>", "<ieee754>"]
-            nibbles = tokens[3:3 + IEEE754_N_NIBBLES]
-            assert tokens[3 + IEEE754_N_NIBBLES:3 + IEEE754_N_NIBBLES + 3] == \
-                ["</ieee754>", "</complexity>", "<expression>"]
-            mu = batch["complexity_mu"][row]
-            assert nibble_tokens_to_float32(nibbles) == float(np.float32(mu))
-            assert batch["complexity_variant"][row] == "nibbles"
-            # mu is the masked target's complexity, recomputable from the streamed skeleton
-            assert mu == engine.complexity(list(batch["skeleton"][row]))
-            # loss discipline: openers/selectors masked, nibbles + closers supervised
-            mask = batch["task_mask"][row].tolist()
-            assert mask[1] and mask[2], "opener and selector must be loss-masked"
-            assert not any(mask[3:3 + IEEE754_N_NIBBLES]), "nibbles are supervised"
-            assert not mask[3 + IEEE754_N_NIBBLES] and not mask[4 + IEEE754_N_NIBBLES], \
-                "closing tags are supervised"
 
 
 def test_complexity_float_block_rides_the_numeric_channel(tokenizer) -> None:  # type: ignore[no-untyped-def]
@@ -186,7 +163,7 @@ def test_complexity_prefix_for_generation(tokenizer, engine) -> None:  # type: i
 
 
 def test_task_segments_label_the_blocks(tokenizer) -> None:  # type: ignore[no-untyped-def]
-    for batch in _iterate(tokenizer, complexity_block=COMPLEXITY_NIBBLES, predict_y_block=PREDICT_A):
+    for batch in _iterate(tokenizer, complexity_block=COMPLEXITY_FLOAT, predict_y_block=PREDICT_A):
         assert batch["task_segments"].dtype == torch.long
         for row, tokens in _rows(batch, tokenizer):
             segments = batch["task_segments"][row].tolist()
@@ -220,9 +197,9 @@ def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # t
     from flash_ansr.train.train import _ce_split_metrics
 
     with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed", target_dialect="tagged",
+                          target_dialect="tagged",
                           condition_dropout=0.5,
-                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0, "p_hypothesize": 0.0},
+                          complexity_block={"p_present": 0.5, "p_hypothesize": 0.0},
                           predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}) as ds:
         for batch in ds.iterate(steps=1, batch_size=32):
             batch = ds.collate(batch, device=torch.device("cpu"))
@@ -260,7 +237,7 @@ def test_ce_split_metrics_cross_tasks_with_conditioning(tokenizer) -> None:  # t
             assert n_uncond_blocks > 0, "no unconditioned instance carried a block to check"
 
 
-HYPOTHESIS_ONLY = {"p_present": 0.0, "p_nibbles": 1.0, "p_hypothesize": 1.0}
+HYPOTHESIS_ONLY = {"p_present": 0.0, "p_hypothesize": 1.0}
 
 
 def test_hypothesis_mode_supervises_the_whole_block_after_the_flag(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
@@ -282,16 +259,16 @@ def test_hypothesis_mode_supervises_the_whole_block_after_the_flag(tokenizer, en
 def test_hypothesis_config_validation(tokenizer) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError, match="exceed"):
         FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed", target_dialect="tagged",
-                         complexity_block={"p_present": 0.6, "p_nibbles": 0.5, "p_hypothesize": 0.6})
+                         target_dialect="tagged",
+                         complexity_block={"p_present": 0.6, "p_hypothesize": 0.6})
     with pytest.raises(ValueError, match="p_hypothesize"):
         FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed", target_dialect="tagged",
-                         complexity_block={"p_present": 1.0, "p_nibbles": 1.0})  # missing key
+                         target_dialect="tagged",
+                         complexity_block={"p_present": 1.0})  # missing key
     old_tokenizer = Tokenizer.from_config(load_config(get_path("configs", "v24.0-T13", "tokenizer.yaml")))
     with pytest.raises(ValueError, match="hypothesize"):
         FlashANSRDataset(source=_source(), tokenizer=old_tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed", target_dialect="tagged",
+                         target_dialect="tagged",
                          complexity_block=HYPOTHESIS_ONLY)
 
 
@@ -311,9 +288,9 @@ def test_ce_split_anchor_is_the_cross_arm_common_ground(tokenizer) -> None:  # t
     from flash_ansr.train.train import _ce_split_metrics
 
     with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed", target_dialect="tagged",
+                          target_dialect="tagged",
                           condition_dropout=0.5,
-                          complexity_block={"p_present": 0.5, "p_nibbles": 1.0, "p_hypothesize": 0.0},
+                          complexity_block={"p_present": 0.5, "p_hypothesize": 0.0},
                           predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}) as ds:
         for batch in ds.iterate(steps=1, batch_size=32):
             batch = ds.collate(batch, device=torch.device("cpu"))
@@ -349,3 +326,14 @@ def test_ce_split_anchor_exists_in_base_shaped_batches() -> None:
     parts = _ce_split_metrics({"labels": labels}, logits, ignore_index=9)
     assert "expression/anchor" in parts
     assert parts["expression/anchor"][1] == int((labels != 9).sum())
+
+
+def test_a_prompted_complexity_is_never_spelled_in_bytes(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """Owner ruling 2026-08-27: bytes are for what the model PREDICTS. A complexity the
+    caller states is compact, always -- the prompted-nibbles variant is gone, so the model
+    never sees a byte span it was not asked to author."""
+    for batch in _iterate(tokenizer, complexity_block={"p_present": 1.0, "p_hypothesize": 0.0}):
+        for row, tokens in _rows(batch, tokenizer):
+            assert batch["complexity_variant"][row] == "float"
+            assert tokens[1:4] == ["<complexity>", "<float>", "</complexity>"]
+            assert "<hypothesize>" not in tokens

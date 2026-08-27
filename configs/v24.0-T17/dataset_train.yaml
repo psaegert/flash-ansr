@@ -29,12 +29,10 @@ source:
         min_count: 1                        # Hoeting, Raftery & Madigan 1996
 tokenizer: './tokenizer.yaml'
 padding: 'zero'
-constant_representation: 'ieee754_mixed'
 target_dialect: 'tagged'
 condition_dropout: 0.1
 complexity_block:
   p_present: 0.4
-  p_nibbles: 0.5
   p_hypothesize: 0.2
 # Promptable masking + constant infilling (owner rulings 2026-08-24, audited):
 # flags 5/5/90 all/fittable/unmasked; partial on 10% of unflagged instances with

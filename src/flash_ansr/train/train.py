@@ -313,30 +313,6 @@ def _binary_auprc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     return float((precision * hits).sum() / hits.sum())
 
 
-def _detach_raw_batch(batch: "dict[str, Any]") -> "dict[str, Any]":
-    """Copy the raw-batch fields the paired constant eval reads, off the worker ring.
-
-    ``FlashANSRDataset.iterate`` yields tensors that VIEW the streaming pool's shared-memory
-    ring: they are valid only until the pool refills that block. Holding the reference and
-    reading it after the loop dereferences unmapped memory -- a hard SIGSEGV, reproducible in
-    twenty lines (keep batch 0, iterate twice, read ``batch["x_tensors"][0]``). The paired
-    eval is the only consumer that outlives its batch, so it takes a copy at capture time.
-    """
-    kept: dict[str, Any] = {}
-    for key in ("skeleton", "constants", "x_tensors", "y_tensors", "data_attn_mask"):
-        value = batch.get(key)
-        if value is None:
-            continue
-        if torch.is_tensor(value):
-            kept[key] = value.detach().clone()
-        elif isinstance(value, (list, tuple)):
-            kept[key] = [item.detach().clone() if torch.is_tensor(item) else copy.deepcopy(item)
-                         for item in value]
-        else:
-            kept[key] = copy.deepcopy(value)
-    return kept
-
-
 class Trainer:
     """Manage end-to-end training for a ``FlashANSRModel``.
 
@@ -1065,11 +1041,6 @@ class Trainer:
         """
         self.model.train()
 
-        # kept for the SYMMETRIC train-side paired-constant eval at validation time (owner ruling:
-        # every val metric has a train counterpart and vice versa). COPIED off the worker ring:
-        # the raw tensors are views the pool recycles (see _detach_raw_batch).
-        self._last_raw_train_batch = _detach_raw_batch(batch)
-
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
         total_residual_loss = 0.0
@@ -1271,7 +1242,6 @@ class Trainer:
         val_residual_count_nonzero = 0.0
         val_task_ce_sums: dict[str, list[float]] = {}
         val_split_ce_sums: dict[str, list[float]] = {}
-        first_raw_batch: dict[str, Any] | None = None
 
         with torch.no_grad():
             if size is None:
@@ -1287,11 +1257,6 @@ class Trainer:
                     preprocess_in_worker=worker_preprocess,
                     num_workers=self.num_workers,
                     max_seq_len=self.decoder_max_seq_len):
-                if first_raw_batch is None:
-                    # Kept RAW (pre-collate) for the paired constant-span eval below: it rebuilds
-                    # both serialization views from the skeleton/constants metadata. COPIED, never
-                    # referenced -- the tensors view the worker ring (see _detach_raw_batch).
-                    first_raw_batch = _detach_raw_batch(batch)
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
                 self._apply_task_mask(batch)
@@ -1351,28 +1316,6 @@ class Trainer:
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
 
-        # T12: the paired constant-span eval on real validation data (mixed representation only).
-        # Acceptance mirrors the pilot's prediction: gap ~ 0 under per-constant mixing.
-        paired_metrics = None
-        train_paired_metrics: dict[str, float] | None = None
-        if (first_raw_batch is not None
-                and getattr(self.val_dataset, "constant_representation", None) == "ieee754_mixed"):
-            from flash_ansr.train.paired_eval import paired_constant_gap
-            paired_metrics = paired_constant_gap(
-                self.model, self.val_dataset.tokenizer, first_raw_batch,
-                device=self.device, max_seq_len=self.decoder_max_seq_len)
-            # Symmetric train-side eval on the last raw TRAIN batch (no extra sampling):
-            # logged as train_ce_constant_* beside the val_ce_constant_* keys at the same
-            # step. Carried via the unprefixed extra channel -- paired_metrics keys get a
-            # val_ prefix downstream.
-            last_train_batch = getattr(self, "_last_raw_train_batch", None)
-            if last_train_batch is not None:
-                train_paired = paired_constant_gap(
-                    self.model, self.train_dataset.tokenizer, last_train_batch,
-                    device=self.device, max_seq_len=self.decoder_max_seq_len)
-                if train_paired is not None:
-                    train_paired_metrics = {f"train_{key}": value for key, value in train_paired.items()}
-
         outlier_metrics: dict[str, float] | None = None
         if val_task_ce_sums:
             outlier_metrics = {f"val_ce_{name}": ce_sum / count
@@ -1415,14 +1358,12 @@ class Trainer:
             val_composite = val_composite + self.residual_loss_weight * outlier_metrics["val_residual_loss"]
         outlier_metrics = dict(outlier_metrics or {})
         outlier_metrics["val_loss"] = val_composite
-        if train_paired_metrics:
-            outlier_metrics.update(train_paired_metrics)
 
         # Log averaged validation metrics (positional when the feature is off, see _log_metrics)
         if outlier_metrics is not None:
-            self._log_validation_metrics(step, avg_val_ce_loss, paired_metrics, extra=outlier_metrics)
+            self._log_validation_metrics(step, avg_val_ce_loss, extra=outlier_metrics)
         else:
-            self._log_validation_metrics(step, avg_val_ce_loss, paired_metrics)
+            self._log_validation_metrics(step, avg_val_ce_loss)
 
     def _save_checkpoint(self, step: int, checkpoint_directory: str) -> None:
         """Persist model weights, optimiser state, and config for ``step``.
@@ -1547,7 +1488,6 @@ class Trainer:
         wandb.log(log_data, step=step)  # type: ignore
 
     def _log_validation_metrics(self, step: int, val_ce_loss: float,
-                                paired_metrics: "dict[str, float] | None" = None,
                                 extra: "dict[str, float] | None" = None) -> None:
         """Submit aggregated validation metrics to Weights & Biases.
 
@@ -1557,16 +1497,10 @@ class Trainer:
             Global training step the metrics correspond to.
         val_ce_loss : float
             Mean validation cross-entropy loss.
-        paired_metrics : dict or None, optional
-            The T12 paired constant-span eval (``ce_constant_gap``/``ce_constant_n``/
-            per-view per-nibble CEs), logged under ``val_`` keys when the mixed
-            representation is active.
         """
         log_data = {
             "val_ce_loss": val_ce_loss,
         }
-        if paired_metrics is not None:
-            log_data.update({f"val_{key}": value for key, value in paired_metrics.items()})
         if extra:
             log_data.update(extra)
         wandb.log(log_data, step=step)  # type: ignore

@@ -89,7 +89,7 @@ def _placeholder_source():  # type: ignore[no-untyped-def]
 def test_unknown_target_dialect_rejected(v24_tokenizer: Tokenizer) -> None:
     with pytest.raises(ValueError, match="target_dialect"):
         FlashANSRDataset(source=_placeholder_source(), tokenizer=v24_tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed", target_dialect="prefix")
+                         target_dialect="prefix")
 
 
 def test_tagged_requires_the_delimiter_tokens() -> None:
@@ -102,7 +102,7 @@ def test_tagged_requires_the_delimiter_tokens() -> None:
     )
     with pytest.raises(ValueError, match="<add>"):
         FlashANSRDataset(source=_placeholder_source(), tokenizer=tokenizer, padding="zero",
-                         constant_representation="ieee754_mixed", target_dialect="tagged")
+                         target_dialect="tagged")
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,6 @@ def test_tagged_streaming_end_to_end(v24_tokenizer: Tokenizer) -> None:
     saw_delimiter = False
     n_expanded = n_compact = 0
     with FlashANSRDataset(source=_placeholder_source(), tokenizer=v24_tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed",
                           target_dialect="tagged") as dataset:
         for batch in dataset.iterate(steps=3, batch_size=16):
             for row, numeric, skeleton, expression in zip(
@@ -201,4 +200,6 @@ def test_tagged_streaming_end_to_end(v24_tokenizer: Tokenizer) -> None:
                 assert any(op in expression for op in EXPLICIT_OPERATORS)
 
     assert saw_delimiter, "no tagged delimiter ever appeared -- the stream is not tagged"
-    assert n_expanded > 0 and n_compact > 0
+    # Every constant is a span and NO expression carries a compact <float>, in the tagged
+    # dialect exactly as in the explicit one (owner ruling 2026-08-27).
+    assert n_expanded > 0 and n_compact == 0

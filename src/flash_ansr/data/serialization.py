@@ -1,20 +1,17 @@
-"""Constant serialization for training sequences (the ``constant_representation`` gate).
+"""Constant serialization for training sequences.
 
-``'ieee754_mixed'``, the only representation, replaces each constant occurrence -- per
-constant independently with probability ``expanded_probability`` (default 0.5, seeded RNG)
--- with one of two forms:
+Every constant occurrence becomes an ``<ieee754>`` span: the open tag, 8 hex-nibble
+tokens, the close tag. The numeric channel is NaN across the whole span -- the value
+lives in the nibbles.
 
-* EXPANDED (10 tokens): ``<ieee754>`` + 8 hex-nibble tokens + ``</ieee754>``; the numeric channel
-  is NaN across the whole span (the value lives in the nibbles).
-* COMPACT (1 token): the existing ``<float>`` special token, with the float32 value on the
-  numeric channel at that position. The label at positions whose TARGET is ``<float>`` is
-  loss-masked downstream (:func:`flash_ansr.data.collate.mask_float_targets`): the model must
-  never be trained to emit ``<float>``; the token exists so histories can carry compacted
-  constants (at inference the model emits bits and the pipeline compacts them).
+There is no second form. Under the owner's 2026-08-27 ruling a number the model PREDICTS
+is spelled in bits everywhere, and the constants of an expression are predicted. The
+compact ``<float>`` token survives for the numbers a CALLER supplies -- ``predict_y``'s x
+coordinates, a prompted complexity -- and is forbidden inside an expression, so a history
+the model conditions on never carries a spelling it was not trained to continue from.
 
 Non-finite constants raise at serialization time -- assert, don't assume.
 """
-import struct
 import math
 import re
 from typing import Sequence
@@ -74,10 +71,6 @@ PREDICT_CONSTANTS_END_TOKEN = "</predict_constants>"
 PREDICT_CONSTANTS_TOKENS = (PREDICT_CONSTANTS_START_TOKEN, PREDICT_CONSTANTS_END_TOKEN)
 COMPLEXITY_TOKENS = (COMPLEXITY_START_TOKEN, COMPLEXITY_END_TOKEN)
 
-#: Legal values of the ``constant_representation`` config key.
-CONSTANT_REPRESENTATION_IEEE754_MIXED = "ieee754_mixed"
-CONSTANT_REPRESENTATIONS = (CONSTANT_REPRESENTATION_IEEE754_MIXED,)
-
 #: The tagged canonical dialect's delimiter set (verified against a live generation-2
 #: engine by the v24 template tests). ``<sub>`` and ``<div>`` are role markers inside
 #: their enclosing bag, not paired tags.
@@ -101,14 +94,8 @@ def _is_constant_placeholder(token: str) -> bool:
 def serialize_constant_tokens(
     tokens: Sequence[str],
     constants: "Sequence[float] | np.ndarray",
-    *,
-    representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
-    rng: np.random.Generator | None = None,
-    expanded_probability: float = 0.5,
-    expanded_mask: "Sequence[bool] | None" = None,
-    zero_tail_bits: int = 0,
 ) -> tuple[list[str], list[float]]:
-    """Serialize the constant placeholders of a token sequence under ``representation``.
+    """Serialize the constant placeholders of a token sequence into ``<ieee754>`` spans.
 
     Parameters
     ----------
@@ -117,50 +104,23 @@ def serialize_constant_tokens(
     constants : Sequence[float or None]
         The fitted values, one per placeholder occurrence, in order. A ``None`` entry
         KEEPS that occurrence as a literal ``<constant>`` placeholder (nan on the
-        numeric channel, no rng draw consumed) -- the promptable-mask target format,
-        where the policy's placeholders survive serialization while kept structural
-        literals still ride the ieee754 spelling.
-    representation : str, default 'ieee754_mixed'
-        ``'ieee754_mixed'`` applies the per-constant 50/50 expanded/compact mixing.
-    rng : numpy.random.Generator, optional
-        The (seeded) RNG driving the per-constant coin flips. Required for
-        ``'ieee754_mixed'``.
-    expanded_probability : float, default 0.5
-        Probability that a constant is serialized in EXPANDED form.
-    expanded_mask : Sequence[bool], optional
-        Force the per-constant form: ``True`` = expanded span, ``False`` = compact
-        ``<float>``. One entry per placeholder, in order. When given, NO rng draws are
-        consumed (the paired T12 eval builds both views of one instance this way).
-    zero_tail_bits : int, default 0
-        Zero the lowest ``n`` mantissa bits of the float32 in the EXPANDED span
-        spelling (the pilot's D-arm tail policy; the T13 re-check compares 0 vs 16).
-        The compact form's numeric-channel value keeps full float32 precision.
+        numeric channel) -- the promptable-mask target format, where the policy's
+        placeholders survive serialization while kept structural literals still ride
+        the ieee754 spelling.
 
     Returns
     -------
     tuple[list[str], list[float]]
         ``(serialized_tokens, numeric_values)`` where ``numeric_values`` is aligned per
-        OUTPUT token: NaN everywhere except at compact ``<float>`` positions, which carry
-        the float32 constant value.
+        OUTPUT token and is NaN throughout: no expression token carries a value on the
+        numeric channel.
 
     Raises
     ------
     ValueError
-        On an unknown representation, a missing RNG for the mixed representation, a
-        placeholder/constants count mismatch, or a non-finite constant.
+        On a placeholder/constants count mismatch, or a non-finite constant.
     """
-    if representation not in CONSTANT_REPRESENTATIONS:
-        raise ValueError(
-            f"Unknown constant_representation {representation!r}; expected one of {CONSTANT_REPRESENTATIONS}."
-        )
-
     tokens = list(tokens)
-
-    if rng is None and expanded_mask is None:
-        raise ValueError("The 'ieee754_mixed' representation requires a (seeded) rng "
-                         "(or an explicit expanded_mask).")
-    if not 0 <= zero_tail_bits <= 23:
-        raise ValueError(f"zero_tail_bits must lie in the float32 mantissa (0..23), got {zero_tail_bits}.")
 
     values = [None if value is None else float(value) for value in constants]
     n_placeholders = sum(1 for token in tokens if _is_constant_placeholder(token))
@@ -168,11 +128,6 @@ def serialize_constant_tokens(
         raise ValueError(
             f"Constant count mismatch: {n_placeholders} placeholder(s) in {tokens!r} but "
             f"{len(values)} value(s)."
-        )
-    if expanded_mask is not None and len(expanded_mask) != n_placeholders:
-        raise ValueError(
-            f"expanded_mask length mismatch: {n_placeholders} placeholder(s) but "
-            f"{len(expanded_mask)} mask entrie(s)."
         )
 
     serialized: list[str] = []
@@ -188,7 +143,7 @@ def serialize_constant_tokens(
         value = values[constant_index]
         constant_index += 1
         if value is None:
-            # The policy's placeholder: it IS the target token. No coin flip, no span.
+            # The policy's placeholder: it IS the target token. No span.
             serialized.append(token)
             numeric.append(float("nan"))
             continue
@@ -197,32 +152,10 @@ def serialize_constant_tokens(
                 f"Non-finite constant {value!r} at placeholder {constant_index - 1}: the data "
                 f"generator must never emit inf/nan constants."
             )
-        value32 = float(np.float32(value))
-
-        if expanded_mask is not None:
-            expand = bool(expanded_mask[constant_index - 1])
-        else:
-            assert rng is not None  # narrowed by the guard above
-            expand = bool(rng.random() < expanded_probability)
-
-        if expand:
-            span_value = value32
-            if zero_tail_bits:
-                # D-arm tail policy: zero the low mantissa bits of the SPELLING only.
-                pattern = int.from_bytes(struct.pack(">f", np.float32(span_value)), "big")
-                pattern &= ~((1 << zero_tail_bits) - 1)
-                span_value = float(struct.unpack(">f", pattern.to_bytes(4, "big"))[0])
-            span = wrap_float32(span_value)  # raises if the value overflowed float32 to non-finite
-            serialized.extend(span)
-            numeric.extend([float("nan")] * len(span))
-        else:
-            if not math.isfinite(value32):
-                raise ValueError(
-                    f"Constant {value!r} overflows float32 ({value32!r}); non-finite constants "
-                    f"must never be serialized."
-                )
-            serialized.append(COMPACT_CONSTANT_TOKEN)
-            numeric.append(value32)
+        # raises if the value overflowed float32 to non-finite
+        span = wrap_float32(float(np.float32(value)))
+        serialized.extend(span)
+        numeric.extend([float("nan")] * len(span))
 
     return serialized, numeric
 

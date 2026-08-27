@@ -61,7 +61,6 @@ def _source(noise):  # type: ignore[no-untyped-def]
 def _iterate(noise, steps=2, batch_size=8):  # type: ignore[no-untyped-def]
     tokenizer = Tokenizer.from_config(load_config(get_path("configs", "v24-template", "tokenizer.yaml")))
     with FlashANSRDataset(source=_source(noise), tokenizer=tokenizer, padding="zero",
-                          constant_representation="ieee754_mixed",
                           target_dialect="tagged") as dataset:
         yield from dataset.iterate(steps=steps, batch_size=batch_size)
 

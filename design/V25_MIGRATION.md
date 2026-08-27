@@ -8,6 +8,63 @@ S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164). N
 float32-representable values in float64 containers -- self-consistent, but not the target
 format, and a checkpoint trained there would be neither v24 nor v25.
 
+### The numeric-representation doctrine — RULED 2026-08-27
+
+**A number's spelling follows its PRODUCER, not its kind.**
+
+* The model predicts it → an `<ieee754>` byte span, **always**. Expression constants,
+  `<predict_y>`'s y\*, `<predict_constants>`' values, and (when it lands) the residual.
+* The caller supplies it → the compact `<float>` token, value on the numeric channel.
+  `<predict_y>`'s x coordinates, a prompted complexity.
+* A quantity that can be either — complexity today; noise sigma, outlier rate and the
+  surrogate fit-error predictor when they land — carries **both** forms, selected by which
+  side of `<hypothesize>` it sits on.
+
+Two coin flips die with this. The per-constant 50/50 expanded/compact mixing in
+`serialize_constant_tokens`, and `p_nibbles`, which spelled a *prompted* complexity in bytes
+half the time. Both put a spelling in the model's history that it was never trained to
+author, which is precisely the out-of-distribution hazard T12 was built to detect.
+
+**T12 dies with the mixing.** `paired_eval.py` measured the NLL gap between an
+expanded-history view and a compact-history view of one instance. There is no compact view
+of an emitted constant any more. Gone: the module, `tests/test_paired_constant_eval.py`, the
+train-loop wiring, `_detach_raw_batch` and `tests/test_data/test_raw_batch_lifetime.py`
+(the ring-view hazard it guarded is now documented at the source, in `data.py`'s
+`outlier_mask` clone).
+
+**In-decode compaction dies too**, in every path — there is nothing left to compact. With it
+goes the per-row decode position, so the static loop is back to a scalar.
+
+**`<float>` stays in the vocabulary.** It is load-bearing for the supplied numbers, it stays
+forbidden at every generation position (`constrained.py:102`), and its targets stay
+loss-masked (`collate.mask_float_targets`). Every remaining `<float>` is harness-owned.
+
+**What this does NOT touch:** the encoder data channel. X/y reach the encoder through
+`float_to_ieee754_bits`, not through tokens; compaction was never involved there.
+
+### The `<hypothesize>` boundary — RULED 2026-08-27
+
+Everything before `<hypothesize>` is given (compact), everything after is the model's
+(bytes); a property given before it may not recur after it; at inference, generation starts
+after `<hypothesize>` when present and after `<expression>` when not.
+
+**The boundary governs PROPERTIES, not task blocks.** `<predict_y>` and `<predict_residual>`
+are query/answer blocks and are exempt: inside them the loss mask decides the spelling, so a
+force-fed x stays compact wherever the block sits, and the supervised answer is bytes. The
+positional rule applies to the scalar attributes -- complexity today, noise sigma and the
+outlier rate when they land.
+
+`streaming.py:810-814` already permutes the given prefix elements and appends the hypothesis
+element last, so the layout exists for one property. What is missing: extracting
+`<hypothesize>` from inside the complexity block into a standalone boundary marker; relaxing
+the mutually-exclusive `n_modes` guard at `flash_ansr_model.py:631`, which today forbids
+exactly the given-plus-hypothesize combination the rule licenses; and enforcing
+non-recurrence in the decode grammar.
+
+**The conflict:** `<predict_y>`'s x is *given* (force-fed, loss-masked) but sits in the
+suffix, after the boundary. Read strictly, the rule spells it in bytes — 18 dims x 10 tokens
+to write numbers the model never predicts.
+
 ### Q5, Q6, Q8 — RULED 2026-08-27
 
 **Q5 (beam expansion) — dropped, not solved.** "Let's not worry about beam search and mcts."
@@ -17,8 +74,8 @@ the two beam loops, so removing them (below) deletes it outright.
 **Q6 (`constant_representation` string) — no rename.** `ieee754_mixed` stays. The required-token
 gate at `data.py:158-164` is the real lock and it gets stronger for free: under bytes it demands
 `<b00>`..`<bff>`, so a stale nibble tokenizer fails at dataset construction naming the missing
-tokens. A rename buys nothing and breaks `train.py:1359`, an EQUALITY test that silently deletes
-the whole T12 paired constant eval.
+tokens. A rename buys nothing. (The `train.py:1359` equality test that made a rename dangerous is
+itself gone -- it gated the T12 paired eval, which the 2026-08-27 doctrine retires.)
 
 **Q8 (`tail_zero_bits`) — DELETED, not re-pinned.** The knob zeroes the low mantissa bits of the
 constant's spelling in the expanded span. That is a TRAINING-time precision reduction, and the

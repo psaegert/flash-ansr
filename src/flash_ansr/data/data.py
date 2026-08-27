@@ -24,8 +24,6 @@ from flash_ansr.data.serialization import (
     PREDICT_CONSTANTS_TOKENS,
     COMPLEXITY_TOKENS,
     PREDICT_Y_TOKENS,
-    CONSTANT_REPRESENTATION_IEEE754_MIXED,
-    CONSTANT_REPRESENTATIONS,
     COMPACT_CONSTANT_TOKEN,
     TAGGED_DELIMITER_TOKENS,
     TARGET_DIALECT_EXPLICIT,
@@ -114,10 +112,8 @@ class FlashANSRDataset:
         padding: Literal["random", "zero"],
         preprocessor: FlashANSRPreprocessor | None = None,
         unconditional_prob: float = 0.0,
-        constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
         condition_dropout: float | None = None,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
-        tail_zero_bits: int = 0,
         complexity_block: "dict[str, Any] | None" = None,
         predict_y_block: "dict[str, Any] | None" = None,
         mask_block: "dict[str, Any] | None" = None,
@@ -147,22 +143,15 @@ class FlashANSRDataset:
             self.unconditional_prob = condition_dropout
         else:
             self.unconditional_prob = float(unconditional_prob)
-        # Constants representation: 'ieee754_mixed' serializes constants per-constant 50/50 as
-        # expanded <ieee754> hex-nibble spans or compact <float> tokens (see
-        # flash_ansr.data.serialization). It is the only representation this generation serves.
-        if constant_representation not in CONSTANT_REPRESENTATIONS:
-            raise ValueError(
-                f"Unknown constant_representation {constant_representation!r}; "
-                f"expected one of {CONSTANT_REPRESENTATIONS}."
-            )
+        # Expression constants ride <ieee754> spans; <float> carries the numbers the CALLER
+        # supplies (predict_y's x, a prompted complexity). Both token sets are required.
         required_tokens = (*IEEE754_SPECIAL_TOKENS, COMPACT_CONSTANT_TOKEN)
         missing_tokens = [token for token in required_tokens if token not in tokenizer]
         if missing_tokens:
             raise ValueError(
-                f"constant_representation 'ieee754_mixed' requires the special tokens "
+                f"the v24 numeric format requires the special tokens "
                 f"{list(required_tokens)}, but the tokenizer is missing {missing_tokens}."
             )
-        self.constant_representation = constant_representation
         # Target-dialect gate: 'explicit' (default) targets the binary-prefix expression;
         # 'tagged' targets the engine's TAGGED CANONICAL output (contract A3) and requires
         # the tagged delimiter tokens in the tokenizer.
@@ -179,18 +168,13 @@ class FlashANSRDataset:
                     f"{missing_delimiters}."
                 )
         self.target_dialect = target_dialect
-        # D-arm tail policy (pinned by the configuration freeze pending the T13 re-check):
-        # zero the low n mantissa bits of every EXPANDED span spelling. 0 = full precision.
-        if not 0 <= int(tail_zero_bits) <= 23:
-            raise ValueError(f"tail_zero_bits must lie in the float32 mantissa (0..23), got {tail_zero_bits}.")
-        self.tail_zero_bits = int(tail_zero_bits)
-        # v24 task blocks (owner ruling 2026-08-24): the optional <complexity> block
-        # (50/25/25 absent/nibbles/<float> at the ruled priors) and the <predict_y>
-        # auxiliary block. Both ride the mixed-constants machinery, so they require
-        # 'ieee754_mixed', the expression wrappers, and their block tokens up front.
+        # v24 task blocks (owner ruling 2026-08-24): the optional <complexity> block and the
+        # <predict_y> auxiliary block, requiring the expression wrappers and their block
+        # tokens up front. A PROMPTED complexity is compact, a HYPOTHESIZED one is spelled
+        # in bits, and no instance carries both (owner ruling 2026-08-27).
         self.complexity_block = _validate_task_block(
             complexity_block, name="complexity_block",
-            probability_keys=("p_present", "p_nibbles", "p_hypothesize"))
+            probability_keys=("p_present", "p_hypothesize"))
         if self.complexity_block is not None:
             if self.complexity_block["p_present"] + self.complexity_block["p_hypothesize"] > 1.0:
                 raise ValueError("complexity_block: p_present + p_hypothesize must not exceed 1.0 "
@@ -245,9 +229,7 @@ class FlashANSRDataset:
             source=source,
             tokenizer=tokenizer,
             padding=padding,
-            constant_representation=constant_representation,
             target_dialect=target_dialect,
-            tail_zero_bits=int(tail_zero_bits),
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
             mask_block=self.mask_block,
@@ -372,11 +354,9 @@ class FlashANSRDataset:
             padding=config_["padding"],
             preprocessor=preprocessor,
             unconditional_prob=config_.get("unconditional_prob", 0.0),
-            constant_representation=config_.get("constant_representation", CONSTANT_REPRESENTATION_IEEE754_MIXED),
             # v24 canonical key for the same probability; the constructor rejects a conflict.
             condition_dropout=config_.get("condition_dropout"),
             target_dialect=config_.get("target_dialect", TARGET_DIALECT_EXPLICIT),
-            tail_zero_bits=config_.get("tail_zero_bits", 0),
             complexity_block=config_.get("complexity_block"),
             predict_y_block=config_.get("predict_y_block"),
             mask_block=config_.get("mask_block"),
@@ -817,9 +797,10 @@ class FlashANSRDataset:
                     batch_dict["outlier_mask"] = torch.from_numpy(
                         self._stream.buffers["outlier_mask"][completed_slot_idx]).to(torch.bool)
                     # clone(), NOT .to(): a same-dtype cast is a no-op that would hand back a
-                    # VIEW onto the worker ring, which the pool recycles on refill (see
-                    # train._detach_raw_batch). outlier_mask escapes this only because its bool
-                    # cast copies.
+                    # VIEW onto the worker ring, which the pool recycles on refill --
+                    # dereferencing one after the next batch is a hard SIGSEGV, not an
+                    # exception. Anything that outlives its batch must COPY. outlier_mask
+                    # escapes this only because its bool cast copies.
                     batch_dict["residual"] = torch.from_numpy(
                         self._stream.buffers["residual"][completed_slot_idx]).clone()
                 batch_dict.update(metadata_fields)

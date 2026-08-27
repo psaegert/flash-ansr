@@ -23,7 +23,6 @@ from flash_ansr.data.serialization import (
     PREDICT_CONSTANTS_START_TOKEN,
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
-    CONSTANT_REPRESENTATION_IEEE754_MIXED,
     POINT_END_TOKEN,
     POINT_START_TOKEN,
     PREDICT_Y_END_TOKEN,
@@ -87,9 +86,7 @@ class WorkerConfig:
     max_seq_len: int
     preprocessor_prompt_config: dict[str, Any] | None
     unconditional_prob: float = 0.0
-    constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED
     target_dialect: str = TARGET_DIALECT_EXPLICIT
-    tail_zero_bits: int = 0
     complexity_block: dict[str, Any] | None = None
     predict_y_block: dict[str, Any] | None = None
     mask_block: dict[str, Any] | None = None
@@ -104,9 +101,7 @@ class SharedMemoryWorkerPool:
         source: ProblemSource,
         tokenizer: Tokenizer,
         padding: Literal["random", "zero"],
-        constant_representation: str = CONSTANT_REPRESENTATION_IEEE754_MIXED,
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
-        tail_zero_bits: int = 0,
         complexity_block: dict[str, Any] | None = None,
         predict_y_block: dict[str, Any] | None = None,
         mask_block: dict[str, Any] | None = None,
@@ -114,9 +109,7 @@ class SharedMemoryWorkerPool:
         self.source = source
         self.tokenizer = tokenizer
         self.padding = padding
-        self.constant_representation = constant_representation
         self.target_dialect = target_dialect
-        self.tail_zero_bits = tail_zero_bits
         self.complexity_block = complexity_block
         self.predict_y_block = predict_y_block
         self.mask_block = mask_block
@@ -244,9 +237,7 @@ class SharedMemoryWorkerPool:
             max_seq_len=max_seq_len,
             preprocessor_prompt_config=preprocessor_prompt_config,
             unconditional_prob=unconditional_prob,
-            constant_representation=self.constant_representation,
             target_dialect=self.target_dialect,
-            tail_zero_bits=self.tail_zero_bits,
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
             mask_block=self.mask_block,
@@ -602,26 +593,18 @@ def _producer_worker(
                                                  else float(next(kept_iter)))
                     assert next(kept_iter, None) is None, "positional value alignment broke"
                     serialized_tokens, body_numeric = serialize_constant_tokens(
-                        skeleton_mm, collected_opt,
-                        representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                    )
+                        skeleton_mm, collected_opt)
                 elif any(placeheld):
                     # Placeholders ARE simplipy's <constant>: the serializer's
                     # None entries keep them, value entries fill the kept slots.
                     constants_opt: list[float | None] = [
                         None if ph else float(v) for v, ph in zip(literals, placeheld)]
                     serialized_tokens, body_numeric = serialize_constant_tokens(
-                        skeleton, constants_opt,
-                        representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                    )
+                        skeleton, constants_opt)
                 else:
                     # Raises on non-finite constants: the generator must never emit them.
                     serialized_tokens, body_numeric = serialize_constant_tokens(
-                        skeleton, literals, representation=CONSTANT_REPRESENTATION_IEEE754_MIXED,
-                        rng=worker_rng, zero_tail_bits=worker_config.tail_zero_bits,
-                    )
+                        skeleton, literals)
                 tokens_to_encode = serialized_tokens
                 if has_expression_wrappers:
                     tokens_to_encode = ["<expression>", *tokens_to_encode, "</expression>"]
@@ -693,14 +676,10 @@ def _producer_worker(
                             block_numeric = [float("nan")] * len(block_tokens)
                             block_masked = [True, *[False] * (len(block_tokens) - 1)]
                             variant = "hypothesis"
-                        elif worker_rng.random() < float(complexity_cfg["p_nibbles"]):
-                            block_tokens = [COMPLEXITY_START_TOKEN, IEEE754_START_TOKEN,
-                                            *float32_to_nibble_tokens(float(mu)),
-                                            IEEE754_END_TOKEN, COMPLEXITY_END_TOKEN]
-                            block_numeric = [float("nan")] * len(block_tokens)
-                            block_masked = [True, True, *[False] * IEEE754_N_NIBBLES, False, False]
-                            variant = "nibbles"
                         else:
+                            # PROMPTED: the caller states the complexity, so it is compact and
+                            # entirely harness-owned. The bytes spelling belongs to the
+                            # hypothesis circumstance alone (owner ruling 2026-08-27).
                             block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
                             block_numeric = [float("nan"), float(mu), float("nan")]
                             block_masked = [True, True, True]
