@@ -6,6 +6,8 @@ import random
 
 import torch
 
+from flash_ansr.utils.weights import save_weights
+
 from flash_ansr.train import Trainer
 from flash_ansr import get_path
 
@@ -53,7 +55,7 @@ def test_load_checkpoint_reconstructs_scheduler_and_scaler_absent() -> None:
         os.makedirs(ckpt_dir, exist_ok=True)
 
         # Save model and optimizer state
-        torch.save(trainer.model.state_dict(), os.path.join(ckpt_dir, "state_dict.pt"))
+        save_weights(trainer.model, ckpt_dir)
         torch.save(trainer.optimizer.state_dict(), os.path.join(ckpt_dir, "optimizer.pt"))
         # Persist training metadata but omit scheduler/scaler states
         torch.save({"step": 5, "total_pflops": 123.0}, os.path.join(ckpt_dir, "training_state.pt"))
@@ -71,7 +73,8 @@ def test_load_checkpoint_reconstructs_scheduler_and_scaler_absent() -> None:
         assert trainer.lr_scheduler.last_epoch == 4
         assert trainer.total_pflops == 123.0
         # Model weights should match the checkpoint contents
-        loaded_state = torch.load(os.path.join(ckpt_dir, "state_dict.pt"), map_location="cpu")
+        from safetensors.torch import load_file
+        loaded_state = load_file(os.path.join(ckpt_dir, "model.safetensors"), device="cpu")
         for name, param in trainer.model.state_dict().items():
             assert torch.allclose(param, loaded_state[name])
 

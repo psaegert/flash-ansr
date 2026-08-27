@@ -5,6 +5,8 @@ import warnings
 from typing import Any, Callable, Literal, Optional, Tuple, TypeAlias
 
 import torch
+
+from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
 from tqdm import tqdm
 
@@ -2209,7 +2211,7 @@ class FlashANSRModel(nn.Module):
         ----------
         directory : str
             Destination directory (created if missing). The weights are written to
-            ``state_dict.pt`` and, when ``config`` is given, the config to ``model.yaml``.
+            ``model.safetensors`` and, when ``config`` is given, the config to ``model.yaml``.
         config : dict[str, Any] or str or None, optional
             Config mapping or path to copy alongside the weights. If ``None``, no config is
             written and ``errors`` governs the response.
@@ -2225,7 +2227,7 @@ class FlashANSRModel(nn.Module):
 
         os.makedirs(directory, exist_ok=True)
 
-        torch.save(self.state_dict(), os.path.join(directory, "state_dict.pt"))
+        save_weights(self, directory)
 
         # Copy the config to the directory for best portability
         if config is None:
@@ -2249,7 +2251,7 @@ class FlashANSRModel(nn.Module):
         Parameters
         ----------
         directory : str
-            Directory containing ``model.yaml`` and ``state_dict.pt``.
+            Directory containing ``model.yaml`` and ``model.safetensors``.
 
         Returns
         -------
@@ -2261,6 +2263,6 @@ class FlashANSRModel(nn.Module):
         config_path = os.path.join(directory, 'model.yaml')
 
         model = cls.from_config(config_path)
-        model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
+        load_weights(model, directory)
 
         return load_config(config_path), model

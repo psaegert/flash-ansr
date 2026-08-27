@@ -12,6 +12,8 @@ from typing import Any, Literal, Sequence
 
 import torch
 
+from flash_ansr.utils.weights import load_weights
+
 from torch.optim.lr_scheduler import LRScheduler
 from torch import nn
 
@@ -1251,7 +1253,6 @@ class Trainer:
         if not os.path.isdir(checkpoint_directory):
             raise FileNotFoundError(f"Checkpoint directory not found: {checkpoint_directory}")
 
-        model_state_path = os.path.join(checkpoint_directory, "state_dict.pt")
         optimizer_state_path = os.path.join(checkpoint_directory, "optimizer.pt")
         scheduler_state_path = os.path.join(checkpoint_directory, "lr_scheduler.pt")
         scaler_state_path = os.path.join(checkpoint_directory, "scaler.pt")
@@ -1259,7 +1260,9 @@ class Trainer:
 
         map_location = torch.device(device)
 
-        self.model.load_state_dict(torch.load(model_state_path, map_location=map_location))
+        # Weights are safetensors; the optimiser/scaler/scheduler state below is not all
+        # tensors and stays on torch.save.
+        load_weights(self.model, checkpoint_directory, device=map_location)
         self.optimizer.load_state_dict(torch.load(optimizer_state_path, map_location=map_location))
 
         resume_step: int | None = None

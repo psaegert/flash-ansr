@@ -5,6 +5,8 @@ from abc import abstractmethod
 from typing import Any, Literal
 
 import torch
+
+from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
 
 from flash_ansr.utils.config_io import load_config, save_config
@@ -43,7 +45,7 @@ class SetEncoder(nn.Module):
 
         os.makedirs(directory, exist_ok=True)
 
-        torch.save(self.state_dict(), os.path.join(directory, "state_dict.pt"))
+        save_weights(self, directory)
 
         if config is None:
             if errors == "raise":
@@ -74,7 +76,7 @@ class SetEncoder(nn.Module):
         config_path = os.path.join(directory, "set_encoder.yaml")
 
         model = cls.from_config(config_path)
-        model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True))
+        load_weights(model, directory)
 
         return load_config(config_path), model
 

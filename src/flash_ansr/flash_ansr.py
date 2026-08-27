@@ -23,6 +23,8 @@ import warnings
 import numpy as np
 import pandas as pd
 import torch
+
+from flash_ansr.utils.weights import load_weights
 from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
@@ -850,7 +852,7 @@ class FlashANSR(BaseEstimator):
         ----------
         directory : str
             Directory that contains ``model.yaml``, ``tokenizer.yaml`` and
-            ``state_dict.pt`` artifacts.
+            ``model.safetensors`` artifacts.
         generation_config : GenerationConfig, optional
             Generation parameters to override defaults during candidate search.
         n_restarts : int, optional
@@ -907,7 +909,7 @@ class FlashANSR(BaseEstimator):
         load_device = 'cpu' if defer_cuda else device
 
         model = FlashANSRModel.from_config(flash_ansr_model_path)
-        model.load_state_dict(torch.load(os.path.join(directory, "state_dict.pt"), weights_only=True, map_location=load_device))
+        load_weights(model, directory, device=load_device)
         model.eval().to(load_device)
 
         tokenizer = Tokenizer.from_config(tokenizer_path)

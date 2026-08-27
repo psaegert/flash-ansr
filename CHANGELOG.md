@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Model weights are safetensors.** `model.safetensors` replaces `state_dict.pt` everywhere weights
+  are written or read — `FlashANSRModel.save`/`load`, the set-encoder, `FlashANSR.load`, and the
+  trainer's resume path (which delegates its write to `model.save`). Weights are the artifact people
+  download, so they are stored in the format the ecosystem reads: a flat tensor map with a JSON
+  header, no pickle, memory-mappable, framework-agnostic. Optimiser, scaler, scheduler and
+  `training_state` stay on `torch.save`: they are not all tensors (param groups, step counters,
+  Python scalars) and they never leave the machine that wrote them.
+- **`flash_ansr convert-weights <dir>...`** writes `model.safetensors` beside an existing
+  `state_dict.pt`, leaving the pickle exactly where it is. Legacy pickles are no longer READ — one
+  format, one code path — so a checkpoint that predates this must be converted once. The
+  `FileNotFoundError` names the command when it finds an unconverted `state_dict.pt`. The converter
+  refuses a state dict carrying non-tensor entries rather than dropping them silently.
 - **`conditioned=` on every decoder verb, and `predict_y(expression=...)`: the trained
   circumstances that had no entry point.** `condition_dropout: 0.1` routes one training instance in
   ten to the learned `null_memory`, and `predict_y_block.p_conditional: 0.5` writes the block in two

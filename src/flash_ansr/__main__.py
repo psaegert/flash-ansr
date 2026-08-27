@@ -44,11 +44,32 @@ def main(argv: Sequence[str] | None = None) -> None:
     remove_parser = subparsers.add_parser("remove", help="Remove a model")
     remove_parser.add_argument("path", type=str, help="Path to the model to remove")
 
+    convert_parser = subparsers.add_parser(
+        "convert-weights",
+        help="Write model.safetensors beside a legacy state_dict.pt (the .pt is left in place)")
+    convert_parser.add_argument("directory", type=str, nargs="+",
+                                help="Checkpoint director(ies) to convert")
+    convert_parser.add_argument("--overwrite", action="store_true",
+                                help="Replace an existing model.safetensors")
+
     # Evaluate input
     args = parser.parse_args(argv)
 
     # Execute the command
     match args.command_name:
+        case 'convert-weights':
+            from flash_ansr.utils.weights import convert_legacy_weights
+            from flash_ansr.utils.paths import substitute_root_path
+
+            for raw in args.directory:
+                directory = substitute_root_path(raw)
+                try:
+                    target = convert_legacy_weights(directory, overwrite=args.overwrite)
+                except (FileNotFoundError, FileExistsError, ValueError) as exc:
+                    print(f"SKIP {directory}: {exc}")
+                    continue
+                print(f"wrote {target}")
+
         case 'train':
             if args.verbose:
                 print(f'Training model from {args.config}')
