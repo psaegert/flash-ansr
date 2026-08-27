@@ -8,6 +8,63 @@ S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164). N
 float32-representable values in float64 containers -- self-consistent, but not the target
 format, and a checkpoint trained there would be neither v24 nor v25.
 
+### Q2 — RULED 2026-08-27: bytes, and the residual head is RETIRED
+
+Two owner rulings, the second of which deletes the question rather than answering it.
+
+1. **f64 + bytes, not nibbles.** 8 positions x 256 symbols, one numeric format everywhere.
+2. **The per-point encoder residual head is retired.** Residual prediction moves to the
+   DECODER as a `<predict_residual>` block, built exactly like `<predict_y>`: **one point per
+   instance, never eight, never all**, with the same suffix/prefix conditioning structure.
+
+So Q2 (head width, 61,760 vs 432,320 params) is moot -- there is no head. So is the whole
+`residual_scale` ruler question (MAD vs |y|+MAD), so is the `residual_loss_weight`
+re-derivation, and so is the non-finite masking guard: the residual becomes prompt payload
+spelled in IEEE bytes, supervised by the ordinary next-token CE, gated by the codec's own
+finiteness check exactly as `y*` already is.
+
+**Two places it must NOT copy predict_y** (owner rulings 2026-08-27):
+
+* **The point is NOT held out.** `predict_y` does `np.delete` on the chosen row
+  (`streaming.py:743-748`) so the target is genuinely unseen. The residual must not: it is
+  `y_observed(x*) - f(x*)`, and `y_observed` reaches the model only through the encoder. Delete
+  the row and the target becomes a single unobserved noise draw whose irreducible loss is the
+  noise entropy forever. Keeping it in makes the prefix arm the capability that was wanted --
+  *infer f from the data, report the displacement at a point you can observe* -- and it is not
+  a lookup: retrieving `y*` at a specific `x*` out of pooled set-encoder memory is real work.
+* **On an unconditioned (nulled-memory) instance the block is DROPPED, not suffix-pinned.**
+  `predict_y` pins to the suffix there because with the expression it degenerates to function
+  evaluation, which is well-posed. The residual has no such fallback: with nulled memory
+  `y_observed` is unreachable in *both* placements. This follows the `predict_constants`
+  doctrine ("supervising values against a NULLED memory is a nonsense task"), not predict_y's.
+
+**Also gate on `noise_spec is not None`.** Without a noise mixture `y_encoder IS y_clean`, the
+residual is identically 0.0, and the block would teach nothing but "emit eight zero bytes".
+Same T0 contract the `outlier_mask` key already follows.
+
+**Ordering against predict_y.** predict_y deletes its row first; the residual block must pick
+its point from what remains, or the two race for the same row.
+
+Block shape, identical in cost to predict_y -- `4 + n_dims + IEEE754_SPAN_LENGTH`:
+
+    <predict_residual> <point> c ... c </point> <ieee754> b0 ... b7 </ieee754> </predict_residual>
+
+**What this deletes** (a net simplification, and it lands with S4/S5 since it needs the byte
+codec and the two new block tokens):
+
+| where | what goes |
+|---|---|
+| `model/flash_ansr_model.py` | `residual_head`, and the `residual_head is not None` arm of the point-representation capture (the outlier head still needs it) |
+| `train/train.py` | `_RESIDUAL_SCALES`, `_masked_median`, `_scaled_residual`, `_residual_scores`, `_residual_loss`, `_float32_to_nibbles_torch`, the `residual_*` metrics and the val-composite term |
+| `data/streaming.py` | the `residual` shm buffer and its fill -- the worker holds `y_encoder` and `y_support` locally, so one point's residual is computed inline (ring 320 -> 304 MiB) |
+| `data/data.py`, `data/collate.py` | the `residual` batch key and its clone-not-cast hazard |
+| `tasks.py` | `predict_residuals` re-implemented on the decoder path, mirroring the predict_y verb |
+| configs | T18's `residual_head`, `residual_loss_weight`, `residual_scale` |
+
+**What this adds:** `<predict_residual>`/`</predict_residual>` (free -- S5 regenerates the
+tokenizer anyway), `TASK_SEGMENT_PREDICT_RESIDUAL = 4`, a `predict_residual` block config
+(`p_present`, `min_n_support`, `p_conditional`), the streaming block, and the inference verb.
+
 ### What S3 decided that the plan left open
 
 * **One name for the width.** `flash_ansr.utils.numeric.NUMERIC_DTYPE` / `NUMERIC_DTYPE_NP`.
