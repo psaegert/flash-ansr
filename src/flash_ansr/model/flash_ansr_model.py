@@ -1123,6 +1123,18 @@ class FlashANSRModel(nn.Module):
         STATIC_DECODE_CALL_COUNT += 1  # engagement proof for gates (see module-level definition)
         device = data.device
 
+        # The dynamic path gets this for free: RotaryEmbedding.forward refuses seq_len >
+        # max_seq_len with a ValueError naming both numbers. The static path indexes the RoPE
+        # table directly, so an over-long max_len reaches the GPU as an out-of-bounds gather --
+        # a device-side assert, which POISONS the CUDA context for the whole process rather
+        # than raising something a caller can act on. Checked once here, not per step: reading
+        # a position tensor's max() inside the loop would sync the device every token.
+        rope_limit = int(self.decoder_max_seq_len)
+        if max_len > rope_limit:
+            raise ValueError(
+                f"max_len {max_len} exceeds the decoder's max_seq_len {rope_limit}; the static "
+                f"decode indexes the RoPE table by absolute position and cannot extrapolate.")
+
         # v24 constrained decoding (T6/T7): the mask is stateless (recomputed per step from the
         # token prefix), so the static position-indexed cache needs no extra bookkeeping.
         grammar = None

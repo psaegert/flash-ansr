@@ -36,10 +36,10 @@ ARMS = {
 }
 
 
-def build(device, span_bias):
-    tokenizer = Tokenizer.from_config(get_path("configs", "test", "tokenizer.yaml"))
+def build(device, span_bias, config="test"):
+    tokenizer = Tokenizer.from_config(get_path("configs", config, "tokenizer.yaml"))
     from simplipy import SimpliPyEngine
-    cfg = load_config(get_path("configs", "test", "model.yaml"))
+    cfg = load_config(get_path("configs", config, "model.yaml"))
     kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
     torch.manual_seed(0x24C2)
     model = FlashANSRModel(simplipy_engine=SimpliPyEngine.load("base", install=True),
@@ -47,11 +47,11 @@ def build(device, span_bias):
     if span_bias:
         with torch.no_grad():
             model.next_token_head[-1].bias[tokenizer[IEEE754_START_TOKEN]] += span_bias
-    return model, tokenizer
+    return model, tokenizer, kwargs
 
 
-def time_arm(model, tokenizer, kwargs, *, choices, max_len, batch_size, device, repeats):
-    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE, device=device)
+def time_arm(model, tokenizer, kwargs, *, choices, max_len, batch_size, device, repeats, n_vars):
+    x = torch.rand(13, n_vars, dtype=NUMERIC_DTYPE, device=device)
     bos = [tokenizer["<bos>"]]
     times, tokens = [], 0
     for r in range(repeats + 1):                       # first pass is warm-up, discarded
@@ -79,11 +79,15 @@ def main() -> None:
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--span-bias", type=float, default=6.0,
                     help="bias the <ieee754> logit so spans actually occur; 0 disables")
+    ap.add_argument("--config", default="test", help="configs/<name> to size the model from")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     device = torch.device(args.device)
-    model, tokenizer = build(device, args.span_bias)
+    model, tokenizer, mk = build(device, args.span_bias, args.config)
+    n_vars = int(mk["encoder_max_n_variables"])
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"config={args.config}  params={n_params/1e6:.2f}M  n_vars={n_vars}")
     print(f"device={device}  choices={args.choices}  max_len={args.max_len}  "
           f"batch={args.batch_size}  repeats={args.repeats}  span_bias={args.span_bias}")
     print(f"{'arm':<28}{'median s':>10}{'best s':>10}{'tok/s':>12}{'vs B':>8}")
@@ -92,7 +96,7 @@ def main() -> None:
         try:
             median, best, tokens = time_arm(
                 model, tokenizer, kwargs, choices=args.choices, max_len=args.max_len,
-                batch_size=args.batch_size, device=device, repeats=args.repeats)
+                batch_size=args.batch_size, device=device, repeats=args.repeats, n_vars=n_vars)
         except Exception as exc:                       # a refused pairing is a RESULT, not a crash
             print(f"{name:<28}{'N/A':>10}  {type(exc).__name__}: {str(exc)[:60]}")
             rows[name] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -107,7 +111,8 @@ def main() -> None:
           "has no key-pad mask")
     if args.json:
         with open(args.json, "w") as fh:
-            json.dump({"device": str(device), "choices": args.choices, "max_len": args.max_len,
+            json.dump({"device": str(device), "config": args.config,
+                       "params": n_params, "choices": args.choices, "max_len": args.max_len,
                        "batch_size": args.batch_size, "repeats": args.repeats,
                        "span_bias": args.span_bias, "arms": rows}, fh, indent=2)
 

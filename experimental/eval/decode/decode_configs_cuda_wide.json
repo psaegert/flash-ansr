@@ -1,0 +1,25 @@
+{
+  "device": "cuda",
+  "choices": 512,
+  "max_len": 192,
+  "batch_size": 256,
+  "repeats": 5,
+  "span_bias": 6.0,
+  "arms": {
+    "A no-cache": {
+      "error": "ValueError: Sequence length 129 exceeds max_seq_len 128"
+    },
+    "B dynamic": {
+      "error": "ValueError: Sequence length 129 exceeds max_seq_len 128"
+    },
+    "C static": {
+      "error": "AcceleratorError: CUDA error: device-side assert triggered\nSearch for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\n"
+    },
+    "D static+grammar": {
+      "error": "AcceleratorError: CUDA error: device-side assert triggered\nSearch for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\n"
+    },
+    "E static+grammar+compact": {
+      "error": "AcceleratorError: CUDA error: device-side assert triggered\nSearch for `cudaErrorAssert' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\n"
+    }
+  }
+}

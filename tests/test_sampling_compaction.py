@@ -141,3 +141,15 @@ def test_the_config_refuses_the_same_pairings_at_construction():
         SoftmaxSamplingConfig(compact_ieee754=True)
     with pytest.raises(ValueError, match="static decode"):
         SoftmaxSamplingConfig(constrain_ieee754=True, compact_ieee754=True, static_decode=False)
+
+
+def test_static_decode_refuses_a_max_len_past_the_rope_table(model, tokenizer):
+    """The dynamic path raises a clean ValueError from RotaryEmbedding.forward. The static
+    path indexes the table directly, so without this the same mistake reaches the GPU as an
+    out-of-bounds gather -- a device-side assert that poisons the CUDA context for the whole
+    process instead of raising something the caller can act on."""
+    limit = int(model.decoder_max_seq_len)
+    with pytest.raises(ValueError, match="max_seq_len"):
+        model.sample_top_kp(
+            torch.rand(13, 11, dtype=NUMERIC_DTYPE), choices=2, max_len=limit + 1,
+            return_raw=True, initial_tokens=[tokenizer["<bos>"]], static_decode=True)

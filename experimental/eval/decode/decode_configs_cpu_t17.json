@@ -1,0 +1,42 @@
+{
+  "device": "cpu",
+  "config": "v24.0-T17",
+  "params": 3416544,
+  "choices": 64,
+  "max_len": 128,
+  "batch_size": 64,
+  "repeats": 3,
+  "span_bias": 6.0,
+  "arms": {
+    "A no-cache": {
+      "median_s": 16.124660040950403,
+      "best_s": 16.116085347021,
+      "tokens": 8192,
+      "tokens_per_s": 508.0417186592143
+    },
+    "B dynamic": {
+      "median_s": 2.5996315970551223,
+      "best_s": 2.5814866551663727,
+      "tokens": 8192,
+      "tokens_per_s": 3151.2157373683044
+    },
+    "C static": {
+      "median_s": 1.3665509361308068,
+      "best_s": 1.3560751639306545,
+      "tokens": 8192,
+      "tokens_per_s": 5994.653974036617
+    },
+    "D static+grammar": {
+      "median_s": 1.4186539589427412,
+      "best_s": 1.3964947250206023,
+      "tokens": 8192,
+      "tokens_per_s": 5774.487815270419
+    },
+    "E static+grammar+compact": {
+      "median_s": 1.4643021640367806,
+      "best_s": 1.4530756769236177,
+      "tokens": 8192,
+      "tokens_per_s": 5594.473737180267
+    }
+  }
+}

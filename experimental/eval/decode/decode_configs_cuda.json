@@ -1,0 +1,40 @@
+{
+  "device": "cuda",
+  "choices": 128,
+  "max_len": 128,
+  "batch_size": 128,
+  "repeats": 5,
+  "span_bias": 6.0,
+  "arms": {
+    "A no-cache": {
+      "median_s": 0.9617241439409554,
+      "best_s": 0.9566400719340891,
+      "tokens": 16384,
+      "tokens_per_s": 17036.070169624323
+    },
+    "B dynamic": {
+      "median_s": 0.7961171960923821,
+      "best_s": 0.7769570730160922,
+      "tokens": 16384,
+      "tokens_per_s": 20579.884570284783
+    },
+    "C static": {
+      "median_s": 0.7627597730606794,
+      "best_s": 0.7462375541217625,
+      "tokens": 16384,
+      "tokens_per_s": 21479.8952155761
+    },
+    "D static+grammar": {
+      "median_s": 0.8592938228975981,
+      "best_s": 0.8418070699553937,
+      "tokens": 16384,
+      "tokens_per_s": 19066.819245542833
+    },
+    "E static+grammar+compact": {
+      "median_s": 1.0525228141341358,
+      "best_s": 1.0467590210027993,
+      "tokens": 16384,
+      "tokens_per_s": 15566.408423629653
+    }
+  }
+}

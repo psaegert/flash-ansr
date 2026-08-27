@@ -1,0 +1,42 @@
+{
+  "device": "cuda",
+  "config": "v24.0-T17",
+  "params": 3416544,
+  "choices": 256,
+  "max_len": 192,
+  "batch_size": 256,
+  "repeats": 5,
+  "span_bias": 6.0,
+  "arms": {
+    "A no-cache": {
+      "median_s": 3.969839174998924,
+      "best_s": 3.959403453860432,
+      "tokens": 49152,
+      "tokens_per_s": 12381.357992925072
+    },
+    "B dynamic": {
+      "median_s": 1.1673979191109538,
+      "best_s": 1.154643202899024,
+      "tokens": 49152,
+      "tokens_per_s": 42103.89550585486
+    },
+    "C static": {
+      "median_s": 1.0829264789354056,
+      "best_s": 1.078185198130086,
+      "tokens": 49152,
+      "tokens_per_s": 45388.12279141973
+    },
+    "D static+grammar": {
+      "median_s": 1.3029229070525616,
+      "best_s": 1.2744698280002922,
+      "tokens": 49152,
+      "tokens_per_s": 37724.41157795773
+    },
+    "E static+grammar+compact": {
+      "median_s": 1.8092604659032077,
+      "best_s": 1.7507559249643236,
+      "tokens": 49152,
+      "tokens_per_s": 27166.901021883903
+    }
+  }
+}
