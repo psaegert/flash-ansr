@@ -1,0 +1,100 @@
+data/streaming.py:43: float32_to_nibble_tokens,
+data/streaming.py:173: "dtype": np.float32,
+data/streaming.py:177: "dtype": np.float32,
+data/streaming.py:181: # without one); float32 like data_attn_mask, bool-cast downstream
+data/streaming.py:183: "dtype": np.float32,
+data/streaming.py:192: "dtype": np.float32,
+data/streaming.py:196: "dtype": np.float32,
+data/streaming.py:484: literals = np.asarray(literal_values, dtype=np.float32)
+data/streaming.py:681: # dialect does not matter. Exact in float32 (mu < 2**24 in practice).
+data/streaming.py:690: *float32_to_nibble_tokens(float(mu)),
+data/streaming.py:697: *float32_to_nibble_tokens(float(mu)),
+data/streaming.py:730: y_star = float(np.float32(y_support[j].reshape(-1)[0]))
+data/streaming.py:757: *float32_to_nibble_tokens(y_star),
+data/streaming.py:795: *float32_to_nibble_tokens(float(value)),
+data/streaming.py:925: outlier_mask.reshape(-1).astype(np.float32) if outlier_mask is not None else 0)
+data/streaming.py:929: # float32 the encoder actually reads. Differenced in float32 (not float64) so
+data/streaming.py:933: y_encoder.reshape(-1).astype(np.float32)
+data/streaming.py:934: - y_support.reshape(-1).astype(np.float32))
+data/collate.py:164: for key, dtype in [("x_tensors", torch.float32), ("y_tensors", torch.float32)]:
+data/collate.py:177: batch["residual"] = batch["residual"].to(device=device, dtype=torch.float32)
+data/collate.py:195: const_item = torch.tensor(const_item, dtype=torch.float32)
+data/collate.py:203: self._pad_sequence(seq, target_length, torch.nan, device=device, dtype=torch.float32)
+data/collate.py:211: input_num_tensor = input_num_tensor.to(device=device, dtype=torch.float32)
+data/collate.py:256: torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None
+data/collate.py:264: batch[key] = batch[key].to(device=device, dtype=torch.float32)
+data/collate.py:266: batch[key] = torch.tensor(batch[key], device=device, dtype=torch.float32)
+data/data.py:184: raise ValueError(f"tail_zero_bits must lie in the float32 mantissa (0..23), got {tail_zero_bits}.")
+data/data.py:583: X = X.to(dtype=torch.float32)
+data/data.py:599: batch["fisher_metric"] = torch.tensor(fisher_vals, dtype=torch.float32)
+data/data.py:601: batch["curvature_metric"] = torch.tensor(hessian_vals, dtype=torch.float32)
+data/data.py:818: # clone(), NOT .to(): float32 -> float32 is a no-op that would hand back a
+flash_ansr.py:154: #: multi-restart refinement is skipped. float32 eps is the same bar srbf's `is_perfect_fit` uses,
+flash_ansr.py:156: _T11_ACCEPT_FVU: float = float(np.finfo(np.float32).eps)
+flash_ansr.py:183: # v24 handshake (contract T11): the beam's predicted float32 constants are the
+flash_ansr.py:184: # init, VERBATIM -- no noise, one restart (float32 embeds exactly in float64,
+flash_ansr.py:523: device=device, dtype=torch.float32)
+flash_ansr.py:526: [float(value) for value in _base_num], device=device, dtype=torch.float32)
+flash_ansr.py:1877: X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_model.device)
+flash_ansr.py:1879: X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_model.device)
+flash_ansr.py:1885: y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_model.device)
+flash_ansr.py:1887: y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_model.device)
+flash_ansr.py:1894: # The R1 gate above ran on the caller's (often float64) array, but the cast to float32
+flash_ansr.py:1900: "X contains values that overflow float32 (|x| > 3.4e38) after the cast the model "
+flash_ansr.py:2013: # slots and their decoded float32 values the verbatim init. The span tokens are guaranteed
+flash_ansr.py:2501: """Per-point residual ``y_i - f(x_i)`` as a distribution over float32 values.
+flash_ansr.py:2527: model emits the 8 hex nibbles of each float32, exactly as in training.
+model/flash_ansr_model.py:271: # 8 IEEE-754 hex nibbles of that float32 (owner ruling 2026-08-27: one numeric format
+model/flash_ansr_model.py:912: numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
+model/flash_ansr_model.py:913: numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+model/flash_ansr_model.py:1681: numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
+model/flash_ansr_model.py:1682: numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+model/flash_ansr_model.py:1914: numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
+model/flash_ansr_model.py:1915: numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+decoding/mcts.py:96: """log10(fvu) mapped to q=1 (fvu=1e-8, ~float32 recovery). Must be < ``reward_log_fvu_hi``."""
+decoding/compaction.py:5: decoded float32 value on the numeric channel (``input_num``). Compaction must be a
+decoding/compaction.py:12: 1. nibbles -> float32 value (exact, via the token codec);
+decoding/compaction.py:51: nibble_tokens_to_float32,
+decoding/compaction.py:78: ``(B,)`` float32 tensor of the decoded constants.
+decoding/compaction.py:162: # 1. nibbles -> float32 values (exact decode via the token codec).
+decoding/compaction.py:166: decoded.append(nibble_tokens_to_float32([id_to_nibble[token] for token in row]))
+decoding/compaction.py:172: values = torch.tensor(decoded, dtype=torch.float32, device=sequences.device)
+decoding/compaction.py:184: dtype=torch.float32, device=sequences.device)
+decoding/compaction.py:188: new_input_num = input_num.clone().to(dtype=torch.float32, device=sequences.device)
+decoding/beam_compaction.py:30: (exact: float32 -> hex nibbles is the T1 round-trip). Downstream (validity, refiner handshake)
+decoding/beam_compaction.py:54: nibble_tokens_to_float32,
+decoding/beam_compaction.py:55: wrap_float32,
+decoding/beam_compaction.py:103: return nibble_tokens_to_float32([id_to_nibble[token] for token in inner])
+decoding/beam_compaction.py:160: out.extend(int(tokenizer[nibble]) for nibble in wrap_float32(float(num_row[position])))
+decoding/beam_compaction.py:169: input_nums = torch.full((beam_width, max_len), float('nan'), device=device, dtype=torch.float32)
+decoding/beam_compaction.py:171: input_nums[:, :prefix_length] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+tasks.py:47: nibble_tokens_to_float32,
+tasks.py:48: nibble_values_to_float32,
+tasks.py:180: x_arr = torch.as_tensor(np.asarray(X, dtype=np.float32))
+tasks.py:181: y_arr = torch.as_tensor(np.asarray(y, dtype=np.float32)).reshape(-1, 1)
+tasks.py:200: numerics = torch.tensor([prefix_numeric], dtype=torch.float32, device=device).repeat(n_samples, 1)
+tasks.py:212: torch.cat([numerics, torch.full((rows, 1), numeric, dtype=torch.float32, device=device)], dim=1),
+tasks.py:239: X = np.zeros((1, estimator.n_variables), dtype=np.float32)
+tasks.py:240: y = np.zeros((1,), dtype=np.float32)
+tasks.py:301: float(nibble_tokens_to_float32([str(tokenizer[int(t)]) for t in row]))
+tasks.py:387: the IEEE-754 nibbles of the residual. Sampling those softmaxes gives ``n_samples`` float32
+tasks.py:464: values = nibble_values_to_float32(nibbles)
+train/train.py:91: torch.set_float32_matmul_precision('high')
+train/train.py:279: def _float32_to_nibbles_torch(values: torch.Tensor) -> torch.Tensor:
+train/train.py:280: """``(...)`` float32 -> ``(..., 8)`` int64 nibble values, big-endian.
+train/train.py:282: The torch sibling of :func:`flash_ansr.utils.ieee754.float32_to_nibble_values`, kept
+train/train.py:286: patterns = values.to(torch.float32).contiguous().view(torch.int32)
+train/train.py:426: #   'none'       -- raw float32 residual. IEEE is an absolute encoding; its exponent
+train/train.py:507: elif _amp_override in ("fp32", "float32"):
+train/train.py:508: amp_dtype = torch.float32
+train/train.py:512: amp_dtype = torch.bfloat16 if cpu_bf16_supported else torch.float32
+train/train.py:987: residual = residual.to(self.device, dtype=torch.float32)
+train/train.py:990: y = batch['y_tensors'].to(self.device, dtype=torch.float32).squeeze(-1)
+train/train.py:996: # Fall back to NO scaling for it rather than clamping to float32 tiny, which would turn
+train/train.py:1020: labels = _float32_to_nibbles_torch(residual)
+train/train.py:1102: if self.amp_dtype == torch.float32:
+train/paired_eval.py:119: x_tensors = torch.stack([torch.as_tensor(batch["x_tensors"][i], dtype=torch.float32) for i, _ in rows])
+train/paired_eval.py:120: y_tensors = torch.stack([torch.as_tensor(batch["y_tensors"][i], dtype=torch.float32) for i, _ in rows])
+train/paired_eval.py:121: attn_mask = torch.stack([torch.as_tensor(batch["data_attn_mask"][i], dtype=torch.float32) for i, _ in rows])
+train/paired_eval.py:133: numeric = torch.full((len(sequences), length), float("nan"), dtype=torch.float32)
+train/paired_eval.py:136: numeric[row, :len(values)] = torch.as_tensor(values, dtype=torch.float32)
