@@ -8,6 +8,7 @@ import pytest
 from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 
 # Outliers-only spec with pinned magnitude: unmasked points stay EXACTLY clean, masked
 # points sit 50 robust-scales away -- separable in-batch without access to the clean y.
@@ -99,11 +100,12 @@ def test_residual_streams_and_is_exactly_zero_off_the_outlier_mask() -> None:
     exactly 0.0 at every unmasked point and non-zero at every masked one. That pins the
     subtraction AND its row alignment: a shifted or stale clean array fails this immediately."""
     import torch
+
     saw_outlier = False
     for batch in _iterate(OUTLIERS_ONLY):
         assert "residual" in batch
         residual = batch["residual"]
-        assert residual.dtype == torch.float32
+        assert residual.dtype == NUMERIC_DTYPE
         assert residual.shape == batch["y_tensors"].shape[:2]
         valid = batch["data_attn_mask"]
         assert torch.all(residual[~valid] == 0), "padding must carry no residual"

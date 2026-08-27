@@ -3,6 +3,11 @@ tokenizer: './tokenizer.yaml'
 
 pre_encoder_noise_scale: 0.1
 
+# v25: the numeric format, pinned explicitly rather than left to the code default (which
+# stays 32 so the frozen v24 checkpoints keep loading their own width). Everything that
+# reaches the encoder or the numeric channel is binary64 -- see flash_ansr.utils.numeric.
+pre_encoder_bits: 64
+
 encoder_max_n_variables: 11
 encoder_dim: 128
 encoder_n_heads: 4

@@ -9,6 +9,17 @@ import torch
 if TYPE_CHECKING:
     from flash_ansr.model.tokenizer import Tokenizer
 
+#: The dtype every numeric surface in the stack carries: the encoder input (``data``), the
+#: numeric channel (``input_num``), the constants, and the residual target.
+#:
+#: One name rather than a literal at each site, because the failure mode has no signature.
+#: :func:`flash_ansr.model.pre_encoder.float_to_ieee754_bits` REINTERPRETS its input rather than
+#: converting it, so a single surface left one width behind does not raise anywhere -- it feeds
+#: the encoder a correctly-shaped tensor of scrambled bits. ``pre_encoder_bits`` stays per-model
+#: configurable for ablations; the dtype assert there is what makes a disagreement loud.
+NUMERIC_DTYPE: torch.dtype = torch.float64
+NUMERIC_DTYPE_NP: np.dtype = np.dtype(np.float64)
+
 _CONSTANT_TOKEN_PATTERN = re.compile(r"C_\d+")
 
 

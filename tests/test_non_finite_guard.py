@@ -35,6 +35,8 @@ import unittest
 
 import pandas as pd
 import torch
+
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSRModel, LampleChartonCatalog, get_path
@@ -198,7 +200,7 @@ class TestBeamSearchDropsAndCounts(unittest.TestCase):
         tokenizer = self.model.tokenizer
         prefix = tokenizer.encode(['<bos>', '<expression>', *expression, '</expression>'])
         sequences, _, _ = self.model.beam_search(
-            torch.rand(13, 11), beam_width=len(tokenizer), max_len=len(prefix) + 1,
+            torch.rand(13, 11, dtype=NUMERIC_DTYPE), beam_width=len(tokenizer), max_len=len(prefix) + 1,
             initial_tokens=prefix, unique=True)
         return sequences
 

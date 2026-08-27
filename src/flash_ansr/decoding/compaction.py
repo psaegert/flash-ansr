@@ -51,6 +51,7 @@ from flash_ansr.utils.ieee754 import (
     nibble_tokens_to_float32,
 )
 from flash_ansr.decoding.constrained import COMPACT_CONSTANT_TOKEN
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 
 if TYPE_CHECKING:  # import for typing only: the model module imports this package lazily
     from flash_ansr.model.flash_ansr_model import FlashANSRModel
@@ -164,12 +165,15 @@ def compact_closed_ieee754_spans(
     decoded = []
     for row in inner.tolist():
         decoded.append(nibble_tokens_to_float32([id_to_nibble[token] for token in row]))
-    if not all(torch.isfinite(torch.tensor(decoded)).tolist()):
+    # dtype is load-bearing: without it torch.tensor() builds float32 and this rejects
+    # exactly the magnitudes the v25 migration exists to admit -- while beam_compaction's
+    # math.isfinite on the same value ADMITS them, and the beam loop then crashes here.
+    if not all(torch.isfinite(torch.tensor(decoded, dtype=NUMERIC_DTYPE)).tolist()):
         raise ValueError(
             f"Non-finite decoded constant(s) {decoded!r}: refusing to compact -- NaN on the "
             f"numeric channel means 'no value'. Leave such spans expanded instead."
         )
-    values = torch.tensor(decoded, dtype=torch.float32, device=sequences.device)
+    values = torch.tensor(decoded, dtype=NUMERIC_DTYPE, device=sequences.device)
 
     # 2. span collapse: one <float> at span_start, freed tail cleared to <pad>.
     new_length = span_start + 1
@@ -181,11 +185,11 @@ def compact_closed_ieee754_spans(
     if input_num is None:
         new_input_num = torch.full(
             (batch, sequences.shape[1]), float("nan"),
-            dtype=torch.float32, device=sequences.device)
+            dtype=NUMERIC_DTYPE, device=sequences.device)
     else:
         if input_num.ndim == 3:
             input_num = input_num.squeeze(-1)
-        new_input_num = input_num.clone().to(dtype=torch.float32, device=sequences.device)
+        new_input_num = input_num.clone().to(dtype=NUMERIC_DTYPE, device=sequences.device)
     new_input_num[:, span_start:current_length] = float("nan")
     new_input_num[:, span_start] = values
 

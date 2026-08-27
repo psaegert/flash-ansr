@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.utils.numeric import build_numeric_sequences
+from flash_ansr.utils.numeric import NUMERIC_DTYPE, build_numeric_sequences
 
 
 def mask_float_targets(
@@ -161,7 +161,7 @@ class BatchFormatter:
             token_bucket_length = min(token_bucket_length, current_tensor.size(1))
             batch["input_ids"] = _adjust_length(current_tensor, token_bucket_length, pad_token_id)
 
-        for key, dtype in [("x_tensors", torch.float32), ("y_tensors", torch.float32)]:
+        for key, dtype in [("x_tensors", NUMERIC_DTYPE), ("y_tensors", NUMERIC_DTYPE)]:
             if isinstance(batch[key], list):
                 batch[key] = torch.stack(batch[key])
             batch[key] = batch[key].to(device=device, dtype=dtype)
@@ -174,7 +174,7 @@ class BatchFormatter:
         if "outlier_mask" in batch:
             batch["outlier_mask"] = batch["outlier_mask"].to(device=device, dtype=torch.bool)
         if "residual" in batch:
-            batch["residual"] = batch["residual"].to(device=device, dtype=torch.float32)
+            batch["residual"] = batch["residual"].to(device=device, dtype=NUMERIC_DTYPE)
 
         support_lengths = batch["data_attn_mask"].sum(dim=1)
         max_support_length = int(support_lengths.max().item()) if support_lengths.numel() > 0 else 1
@@ -192,7 +192,7 @@ class BatchFormatter:
         constants_list = []
         for const_item in batch["constants"]:
             if not isinstance(const_item, torch.Tensor):
-                const_item = torch.tensor(const_item, dtype=torch.float32)
+                const_item = torch.tensor(const_item, dtype=NUMERIC_DTYPE)
             constants_list.append(const_item.to(device))
         batch["constants"] = constants_list
 
@@ -200,7 +200,7 @@ class BatchFormatter:
             target_length = token_bucket_length
             if isinstance(batch["input_num"][0], list):
                 padded_input_num = [
-                    self._pad_sequence(seq, target_length, torch.nan, device=device, dtype=torch.float32)
+                    self._pad_sequence(seq, target_length, torch.nan, device=device, dtype=NUMERIC_DTYPE)
                     for seq in batch["input_num"]
                 ]
                 batch["input_num"] = torch.stack(padded_input_num).unsqueeze(-1)
@@ -208,7 +208,7 @@ class BatchFormatter:
                 input_num_tensor = batch["input_num"]
                 if input_num_tensor.dim() == 2:
                     input_num_tensor = input_num_tensor.unsqueeze(-1)
-                input_num_tensor = input_num_tensor.to(device=device, dtype=torch.float32)
+                input_num_tensor = input_num_tensor.to(device=device, dtype=NUMERIC_DTYPE)
                 batch["input_num"] = _adjust_length(input_num_tensor, target_length, float("nan"))
 
         if "prompt_mask" in batch:
@@ -253,7 +253,7 @@ class BatchFormatter:
 
         if "complexity" in batch:
             batch["complexity"] = [
-                torch.tensor(c, device=device, dtype=torch.float32) if c is not None else None
+                torch.tensor(c, device=device, dtype=NUMERIC_DTYPE) if c is not None else None
                 for c in batch["complexity"]
             ]
 
@@ -261,9 +261,9 @@ class BatchFormatter:
             if key not in batch:
                 continue
             if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device=device, dtype=torch.float32)
+                batch[key] = batch[key].to(device=device, dtype=NUMERIC_DTYPE)
             else:
-                batch[key] = torch.tensor(batch[key], device=device, dtype=torch.float32)
+                batch[key] = torch.tensor(batch[key], device=device, dtype=NUMERIC_DTYPE)
 
         # Optional condition (CFG): per-example boolean (True = conditioned). Arrives as a list of bools
         # from the worker metadata expansion; tensorize to shape (B,) WITHOUT padding (it is per-example,

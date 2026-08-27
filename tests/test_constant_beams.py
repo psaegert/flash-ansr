@@ -22,6 +22,8 @@ import numpy as np
 import pytest
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
@@ -109,7 +111,7 @@ def _scan_spans(ids: list[int], tokenizer: Tokenizer) -> list[float]:
 
 
 def _nan(*shape: int) -> torch.Tensor:
-    return torch.full(shape, float("nan"), dtype=torch.float32)
+    return torch.full(shape, float("nan"), dtype=NUMERIC_DTYPE)
 
 
 # The T9/T10 steering landscape. Head biases alone cannot express "open a span EARLY,
@@ -226,7 +228,7 @@ def _run_t9_beam_search(tokenizer: Tokenizer, engine, bias_overrides: dict[str, 
     _install_early_open_boost(model, tokenizer)
     initial = [tokenizer["<bos>"], tokenizer["<expression>"]]
     torch.manual_seed(_T9_SEED)
-    data = torch.rand(13, 11)
+    data = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
     beams, log_probs, completed = model.beam_search(
         data, beam_width=_T9_WIDTH, max_len=_T9_MAX_LEN, unique=True, use_cache=True,
         initial_tokens=initial, constrain_ieee754=True, compact_ieee754=True)
@@ -342,7 +344,7 @@ def test_t9_compaction_requires_grammar_and_cache(tokenizer: Tokenizer, engine) 
     model = _steered_model(tokenizer, engine, _T9_BIASES)
     initial = [tokenizer["<bos>"], tokenizer["<expression>"]]
     torch.manual_seed(_T9_SEED)
-    data = torch.rand(13, 11)
+    data = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     with pytest.raises(ValueError):
         model.beam_search(data, beam_width=2, max_len=_T9_MAX_LEN, use_cache=True,
@@ -394,7 +396,7 @@ def test_t10_pruned_mid_span_leaves_no_orphaned_state(tokenizer: Tokenizer, engi
     model = _steered_model(tokenizer, engine, biases)
     initial = [tokenizer["<bos>"], tokenizer["<expression>"]]
     torch.manual_seed(_T9_SEED)
-    data = torch.rand(13, 11)
+    data = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     beams, log_probs, completed = model.beam_search(
         data, beam_width=2, max_len=16, unique=True, use_cache=True,

@@ -45,6 +45,7 @@ from tqdm import tqdm
 
 from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
 from flash_ansr.decoding.compaction import compact_closed_ieee754_spans
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.decoding.constrained import COMPACT_CONSTANT_TOKEN, IEEE754GrammarConstraint
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
@@ -166,9 +167,9 @@ def beam_search_with_compaction(
     # compact-view forward the T9 golden equality compares against (never None here).
     sequences = torch.full((beam_width, max_len), pad_token_id, device=device, dtype=torch.long)
     sequences[:, :prefix_length] = torch.tensor(base_tokens, device=device, dtype=torch.long)
-    input_nums = torch.full((beam_width, max_len), float('nan'), device=device, dtype=torch.float32)
+    input_nums = torch.full((beam_width, max_len), float('nan'), device=device, dtype=NUMERIC_DTYPE)
     if base_input_num is not None:
-        input_nums[:, :prefix_length] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+        input_nums[:, :prefix_length] = torch.tensor(base_input_num, device=device, dtype=NUMERIC_DTYPE)
 
     lengths = torch.full((beam_width,), prefix_length, device=device, dtype=torch.long)
     scores = torch.full((beam_width,), float('-inf'), device=device, dtype=torch.float)

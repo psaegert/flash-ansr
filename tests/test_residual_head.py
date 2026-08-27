@@ -3,6 +3,8 @@ import numpy as np
 import pytest
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.train.train import (
@@ -99,7 +101,7 @@ def test_head_shape_and_same_pass_capture(tokenizer, engine) -> None:  # type: i
     model, kwargs = _model(tokenizer, engine, residual_head=True, outlier_head=False)
     assert model.residual_head is not None
     B, M = 3, 11
-    data = torch.randn(B, M, kwargs["encoder_max_n_variables"])
+    data = torch.randn(B, M, kwargs["encoder_max_n_variables"], dtype=NUMERIC_DTYPE)
     mask = torch.ones(B, M, dtype=torch.bool)
     mask[0, 8:] = False
     with torch.no_grad():
@@ -119,7 +121,7 @@ def test_residual_head_off_by_default(tokenizer, engine) -> None:  # type: ignor
 def test_point_representations_captured_for_either_head(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
     """Residual head alone must still trigger the pre-pooling capture."""
     model, kwargs = _model(tokenizer, engine, outlier_head=False, residual_head=True)
-    data = torch.randn(2, 6, kwargs["encoder_max_n_variables"])
+    data = torch.randn(2, 6, kwargs["encoder_max_n_variables"], dtype=NUMERIC_DTYPE)
     with torch.no_grad():
         model(torch.randint(0, len(tokenizer), (2, 4)), data)
     assert model.point_representations is not None
@@ -218,6 +220,7 @@ def test_predict_residuals_is_deterministic_under_a_seed(tokenizer, engine) -> N
     # Compare BIT PATTERNS, not floats: an untrained head emits nan patterns freely and
     # nan != nan would fail this even on identical draws (which is what non_finite_fraction
     # is there to report).
+
     def bits(runs):  # type: ignore[no-untyped-def]
         return np.array([d.draws for d in runs], dtype=np.float32).view(np.uint32)
     assert np.array_equal(bits(first), bits(again))
@@ -245,15 +248,20 @@ def test_degenerate_problem_falls_back_to_no_scaling() -> None:
         "data_attn_mask": torch.tensor([[True, True, True, False]]),
     }
     scaled = _scaling_trainer("mad")._scaled_residual(batch)
-    torch.testing.assert_close(scaled[0, :3], torch.tensor([1.0, 2.0, 0.0]))
+    assert scaled.dtype is NUMERIC_DTYPE, "the residual lane carries the stack's numeric width"
+    torch.testing.assert_close(scaled[0, :3], torch.tensor([1.0, 2.0, 0.0], dtype=NUMERIC_DTYPE))
 
 
 def test_masking_follows_the_scaled_value_not_the_raw_residual() -> None:
-    """A genuinely tiny spread can push a finite residual to inf under the ruler."""
-    # spread must be tiny yet NON-zero: near 1.0 the float32 grid is ~1e-7, far too coarse.
-    y = torch.tensor([[1e-30, 2e-30, 3e-30, 0.0]]).unsqueeze(-1)
+    """A genuinely tiny spread can push a finite residual to inf under the ruler.
+
+    The magnitudes here are binary64 magnitudes on purpose. The original pair (1e20 over a
+    1e-30 spread) overflowed float32 but is an unremarkable 6.7e49 in float64 -- keeping it
+    would have left this regression silently untested the moment the lane widened.
+    """
+    y = torch.tensor([[1e-300, 2e-300, 3e-300, 0.0]], dtype=NUMERIC_DTYPE).unsqueeze(-1)
     batch = {
-        "residual": torch.tensor([[1e20, 1e20, 0.0, 0.0]]),
+        "residual": torch.tensor([[1e100, 1e100, 0.0, 0.0]], dtype=NUMERIC_DTYPE),
         "y_tensors": y,
         "data_attn_mask": torch.tensor([[True, True, True, False]]),
     }
@@ -263,3 +271,20 @@ def test_masking_follows_the_scaled_value_not_the_raw_residual() -> None:
     valid = batch["data_attn_mask"] & torch.isfinite(scaled)
     assert valid.tolist() == [[False, False, True, False]], (
         "overflowed points must drop; masking the RAW residual would have kept them")
+
+
+def test_the_label_and_the_mask_read_the_same_narrowed_value() -> None:
+    """The residual lane is binary64; the CODEC is still binary32 until the byte cut.
+
+    A residual that is finite in float64 but outside float32 range must be MASKED, not
+    encoded: `float32_to_nibbles(1e300)` is inf's bit pattern, a perfectly well-formed
+    nibble target for a value the head can never be right about.
+    """
+    from flash_ansr.train.train import _float32_to_nibbles_torch
+    residual = torch.tensor([[1.0, 1e300, -1e300, 0.0]], dtype=NUMERIC_DTYPE)
+    assert torch.isfinite(residual).all(), "finite in float64 -- that is the whole point"
+    encoded = residual.to(torch.float32)
+    assert torch.isfinite(encoded).tolist() == [[True, False, False, True]]
+    # What the wider mask would have admitted, and what it would have encoded.
+    labels = _float32_to_nibbles_torch(encoded)
+    assert labels[0, 1].tolist() == [7, 15, 8, 0, 0, 0, 0, 0], "0x7f800000 == +inf"

@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import get_path
 from flash_ansr.data.collate import BatchFormatter
 from flash_ansr.model.tokenizer import Tokenizer
@@ -259,7 +261,7 @@ def test_t6_decode_time_mask_dynamic_sampling(tokenizer: Tokenizer, engine) -> N
     float_id = tokenizer[COMPACT_TOKEN]
     bos = tokenizer["<bos>"]
     torch.manual_seed(0x24C6)
-    x = torch.rand(13, 11)
+    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     torch.manual_seed(7)
     raw_off, _ = model.sample_top_kp(x, choices=16, max_len=24, return_raw=True,
@@ -282,7 +284,7 @@ def test_t6_decode_time_mask_static_sampling(tokenizer: Tokenizer, engine) -> No
     float_id = tokenizer[COMPACT_TOKEN]
     bos = tokenizer["<bos>"]
     torch.manual_seed(0x24C6)
-    x = torch.rand(13, 11)
+    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     count_before = fam.STATIC_DECODE_CALL_COUNT
     torch.manual_seed(7)
@@ -304,7 +306,7 @@ def test_t6_decode_time_mask_beam_search(tokenizer: Tokenizer, engine) -> None: 
     float_id = tokenizer[COMPACT_TOKEN]
     initial = [tokenizer["<bos>"], tokenizer["<expression>"]]
     torch.manual_seed(0x24C6)
-    x = torch.rand(13, 11)
+    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     beams_off, _, _ = model.beam_search(x, beam_width=4, max_len=12, unique=False,
                                         initial_tokens=initial)
@@ -379,7 +381,7 @@ def test_t7_constrained_sampling_emissions_parse(tokenizer: Tokenizer, engine) -
     float_id = tokenizer[COMPACT_TOKEN]
     bos = tokenizer["<bos>"]
     torch.manual_seed(0x24C7)
-    x = torch.rand(13, 11)
+    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     for use_cache in (False, True):
         torch.manual_seed(11)
@@ -411,7 +413,7 @@ def _feed_incremental(model, ids: torch.Tensor, nums: torch.Tensor, memory: torc
 
 
 def _nan(*shape: int) -> torch.Tensor:
-    return torch.full(shape, float("nan"), dtype=torch.float32)
+    return torch.full(shape, float("nan"), dtype=NUMERIC_DTYPE)
 
 
 def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
@@ -439,7 +441,7 @@ def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine)
     prefix_num[0, prefix.index("<float>")] = history_value
 
     torch.manual_seed(0x24C8)
-    data = torch.rand(1, 13, 11)
+    data = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
     with torch.no_grad():
         memory = model._create_memory(data)
 
@@ -518,7 +520,7 @@ def test_t8_compaction_equivalence_small_batch(tokenizer: Tokenizer, engine) -> 
     cont_ids = torch.tensor([tokenizer.encode(continuation)] * 3, dtype=torch.long)
 
     torch.manual_seed(0x24C9)
-    data = torch.rand(3, 13, 11)
+    data = torch.rand(3, 13, 11, dtype=NUMERIC_DTYPE)
     with torch.no_grad():
         memory = model._create_memory(data)
 
@@ -537,7 +539,13 @@ def test_t8_compaction_equivalence_small_batch(tokenizer: Tokenizer, engine) -> 
         assert result.length == span_start + 1
         assert torch.all(result.sequences[:, span_start] == float_id)
         assert result.past_key_values[0][0][0].shape[2] == span_start + 1
-        assert torch.all(result.input_num[:, span_start] == torch.tensor(values, dtype=torch.float32))
+        # Against the CODEC's value, not the source literal: the numeric channel is
+        # binary64 while the span codec still snaps to binary32, so 3.0e-3 rides as
+        # 0.003000000026077032. Comparing to the literal only passed while both sides
+        # were narrowed to float32 -- it was never testing the round-trip it looks like.
+        assert torch.all(result.input_num[:, span_start]
+                         == torch.tensor([float(np.float32(v)) for v in values],
+                                         dtype=NUMERIC_DTYPE))
 
         logits_cont, _ = _feed_incremental(
             model, cont_ids, _nan(3, len(continuation)), memory, result.past_key_values)
@@ -567,7 +575,7 @@ def test_t8_compaction_validates_the_span(tokenizer: Tokenizer, engine) -> None:
     length = len(ids)
 
     torch.manual_seed(0x24C9)
-    data = torch.rand(1, 13, 11)
+    data = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
     with torch.no_grad():
         memory = model._create_memory(data)
         seq = torch.full((1, 64), pad_id, dtype=torch.long)

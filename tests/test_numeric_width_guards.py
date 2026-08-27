@@ -54,3 +54,78 @@ def test_is_constant_token_uses_a_set_not_a_scan():
     assert isinstance(scoring._NIBBLE_TOKEN_SET, frozenset)
     from flash_ansr.utils.ieee754 import NIBBLE_TOKENS
     assert scoring._NIBBLE_TOKEN_SET == frozenset(NIBBLE_TOKENS)
+
+
+# ---------------------------------------------------------------------------
+# The end-to-end guard: one dtype on every numeric surface the model reads.
+#
+# The per-site asserts above catch a mismatch once it reaches the pre-encoder. This one
+# catches it at the seam where it is INTRODUCED -- collate is the last place a batch can
+# still be normalized, and a single site left behind there is the failure the migration's
+# own plan flags as most likely to hide.
+# ---------------------------------------------------------------------------
+
+class _DummyCatalog:
+    simplipy_engine = None
+    variables = ["x1", "x2"]
+
+
+class _DummySource:
+    """The collate-only seam: the dataset never streams here, so __init__'s reads suffice."""
+    config = {"catalog": {"type": "lample_charton"},
+              "sampling": {"n_support": "prior", "n_validation": 0}}
+    max_n_support = 4
+    catalog = _DummyCatalog()
+    noise_spec = None
+
+
+def test_collate_normalizes_every_numeric_surface():
+    """Whatever width the worker produced, what leaves collate is ONE dtype.
+
+    Deliberately fed float32 -- the pre-migration width -- because a batch that arrives
+    already correct proves nothing about the cast sites.
+    """
+    from flash_ansr.data import FlashANSRDataset
+    from flash_ansr.model.tokenizer import Tokenizer
+    from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
+    from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
+    tokenizer = Tokenizer(
+        vocab=["x1", "x2"],
+        special_tokens=["<pad>", "<bos>", "<eos>", "<expression>", "</expression>",
+                        *IEEE754_SPECIAL_TOKENS, "<float>"],
+    )
+    with FlashANSRDataset(source=_DummySource(), tokenizer=tokenizer, padding="zero") as dataset:
+        batch = {
+            "input_ids": [[tokenizer["<bos>"], tokenizer["x1"]],
+                          [tokenizer["<bos>"], tokenizer["x2"]]],
+            "x_tensors": [torch.zeros((2, 2), dtype=torch.float32),
+                          torch.ones((2, 2), dtype=torch.float32)],
+            "y_tensors": [torch.ones((2, 1), dtype=torch.float32),
+                          torch.zeros((2, 1), dtype=torch.float32)],
+            "constants": [[0.1, 0.2], [0.3]],
+            "input_num": [[float("nan"), 1.0], [float("nan"), 2.0]],
+            "residual": torch.zeros((2, 2), dtype=torch.float32),
+        }
+        collated = dataset.collate(batch, device="cpu")
+
+    for key in ("x_tensors", "y_tensors", "input_num", "residual"):
+        assert collated[key].dtype is NUMERIC_DTYPE, f"{key} left collate as {collated[key].dtype}"
+    for tensor in collated["constants"]:
+        assert tensor.dtype is NUMERIC_DTYPE, f"constants left collate as {tensor.dtype}"
+    # Masks are boolean data and are NOT part of the numeric width (see S10).
+    assert collated["data_attn_mask"].dtype is torch.bool
+
+
+def test_the_shared_dtype_and_the_configured_width_are_the_same_number():
+    """`NUMERIC_DTYPE` and `pre_encoder_bits` are set in different files by different
+    kinds of edit; nothing but this ties them together."""
+    import torch as _torch
+
+    from flash_ansr.model.flash_ansr_model import FlashANSRModel
+    from flash_ansr.utils.numeric import NUMERIC_DTYPE
+    from flash_ansr.utils.paths import get_path
+
+    model = FlashANSRModel.from_config(get_path("configs", "test", "model.yaml"))
+    assert _torch.finfo(NUMERIC_DTYPE).bits == model.pre_encoder_bits
+    assert model.pre_encoder.encoding_size == model.pre_encoder_numeric_tokens.encoding_size

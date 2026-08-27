@@ -8,6 +8,8 @@ non-constant positions, so the defaults must keep reproducing it exactly.
 import pytest
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import FlashANSRModel, get_path
 from flash_ansr.model.encoders.set_transformer import MAB, SetTransformer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
@@ -130,11 +132,11 @@ class TestSanitizeInputNum:
         assert model.sanitize_input_num is False
         assert all(isab.mab_self.mask_query_norms is False for isab in model.encoder.isabs)
 
-        x = torch.rand(2, 10, 11)
+        x = torch.rand(2, 10, 11, dtype=NUMERIC_DTYPE)
         input_tokens = torch.randint(
             low=len(model.tokenizer.special_tokens), high=len(model.tokenizer), size=(2, 7)
         )
-        input_num = torch.full((2, 7, 1), float("nan"))
+        input_num = torch.full((2, 7, 1), float("nan"), dtype=NUMERIC_DTYPE)
         input_num[0, 2, 0] = 1.5
 
         with torch.no_grad():
@@ -146,7 +148,7 @@ class TestSanitizeInputNum:
         assert not torch.equal(logits_legacy, logits_sane)
 
         # ...but with no NaNs present, sanitization must be a no-op.
-        input_num_full = torch.full((2, 7, 1), 2.0)
+        input_num_full = torch.full((2, 7, 1), 2.0, dtype=NUMERIC_DTYPE)
         with torch.no_grad():
             model.sanitize_input_num = False
             a = model(input_tokens, x, input_num=input_num_full)

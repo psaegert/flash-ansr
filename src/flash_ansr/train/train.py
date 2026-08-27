@@ -13,6 +13,7 @@ from typing import Any, Literal, Sequence
 import torch
 
 from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.utils.weights import load_weights
 
 from torch.optim.lr_scheduler import LRScheduler
@@ -984,17 +985,17 @@ class Trainer:
         residual = batch.get('residual')
         if residual is None:
             return None
-        residual = residual.to(self.device, dtype=torch.float32)
+        residual = residual.to(self.device, dtype=NUMERIC_DTYPE)
         if self.residual_scale == 'none':
             return residual
-        y = batch['y_tensors'].to(self.device, dtype=torch.float32).squeeze(-1)
+        y = batch['y_tensors'].to(self.device, dtype=NUMERIC_DTYPE).squeeze(-1)
         valid = batch['data_attn_mask'].to(self.device)
         # Robust spread of the OBSERVED targets, per problem, over valid points only.
         median = _masked_median(y, valid)
         mad = 1.4826 * _masked_median((y - median.unsqueeze(1)).abs(), valid)
         # A degenerate problem (every y identical) has MAD 0 and nothing to measure against.
-        # Fall back to NO scaling for it rather than clamping to float32 tiny, which would turn
-        # an ordinary residual into ~1e38 -- absurd, yet finite, so it would encode as a
+        # Fall back to NO scaling for it rather than clamping to the dtype's tiny, which would
+        # turn an ordinary residual into ~1e308 -- absurd, yet finite, so it would encode as a
         # perfectly legitimate nibble target instead of being masked out.
         mad = torch.where(mad > 0, mad, torch.ones_like(mad))
         scale = mad.unsqueeze(1) if self.residual_scale == 'mad' else y.abs() + mad.unsqueeze(1)
@@ -1017,12 +1018,16 @@ class Trainer:
         residual = self._scaled_residual(batch)
         if residual is None:
             return None
-        labels = _float32_to_nibbles_torch(residual)
+        # The codec is still binary32 until S4, so the quantity ACTUALLY encoded is the
+        # float32 narrowing of the scaled residual. Both the label and the validity mask read
+        # that value -- masking the wider one would let a residual outside float32 range through
+        # as inf's bit pattern, a perfectly well-formed nibble target for a value the head can
+        # never see. When the codec widens, this narrowing is the single line that goes.
+        encoded = residual.to(torch.float32)
+        labels = _float32_to_nibbles_torch(encoded)
         logits = head(point_representations)
         logits = logits.view(*logits.shape[:-1], IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS)
-        # A non-finite residual has no meaningful nibble target. Checked on the SCALED value,
-        # which is what gets encoded -- a ruler can push a finite residual to inf.
-        valid = batch['data_attn_mask'].to(logits.device) & torch.isfinite(residual)
+        valid = batch['data_attn_mask'].to(logits.device) & torch.isfinite(encoded)
         instance_index = torch.arange(
             valid.shape[0], device=valid.device).unsqueeze(1).expand_as(valid)[valid]
         return logits[valid], labels[valid], instance_index

@@ -2,6 +2,8 @@
 import pytest
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import get_path
 from flash_ansr.model.encoders.set_transformer import SetTransformer
 from flash_ansr.model.tokenizer import Tokenizer
@@ -49,7 +51,7 @@ def test_set_transformer_returns_prepool_point_representations() -> None:
 def test_model_captures_point_representations_in_the_same_pass(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
     model, kwargs = _model(tokenizer, engine, outlier_head=True)
     B, M = 2, 12
-    data = torch.randn(B, M, kwargs["encoder_max_n_variables"])
+    data = torch.randn(B, M, kwargs["encoder_max_n_variables"], dtype=NUMERIC_DTYPE)
     mask = torch.ones(B, M, dtype=torch.bool)
     mask[0, 9:] = False
     tokens = torch.randint(0, len(tokenizer), (B, 5))
@@ -69,7 +71,7 @@ def test_disabled_head_stays_absent_and_checkpoint_compatible(tokenizer, engine)
     extra = set(with_head.state_dict()) - set(without_head.state_dict())
     assert extra and all(key.startswith("outlier_head.") for key in extra)
     B, M = 1, 6
-    data = torch.randn(B, M, kwargs["encoder_max_n_variables"])
+    data = torch.randn(B, M, kwargs["encoder_max_n_variables"], dtype=NUMERIC_DTYPE)
     with torch.no_grad():
         without_head(torch.randint(0, len(tokenizer), (B, 4)), data)
     assert without_head.point_representations is None

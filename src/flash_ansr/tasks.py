@@ -47,6 +47,7 @@ from flash_ansr.utils.ieee754 import (
     nibble_tokens_to_float32,
     nibble_values_to_float32,
 )
+from flash_ansr.utils.numeric import NUMERIC_DTYPE, NUMERIC_DTYPE_NP
 from flash_ansr.utils.tensor_ops import pad_input_set
 
 #: Draws taken by default whenever a verb reads a value out of the model. NOT 1: a single decode is
@@ -177,8 +178,8 @@ def _seeded_generator(device: Any, seed: int | None) -> torch.Generator | None:
 def _encoder_batch(X: np.ndarray, y: np.ndarray, n_variables: int,
                    device: torch.device | str) -> tuple[torch.Tensor, torch.Tensor]:
     """Pack ``(X, y)`` into the (1, n_points, n_variables + 1) tensor the encoder reads."""
-    x_arr = torch.as_tensor(np.asarray(X, dtype=np.float32))
-    y_arr = torch.as_tensor(np.asarray(y, dtype=np.float32)).reshape(-1, 1)
+    x_arr = torch.as_tensor(np.asarray(X, dtype=NUMERIC_DTYPE_NP))
+    y_arr = torch.as_tensor(np.asarray(y, dtype=NUMERIC_DTYPE_NP)).reshape(-1, 1)
     if x_arr.ndim == 1:
         x_arr = x_arr.reshape(-1, 1)
     if x_arr.shape[0] != y_arr.shape[0]:
@@ -197,7 +198,7 @@ def _start_state(prefix_tokens: list[int], prefix_numeric: list[float], n_sample
                  device: Any) -> tuple[torch.Tensor, torch.Tensor]:
     """``n_samples`` identical rows of the prompt prefix, ready to diverge."""
     sequences = torch.tensor([prefix_tokens], dtype=torch.long, device=device).repeat(n_samples, 1)
-    numerics = torch.tensor([prefix_numeric], dtype=torch.float32, device=device).repeat(n_samples, 1)
+    numerics = torch.tensor([prefix_numeric], dtype=NUMERIC_DTYPE, device=device).repeat(n_samples, 1)
     return sequences, numerics
 
 
@@ -209,7 +210,7 @@ def _append(state: tuple[torch.Tensor, torch.Tensor], token_id: int,
     device = sequences.device
     return (
         torch.cat([sequences, torch.full((rows, 1), token_id, dtype=torch.long, device=device)], dim=1),
-        torch.cat([numerics, torch.full((rows, 1), numeric, dtype=torch.float32, device=device)], dim=1),
+        torch.cat([numerics, torch.full((rows, 1), numeric, dtype=NUMERIC_DTYPE, device=device)], dim=1),
     )
 
 
@@ -236,8 +237,8 @@ def _conditioning(estimator: Any, X: Any, y: Any, *, conditioned: bool, n_rows: 
             f"(the learned null_memory); this checkpoint has no unconditioned mode.")
     if X is None or y is None:
         # Discarded by the null substitution -- shape is all that matters.
-        X = np.zeros((1, estimator.n_variables), dtype=np.float32)
-        y = np.zeros((1,), dtype=np.float32)
+        X = np.zeros((1, estimator.n_variables), dtype=NUMERIC_DTYPE_NP)
+        y = np.zeros((1,), dtype=NUMERIC_DTYPE_NP)
     data, attn_mask = _encoder_batch(X, y, estimator.n_variables, model.device)
     mask = torch.zeros(n_rows, dtype=torch.bool, device=model.device)
     return data, attn_mask, mask

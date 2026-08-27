@@ -1,8 +1,48 @@
 # v25: float64 numerics + byte constant tokens — migration plan
 
 **Status: owner-approved 2026-08-27.** Mapped by a 7-way parallel audit of the four repos,
-then synthesized; every line number was verified against the working tree. Steps S1, S2 and
-the pre-encoder half of S3 are LANDED (flash-ansr 3e2cca1 / 60ec46a, srbf 4f97164).
+then synthesized; every line number was verified against the working tree. Steps **S1, S2 and
+S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164). Next: S4.
+
+**Do not launch a training run between S3 and S4.** Between them the tree carries
+float32-representable values in float64 containers -- self-consistent, but not the target
+format, and a checkpoint trained there would be neither v24 nor v25.
+
+### What S3 decided that the plan left open
+
+* **One name for the width.** `flash_ansr.utils.numeric.NUMERIC_DTYPE` / `NUMERIC_DTYPE_NP`.
+  Every site the sweep touched dereferences it instead of spelling a literal, because the
+  failure mode has no signature: a missed site produces a correctly-shaped tensor of
+  scrambled bits, not an error. The next width change is one line plus a test.
+* **Q7 (`streaming.py:929-934`) -- intent preserved, not flipped.** The comment's stated
+  reason was "difference in the dtype the ENCODER reads". That dtype is now binary64, so the
+  differencing follows it. Cancellation is still whatever the data does, which was the point.
+* **`data.py:583/599/601` (the `include_metrics` diagnostics) -- widened.** No v24 config
+  turns them on and `estimate_fisher_metric` is dtype-agnostic (`jacrev`/`vmap`), so the only
+  live question was whether a diagnostic should describe the data in a narrower width than the
+  data. It should not. `collate.py:264/266` moved with them, or the producer and the consumer
+  would have disagreed.
+* **`collate.py:256` (`complexity`) -- widened, though nothing reads it.** mu is exact in
+  binary32 below 2**24 and the measured band tops out at 790k, so this is uniformity, not a
+  fix.
+* **Masks stay float32.** `outlier_mask` and `data_attn_mask` are boolean data; widening them
+  would double 32 MiB of shared ring for nothing. S10 narrows them to `np.bool_` properly,
+  with the `.clone()` that a bool buffer requires.
+* **`train.py:296/297/311` NOT touched.** Pre-existing float64 in the AUROC/AP rank
+  statistics, unrelated to the numeric channel. A blanket sweep caught them; they were put
+  back as literals so the constant keeps meaning one thing.
+* **The residual label and its mask now read the same narrowed value.** `_residual_scores`
+  computes `encoded = residual.to(torch.float32)` and both the nibble label and the
+  `isfinite` mask read *that*. Without it the f64 lane admits residuals the f32 codec cannot
+  spell, and they encode as inf's bit pattern -- a well-formed target for a value the head can
+  never be right about. When S4 widens the codec, deleting that one line is the whole change.
+* **`configs/{test,v24.0-T17,v24.0-T18}/model.yaml` pin `pre_encoder_bits: 64`.** The code
+  default stays 32 (C4) and is now itself under test: the frozen v24 checkpoint yamls omit the
+  key, and flipping the default would rebuild them silently at the wrong width instead of
+  failing at `load_weights(strict=True)`.
+* **`fit()` normalizes the caller's dtype in BOTH branches.** It previously passed a
+  caller-supplied `torch.Tensor` through with only a device move -- which, against a
+  reinterpreting pre-encoder, is the scrambled-bits path with a public entry point.
 
 Owner rulings folded in:
 * **effort=4 everywhere** for the simplipy engine.

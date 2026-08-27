@@ -7,6 +7,7 @@ from typing import Any, Callable, Literal, Optional, Tuple, TypeAlias
 import torch
 
 from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
 from tqdm import tqdm
@@ -909,8 +910,8 @@ class FlashANSRModel(nn.Module):
 
         numeric_template: torch.Tensor | None = None
         if base_input_num is not None:
-            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
-            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=NUMERIC_DTYPE)
+            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=NUMERIC_DTYPE)
 
         def build_input_num_tensor(current_length: int, batch_size: int) -> torch.Tensor | None:
             if numeric_template is None:
@@ -1678,8 +1679,8 @@ class FlashANSRModel(nn.Module):
         # Pre-allocate numeric template once (mirrors beam_search optimisation)
         numeric_template: torch.Tensor | None = None
         if base_input_num is not None:
-            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
-            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=NUMERIC_DTYPE)
+            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=NUMERIC_DTYPE)
 
         def build_input_num_tensor(current_length: int, batch_size: int) -> torch.Tensor | None:
             if numeric_template is None:
@@ -1911,8 +1912,8 @@ class FlashANSRModel(nn.Module):
 
         numeric_template: torch.Tensor | None = None
         if base_input_num is not None:
-            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=torch.float32)
-            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=torch.float32)
+            numeric_template = torch.full((max_len,), float('nan'), device=device, dtype=NUMERIC_DTYPE)
+            numeric_template[:len(base_input_num)] = torch.tensor(base_input_num, device=device, dtype=NUMERIC_DTYPE)
 
         n_heads = block0.self_attention.n_heads
         head_dim = block0.self_attention.head_dim

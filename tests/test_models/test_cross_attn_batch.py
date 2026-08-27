@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 import torch
+
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 import torch.nn.functional as F
 
 from flash_ansr import FlashANSRModel, get_path
@@ -39,7 +41,7 @@ class TestCrossAttentionBatchDims(unittest.TestCase):
     def test_batch_dims_match_with_broadcast_memory(self):
         """A batch-1 memory against multi-row tokens must not leave k/v batch at 1."""
         n_rows = 4
-        memory = self.nsr._create_memory(torch.rand(1, 13, 11))
+        memory = self.nsr._create_memory(torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE))
         self.assertEqual(memory.shape[0], 1, "fixture should produce a batch-1 memory")
         tokens = torch.randint(1, 10, (n_rows, 3))
 
@@ -56,7 +58,7 @@ class TestCrossAttentionBatchDims(unittest.TestCase):
     def test_batch_dims_match_during_cached_decode(self):
         """The same holds on the incremental path, where cross-attention K/V come from cache."""
         n_rows = 4
-        memory = self.nsr._create_memory(torch.rand(1, 13, 11))
+        memory = self.nsr._create_memory(torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE))
         tokens = torch.randint(1, 10, (n_rows, 4))
 
         def run():
@@ -77,7 +79,7 @@ class TestCrossAttentionBatchDims(unittest.TestCase):
     def test_cached_kv_still_carries_query_batch(self):
         """The hoist must not change what use_cache returns: K/V still come back at Q's batch."""
         n_rows = 3
-        memory = self.nsr._create_memory(torch.rand(1, 13, 11))
+        memory = self.nsr._create_memory(torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE))
         tokens = torch.randint(1, 10, (n_rows, 3))
 
         with torch.no_grad():
@@ -93,7 +95,7 @@ class TestCrossAttentionBatchDims(unittest.TestCase):
     def test_static_cross_caches_a_view_and_matches_a_contiguous_reference(self):
         """forward_static_cross satisfies the batch contract without copying the memory."""
         n_rows = 8
-        memory = self.nsr._create_memory(torch.rand(1, 13, 11))
+        memory = self.nsr._create_memory(torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE))
         attn = self.nsr.decoder.layers[0].cross_attention
         dim = attn.n_heads * attn.head_dim
         q = torch.randn(n_rows, 1, dim)

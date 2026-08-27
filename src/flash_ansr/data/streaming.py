@@ -34,6 +34,7 @@ from flash_ansr.data.serialization import (
     truncation_cuts_ieee754_span,
 )
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.utils.numeric import NUMERIC_DTYPE_NP
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
@@ -170,11 +171,11 @@ class SharedMemoryWorkerPool:
         shm_configs: dict[str, dict[str, Any]] = {
             "x_tensors": {
                 "shape": (self.pool_size, batch_size, max_n_support, len(self.source.catalog.variables)),
-                "dtype": np.float32,
+                "dtype": NUMERIC_DTYPE_NP,
             },
             "y_tensors": {
                 "shape": (self.pool_size, batch_size, max_n_support, 1),
-                "dtype": np.float32,
+                "dtype": NUMERIC_DTYPE_NP,
             },
             "outlier_mask": {
                 # per-point contamination labels from the source's noise mixture (all-zero
@@ -189,7 +190,7 @@ class SharedMemoryWorkerPool:
                 # any ruler is a train-side choice (see Trainer.residual_scale), so the buffer
                 # never bakes one in.
                 "shape": (self.pool_size, batch_size, max_n_support),
-                "dtype": np.float32,
+                "dtype": NUMERIC_DTYPE_NP,
             },
             "data_attn_mask": {
                 "shape": (self.pool_size, batch_size, max_n_support),
@@ -726,7 +727,7 @@ def _producer_worker(
                             # y* is the CLEAN value -- the task supervises the function, not the
                             # noise. Full-precision nibbles (v24 ruling: no tail zeroing).
                             j = int(worker_rng.integers(x_support.shape[0]))
-                            point = x_support[j].astype(np.float64)
+                            point = x_support[j].astype(NUMERIC_DTYPE_NP)
                             y_star = float(np.float32(y_support[j].reshape(-1)[0]))
                             # Placement decides WHAT the model may condition on:
                             #   suffix (after </expression>) -> the data AND the expression;
@@ -926,12 +927,13 @@ def _producer_worker(
                 outlier_mask_batch[i, y_encoder.shape[0]:] = 0
 
                 # The residual the model would have to explain: observed minus truth, in the
-                # float32 the encoder actually reads. Differenced in float32 (not float64) so
-                # the target is exactly the displacement present in the data, cancellation and
-                # all -- see y_encoder above for why the clean array stays local.
+                # dtype the encoder actually reads (v25: binary64). Differencing in the ENCODER's
+                # dtype -- not a wider one -- is the point: the target is exactly the displacement
+                # present in the data the model sees, cancellation and all. See y_encoder above
+                # for why the clean array stays local.
                 residual_batch[i, : y_encoder.shape[0]] = (
-                    y_encoder.reshape(-1).astype(np.float32)
-                    - y_support.reshape(-1).astype(np.float32))
+                    y_encoder.reshape(-1).astype(NUMERIC_DTYPE_NP)
+                    - y_support.reshape(-1).astype(NUMERIC_DTYPE_NP))
                 residual_batch[i, y_encoder.shape[0]:] = 0
 
                 data_attn_mask_batch[i, : x_support.shape[0]] = 1

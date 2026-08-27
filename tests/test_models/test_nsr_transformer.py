@@ -4,6 +4,8 @@ import tempfile
 
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr.model.decoders import TransformerDecoder
 from flash_ansr import FlashANSRModel, get_path, SetTransformer
 
@@ -21,7 +23,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         batch_size = 257
         sequence_length = 17
 
-        x = torch.rand(batch_size, 10, 11)
+        x = torch.rand(batch_size, 10, 11, dtype=NUMERIC_DTYPE)
         input_tokens = torch.randint(low=len(nsr.tokenizer.special_tokens), high=len(nsr.tokenizer), size=(batch_size, sequence_length))
 
         random_padding_beginnings = torch.randint(0, sequence_length, (batch_size,))
@@ -37,7 +39,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_nsr_beam_search(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
-        x = torch.rand(13, 11)
+        x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
         beams, scores, _ = nsr.beam_search(x, beam_width=4, max_len=10)
 
@@ -58,7 +60,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         for seed in range(5):
             torch.manual_seed(seed)
-            x = torch.rand(13, 11)
+            x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
             beams, scores, _ = nsr.beam_search(
                 x,
                 beam_width=1,
@@ -88,7 +90,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         for seed in range(5):
             torch.manual_seed(seed)
-            x = torch.rand(13, 11)
+            x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
             beams, _, completed = nsr.beam_search(
                 x,
                 beam_width=4,
@@ -118,7 +120,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         for seed in range(5):
             torch.manual_seed(seed)
-            x = torch.rand(13, 11)
+            x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
             beams, _, _ = nsr.beam_search(
                 x,
                 beam_width=4,
@@ -137,7 +139,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
     def test_nsr_sample_top_kp(self):
         nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
 
-        x = torch.rand(13, 11)
+        x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
         try:
             beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
@@ -154,7 +156,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         assert isinstance(nsr.encoder, SetTransformer)
         assert isinstance(nsr.decoder, TransformerDecoder)
 
-        x = torch.rand(256, 10, 11)
+        x = torch.rand(256, 10, 11, dtype=NUMERIC_DTYPE)
         input_tokens = torch.randint(5, 10, (256, 17))
 
         random_padding_beginnings = torch.randint(0, 17, (256,))
@@ -217,7 +219,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
 
         B = 7
         S = 13
-        x = torch.rand(B, 10, 11)
+        x = torch.rand(B, 10, 11, dtype=NUMERIC_DTYPE)
         input_tokens = torch.randint(5, 10, (B, S))
 
         random_padding_beginnings = torch.randint(5, S, (B,))

@@ -34,6 +34,7 @@ from flash_ansr.data.serialization import (
 )
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
 from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from symbolic_data import LampleChartonCatalog, ProblemSource
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.preprocessing import FlashANSRPreprocessor
@@ -580,7 +581,7 @@ class FlashANSRDataset:
             mask = data_attn_mask[idx]
             X = x_tensors[idx]
             X = X[mask] if mask is not None else X
-            X = X.to(dtype=torch.float32)
+            X = X.to(dtype=NUMERIC_DTYPE)
 
             try:
                 if compute_fisher:
@@ -596,9 +597,9 @@ class FlashANSRDataset:
                     hessian_vals.append(float("nan"))
 
         if compute_fisher:
-            batch["fisher_metric"] = torch.tensor(fisher_vals, dtype=torch.float32)
+            batch["fisher_metric"] = torch.tensor(fisher_vals, dtype=NUMERIC_DTYPE)
         if compute_hessian:
-            batch["curvature_metric"] = torch.tensor(hessian_vals, dtype=torch.float32)
+            batch["curvature_metric"] = torch.tensor(hessian_vals, dtype=NUMERIC_DTYPE)
 
     def _initialize_stream(
         self,
@@ -815,7 +816,7 @@ class FlashANSRDataset:
                 if getattr(self._stream.source, "noise_spec", None) is not None:
                     batch_dict["outlier_mask"] = torch.from_numpy(
                         self._stream.buffers["outlier_mask"][completed_slot_idx]).to(torch.bool)
-                    # clone(), NOT .to(): float32 -> float32 is a no-op that would hand back a
+                    # clone(), NOT .to(): a same-dtype cast is a no-op that would hand back a
                     # VIEW onto the worker ring, which the pool recycles on refill (see
                     # train._detach_raw_batch). outlier_mask escapes this only because its bool
                     # cast copies.

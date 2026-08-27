@@ -26,6 +26,7 @@ from flash_ansr.data.serialization import (
     serialize_constant_tokens,
 )
 from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_START_TOKEN
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 
 
 def build_paired_views(
@@ -116,8 +117,8 @@ def paired_constant_gap(
     pad_id = int(tokenizer["<pad>"])
     # torch.stack of per-row torch.as_tensor keeps whatever device the batch lives on
     # (np.asarray over a list of cuda tensors raises); .to(device) then normalizes.
-    x_tensors = torch.stack([torch.as_tensor(batch["x_tensors"][i], dtype=torch.float32) for i, _ in rows])
-    y_tensors = torch.stack([torch.as_tensor(batch["y_tensors"][i], dtype=torch.float32) for i, _ in rows])
+    x_tensors = torch.stack([torch.as_tensor(batch["x_tensors"][i], dtype=NUMERIC_DTYPE) for i, _ in rows])
+    y_tensors = torch.stack([torch.as_tensor(batch["y_tensors"][i], dtype=NUMERIC_DTYPE) for i, _ in rows])
     attn_mask = torch.stack([torch.as_tensor(batch["data_attn_mask"][i], dtype=torch.float32) for i, _ in rows])
     data = torch.cat([x_tensors, y_tensors], dim=-1).to(device)
     attn_mask = attn_mask.to(device)
@@ -130,10 +131,10 @@ def paired_constant_gap(
             numerics = [views[view_index][1] for _, views in rows]
             length = max(len(sequence) for sequence in sequences)
             ids = torch.full((len(sequences), length), pad_id, dtype=torch.long)
-            numeric = torch.full((len(sequences), length), float("nan"), dtype=torch.float32)
+            numeric = torch.full((len(sequences), length), float("nan"), dtype=NUMERIC_DTYPE)
             for row, (sequence, values) in enumerate(zip(sequences, numerics)):
                 ids[row, :len(sequence)] = torch.as_tensor(sequence, dtype=torch.long)
-                numeric[row, :len(values)] = torch.as_tensor(values, dtype=torch.float32)
+                numeric[row, :len(values)] = torch.as_tensor(values, dtype=NUMERIC_DTYPE)
             ids = ids.to(device)
             numeric = numeric.to(device)
             logits = model(ids, data, input_num=numeric, data_attn_mask=attn_mask)

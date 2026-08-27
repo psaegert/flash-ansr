@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.utils.weights import load_weights
 from tqdm import tqdm
 
@@ -520,10 +521,10 @@ class FlashANSR(BaseEstimator):
         input_num = None
         if self.flash_ansr_model._has_numeric_channel():
             input_num = torch.full((batch_size, max_len), float('nan'),
-                                   device=device, dtype=torch.float32)
+                                   device=device, dtype=NUMERIC_DTYPE)
             if _base_num is not None:
                 prefix_numeric = torch.tensor(
-                    [float(value) for value in _base_num], device=device, dtype=torch.float32)
+                    [float(value) for value in _base_num], device=device, dtype=NUMERIC_DTYPE)
                 input_num[:, :prefix_numeric.shape[0]] = prefix_numeric
 
         with torch.no_grad():
@@ -1872,33 +1873,37 @@ class FlashANSR(BaseEstimator):
 
         with torch.no_grad():
             # Convert the input data to a tensor
+            # dtype is NOT the caller's choice: the pre-encoder reinterprets rather than
+            # converts, so a float32 tensor handed straight through would be viewed as int64 and
+            # emit scrambled bits at the right shape. Normalize both branches.
             if not isinstance(X, torch.Tensor):
                 if isinstance(X, pd.DataFrame):
-                    X = torch.tensor(X.values, dtype=torch.float32, device=self.flash_ansr_model.device)
+                    X = torch.tensor(X.values, dtype=NUMERIC_DTYPE, device=self.flash_ansr_model.device)
                 else:
-                    X = torch.tensor(X, dtype=torch.float32, device=self.flash_ansr_model.device)
+                    X = torch.tensor(X, dtype=NUMERIC_DTYPE, device=self.flash_ansr_model.device)
             else:
-                X = X.to(self.flash_ansr_model.device)
+                X = X.to(device=self.flash_ansr_model.device, dtype=NUMERIC_DTYPE)
 
             if not isinstance(y, torch.Tensor):
                 if isinstance(y, (pd.DataFrame, pd.Series)):
-                    y = torch.tensor(y.values, dtype=torch.float32, device=self.flash_ansr_model.device)
+                    y = torch.tensor(y.values, dtype=NUMERIC_DTYPE, device=self.flash_ansr_model.device)
                 else:
-                    y = torch.tensor(y, dtype=torch.float32, device=self.flash_ansr_model.device)
+                    y = torch.tensor(y, dtype=NUMERIC_DTYPE, device=self.flash_ansr_model.device)
             else:
-                y = y.to(self.flash_ansr_model.device)
+                y = y.to(device=self.flash_ansr_model.device, dtype=NUMERIC_DTYPE)
 
             if y.dim() == 1:
                 y = y.unsqueeze(-1)
 
-            # The R1 gate above ran on the caller's (often float64) array, but the cast to float32
-            # one line later can MANUFACTURE non-finite values: |x| > 3.4e38 overflows to inf and
-            # enters the encoder and the refiner as inf, which the gate was written to prevent.
-            # Check the post-cast tensor, and name the magnitude so the caller can rescale.
+            # The R1 gate above ran on the caller's array; the cast on the way in can still
+            # MANUFACTURE non-finite values (an overflowing narrowing sends |x| to inf, which
+            # enters the encoder and the refiner as inf -- exactly what the gate exists to
+            # prevent). v25 reads binary64, so this only bites a caller who arrives wider than
+            # that, but the check is what makes the boundary honest either way.
             if not bool(torch.isfinite(X).all()):
                 raise ValueError(
-                    "X contains values that overflow float32 (|x| > 3.4e38) after the cast the model "
-                    "requires. Rescale the inputs before calling fit().")
+                    f"X contains values that are not finite in {NUMERIC_DTYPE}, the dtype the model "
+                    f"reads. Rescale the inputs before calling fit().")
 
             sample_count = y.shape[0]
             # Over the FINITE rows only -- the same mask the refiner fits under (refine.py `_r1`).
@@ -1940,8 +1945,11 @@ class FlashANSR(BaseEstimator):
                     raise CapabilityUnavailable(
                         "fit(conditioned=False) needs a model trained with optional_condition=True "
                         "(the learned null_memory); this checkpoint has no unconditioned mode.")
+                # Pin to null_memory's OWN dtype (the model's parameter dtype), not to the
+                # data's: memory feeds the decoder's cross-attention projections, which are
+                # parameters. data_tensor is binary64 encoder INPUT and stops at the pre-encoder.
                 memory_for_scoring = (
-                    model.null_memory.to(dtype=data_tensor.dtype, device=data_tensor.device)
+                    model.null_memory.to(device=data_tensor.device)
                     .expand(data_tensor.shape[0], -1, -1).contiguous())
 
             prompt_prefix = self._prepare_prompt_prefix(

@@ -3,6 +3,8 @@ import unittest
 
 import torch
 
+from flash_ansr.utils.numeric import NUMERIC_DTYPE
+
 from flash_ansr import FlashANSRModel, get_path
 
 
@@ -15,14 +17,14 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_forward_use_cache_false_returns_tensor(self):
         """use_cache=False returns a plain Tensor, not a tuple."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         tokens = torch.tensor([[1, 5, 7]])
         result = self.nsr.forward(tokens, x, use_cache=False)
         self.assertIsInstance(result, torch.Tensor)
 
     def test_forward_use_cache_true_returns_tuple(self):
         """use_cache=True returns (logits, past_key_values)."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         tokens = torch.tensor([[1, 5, 7]])
         result = self.nsr.forward(tokens, x, use_cache=True)
         self.assertIsInstance(result, tuple)
@@ -33,7 +35,7 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_prefill_matches_full_forward(self):
         """Logits from a prefill step (use_cache=True, no past) match use_cache=False."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         tokens = torch.tensor([[1, 5, 7, 9]])
         logits_full = self.nsr.forward(tokens, x, use_cache=False)
         logits_cached, _ = self.nsr.forward(tokens, x, use_cache=True)
@@ -41,7 +43,7 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_incremental_matches_full(self):
         """Logits from prefill(2 tokens) + incremental(1 token) match full(3 tokens)."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         memory = self.nsr._create_memory(x)
         tokens = torch.tensor([[1, 5, 7]])
 
@@ -57,7 +59,7 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_multi_step_incremental(self):
         """Multiple single-token incremental steps match full recomputation."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         memory = self.nsr._create_memory(x)
         tokens = torch.tensor([[1, 5, 7, 9, 11]])
 
@@ -77,7 +79,7 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_cache_shapes(self):
         """Verify KV-cache tensor shapes match expectations."""
-        x = torch.rand(2, 13, 11)
+        x = torch.rand(2, 13, 11, dtype=NUMERIC_DTYPE)
         tokens = torch.tensor([[1, 5, 7], [1, 8, 9]])
         _, past = self.nsr.forward(tokens, x, use_cache=True)
 
@@ -105,7 +107,7 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_cache_grows_on_incremental_step(self):
         """Self-attention cache seq dim grows by 1 each step; cross-attention stays fixed."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         memory = self.nsr._create_memory(x)
         tokens = torch.tensor([[1, 5, 7]])
 
@@ -122,10 +124,10 @@ class TestKVCacheForward(unittest.TestCase):
 
     def test_numeric_embeddings_with_cache(self):
         """Incremental step with numeric embeddings matches full forward."""
-        x = torch.rand(1, 13, 11)
+        x = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
         memory = self.nsr._create_memory(x)
         tokens = torch.tensor([[1, 5, 7]])
-        input_num = torch.tensor([[[0.5], [float('nan')], [float('nan')]]])
+        input_num = torch.tensor([[[0.5], [float('nan')], [float('nan')]]], dtype=NUMERIC_DTYPE)
 
         logits_full = self.nsr.forward(tokens, None, input_num=input_num, memory=memory, use_cache=False)
 
@@ -144,7 +146,7 @@ class TestKVCacheBeamSearch(unittest.TestCase):
     def setUp(self) -> None:
         self.nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
         self.nsr.eval()
-        self.x = torch.rand(13, 11)
+        self.x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     def test_beam_search_sequences_match(self):
         """Beam search with use_cache=True produces the same sequences."""
@@ -192,7 +194,7 @@ class TestKVCacheSampling(unittest.TestCase):
     def setUp(self) -> None:
         self.nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
         self.nsr.eval()
-        self.x = torch.rand(13, 11)
+        self.x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     def test_sampling_sequences_match(self):
         """Sampling with use_cache=True produces the same sequences."""

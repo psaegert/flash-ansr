@@ -83,19 +83,35 @@ class TestFlashANSRModelAblations:
 
     def _forward(self, model: FlashANSRModel) -> torch.Tensor:
         batch, set_size, n_vars = 4, 6, 11
-        x = torch.randn(batch, set_size, n_vars)
+        # The pre-encoder REINTERPRETS rather than converts, so each arm gets the width it
+        # was built for. binary16 is the lossy arm and casts from anything.
+        dtype = torch.float64 if model.pre_encoder_bits == 64 else torch.float32
+        x = torch.randn(batch, set_size, n_vars, dtype=dtype)
         seq_len = 9
         tokens = torch.randint(
             len(model.tokenizer.special_tokens), len(model.tokenizer), (batch, seq_len)
         )
         return model.forward(tokens, x)
 
-    def test_default_loads_pre_norm_and_32bit(self):
+    def test_config_pins_the_numeric_width_explicitly(self):
+        """v25: configs PIN the width rather than inherit it (memory rule: pin artifacts)."""
         model = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
-        assert model.pre_encoder.encoding_size == 32
-        assert model.pre_encoder_bits == 32
+        assert model.pre_encoder.encoding_size == 64
+        assert model.pre_encoder_bits == 64
+        assert model.pre_encoder_numeric_tokens.encoding_size == 64
         for layer in model.decoder.layers:
             assert layer.norm_position == "pre"
+
+    def test_the_code_default_stays_32_for_the_frozen_v24_checkpoints(self):
+        """The v24 checkpoint model.yamls OMIT pre_encoder_bits and rely on this default.
+        Flipping it would silently rebuild them at the wrong width; keeping it means their
+        shape mismatch is what fails, loudly, at load_weights(strict=True)."""
+        from flash_ansr.utils.config_io import load_config
+        cfg = load_config(get_path('configs', 'test', 'model.yaml'))
+        assert 'pre_encoder_bits' in cfg, "the pin itself is the thing under test"
+        del cfg['pre_encoder_bits']
+        model = FlashANSRModel.from_config(cfg)
+        assert model.pre_encoder_bits == 32
 
     def test_b1_post_norm_decoder(self):
         from flash_ansr.utils.config_io import load_config
@@ -164,7 +180,8 @@ class TestFlashANSRModelAblations:
         engine = SimpliPyEngine.load(cfg["simplipy_engine"], install=True)
         tokenizer = Tokenizer.from_config(get_path('configs', 'test', 'tokenizer.yaml'))
 
-        kwargs = {k: cfg[k] for k in cfg if k != 'simplipy_engine' and k != 'tokenizer'}
+        kwargs = {k: cfg[k] for k in cfg
+                  if k not in ('simplipy_engine', 'tokenizer', 'pre_encoder_bits')}
         model = FlashANSRModel(
             simplipy_engine=engine,
             tokenizer=tokenizer,
