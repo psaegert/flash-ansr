@@ -8,6 +8,46 @@ S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164). N
 float32-representable values in float64 containers -- self-consistent, but not the target
 format, and a checkpoint trained there would be neither v24 nor v25.
 
+### Q5, Q6, Q8 — RULED 2026-08-27
+
+**Q5 (beam expansion) — dropped, not solved.** "Let's not worry about beam search and mcts."
+No grammar-aware expansion work; S4 does not wait on it. The question only ever existed inside
+the two beam loops, so removing them (below) deletes it outright.
+
+**Q6 (`constant_representation` string) — no rename.** `ieee754_mixed` stays. The required-token
+gate at `data.py:158-164` is the real lock and it gets stronger for free: under bytes it demands
+`<b00>`..`<bff>`, so a stale nibble tokenizer fails at dataset construction naming the missing
+tokens. A rename buys nothing and breaks `train.py:1359`, an EQUALITY test that silently deletes
+the whole T12 paired constant eval.
+
+**Q8 (`tail_zero_bits`) — DELETED, not re-pinned.** The knob zeroes the low mantissa bits of the
+constant's spelling in the expanded span. That is a TRAINING-time precision reduction, and the
+standing full-precision ruling forbids it: *"We will train every model on full precision and then
+do actual studies regarding precision and only reduce precision of the ieee predictions at
+inference time, if at all."* It cannot be reframed as an inference-time study, because it changes
+the training data. So it goes, and the "is 16 still 16 at 52 mantissa bits?" trap goes with it.
+
+The sanctioned inference-time study is a DIFFERENT mechanism -- truncate the model's PREDICTED
+bytes before refinement, in the decode path -- and is not this knob.
+
+Sites: `data/streaming.py` (7), `data/serialization.py` (6, incl. the `0..23` bound and the
+`pattern &= ~((1 << n) - 1)` masking at :208-214), `data/data.py` (5), `train/paired_eval.py` (4),
+`tests/test_paired_constant_eval.py`. `configs/v24.0-T13/dataset_train_tail16.yaml` freezes with
+T13 to the `compat/v24-nibbles` tag; the T13 D-arm result becomes history, not a baseline.
+
+**This also deletes an S10 item.** "`_validate_step` drops `zero_tail_bits` so paired views are
+always built with a 0-bit tail even on an arm training at `tail_zero_bits: 16`" cannot happen
+when no such arm exists.
+
+### Q3 — RULED 2026-08-27: two digits
+
+`BYTE_TOKENS = tuple(f"<b{v:02x}>" for v in range(256))`, plus a `constants_format` key in
+tokenizer.yaml. Never `f"<b{v:x}>"`: over `range(256)` that re-emits `<b0>`/`<b1>` -- the
+RETIRED bit tokens -- for values 0..15, and `tests/test_ieee754.py:125-127` still rejects
+`["<b0>"] * 8`. Two digits makes both presence-only gates (`constrained.py:43-50`,
+`flash_ansr.py:1070`) fail loudly on a stale vocabulary instead of silently enforcing an
+8-byte grammar over nibble tokens.
+
 ### Q2 — RULED 2026-08-27: bytes, and the residual head is RETIRED
 
 Two owner rulings, the second of which deletes the question rather than answering it.
