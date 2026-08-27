@@ -1,7 +1,7 @@
 """Canonical candidate-scoring primitives (single source of truth).
 
 These are owned by flash-ansr because the product needs them at *inference* time to score and
-rank decode candidates (``flash_ansr.py`` / ``generation/mcts.py`` / ``results.py``). They are
+rank decode candidates (``flash_ansr.py`` / ``results.py``). They are
 also consumed by the comparison baselines and, after the repo split, by ``srbf`` via the
 public API. This module collapses the formerly-triplicated
 ``_compute_fvu`` / ``_normalize_variance`` / ``_score_from_fvu`` copies

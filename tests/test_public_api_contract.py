@@ -158,16 +158,14 @@ class TestGenerationConfigs:
 
     def test_config_classes_importable(self):
         from flash_ansr.utils.generation import (  # noqa: F401
-            BeamSearchConfig,
             GenerationConfig,
             GenerationConfigBase,
-            MCTSGenerationConfig,
             SoftmaxSamplingConfig,
         )
 
         assert GenerationConfig is not None  # union alias
 
-    @pytest.mark.parametrize("name", ["BeamSearchConfig", "SoftmaxSamplingConfig", "MCTSGenerationConfig"])
+    @pytest.mark.parametrize("name", ["SoftmaxSamplingConfig"])
     def test_concrete_configs_are_classes(self, name):
         import flash_ansr.utils.generation as gen
 
@@ -312,9 +310,7 @@ class TestPackageRootReExports:
             "NoValidSampleFoundError",
             "GenerationConfig",
             "GenerationConfigBase",
-            "BeamSearchConfig",
             "SoftmaxSamplingConfig",
-            "MCTSGenerationConfig",
             "create_generation_config",
             "get_path",
             "get_root",
@@ -326,28 +322,3 @@ class TestPackageRootReExports:
         import flash_ansr
 
         assert hasattr(flash_ansr, name), f"flash_ansr.{name} regressed from the package root surface"
-
-
-class TestMCTSGenerationConfigSurface:
-    """Additive (0.11.0): the rewritten MCTS decoder's public config surface. srbf/eval configs and
-    downstream users construct these by keyword; field removals/renames are breaking changes."""
-
-    def test_fields_construct_and_roundtrip(self):
-        from flash_ansr.utils.generation import MCTSGenerationConfig
-
-        cfg = MCTSGenerationConfig(
-            refine_budget=64, batch_width=16, async_search=True, inflight=32, gpu_batch=8,
-            backup="max", value_objective="score", invalid_penalty=1.0,
-            reward_log_fvu_hi=0.0, reward_log_fvu_lo=-8.0,
-        )
-        kw = cfg.to_kwargs()
-        for k in ("refine_budget", "batch_width", "async_search", "inflight", "gpu_batch",
-                  "backup", "value_objective", "invalid_penalty"):
-            assert k in kw, f"MCTSGenerationConfig.to_kwargs missing {k!r}"
-        assert kw["async_search"] is True and kw["inflight"] == 32 and kw["gpu_batch"] == 8
-
-    def test_pool_submit_is_public(self):
-        from flash_ansr._refine_pool import RecoverableForkPool
-
-        assert callable(getattr(RecoverableForkPool, "submit", None)), \
-            "RecoverableForkPool.submit (async MCTS refine path) must exist"

@@ -9,9 +9,7 @@ import torch
 from flash_ansr import (
     FlashANSR,
     GenerationConfig,
-    BeamSearchConfig,
     SoftmaxSamplingConfig,
-    MCTSGenerationConfig,
     ConvergenceError,
     create_generation_config,
     get_path,
@@ -84,7 +82,7 @@ class TestInference(unittest.TestCase):
         nsr = FlashANSR.load(
             directory=self.model_dir,
             generation_config=create_generation_config(
-                method="beam_search", beam_width=4, max_len=32, batch_size=4,
+                method="softmax_sampling", choices=4, max_len=32, batch_size=4,
                 unique=True, limit_expansions=True, use_cache=True),
             n_restarts=2,
         ).to(self.device)
@@ -211,19 +209,6 @@ class TestInference(unittest.TestCase):
                 self.assertFalse(any(token == '<constant>' for token in expr_prefix),
                                  f"Beam {beam_idx} fit {fit_idx} prefix retains <constant> placeholders")
 
-    def test_beam_search_inference(self) -> None:
-        generation_config = BeamSearchConfig(
-            beam_width=8,
-            max_len=24,
-            batch_size=32,
-            unique=True,
-        )
-
-        nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
-
-        self.assertEqual(nsr.generation_config.method, 'beam_search')
-        self._assert_valid_results(nsr)
-
     def test_softmax_sampling_inference(self) -> None:
         generation_config = SoftmaxSamplingConfig(
             choices=16,
@@ -280,21 +265,4 @@ class TestInference(unittest.TestCase):
         nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
 
         self.assertEqual(nsr.generation_config.method, 'softmax_sampling')
-        self._assert_valid_results(nsr)
-
-    def test_mcts_inference(self) -> None:
-        generation_config = MCTSGenerationConfig(
-            beam_width=6,
-            simulations=24,
-            expansion_top_k=12,
-            max_depth=24,
-            temperature=1.0,
-            completion_sort='reward',
-            min_visits_before_expansion=1,
-            invalid_penalty=1e5,
-        )
-
-        nsr = self._fit_with_generation_config(generation_config, n_restarts=6)
-
-        self.assertEqual(nsr.generation_config.method, 'mcts')
         self._assert_valid_results(nsr)

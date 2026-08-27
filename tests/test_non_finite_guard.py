@@ -18,7 +18,7 @@ does not cover it: ``['/', 'x1', '-', 'x2', 'x2']`` survives decoding intact and
 out of the model as ``['*', 'float("inf")', 'x1']``.
 
 THE GUARD sits at the simplification seam (``flash_ansr.utils.skeleton``), the single point
-every candidate producer shares -- beam search, softmax post-processing, MCTS canonicalization,
+every candidate producer shares -- softmax post-processing,
 the constant-pruning lane, the parallel simplify pool and dataset conversion all call it. It
 RAISES there (a function that returns a skeleton cannot return "no skeleton" without spreading
 an optional-return contract nobody can be forced to check), and every CANDIDATE producer
@@ -28,20 +28,17 @@ the re-encode ``KeyError`` those sites already skip on. The INGEST direction doe
 non-finite arriving from a data producer is a broken upstream contract, and swallowing it would
 silently reshape the training distribution.
 
-These tests observe from outside: the public ``beam_search`` / ``parse_data`` APIs, the model's
+These tests observe from outside: the public ``sample_top_kp`` / ``parse_data`` APIs, the model's
 post-processing entry point, and the published drop counter.
 """
 import unittest
 
 import pandas as pd
-import torch
 
-from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from simplipy import SimpliPyEngine
 
 from flash_ansr import FlashANSRModel, LampleChartonCatalog, get_path
 from flash_ansr.convert_data import SOOSEParser
-from flash_ansr.model.flash_ansr_model import canonicalize_beam
 from flash_ansr.utils.skeleton import (
     NON_FINITE_TOKENS,
     NonFiniteExpressionError,
@@ -178,77 +175,6 @@ class TestPostprocessDropsAndCounts(unittest.TestCase):
         sequences, _, _ = self.model._postprocess_sampled(
             [self._sequence(LITERAL_FREE_INF)], [0.0], simplify=False)
         self.assertEqual(len(sequences), 1)
-        self.assertEqual(non_finite_drops(), 0)
-
-
-class TestBeamSearchDropsAndCounts(unittest.TestCase):
-    """The beam-search lane simplifies inline (its own dedup cache) and never passes through
-    `_postprocess_sampled`, so it needs the guard on its own account.
-
-    `beam_width = len(tokenizer)` makes the expansion enumerate the WHOLE vocabulary from the
-    single active beam, so `<eos>` is reached whatever the (randomly initialised) weights say:
-    the completion is forced by the beam width, not by the model.
-    """
-
-    def setUp(self) -> None:
-        torch.manual_seed(0)
-        self.model = _model()
-        self.model.eval()
-        reset_non_finite_drops()
-
-    def _run(self, expression: list[str]) -> list[list[int]]:
-        tokenizer = self.model.tokenizer
-        prefix = tokenizer.encode(['<bos>', '<expression>', *expression, '</expression>'])
-        sequences, _, _ = self.model.beam_search(
-            torch.rand(13, 11, dtype=NUMERIC_DTYPE), beam_width=len(tokenizer), max_len=len(prefix) + 1,
-            initial_tokens=prefix, unique=True)
-        return sequences
-
-    def test_the_harness_reaches_the_simplify_site(self) -> None:
-        # Control: a FINITE prime completes and comes back, so the non-finite case below is
-        # dropped by the guard, not by the setup failing to reach EOS.
-        tokenizer = self.model.tokenizer
-        completed = [s for s in self._run(['+', 'x1', 'x1']) if tokenizer['<eos>'] in s]
-        self.assertTrue(completed)
-        for sequence in completed:
-            self.assertEqual(find_non_finite(tokenizer.decode(sequence)), [])
-        self.assertEqual(non_finite_drops(), 0)
-
-    def test_completed_beam_never_carries_a_non_finite_token(self) -> None:
-        tokenizer = self.model.tokenizer
-        completed = [s for s in self._run(LITERAL_FREE_INF) if tokenizer['<eos>'] in s]
-        for sequence in completed:
-            self.assertEqual(find_non_finite(tokenizer.decode(sequence)), [],
-                             f"non-finite beam: {tokenizer.decode(sequence)}")
-        # The one completion this prime can reach is the non-finite fold, and it is gone --
-        # counted, not silently absent.
-        self.assertEqual(completed, [])
-        self.assertGreaterEqual(non_finite_drops(), 1)
-
-
-class TestMCTSCanonicalizationDropsAndCounts(unittest.TestCase):
-    """`canonicalize_beam` is the MCTS lane's dedup key + refine expression. A non-finite fold
-    makes the completion unrefinable, which is exactly its existing `expression is None` state."""
-
-    def setUp(self) -> None:
-        self.model = _model()
-        reset_non_finite_drops()
-
-    def test_non_finite_completion_has_no_refinable_expression(self) -> None:
-        tokenizer = self.model.tokenizer
-        tokens = tuple(tokenizer.encode(
-            ['<bos>', '<expression>', *LITERAL_FREE_INF, '</expression>', '<eos>']))
-        key, expression = canonicalize_beam(tokenizer, self.model.simplipy_engine, tokens)
-        self.assertIsNone(expression)
-        self.assertEqual(find_non_finite(tokenizer.decode(list(key))), [])
-        self.assertEqual(non_finite_drops(), 1)
-
-    def test_finite_completion_still_canonicalizes(self) -> None:
-        tokenizer = self.model.tokenizer
-        tokens = tuple(tokenizer.encode(
-            ['<bos>', '<expression>', '+', 'x1', 'x1', '</expression>', '<eos>']))
-        _, expression = canonicalize_beam(tokenizer, self.model.simplipy_engine, tokens)
-        self.assertIsNotNone(expression)
         self.assertEqual(non_finite_drops(), 0)
 
 

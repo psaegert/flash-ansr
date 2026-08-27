@@ -1,5 +1,5 @@
 """Generation configuration helpers with method-specific signatures."""
-from typing import Any, Callable, Iterator, Literal, Mapping, overload
+from typing import Any, Iterator, Literal, Mapping
 
 
 def validate_simplify(value: Any) -> bool:
@@ -30,7 +30,7 @@ class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
     __slots__ = ('method',)
-    method: Literal['beam_search', 'softmax_sampling', 'mcts', 'prior_sampling']
+    method: Literal['softmax_sampling', 'prior_sampling']
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments appropriate for the configured method."""
@@ -57,78 +57,6 @@ class GenerationConfigBase(Mapping[str, Any]):
         if not isinstance(other, self.__class__):
             return NotImplemented
         return self.to_kwargs() == other.to_kwargs()
-
-
-class BeamSearchConfig(GenerationConfigBase):
-    """Configuration for beam-search based generation."""
-
-    __slots__ = (
-        'beam_width',
-        'max_len',
-        'batch_size',
-        'unique',
-        'limit_expansions',
-        'use_cache',
-        'constrain_ieee754',
-        'compact_ieee754',
-    )
-
-    method: Literal['beam_search']
-    beam_width: int
-    max_len: int
-    batch_size: int
-    unique: bool
-    limit_expansions: bool
-    use_cache: bool
-    constrain_ieee754: bool
-    compact_ieee754: bool
-
-    def __init__(
-        self,
-        *,
-        beam_width: int = 32,
-        max_len: int = 32,
-        batch_size: int = 128,
-        unique: bool = True,
-        limit_expansions: bool = True,
-        use_cache: bool = True,   # KV cache ON by default (quality-equivalent; the inference speed win)
-        constrain_ieee754: bool = False,   # v24 grammar mask over <ieee754> spans (T6/T7)
-        compact_ieee754: bool = False,     # v24 per-beam KV compaction of closed spans (T9/T10)
-    ) -> None:
-        # Fail at CONFIG time, not mid-decode: the model raises the same two rules deep
-        # inside beam_search, where the traceback tells a user nothing about what to change.
-        if compact_ieee754 and not constrain_ieee754:
-            raise ValueError(
-                "compact_ieee754=True requires constrain_ieee754=True: compaction relies on "
-                "the grammar guaranteeing well-formed spans."
-            )
-        if compact_ieee754 and not use_cache:
-            raise ValueError(
-                "compact_ieee754=True requires use_cache=True: compaction is KV surgery on "
-                "the dynamic cache."
-            )
-        self.method = 'beam_search'
-        self.beam_width = beam_width
-        self.max_len = max_len
-        self.batch_size = batch_size
-        self.unique = unique
-        self.limit_expansions = limit_expansions
-        self.use_cache = use_cache
-        self.constrain_ieee754 = constrain_ieee754
-        self.compact_ieee754 = compact_ieee754
-
-    def to_kwargs(self) -> dict[str, Any]:
-        """Return the beam-search keyword arguments (``beam_width``, ``max_len``, ...)."""
-        return {
-            'beam_width': self.beam_width,
-            'max_len': self.max_len,
-            'batch_size': self.batch_size,
-            'unique': self.unique,
-            'limit_expansions': self.limit_expansions,
-            'use_cache': self.use_cache,
-            'constrain_ieee754': self.constrain_ieee754,
-            'compact_ieee754': self.compact_ieee754,
-        }
 
 
 class SoftmaxSamplingConfig(GenerationConfigBase):
@@ -195,9 +123,8 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.use_cache = use_cache
         self.static_decode = static_decode
         self.guidance_weight = guidance_weight
-        # NB no compact_ieee754 here: in-decode compaction is implemented for BEAM
-        # SEARCH only (decoding/beam_compaction.py). The sampling loop can carry the
-        # grammar but not the KV surgery, so offering the flag would be a lie.
+        # NB no compact_ieee754 here yet: the span-collapse helper exists
+        # (decoding/compaction.py) but the sampling loop does not schedule it.
         self.constrain_ieee754 = constrain_ieee754
 
     def to_kwargs(self) -> dict[str, Any]:
@@ -219,196 +146,23 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         }
 
 
-class MCTSGenerationConfig(GenerationConfigBase):
-    """Configuration for Monte Carlo tree search generation."""
-
-    __slots__ = (
-        'beam_width',
-        'simulations',
-        'max_rollouts',
-        'refine_budget',
-        'batch_width',
-        'async_search',
-        'inflight',
-        'gpu_batch',
-        'uct_c',
-        'expansion_top_k',
-        'max_depth',
-        'rollout_max_len',
-        'rollout_policy',
-        'temperature',
-        'rollout_resample_retries',
-        'dirichlet_alpha',
-        'dirichlet_epsilon',
-        'backup',
-        'fpu_reduction',
-        'renormalize_prior',
-        'reward_log_fvu_hi',
-        'reward_log_fvu_lo',
-        'value_objective',
-        'invalid_penalty',
-        'min_visits_before_expansion',
-        'reward_transform',
-        'completion_sort',
-    )
-
-    method: Literal['mcts']
-    beam_width: int
-    simulations: int
-    max_rollouts: int | None
-    refine_budget: int | None
-    batch_width: int
-    async_search: bool
-    inflight: int
-    gpu_batch: int | None
-    uct_c: float
-    expansion_top_k: int
-    max_depth: int
-    rollout_max_len: int | None
-    rollout_policy: str
-    temperature: float
-    rollout_resample_retries: int
-    dirichlet_alpha: float | None
-    dirichlet_epsilon: float
-    backup: str
-    fpu_reduction: float
-    renormalize_prior: bool
-    reward_log_fvu_hi: float
-    reward_log_fvu_lo: float
-    value_objective: str
-    invalid_penalty: float
-    min_visits_before_expansion: int
-    reward_transform: Callable[[float], float] | None
-    completion_sort: str
-
-    def __init__(
-        self,
-        *,
-        beam_width: int = 16,
-        simulations: int = 256,
-        max_rollouts: int | None = None,
-        refine_budget: int | None = None,
-        batch_width: int = 32,
-        async_search: bool = False,
-        inflight: int = 128,
-        gpu_batch: int | None = None,
-        uct_c: float = 1.4,
-        expansion_top_k: int = 32,
-        max_depth: int = 64,
-        rollout_max_len: int | None = None,
-        rollout_policy: str = 'sample',
-        temperature: float = 1.0,
-        rollout_resample_retries: int = 8,
-        dirichlet_alpha: float | None = None,
-        dirichlet_epsilon: float = 0.25,
-        backup: str = 'max',
-        fpu_reduction: float = 0.0,
-        renormalize_prior: bool = True,
-        reward_log_fvu_hi: float = 0.0,
-        reward_log_fvu_lo: float = -8.0,
-        value_objective: str = 'score',
-        invalid_penalty: float = 1.0,
-        min_visits_before_expansion: int = 1,
-        reward_transform: Callable[[float], float] | None = None,
-        completion_sort: str = 'reward',
-    ) -> None:
-        self.method = 'mcts'
-        self.beam_width = beam_width
-        self.simulations = simulations
-        self.max_rollouts = max_rollouts
-        self.refine_budget = refine_budget
-        self.batch_width = batch_width
-        self.async_search = async_search
-        self.inflight = inflight
-        self.gpu_batch = gpu_batch
-        self.uct_c = uct_c
-        self.expansion_top_k = expansion_top_k
-        self.max_depth = max_depth
-        self.rollout_max_len = rollout_max_len
-        self.rollout_policy = rollout_policy
-        self.temperature = temperature
-        self.rollout_resample_retries = rollout_resample_retries
-        self.dirichlet_alpha = dirichlet_alpha
-        self.dirichlet_epsilon = dirichlet_epsilon
-        self.backup = backup
-        self.fpu_reduction = fpu_reduction
-        self.renormalize_prior = renormalize_prior
-        self.reward_log_fvu_hi = reward_log_fvu_hi
-        self.reward_log_fvu_lo = reward_log_fvu_lo
-        self.value_objective = value_objective
-        self.invalid_penalty = invalid_penalty
-        self.min_visits_before_expansion = min_visits_before_expansion
-        self.reward_transform = reward_transform
-        self.completion_sort = completion_sort
-
-        if completion_sort not in ('reward', 'log_prob'):
-            raise ValueError("completion_sort must be either 'reward' or 'log_prob'")
-        if backup not in ('max', 'mean'):
-            raise ValueError("backup must be either 'max' or 'mean'")
-        if rollout_policy not in ('sample', 'greedy'):
-            raise ValueError("rollout_policy must be either 'sample' or 'greedy'")
-
-    def to_kwargs(self) -> dict[str, Any]:
-        """Return the MCTS keyword arguments (``simulations``, ``uct_c``, ``max_depth``, ...)."""
-        return {
-            'beam_width': self.beam_width,
-            'simulations': self.simulations,
-            'max_rollouts': self.max_rollouts,
-            'refine_budget': self.refine_budget,
-            'batch_width': self.batch_width,
-            'async_search': self.async_search,
-            'inflight': self.inflight,
-            'gpu_batch': self.gpu_batch,
-            'uct_c': self.uct_c,
-            'expansion_top_k': self.expansion_top_k,
-            'max_depth': self.max_depth,
-            'rollout_max_len': self.rollout_max_len,
-            'rollout_policy': self.rollout_policy,
-            'temperature': self.temperature,
-            'rollout_resample_retries': self.rollout_resample_retries,
-            'dirichlet_alpha': self.dirichlet_alpha,
-            'dirichlet_epsilon': self.dirichlet_epsilon,
-            'backup': self.backup,
-            'fpu_reduction': self.fpu_reduction,
-            'renormalize_prior': self.renormalize_prior,
-            'reward_log_fvu_hi': self.reward_log_fvu_hi,
-            'reward_log_fvu_lo': self.reward_log_fvu_lo,
-            'value_objective': self.value_objective,
-            'invalid_penalty': self.invalid_penalty,
-            'min_visits_before_expansion': self.min_visits_before_expansion,
-            'reward_transform': self.reward_transform,
-            'completion_sort': self.completion_sort,
-        }
+GenerationConfig = SoftmaxSamplingConfig
 
 
-GenerationConfig = BeamSearchConfig | SoftmaxSamplingConfig | MCTSGenerationConfig
+def create_generation_config(*, method: Literal['softmax_sampling'] = 'softmax_sampling',
+                             **kwargs: Any) -> GenerationConfig:
+    """Factory that builds the generation configuration.
 
-
-@overload
-def create_generation_config(*, method: Literal['beam_search'] = 'beam_search', **kwargs: Any) -> BeamSearchConfig:
-    ...
-
-
-@overload
-def create_generation_config(*, method: Literal['softmax_sampling'], **kwargs: Any) -> SoftmaxSamplingConfig:
-    ...
-
-
-@overload
-def create_generation_config(*, method: Literal['mcts'], **kwargs: Any) -> MCTSGenerationConfig:
-    ...
-
-
-def create_generation_config(*, method: Literal['beam_search', 'softmax_sampling', 'mcts'] = 'beam_search', **kwargs: Any) -> GenerationConfig:
-    """Factory that builds the method-specific generation configuration."""
-    method_normalized = method.lower()
-    if method_normalized == 'beam_search':
-        return BeamSearchConfig(**kwargs)
-    if method_normalized == 'softmax_sampling':
-        return SoftmaxSamplingConfig(**kwargs)
-    if method_normalized == 'mcts':
-        return MCTSGenerationConfig(**kwargs)
-    raise ValueError(f"Invalid generation method: {method}")
+    Softmax sampling is the only method. Beam search and MCTS were retired once the
+    capability that justified beam -- in-decode span compaction -- was shown to need a
+    per-row decode position rather than a beam (see tests/test_models/
+    test_static_position_rewind.py). The keyword survives so a stale config fails loudly.
+    """
+    if method.lower() != 'softmax_sampling':
+        raise ValueError(
+            f"Invalid generation method: {method}. Beam search and MCTS were retired; "
+            f"'softmax_sampling' is the only method.")
+    return SoftmaxSamplingConfig(**kwargs)
 
 
 # Hardware gate for the c-adaptive caps in ``suggest_batch_size``: those caps are validated only on a

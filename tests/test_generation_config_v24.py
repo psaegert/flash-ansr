@@ -1,62 +1,39 @@
-"""The v24 decoding options must be reachable from the PUBLIC config (owner ruling
-2026-08-26: benchmarks run the code and API we would serve a user).
+"""The v24 decode switches on the public generation config.
 
-`constrain_ieee754` (T6/T7 grammar mask) and `compact_ieee754` (T9/T10 per-beam KV
-compaction) existed only as private `FlashANSRModel.beam_search` / `sample_top_kp`
-keyword arguments: `FlashANSR` never passed them, so no user -- and no benchmark --
-could reach the production compaction loop without hand-rolling a decoder. These
-tests pin the plumbing and the fail-early validation.
+`constrain_ieee754` (the T6/T7 grammar mask) existed only as a private `sample_top_kp`
+keyword; a caller going through `FlashANSR` could not reach it. These pin it to the
+config surface, where `to_kwargs()` is what the estimator actually forwards.
+
+Beam search and MCTS were retired (2026-08-27), so `SoftmaxSamplingConfig` is the whole
+surface. `compact_ieee754` is not here yet: the span-collapse helper exists
+(`decoding/compaction.py`) but the sampling loop does not schedule it.
 """
 import pytest
 
-from flash_ansr.utils.generation import BeamSearchConfig, SoftmaxSamplingConfig
+from flash_ansr.utils.generation import SoftmaxSamplingConfig, create_generation_config
 
 
-def test_beam_config_defaults_are_off() -> None:
-    """Existing configs must be byte-identical in behaviour: both flags default False."""
-    kwargs = BeamSearchConfig().to_kwargs()
+def test_constrain_defaults_off() -> None:
+    kwargs = SoftmaxSamplingConfig().to_kwargs()
     assert kwargs['constrain_ieee754'] is False
-    assert kwargs['compact_ieee754'] is False
 
 
-def test_beam_config_forwards_both_flags() -> None:
-    kwargs = BeamSearchConfig(constrain_ieee754=True, compact_ieee754=True).to_kwargs()
-    assert kwargs['constrain_ieee754'] is True
-    assert kwargs['compact_ieee754'] is True
-    assert kwargs['use_cache'] is True
-
-
-def test_compaction_without_grammar_raises_at_config_time() -> None:
-    with pytest.raises(ValueError, match="requires constrain_ieee754"):
-        BeamSearchConfig(compact_ieee754=True)
-
-
-def test_compaction_without_cache_raises_at_config_time() -> None:
-    with pytest.raises(ValueError, match="requires use_cache"):
-        BeamSearchConfig(constrain_ieee754=True, compact_ieee754=True, use_cache=False)
-
-
-def test_softmax_config_carries_grammar_only() -> None:
-    """Sampling can carry the grammar; compaction is beam-search-only, so the
-    sampling config must not advertise a flag it cannot honour."""
+def test_constrain_reaches_to_kwargs() -> None:
     kwargs = SoftmaxSamplingConfig(constrain_ieee754=True).to_kwargs()
     assert kwargs['constrain_ieee754'] is True
-    assert 'compact_ieee754' not in kwargs
+
+
+def test_compaction_is_not_offered_on_the_sampling_config() -> None:
+    """Offering a flag the loop cannot honour would be a lie. When the sampling loop
+    schedules compaction, this test becomes its positive counterpart."""
+    assert 'compact_ieee754' not in SoftmaxSamplingConfig().to_kwargs()
     with pytest.raises(TypeError):
         SoftmaxSamplingConfig(compact_ieee754=True)  # type: ignore[call-arg]
 
 
-def test_softmax_config_default_off() -> None:
-    assert SoftmaxSamplingConfig().to_kwargs()['constrain_ieee754'] is False
-
-
-@pytest.mark.parametrize("cfg", [
-    BeamSearchConfig(constrain_ieee754=True),
-    BeamSearchConfig(constrain_ieee754=True, compact_ieee754=True),
-    SoftmaxSamplingConfig(constrain_ieee754=True),
-])
-def test_mapping_protocol_survives_the_new_fields(cfg) -> None:  # type: ignore[no-untyped-def]
-    assert cfg['constrain_ieee754'] is True
-    assert dict(cfg) == cfg.to_kwargs()
-    assert cfg == cfg.__class__(**{k: v for k, v in cfg.to_kwargs().items()
-                                   if k != 'method'})
+def test_the_factory_serves_softmax_sampling_and_names_the_retired_methods() -> None:
+    assert isinstance(create_generation_config(), SoftmaxSamplingConfig)
+    assert isinstance(create_generation_config(method='softmax_sampling'), SoftmaxSamplingConfig)
+    for retired in ('beam_search', 'mcts'):
+        with pytest.raises(ValueError, match='retired'):
+            create_generation_config(method=retired)  # type: ignore[arg-type]

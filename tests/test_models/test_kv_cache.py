@@ -140,54 +140,6 @@ class TestKVCacheForward(unittest.TestCase):
         )
 
 
-class TestKVCacheBeamSearch(unittest.TestCase):
-    """Verify beam search produces identical results with and without KV-cache."""
-
-    def setUp(self) -> None:
-        self.nsr = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
-        self.nsr.eval()
-        self.x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
-
-    def test_beam_search_sequences_match(self):
-        """Beam search with use_cache=True produces the same sequences."""
-        torch.manual_seed(0)
-        beams_no, scores_no, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, use_cache=False)
-        torch.manual_seed(0)
-        beams_c, scores_c, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, use_cache=True)
-
-        self.assertEqual(beams_no, beams_c)
-
-    def test_beam_search_scores_match(self):
-        """Beam search with use_cache=True produces the same log-prob scores."""
-        torch.manual_seed(0)
-        _, scores_no, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, use_cache=False)
-        torch.manual_seed(0)
-        _, scores_c, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, use_cache=True)
-
-        for s_no, s_c in zip(scores_no, scores_c):
-            self.assertAlmostEqual(s_no, s_c, places=3)
-
-    def test_beam_search_wider_beam(self):
-        """Equivalence holds with a wider beam that forces more reshuffling."""
-        torch.manual_seed(42)
-        beams_no, scores_no, _ = self.nsr.beam_search(self.x, beam_width=8, max_len=12, use_cache=False)
-        torch.manual_seed(42)
-        beams_c, scores_c, _ = self.nsr.beam_search(self.x, beam_width=8, max_len=12, use_cache=True)
-
-        self.assertEqual(beams_no, beams_c)
-        for s_no, s_c in zip(scores_no, scores_c):
-            self.assertAlmostEqual(s_no, s_c, places=3)
-
-    def test_beam_search_non_unique(self):
-        """Equivalence holds with unique=False (no simplification dedup)."""
-        torch.manual_seed(7)
-        beams_no, scores_no, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, unique=False, use_cache=False)
-        torch.manual_seed(7)
-        beams_c, scores_c, _ = self.nsr.beam_search(self.x, beam_width=4, max_len=10, unique=False, use_cache=True)
-
-        self.assertEqual(beams_no, beams_c)
-
-
 class TestKVCacheSampling(unittest.TestCase):
     """Verify sampling produces identical results with and without KV-cache."""
 

@@ -172,7 +172,7 @@ class RecoverableForkPool:
                 self._recreate(kill=killed)
 
     def submit(self, fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future:
-        """Non-blocking single-job submission returning a ``Future`` (for the overlapped async MCTS loop).
+        """Non-blocking single-job submission returning a ``Future``.
 
         Unlike :meth:`map_ordered`, this is a PURE PASS-THROUGH that NEVER recreates the pool: a single Future
         owns no batch to atomically retry, and a re-fork after CUDA is the forbidden hazard the persistent pool

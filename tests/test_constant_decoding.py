@@ -301,29 +301,12 @@ def test_t6_decode_time_mask_static_sampling(tokenizer: Tokenizer, engine) -> No
     assert all(float_id not in seq for seq in raw_on)
 
 
-def test_t6_decode_time_mask_beam_search(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
-    model = _biased_model(tokenizer, engine, COMPACT_TOKEN, bias=20.0)
-    float_id = tokenizer[COMPACT_TOKEN]
-    initial = [tokenizer["<bos>"], tokenizer["<expression>"]]
-    torch.manual_seed(0x24C6)
-    x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
-
-    beams_off, _, _ = model.beam_search(x, beam_width=4, max_len=12, unique=False,
-                                        initial_tokens=initial)
-    assert any(float_id in seq for seq in beams_off)
-
-    beams_on, _, _ = model.beam_search(x, beam_width=4, max_len=12, unique=False,
-                                       initial_tokens=initial, constrain_ieee754=True)
-    assert beams_on, "constrained beam search must still return sequences"
-    assert all(float_id not in seq for seq in beams_on)
-
-
 def test_t6_mask_wired_at_all_three_logit_sites() -> None:
     """The seam must be wired into the beam, dynamic-sampling and static-sampling logits
     sites (the C1 `_apply_float_target_mask` wiring-test pattern)."""
     from flash_ansr.model.flash_ansr_model import FlashANSRModel
 
-    for method in (FlashANSRModel.beam_search, FlashANSRModel.sample_top_kp,
+    for method in (FlashANSRModel.sample_top_kp,
                    FlashANSRModel._sample_top_kp_static):
         source = inspect.getsource(method)
         assert "constrain_ieee754" in source, method.__name__
