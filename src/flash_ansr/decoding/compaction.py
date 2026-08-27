@@ -38,13 +38,15 @@ WHAT THE STATIC PATH NEEDS (not implemented here -- position-indexed StaticKVCac
 * the numeric step-input must become per-row (the decode loop currently expands one shared
   ``numeric_template``), so each row's ``<float>`` re-encode carries its OWN value.
 """
+import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Sequence
 
 import torch
 
 from flash_ansr.utils.ieee754 import (
     IEEE754_END_TOKEN,
+    IEEE754_N_NIBBLES,
     IEEE754_SPAN_LENGTH,
     IEEE754_START_TOKEN,
     NIBBLE_TOKENS,
@@ -225,3 +227,58 @@ def compact_closed_ieee754_spans(
         values=values,
         logits=logits,
     )
+
+
+# ---------------------------------------------------------------------------
+# Static-path compaction: no cache surgery, just a per-row position rewind.
+#
+# The function above rewrites the dynamic cat-grow cache. The static
+# position-indexed cache needs none of that: a compacting row sets its own
+# position back to `span_start`, the stale slots fall outside `attend_mask`, and
+# later writes overwrite them in place. All the caller needs from here is the
+# VALUE and the go/no-go, which is what these two provide.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SpanCodecIds:
+    """Token ids for the expanded-span codec, resolved once per decode rather than per step."""
+
+    open_id: int
+    close_id: int
+    float_id: int
+    id_to_nibble: dict
+
+
+def span_codec_ids(tokenizer: "Any") -> SpanCodecIds:
+    """Resolve the span token ids for `tokenizer` (256 lookups per call -- hoist it)."""
+    nibble_ids = [int(tokenizer[token]) for token in NIBBLE_TOKENS]
+    return SpanCodecIds(
+        open_id=int(tokenizer[IEEE754_START_TOKEN]),
+        close_id=int(tokenizer[IEEE754_END_TOKEN]),
+        float_id=int(tokenizer[COMPACT_CONSTANT_TOKEN]),
+        id_to_nibble={token_id: NIBBLE_TOKENS[value] for value, token_id in enumerate(nibble_ids)},
+    )
+
+
+def closed_span_value(ids: SpanCodecIds, row: "Sequence[int]", end_index: int) -> float | None:
+    """Decode the span whose CLOSING tag sits at ``row[end_index]``.
+
+    Returns ``None`` for "do not compact", which covers both refusals:
+    * the span is malformed or runs off the start of the buffer; and
+    * it decodes to a non-finite value -- the numeric channel carries NaN to mean
+      "no value", so a non-finite constant must stay expanded (the landed T10 rule,
+      honoured here by exclusion rather than by raising).
+    """
+    span_start = end_index - IEEE754_SPAN_LENGTH + 1
+    if span_start < 0 or int(row[end_index]) != ids.close_id or int(row[span_start]) != ids.open_id:
+        return None
+    tokens = []
+    for token_id in row[span_start + 1:end_index]:
+        nibble = ids.id_to_nibble.get(int(token_id))
+        if nibble is None:
+            return None
+        tokens.append(nibble)
+    if len(tokens) != IEEE754_N_NIBBLES:
+        return None
+    value = nibble_tokens_to_float32(tokens)
+    return value if math.isfinite(value) else None

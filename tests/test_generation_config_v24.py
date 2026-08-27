@@ -5,8 +5,8 @@ keyword; a caller going through `FlashANSR` could not reach it. These pin it to 
 config surface, where `to_kwargs()` is what the estimator actually forwards.
 
 Beam search and MCTS were retired (2026-08-27), so `SoftmaxSamplingConfig` is the whole
-surface. `compact_ieee754` is not here yet: the span-collapse helper exists
-(`decoding/compaction.py`) but the sampling loop does not schedule it.
+surface -- including `compact_ieee754`, which moved onto the sampling loop with it.
+See tests/test_sampling_compaction.py for the compaction behaviour itself.
 """
 import pytest
 
@@ -21,14 +21,6 @@ def test_constrain_defaults_off() -> None:
 def test_constrain_reaches_to_kwargs() -> None:
     kwargs = SoftmaxSamplingConfig(constrain_ieee754=True).to_kwargs()
     assert kwargs['constrain_ieee754'] is True
-
-
-def test_compaction_is_not_offered_on_the_sampling_config() -> None:
-    """Offering a flag the loop cannot honour would be a lie. When the sampling loop
-    schedules compaction, this test becomes its positive counterpart."""
-    assert 'compact_ieee754' not in SoftmaxSamplingConfig().to_kwargs()
-    with pytest.raises(TypeError):
-        SoftmaxSamplingConfig(compact_ieee754=True)  # type: ignore[call-arg]
 
 
 def test_the_factory_serves_softmax_sampling_and_names_the_retired_methods() -> None:
