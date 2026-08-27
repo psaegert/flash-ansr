@@ -211,7 +211,7 @@ class Attention(nn.Module):
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         k_buf: torch.Tensor,
         v_buf: torch.Tensor,
-        position: int,
+        position: "int | torch.Tensor",
         attn_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Position-indexed self-attention for a single new token (seq_len_q == 1). Writes the new
@@ -226,8 +226,16 @@ class Attention(nn.Module):
         if self.use_rope:
             cos, sin = rope_emb
             q, k = apply_rotary_emb(q, k, cos, sin)
-        k_buf[:, :, position, :] = k[:, :, 0, :]
-        v_buf[:, :, position, :] = v[:, :, 0, :]
+        if isinstance(position, torch.Tensor):
+            # Per-row slot. Advanced indices on dims 0 and 2 are separated by a slice, so the
+            # broadcast dim leads: `k_buf[rows, :, position, :]` is (batch, n_heads, head_dim),
+            # exactly the shape of `k[:, :, 0, :]`.
+            rows = torch.arange(k_buf.shape[0], device=k_buf.device)
+            k_buf[rows, :, position, :] = k[:, :, 0, :]
+            v_buf[rows, :, position, :] = v[:, :, 0, :]
+        else:
+            k_buf[:, :, position, :] = k[:, :, 0, :]
+            v_buf[:, :, position, :] = v[:, :, 0, :]
         attn_output = F.scaled_dot_product_attention(q, k_buf, v_buf, attn_mask=attn_mask)
         if self.use_xsa:
             # Exclusive Self-Attention: subtract the component of the attention output parallel to THIS
@@ -384,7 +392,7 @@ class TransformerDecoderBlock(nn.Module):
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         sa_buf: Tuple[torch.Tensor, torch.Tensor],
         ca_holder: list,
-        position: int,
+        position: "int | torch.Tensor",
         attn_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Pre-norm static decode step (pre-norm, RoPE-self only; XSA supported;

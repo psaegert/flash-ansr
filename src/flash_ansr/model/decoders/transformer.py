@@ -123,7 +123,7 @@ class TransformerDecoder(nn.Module):
         encoder_memory: torch.Tensor,
         extra_parallel_embeddings: torch.Tensor | None,
         static_cache: StaticKVCache,
-        position: int,
+        position: "int | torch.Tensor",
     ) -> torch.Tensor:
         """Static-shape (graph-capturable) single-token decode step. `tokens` is the one new token
         (B, 1); its K/V are written into `static_cache` at absolute `position` and the full buffer is
@@ -135,8 +135,16 @@ class TransformerDecoder(nn.Module):
 
         # Position-indexed RoPE for the single new token at ABSOLUTE `position` (the dynamic path infers
         # this from cache length, which is always max_len for a static buffer -> must be explicit).
-        cos = self.rope.cos_cached[:, :, position:position + 1, :].to(dtype=h.dtype)
-        sin = self.rope.sin_cached[:, :, position:position + 1, :].to(dtype=h.dtype)
+        if isinstance(position, torch.Tensor):
+            # Per-row absolute positions: gather (batch, head_dim) and broadcast to (batch, 1, 1, D)
+            # against q/k of (batch, n_heads, 1, head_dim). RoPE is applied to K BEFORE it is cached,
+            # so a cached key permanently carries the position it was written at -- which is why a
+            # compacted row must be RE-encoded at its collapsed position rather than moved.
+            cos = self.rope.cos_cached[0, 0].index_select(0, position).unsqueeze(1).unsqueeze(1).to(dtype=h.dtype)
+            sin = self.rope.sin_cached[0, 0].index_select(0, position).unsqueeze(1).unsqueeze(1).to(dtype=h.dtype)
+        else:
+            cos = self.rope.cos_cached[:, :, position:position + 1, :].to(dtype=h.dtype)
+            sin = self.rope.sin_cached[:, :, position:position + 1, :].to(dtype=h.dtype)
         rope_emb = (cos, sin)
 
         # Project + norm encoder memory ONLY if cross-attn K/V are not yet cached (first call when not

@@ -638,7 +638,7 @@ class FlashANSRModel(nn.Module):
         input_num: torch.Tensor | None,
         memory: torch.Tensor,
         static_cache: StaticKVCache,
-        position: int,
+        position: "int | torch.Tensor",
     ) -> torch.Tensor:
         """Static-shape (graph-capturable) single-token decode step. Mirrors ``forward`` (numeric
         embedding routing identical) but the decoder writes K/V into ``static_cache`` at ``position``
