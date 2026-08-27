@@ -74,19 +74,12 @@ class StaticKVCache:
             self.ca[i][0] = (ca_k, ca_v)
         self.position = prefill_len
 
-    def attend_mask(self, position: "int | torch.Tensor") -> torch.Tensor:
+    def attend_mask(self, position: int) -> torch.Tensor:
         """Boolean self-attn mask: True (attend) for key slots [0:position+1], False beyond.
         SDPA boolean mask convention: True = participate.
 
-        `position` may be a scalar (all rows aligned -> `(1, 1, 1, max_len)`, broadcast over the
-        batch) or a per-row `(batch,)` tensor (-> `(batch, 1, 1, max_len)`, broadcast over heads).
-        The per-row form is what lets rows DESYNCHRONIZE, which is what span compaction needs: a
-        row that rewinds to `span_start` simply stops attending to the slots beyond it, and later
-        writes overwrite them in place -- no buffer surgery, no zeroing.
-
-        Both forms are graph-capturable. A CUDA graph forbids SHAPE changes, not content changes,
-        and neither the `(batch,)` position tensor nor this mask changes shape between steps."""
+        Every row of a chunk decodes at the same absolute position, so this is `(1, 1, 1, max_len)`
+        and broadcasts over the batch. It is graph-capturable: a CUDA graph forbids SHAPE changes,
+        and the mask keeps its shape between steps."""
         idx = torch.arange(self.max_len, device=self.device)
-        if isinstance(position, torch.Tensor):
-            return idx.view(1, 1, 1, -1) <= position.view(-1, 1, 1, 1)
         return idx.view(1, 1, 1, -1) <= position

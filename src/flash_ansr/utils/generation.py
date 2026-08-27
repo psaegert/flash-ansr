@@ -76,7 +76,6 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         'static_decode',
         'guidance_weight',
         'constrain_ieee754',
-        'compact_ieee754',
     )
 
     method: Literal['softmax_sampling']
@@ -93,7 +92,6 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     static_decode: bool | None
     guidance_weight: float | None
     constrain_ieee754: bool
-    compact_ieee754: bool
 
     def __init__(
         self,
@@ -111,7 +109,6 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         static_decode: bool | None = None,   # tri-state: None=deployed default for capable models, True/False explicit
         guidance_weight: float | None = None,   # classifier-free guidance (optcond models only); None=plain conditioned decode
         constrain_ieee754: bool = False,   # v24 grammar mask over <ieee754> spans (T6/T7)
-        compact_ieee754: bool = False,     # in-decode span compaction (static path only)
     ) -> None:
         self.method = 'softmax_sampling'
         self.choices = choices
@@ -127,19 +124,6 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.static_decode = static_decode
         self.guidance_weight = guidance_weight
         self.constrain_ieee754 = constrain_ieee754
-        # In-decode span compaction: the static path's per-row position rewind. Validated HERE
-        # rather than inside the decode, where the traceback tells a user nothing about what to
-        # change (the same reason the retired beam config validated it at construction).
-        if compact_ieee754:
-            if not constrain_ieee754:
-                raise ValueError(
-                    "compact_ieee754=True requires constrain_ieee754=True: compaction decodes a "
-                    "span the grammar guarantees is well-formed.")
-            if static_decode is False:
-                raise ValueError(
-                    "compact_ieee754=True requires the static decode path: compaction is a per-row "
-                    "position rewind on the static position-indexed cache.")
-        self.compact_ieee754 = compact_ieee754
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return the softmax-sampling keyword arguments (``choices``, ``top_k``, ``top_p``, ...)."""
@@ -157,7 +141,6 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
             'static_decode': self.static_decode,
             'guidance_weight': self.guidance_weight,
             'constrain_ieee754': self.constrain_ieee754,
-            'compact_ieee754': self.compact_ieee754,
         }
 
 
@@ -168,10 +151,10 @@ def create_generation_config(*, method: Literal['softmax_sampling'] = 'softmax_s
                              **kwargs: Any) -> GenerationConfig:
     """Factory that builds the generation configuration.
 
-    Softmax sampling is the only method. Beam search and MCTS were retired once the
-    capability that justified beam -- in-decode span compaction -- was shown to need a
-    per-row decode position rather than a beam (see tests/test_models/
-    test_static_position_rewind.py). The keyword survives so a stale config fails loudly.
+    Softmax sampling is the only method. Beam search and MCTS were retired, and with them
+    in-decode span compaction: under the owner's 2026-08-27 ruling every model-PREDICTED
+    number is spelled as an ieee754 span everywhere, so there is nothing left to compact.
+    The keyword survives so a stale config fails loudly.
     """
     if method.lower() != 'softmax_sampling':
         raise ValueError(

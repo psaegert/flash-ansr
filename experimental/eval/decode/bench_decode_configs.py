@@ -1,16 +1,14 @@
 """Wall-time of every sampling decode configuration.
 
-Arms (the compaction ones need the grammar, so a grammar-only arm isolates its cost):
+  A  no cache          use_cache=False, static_decode=False
+  B  dynamic cache     use_cache=True,  static_decode=False
+  C  static cache      static_decode=True
+  D  static + grammar  + constrain_ieee754
 
-  A  no cache                       use_cache=False, static_decode=False
-  B  dynamic cache                  use_cache=True,  static_decode=False
-  C  static cache                   static_decode=True
-  D  static + grammar               + constrain_ieee754
-  E  static + grammar + compaction  + compact_ieee754
-
-  dynamic + compaction is N/A by construction: compaction desynchronizes rows and the
-  dynamic cat-grow path has no key-pad mask, so its rows cannot carry different lengths.
-  That is the gate in sample_top_kp, not an omission here.
+The measured E arm (in-decode span compaction) is gone with compaction itself: under the
+owner's 2026-08-27 ruling every model-predicted number stays an `<ieee754>` span. Its last
+numbers, for the record: +4.9% over D at a low span rate and +41.3% at a high one, all of
+it host-side per-event cost.
 """
 import argparse
 import json
@@ -31,8 +29,6 @@ ARMS = {
     "B dynamic":                  dict(use_cache=True, static_decode=False),
     "C static":                   dict(static_decode=True),
     "D static+grammar":           dict(static_decode=True, constrain_ieee754=True),
-    "E static+grammar+compact":   dict(static_decode=True, constrain_ieee754=True,
-                                       compact_ieee754=True),
 }
 
 

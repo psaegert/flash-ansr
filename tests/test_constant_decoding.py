@@ -1,10 +1,13 @@
-"""Acceptance tests T5-T8 for the v24 `ieee754_mixed` constants DECODER pathway (lane C2).
+"""Acceptance tests T5-T7 for the v24 constants DECODER pathway (lane C2).
 
 Pre-registered integration contract, lane C2: the decoder numeric pathway (T5), the
 decode-time vocabulary mask (T6, the mask half; the trained-model logit-rank half is a
-skipped placeholder pointing at T13), the constrained-decoding grammar over expanded
-`<ieee754>` spans (T7), and THE GOLDEN TEST: compaction equivalence on the dynamic KV
-path (T8, single-sequence + small-batch; the per-beam version is T9, next lane).
+skipped placeholder pointing at T13), and the constrained-decoding grammar over
+`<ieee754>` spans (T7).
+
+T8/T9 (compaction equivalence) are GONE: under the owner's 2026-08-27 ruling every
+model-predicted number stays an `<ieee754>` span everywhere, so no compact view of an
+emitted constant exists to be equivalent to.
 
 NOTE on the test engine: the configs/test bundle references the generation-1 'dev_7-3'
 simplipy asset, refused at load by the simplipy generation gate this repo now targets (a
@@ -13,7 +16,6 @@ directly from the configs/test model kwargs with the generation-2 'base' engine,
 pattern lane C1 established.
 """
 import inspect
-import math
 
 import numpy as np
 import pytest
@@ -377,210 +379,3 @@ def test_t7_constrained_sampling_emissions_parse(tokenizer: Tokenizer, engine) -
             n_spans += len(_scan_spans(seq, tokenizer))
         # The biased model must actually have opened spans, or the test is vacuous.
         assert n_spans >= 5, f"use_cache={use_cache}: only {n_spans} spans sampled"
-
-
-# ---------------------------------------------------------------------------
-# T8 — THE GOLDEN TEST: compaction is a mechanical no-op relative to the compact view
-# ---------------------------------------------------------------------------
-
-def _feed_incremental(model, ids: torch.Tensor, nums: torch.Tensor, memory: torch.Tensor, past: list | None):  # type: ignore[no-untyped-def]
-    """Feed `ids` (B, T) one token at a time through the dynamic KV path (generation-
-    faithful), returning (logits (B, T, V), past)."""
-    logits_steps = []
-    for t in range(ids.shape[1]):
-        logits, past = model.forward(
-            ids[:, t:t + 1], None, input_num=nums[:, t:t + 1].unsqueeze(-1),
-            memory=memory, past_key_values=past, use_cache=True)
-        logits_steps.append(logits)
-    return torch.cat(logits_steps, dim=1), past
-
-
-def _nan(*shape: int) -> torch.Tensor:
-    return torch.full(shape, float("nan"), dtype=NUMERIC_DTYPE)
-
-
-def test_t8_compaction_equivalence_single_sequence(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
-    from flash_ansr.decoding.compaction import compact_closed_ieee754_spans
-
-    model = _tiny_model(tokenizer, engine)
-    pad_id = tokenizer["<pad>"]
-    float_id = tokenizer[COMPACT_TOKEN]
-    value = 1.5
-    history_value = 0.5  # a previously-compacted constant already in the prefix
-
-    # Prefix carries a compact-history constant (<float> with its value on the numeric
-    # channel) — the in-distribution compact-history-then-expanded pattern of T3.
-    prefix = ["<bos>", "<expression>", "+", "*", "<float>", "x1", "*"]
-    span = wrap_float32(value)
-    continuation = ["x2", "</expression>", "<eos>"]
-    span_start = len(prefix)              # 7
-    expanded_length = span_start + IEEE754_SPAN_LENGTH  # 17
-
-    prefix_ids = torch.tensor([tokenizer.encode(prefix)], dtype=torch.long)
-    span_ids = torch.tensor([tokenizer.encode(span)], dtype=torch.long)
-    cont_ids = torch.tensor([tokenizer.encode(continuation)], dtype=torch.long)
-
-    prefix_num = _nan(1, len(prefix))
-    prefix_num[0, prefix.index("<float>")] = history_value
-
-    torch.manual_seed(0x24C8)
-    data = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
-    with torch.no_grad():
-        memory = model._create_memory(data)
-
-        # --- incremental path: prefill the prefix, then GENERATE the span token-by-token ---
-        logits_prefix, past = model.forward(
-            prefix_ids, None, input_num=prefix_num.unsqueeze(-1), memory=memory, use_cache=True)
-        _, past = _feed_incremental(model, span_ids, _nan(1, IEEE754_SPAN_LENGTH), memory, past)
-        assert past[0][0][0].shape[2] == expanded_length
-
-        # --- compaction: nibbles -> value -> span collapse -> <float>+input_num -> KV drop + re-encode ---
-        buffer = torch.full((1, 64), pad_id, dtype=torch.long)
-        buffer[0, :span_start] = prefix_ids[0]
-        buffer[0, span_start:expanded_length] = span_ids[0]
-        num_buffer = _nan(1, 64)
-        num_buffer[0, :len(prefix)] = prefix_num[0]
-
-        result = compact_closed_ieee754_spans(
-            model, buffer, current_length=expanded_length, past_key_values=past,
-            memory=memory, input_num=num_buffer)
-
-        # Mechanics: value decoded, span collapsed to ONE <float>, tail cleared, KV shrunk
-        # by exactly the 10 span entries (+1 for the re-encoded compact token).
-        assert result.values.tolist() == [value]
-        assert result.length == span_start + 1
-        assert int(result.sequences[0, span_start]) == float_id
-        assert torch.all(result.sequences[0, span_start + 1:expanded_length] == pad_id)
-        assert torch.equal(result.sequences[0, :span_start], prefix_ids[0])
-        assert result.past_key_values[0][0][0].shape[2] == span_start + 1
-        # The numeric channel: history value preserved, new value at the collapsed slot.
-        assert result.input_num[0, prefix.index("<float>")] == history_value
-        assert result.input_num[0, span_start] == value
-        assert math.isnan(float(result.input_num[0, span_start - 1]))
-        # Cross-attention K/V are untouched by the surgery.
-        assert torch.equal(result.past_key_values[0][1][0], past[0][1][0])
-
-        # --- continue on the incremental path over the continuation tokens ---
-        logits_cont, _ = _feed_incremental(
-            model, cont_ids, _nan(1, len(continuation)), memory, result.past_key_values)
-        incremental = torch.cat([result.logits, logits_cont], dim=1)
-
-        # --- fresh forward over the compact-view sequence ---
-        compact_view = [*prefix, COMPACT_TOKEN, *continuation]
-        compact_ids = torch.tensor([tokenizer.encode(compact_view)], dtype=torch.long)
-        compact_num = _nan(1, len(compact_view))
-        compact_num[0, prefix.index("<float>")] = history_value
-        compact_num[0, span_start] = value
-        fresh = model.forward(compact_ids, None, input_num=compact_num.unsqueeze(-1),
-                              memory=memory, use_cache=False)
-
-    # THE golden equality: every post-compaction position, to float tolerance.
-    post = fresh[:, span_start:span_start + 1 + len(continuation)]
-    assert incremental.shape == post.shape
-    max_diff = (incremental - post).abs().max().item()
-    assert torch.allclose(incremental, post, atol=LOGITS_ATOL), f"max diff {max_diff}"
-    # And the pre-compaction prefix positions agree too (same cache, untouched).
-    assert torch.allclose(logits_prefix, fresh[:, :span_start], atol=LOGITS_ATOL)
-
-
-def test_t8_compaction_equivalence_small_batch(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
-    from flash_ansr.decoding.compaction import compact_closed_ieee754_spans
-
-    model = _tiny_model(tokenizer, engine)
-    pad_id = tokenizer["<pad>"]
-    float_id = tokenizer[COMPACT_TOKEN]
-    values = [1.5, -0.25, 3.0e-3]
-    variables = ["x1", "x2", "x3"]
-
-    prefix_len = 4
-    continuation = ["+", "x2", "</expression>", "<eos>"]
-    span_start = prefix_len
-    expanded_length = span_start + IEEE754_SPAN_LENGTH
-
-    rows_prefix = [["<bos>", "<expression>", var, "*"] for var in variables]
-    prefix_ids = torch.tensor([tokenizer.encode(row) for row in rows_prefix], dtype=torch.long)
-    span_ids = torch.tensor([tokenizer.encode(wrap_float32(v)) for v in values], dtype=torch.long)
-    cont_ids = torch.tensor([tokenizer.encode(continuation)] * 3, dtype=torch.long)
-
-    torch.manual_seed(0x24C9)
-    data = torch.rand(3, 13, 11, dtype=NUMERIC_DTYPE)
-    with torch.no_grad():
-        memory = model._create_memory(data)
-
-        _, past = model.forward(prefix_ids, None, input_num=_nan(3, prefix_len).unsqueeze(-1),
-                                memory=memory, use_cache=True)
-        _, past = _feed_incremental(model, span_ids, _nan(3, IEEE754_SPAN_LENGTH), memory, past)
-
-        buffer = torch.full((3, 64), pad_id, dtype=torch.long)
-        buffer[:, :prefix_len] = prefix_ids
-        buffer[:, span_start:expanded_length] = span_ids
-
-        result = compact_closed_ieee754_spans(
-            model, buffer, current_length=expanded_length, past_key_values=past, memory=memory)
-
-        assert result.values.tolist() == pytest.approx([float(np.float32(v)) for v in values])
-        assert result.length == span_start + 1
-        assert torch.all(result.sequences[:, span_start] == float_id)
-        assert result.past_key_values[0][0][0].shape[2] == span_start + 1
-        # Against the CODEC's value, not the source literal: the numeric channel is
-        # binary64 while the span codec still snaps to binary32, so 3.0e-3 rides as
-        # 0.003000000026077032. Comparing to the literal only passed while both sides
-        # were narrowed to float32 -- it was never testing the round-trip it looks like.
-        assert torch.all(result.input_num[:, span_start]
-                         == torch.tensor([float(np.float32(v)) for v in values],
-                                         dtype=NUMERIC_DTYPE))
-
-        logits_cont, _ = _feed_incremental(
-            model, cont_ids, _nan(3, len(continuation)), memory, result.past_key_values)
-        incremental = torch.cat([result.logits, logits_cont], dim=1)
-
-        compact_rows = [[*row, COMPACT_TOKEN, *continuation] for row in rows_prefix]
-        compact_ids = torch.tensor([tokenizer.encode(row) for row in compact_rows], dtype=torch.long)
-        compact_num = _nan(3, len(compact_rows[0]))
-        compact_num[:, span_start] = torch.tensor(values, dtype=torch.float32)
-        fresh = model.forward(compact_ids, None, input_num=compact_num.unsqueeze(-1),
-                              memory=memory, use_cache=False)
-
-    post = fresh[:, span_start:span_start + 1 + len(continuation)]
-    assert incremental.shape == post.shape
-    max_diff = (incremental - post).abs().max().item()
-    assert torch.allclose(incremental, post, atol=LOGITS_ATOL), f"max diff {max_diff}"
-
-
-def test_t8_compaction_validates_the_span(tokenizer: Tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
-    from flash_ansr.decoding.compaction import compact_closed_ieee754_spans
-
-    model = _tiny_model(tokenizer, engine)
-    pad_id = tokenizer["<pad>"]
-    prefix = ["<bos>", "<expression>", "x1", "*"]
-    span = wrap_float32(2.0)
-    ids = tokenizer.encode([*prefix, *span])
-    length = len(ids)
-
-    torch.manual_seed(0x24C9)
-    data = torch.rand(1, 13, 11, dtype=NUMERIC_DTYPE)
-    with torch.no_grad():
-        memory = model._create_memory(data)
-        seq = torch.full((1, 64), pad_id, dtype=torch.long)
-        seq[0, :length] = torch.tensor(ids, dtype=torch.long)
-        _, past = model.forward(seq[:, :length], None, input_num=_nan(1, length).unsqueeze(-1),
-                                memory=memory, use_cache=True)
-
-        # Not span-terminated: last token is not </ieee754>.
-        bad = seq.clone()
-        bad[0, length - 1] = tokenizer["x1"]
-        with pytest.raises(ValueError):
-            compact_closed_ieee754_spans(model, bad, current_length=length,
-                                         past_key_values=past, memory=memory)
-
-        # A non-nibble token inside the span.
-        bad = seq.clone()
-        bad[0, length - 4] = tokenizer["x1"]
-        with pytest.raises(ValueError):
-            compact_closed_ieee754_spans(model, bad, current_length=length,
-                                         past_key_values=past, memory=memory)
-
-        # Too short to contain a whole span.
-        with pytest.raises(ValueError):
-            compact_closed_ieee754_spans(model, seq[:, :6], current_length=6,
-                                         past_key_values=past, memory=memory)

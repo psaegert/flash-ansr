@@ -5,7 +5,7 @@ keyword; a caller going through `FlashANSR` could not reach it. These pin it to 
 config surface, where `to_kwargs()` is what the estimator actually forwards.
 
 Beam search and MCTS were retired (2026-08-27), so `SoftmaxSamplingConfig` is the whole
-surface -- including `compact_ieee754`, which moved onto the sampling loop with it.
+surface. In-decode span compaction went with them (owner ruling 2026-08-27).
 See tests/test_sampling_compaction.py for the compaction behaviour itself.
 """
 import pytest

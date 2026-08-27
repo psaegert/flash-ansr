@@ -5,7 +5,7 @@ from typing import Any, Callable, Literal, Tuple, TypeAlias
 
 import torch
 
-from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS, IEEE754_SPAN_LENGTH
+from flash_ansr.utils.ieee754 import IEEE754_N_NIBBLES, IEEE754_N_NIBBLE_SYMBOLS
 from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from flash_ansr.utils.weights import load_weights, save_weights
 from torch import nn
@@ -752,7 +752,6 @@ class FlashANSRModel(nn.Module):
         memory: torch.Tensor | None = None,
         guidance_weight: float | None = None,
         constrain_ieee754: bool = False,
-        compact_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
         """Decode candidate expressions from ``data`` by top-k / top-p (nucleus) sampling.
 
@@ -861,28 +860,13 @@ class FlashANSRModel(nn.Module):
                 use_cache = False
                 uncond_memory = self.null_memory.detach().to(device=data.device)
 
-        if compact_ieee754:
-            # Compaction rides the static path's per-row position rewind. The grammar is what
-            # guarantees a closed span is well-formed before it is decoded, and the rewind is
-            # meaningless without a cache to rewind IN.
-            if not constrain_ieee754:
-                raise ValueError(
-                    "compact_ieee754=True requires constrain_ieee754=True: compaction decodes a "
-                    "span the grammar guarantees is well-formed.")
-            if not static_decode:
-                raise ValueError(
-                    "compact_ieee754=True requires static_decode=True: compaction is a per-row "
-                    "position rewind on the static position-indexed cache. The dynamic cat-grow "
-                    "path has no key-pad mask, so its rows cannot desynchronize.")
-
         if static_decode:
             return self._sample_top_kp_static(
                 data, choices=choices, top_k=top_k, top_p=top_p, max_len=max_len,
                 batch_size=batch_size, temperature=temperature, valid_only=valid_only,
                 simplify=simplify, unique=unique, verbose=verbose, return_raw=return_raw,
                 prompt_prefix=prompt_prefix, initial_tokens=initial_tokens,
-                input_num=input_num, memory=memory, constrain_ieee754=constrain_ieee754,
-                compact_ieee754=compact_ieee754)
+                input_num=input_num, memory=memory, constrain_ieee754=constrain_ieee754)
 
         device = data.device
 
@@ -1099,7 +1083,6 @@ class FlashANSRModel(nn.Module):
         input_num: list[float] | None = None,
         memory: torch.Tensor | None = None,
         constrain_ieee754: bool = False,
-        compact_ieee754: bool = False,
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
         """Static-shape, position-indexed-KV variant of ``sample_top_kp`` (Stage 1b).
 
@@ -1215,12 +1198,6 @@ class FlashANSRModel(nn.Module):
         # --- 2. chunk-major static generation loop ---
         with torch.no_grad():
             pbar = tqdm(total=choices, disable=not verbose, desc="Generating tokens (static)", smoothing=0.0)
-            span_codec = None
-            n_compacted = 0
-            if compact_ieee754:
-                from flash_ansr.decoding.compaction import closed_span_value, span_codec_ids
-                span_codec = span_codec_ids(self.tokenizer)
-
             for chunk_start in range(0, choices, batch_size):
                 chunk_stop = min(chunk_start + batch_size, choices)
                 rows = slice(chunk_start, chunk_stop)
@@ -1244,11 +1221,6 @@ class FlashANSRModel(nn.Module):
 
                 next_logits = logits_pre[:, -1, :]              # predicts slot `prefix_length`
                 chunk_finished = is_finished[rows].clone()      # local (bsz,) finished flags
-                # Per-row CACHE position. Without compaction it tracks `current_length` exactly;
-                # a compacting row rewinds its own entry and from then on sits 9 slots per
-                # constant behind the token buffer, which stays EXPANDED (the tokens are the
-                # output; the cache is what the model conditions on).
-                cache_pos = torch.full((bsz,), prefix_length, device=device, dtype=torch.long)
 
                 for current_length in range(prefix_length, max_len):
                     if (current_length - prefix_length) % early_stop_every == 0 and bool(chunk_finished.all()):
@@ -1298,41 +1270,15 @@ class FlashANSRModel(nn.Module):
 
                     # full-width static forward of the just-written token (finished rows feed <pad>, K/V
                     # written but never read -- masked out of `active` next step)
-                    # .clone(): `rows` is a SLICE, so this is basic indexing and returns a VIEW
-                    # onto `sequences`. Compaction rewrites the row's token below, and without the
-                    # copy that write lands in the output buffer -- clobbering the </ieee754> the
-                    # grammar is still waiting for, which then emits a SECOND close tag.
-                    token_full = sequences[rows, current_length].unsqueeze(-1).clone()   # (bsz, 1)
+                    token_full = sequences[rows, current_length].unsqueeze(-1)   # (bsz, 1)
                     if numeric_template is not None:
-                        # Per-row, not one shared value: a compacting row carries its OWN decoded
-                        # constant on the numeric channel this step.
-                        num_step = numeric_template[current_length].expand(bsz).clone().reshape(bsz, 1, 1)
+                        num_step = numeric_template[current_length].expand(bsz).reshape(bsz, 1, 1)
                     else:
                         num_step = None
 
-                    if span_codec is not None:
-                        # Compaction (T8/T10 on the static path): a row that just closed a span
-                        # forwards ONE <float> at the span's own start slot instead of the closing
-                        # tag. No cache surgery -- the stale slots fall outside attend_mask and are
-                        # overwritten in place. A non-finite value stays expanded (T10, by exclusion).
-                        closed = (sequences[rows, current_length] == span_codec.close_id).nonzero(as_tuple=True)[0]
-                        for local_row in closed.tolist():
-                            value = closed_span_value(
-                                span_codec, sequences[chunk_start + local_row].tolist(), current_length)
-                            if value is None:
-                                continue
-                            cache_pos[local_row] -= IEEE754_SPAN_LENGTH - 1
-                            token_full[local_row, 0] = span_codec.float_id
-                            if num_step is None:
-                                num_step = torch.full((bsz, 1, 1), float('nan'),
-                                                      device=device, dtype=NUMERIC_DTYPE)
-                            num_step[local_row, 0, 0] = value
-                            n_compacted += 1
-
                     logits_full = self.forward_static(token_full, num_step, mem_chunk, static_cache,
-                                                      position=cache_pos.clone())
+                                                      position=current_length)
                     next_logits = logits_full[:, -1, :]
-                    cache_pos += 1
 
                 is_finished[rows] = chunk_finished
                 del static_cache
