@@ -9,6 +9,8 @@ from multiprocessing import shared_memory
 from multiprocessing.managers import ListProxy, SyncManager
 from typing import Any, Literal
 
+import math
+
 import numpy as np
 
 from symbolic_data import ProblemSource
@@ -21,6 +23,8 @@ from flash_ansr.data.serialization import (
     MASKED_CONSTANT_TOKEN,
     PREDICT_CONSTANTS_END_TOKEN,
     PREDICT_CONSTANTS_START_TOKEN,
+    PREDICT_RESIDUAL_END_TOKEN,
+    PREDICT_RESIDUAL_START_TOKEN,
     COMPLEXITY_END_TOKEN,
     COMPLEXITY_START_TOKEN,
     POINT_END_TOKEN,
@@ -54,6 +58,7 @@ TASK_SEGMENT_EXPRESSION = 0
 TASK_SEGMENT_COMPLEXITY = 1
 TASK_SEGMENT_PREDICT_Y = 2
 TASK_SEGMENT_PREDICT_CONSTANTS = 3
+TASK_SEGMENT_PREDICT_RESIDUAL = 4
 
 
 def draw_condition_mask(rng: np.random.Generator, condition_dropout: float) -> bool:
@@ -89,6 +94,7 @@ class WorkerConfig:
     target_dialect: str = TARGET_DIALECT_EXPLICIT
     complexity_block: dict[str, Any] | None = None
     predict_y_block: dict[str, Any] | None = None
+    residual_block: dict[str, Any] | None = None
     mask_block: dict[str, Any] | None = None
 
 
@@ -104,6 +110,7 @@ class SharedMemoryWorkerPool:
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         complexity_block: dict[str, Any] | None = None,
         predict_y_block: dict[str, Any] | None = None,
+        residual_block: dict[str, Any] | None = None,
         mask_block: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
@@ -112,6 +119,7 @@ class SharedMemoryWorkerPool:
         self.target_dialect = target_dialect
         self.complexity_block = complexity_block
         self.predict_y_block = predict_y_block
+        self.residual_block = residual_block
         self.mask_block = mask_block
 
         self._manager: SyncManager | None = None
@@ -240,6 +248,7 @@ class SharedMemoryWorkerPool:
             target_dialect=self.target_dialect,
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
+            residual_block=self.residual_block,
             mask_block=self.mask_block,
         )
 
@@ -373,7 +382,12 @@ def _producer_worker(
     complexity_cfg = worker_config.complexity_block
     mask_cfg = worker_config.mask_block
     predict_y_cfg = worker_config.predict_y_block
-    task_blocks_on = complexity_cfg is not None or predict_y_cfg is not None or mask_cfg is not None
+    residual_cfg = worker_config.residual_block
+    # The residual block needs a noise mixture to have anything to predict: without one
+    # y_encoder IS y_clean and every target is exactly 0.0.
+    noise_spec = getattr(source, "noise_spec", None)
+    task_blocks_on = (complexity_cfg is not None or predict_y_cfg is not None
+                      or mask_cfg is not None or residual_cfg is not None)
 
     if "<expression>" in tokenizer and "</expression>" not in tokenizer:
         warnings.warn(
@@ -618,6 +632,7 @@ def _producer_worker(
                 # stays exactly what it is without the features.
                 complexity_draw: dict[str, Any] | None = None
                 predict_y_draw: dict[str, Any] | None = None
+                residual_draw: dict[str, Any] | None = None
                 task_mask: list[bool] | None = None
                 task_segments: list[int] | None = None
                 block_order: dict[str, list[str]] | None = None
@@ -791,6 +806,67 @@ def _producer_worker(
                             else:
                                 n_skipped_task_blocks += 1
 
+                    # <predict_residual>: the displacement between what was OBSERVED at a
+                    # point and what the law predicts there. Four things it must NOT copy
+                    # from predict_y, each of which silently ruins the task:
+                    #
+                    #  1. The point is NOT held out. The target is y_observed(x*) - f(x*),
+                    #     and y_observed reaches the model only through the encoder. Delete
+                    #     the row and the target becomes a single unobserved noise draw
+                    #     whose irreducible loss is the noise entropy, forever. Kept in, the
+                    #     task is "infer f from the data, report the displacement at a point
+                    #     you can observe" -- and that is not a lookup, since retrieving y*
+                    #     at a specific x* out of pooled set-encoder memory is real work.
+                    #  2. It is DROPPED on an unconditioned instance, never suffix-pinned.
+                    #     predict_y survives there because with the expression it degenerates
+                    #     to function evaluation, which is well posed. The residual has no
+                    #     such fallback: with nulled memory y_observed is unreachable in
+                    #     BOTH placements.
+                    #  3. It requires a noise mixture. Without one y_encoder IS y_clean, the
+                    #     residual is identically 0.0, and the block teaches only "emit eight
+                    #     zero bytes".
+                    #  4. It picks from what predict_y LEFT. predict_y deletes its row above;
+                    #     drawing before that would let the two race for the same point.
+                    if (residual_cfg is not None
+                            and noise_spec is not None
+                            and condition_mask_value is not False
+                            and x_support.shape[0] >= int(residual_cfg["min_n_support"])
+                            and worker_rng.random() < float(residual_cfg["p_present"])):
+                        n_dims = x_support.shape[1]
+                        if 4 + n_dims + IEEE754_SPAN_LENGTH <= budget:
+                            j = int(worker_rng.integers(x_support.shape[0]))
+                            point = x_support[j].astype(NUMERIC_DTYPE_NP)
+                            # Differenced in the ENCODER's dtype, so the target is exactly
+                            # the displacement present in the data the model sees.
+                            residual_value = float(
+                                np.asarray(y_encoder[j], dtype=NUMERIC_DTYPE_NP).reshape(-1)[0]
+                                - np.asarray(y_support[j], dtype=NUMERIC_DTYPE_NP).reshape(-1)[0])
+                            if math.isfinite(residual_value):
+                                conditional = bool(worker_rng.random() < float(residual_cfg["p_conditional"]))
+                                block_tokens = [PREDICT_RESIDUAL_START_TOKEN, POINT_START_TOKEN]
+                                block_numeric = [float("nan"), float("nan")]
+                                block_masked = [True, True]
+                                for value in point:
+                                    block_tokens.append(COMPACT_CONSTANT_TOKEN)
+                                    block_numeric.append(float(value))
+                                    block_masked.append(True)
+                                block_tokens += [POINT_END_TOKEN, IEEE754_START_TOKEN,
+                                                 *float64_to_byte_tokens(residual_value),
+                                                 IEEE754_END_TOKEN, PREDICT_RESIDUAL_END_TOKEN]
+                                block_numeric += [float("nan")] * (4 + IEEE754_N_BYTES)
+                                block_masked += [True, True, *[False] * IEEE754_N_BYTES, False, False]
+                                budget -= len(block_tokens)
+                                element = ("predict_residual", block_tokens, block_numeric, block_masked,
+                                           [TASK_SEGMENT_PREDICT_RESIDUAL] * len(block_tokens))
+                                if conditional:
+                                    suffix_elements.append(element)
+                                else:
+                                    prefix_elements.append(element)
+                                residual_draw = {"x": point.tolist(), "residual": residual_value,
+                                                 "conditional": conditional}
+                        else:
+                            n_skipped_task_blocks += 1
+
                     if len(prefix_elements) > 1:
                         prefix_elements = [prefix_elements[int(k)]
                                            for k in worker_rng.permutation(len(prefix_elements))]
@@ -883,7 +959,8 @@ def _producer_worker(
                 if task_blocks_on:
                     metadata["task_mask"] = (task_mask if task_mask is not None
                                              else [False] * len(input_ids))
-                    # 0 = expression/other, 1 = complexity, 2 = predict_y: the per-position
+                    # 0 = expression/other, 1 = complexity, 2 = predict_y, 3 = predict_constants,
+                    # 4 = predict_residual: the per-position
                     # channel the trainer splits the CE by (per-task wandb curves).
                     metadata["task_segments"] = (task_segments if task_segments is not None
                                                  else [0] * len(input_ids))
@@ -892,6 +969,8 @@ def _producer_worker(
                     metadata["complexity_variant"] = None if complexity_draw is None else complexity_draw["variant"]
                 if predict_y_cfg is not None:
                     metadata["predict_y"] = predict_y_draw
+                if residual_cfg is not None:
+                    metadata["predict_residual"] = residual_draw
                 if mask_cfg is not None:
                     metadata["mask_mode"] = mask_mode
                     metadata["n_placeholders"] = int(sum(

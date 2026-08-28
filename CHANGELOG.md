@@ -36,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Query/answer blocks are exempt: inside them the loss mask decides, so caller-supplied
   coordinates stay compact wherever the block sits.
 
+### Added
+- **`<predict_residual>`, the displacement block.** Given a point, the model reports how far
+  the observation there sits off the law: `<predict_residual> <point> <float>*dims </point>
+  <ieee754> 8 bytes </ieee754> </predict_residual>`. The coordinates are caller-supplied and
+  compact; the displacement is predicted and therefore a byte span. Enabled by
+  `residual_block` in the dataset configuration, which requires a source with a noise
+  mixture — without one the observed targets are the clean ones and every answer is zero.
+
+  It differs from `<predict_y>` in three ways that matter. The queried point stays IN the
+  encoder's support, because the observation reaches the model only through the encoder.
+  The block is dropped on an unconditioned instance rather than moved, because a nulled
+  memory puts the observation out of reach in either placement. And it draws its point from
+  what `<predict_y>` left, so the two never query the same one.
+
 ### Removed
 - **Beam search and MCTS.** `SoftmaxSamplingConfig` is the generation configuration;
   `create_generation_config` rejects any other method by name.

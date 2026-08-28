@@ -1,6 +1,6 @@
 # v25: float64 numerics + byte constant tokens — migration plan
 
-**Status: owner-approved 2026-08-27. S4-S7 LANDED.** Mapped by a 7-way parallel audit of the four repos,
+**Status: owner-approved 2026-08-27. S4-S7 and S9 LANDED; `<predict_residual>` built.** Mapped by a 7-way parallel audit of the four repos,
 then synthesized; every line number was verified against the working tree. Steps **S1, S2 and
 S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164), and **S4 is
 LANDED** on the flash-ansr side, **S5 with it**, and **S6/S7 across symbolic-data

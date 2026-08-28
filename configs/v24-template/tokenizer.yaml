@@ -44,10 +44,12 @@ special_tokens:
   - "</expression>"
   - "<complexity>"
   - "</complexity>"
-  # v24 task blocks: the predict_y auxiliary block --
-  # <predict_y> <point> <float>*dims </point> <ieee754> 8 bytes </ieee754> </predict_y>.
-  # Openers and the point are harness-fed and loss-masked; the model owns the y* bytes
-  # and the closing tags.
+  # The two query/answer blocks, identical in shape:
+  #   <predict_y>        <point> <float>*dims </point> <ieee754> 8 bytes </ieee754> </predict_y>
+  #   <predict_residual> <point> <float>*dims </point> <ieee754> 8 bytes </ieee754> </predict_residual>
+  # Openers and the point are harness-fed and loss-masked; the model owns the answer bytes
+  # and the closing tags. predict_y asks for the target at a HELD-OUT point; predict_residual
+  # asks how far the observation at a point the model can see sits off the law.
   # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
   # open property blocks (e.g. <complexity>) on its own.
   - "<hypothesize>"
@@ -62,10 +64,13 @@ special_tokens:
   - "</predict_constants>"
   - "<predict_y>"
   - "</predict_y>"
+  - "<predict_residual>"
+  - "</predict_residual>"
   - "<point>"
   - "</point>"
-  # The compact-constant summary token (loss-masked as a target; carries its value on the
-  # numeric channel). The per-constant 50/50 expanded/compact mixing is unchanged.
+  # The compact form of a CALLER-SUPPLIED number: loss-masked as a target, value on the
+  # numeric channel. Query coordinates and a stated complexity use it; nothing the model
+  # predicts does.
   - "<float>"
   # Symbolic constants: NOT numeric literals in the tagged canonical dialect.
   - 'np.pi'

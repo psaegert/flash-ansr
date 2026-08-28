@@ -45,3 +45,15 @@ predict_y_block:
   p_present: 0.3333333333333333
   p_conditional: 0.5
   min_n_support: 8
+
+# <predict_residual>: how far the observation at a point sits off the law -- the same shape
+# as predict_y and the same cost, but a different question. The point is NOT held out (the
+# observation has to reach the model through the encoder for the target to be answerable),
+# the block is dropped rather than moved on an unconditioned instance (with nulled memory
+# the observation is unreachable in either placement), and it draws its point from what
+# predict_y left. p_clean above means ~30% of these targets are exactly zero, which is not
+# degenerate: telling a clean instance from a contaminated one is part of the task.
+residual_block:
+  p_present: 0.3333333333333333
+  p_conditional: 0.5
+  min_n_support: 8

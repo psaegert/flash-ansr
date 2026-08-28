@@ -23,6 +23,7 @@ from flash_ansr.data.serialization import (
     MASK_MODE_TOKENS,
     PREDICT_CONSTANTS_TOKENS,
     COMPLEXITY_TOKENS,
+    PREDICT_RESIDUAL_TOKENS,
     PREDICT_Y_TOKENS,
     COMPACT_CONSTANT_TOKEN,
     TAGGED_DELIMITER_TOKENS,
@@ -116,6 +117,7 @@ class FlashANSRDataset:
         target_dialect: str = TARGET_DIALECT_EXPLICIT,
         complexity_block: "dict[str, Any] | None" = None,
         predict_y_block: "dict[str, Any] | None" = None,
+        residual_block: "dict[str, Any] | None" = None,
         mask_block: "dict[str, Any] | None" = None,
     ) -> None:
         self.source = source
@@ -185,6 +187,18 @@ class FlashANSRDataset:
         self.predict_y_block = _validate_task_block(
             predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
             int_keys=("min_n_support",))
+        # <predict_residual>: the observed-minus-predicted displacement at one point. It
+        # needs a noise mixture to have a target at all -- without one the residual is
+        # identically 0.0 and the block teaches only "emit eight zero bytes" -- so the
+        # source is checked here rather than letting a run train on a degenerate task.
+        self.residual_block = _validate_task_block(
+            residual_block, name="residual_block", probability_keys=("p_present", "p_conditional"),
+            int_keys=("min_n_support",))
+        if self.residual_block is not None and getattr(source, "noise_spec", None) is None:
+            raise ValueError(
+                "residual_block requires a source with a noise mixture: without one the "
+                "observed targets ARE the clean ones, every residual is exactly 0.0, and the "
+                "block has nothing to teach. Configure sampling.noise, or remove the block.")
         # The promptable-mask + constant-infilling feature (owner rulings 2026-08-24):
         # 'all'/'fittable' emission formats behind harness-owned flags, the unflagged
         # per-slot partial circumstance, and the <predict_constants> block probabilities.
@@ -208,7 +222,7 @@ class FlashANSRDataset:
                     "is defined on the tagged canonical (the explicit path's site filters "
                     "diverge on np.pi/np.e and would break slot alignment).")
         if (self.complexity_block is not None or self.predict_y_block is not None
-                or self.mask_block is not None):
+                or self.mask_block is not None or self.residual_block is not None):
             missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
             if missing_wrappers:
                 raise ValueError(f"task blocks require the expression wrappers, missing {missing_wrappers}.")
@@ -220,6 +234,10 @@ class FlashANSRDataset:
             missing_tokens = [t for t in PREDICT_Y_TOKENS if t not in tokenizer]
             if missing_tokens:
                 raise ValueError(f"predict_y_block requires tokens {list(PREDICT_Y_TOKENS)}, missing {missing_tokens}.")
+        if self.residual_block is not None:
+            missing_tokens = [t for t in PREDICT_RESIDUAL_TOKENS if t not in tokenizer]
+            if missing_tokens:
+                raise ValueError(f"residual_block requires tokens {list(PREDICT_RESIDUAL_TOKENS)}, missing {missing_tokens}.")
         self.data = None
         #: Monotone worker-counter sums (skipped blocks, restructure gate, drops).
         self.stream_counters: dict[str, int] = {}
@@ -232,6 +250,7 @@ class FlashANSRDataset:
             target_dialect=target_dialect,
             complexity_block=self.complexity_block,
             predict_y_block=self.predict_y_block,
+            residual_block=self.residual_block,
             mask_block=self.mask_block,
         )
         self._preprocessor_prompt_config = (
@@ -359,6 +378,7 @@ class FlashANSRDataset:
             target_dialect=config_.get("target_dialect", TARGET_DIALECT_EXPLICIT),
             complexity_block=config_.get("complexity_block"),
             predict_y_block=config_.get("predict_y_block"),
+            residual_block=config_.get("residual_block"),
             mask_block=config_.get("mask_block"),
         )
 

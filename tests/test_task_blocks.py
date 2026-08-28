@@ -387,3 +387,121 @@ def test_the_boundary_splits_compact_from_bytes_except_in_query_blocks(tokenizer
 
     assert seen_boundary > 0, "vacuous: no instance carried the boundary"
     assert seen_query_float > 0, "vacuous: the exemption was never exercised"
+
+
+# ---------------------------------------------------------------------------
+# <predict_residual> -- the same shape as predict_y, four rules it must not share
+# ---------------------------------------------------------------------------
+
+# p_clean 0 so every instance has a real displacement to report; p_instance 0 so the
+# outlier shove never fires and the target stays the ordinary noise draw. The rate range
+# is validated whether or not outliers are enabled, so it carries a legal band.
+NOISE_SPEC = {"p_clean": 0.0, "types": {"additive": 1.0}, "level": [0.05, 0.2],
+              "outliers": {"p_instance": 0.0, "rate": [0.01, 0.1], "magnitude": [3.0, 3.0]}}
+RESIDUAL_ALWAYS = {"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 1}
+
+
+def _noisy_source():  # type: ignore[no-untyped-def]
+    """The default source draws clean targets, so the residual would be identically 0."""
+    from symbolic_data import ProblemSource
+    source = _source()
+    return ProblemSource({"catalog": source.catalog,
+                          "sampling": {"n_support": "prior", "n_validation": 0, "noise": NOISE_SPEC}})
+
+
+def _iterate_noisy(tokenizer, steps=2, batch_size=16, **blocks):  # type: ignore[no-untyped-def]
+    with FlashANSRDataset(source=_noisy_source(), tokenizer=tokenizer, padding="zero",
+                          target_dialect="tagged", **blocks) as dataset:
+        for batch in dataset.iterate(steps=steps, batch_size=batch_size):
+            yield dataset.collate(batch, device=torch.device("cpu"))
+
+
+def test_residual_block_shape_and_target(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """Coordinates are caller-supplied and therefore compact; the displacement is the
+    model's and therefore an ieee754 span, decoding EXACTLY to observed minus clean."""
+    seen = 0
+    for batch in _iterate_noisy(tokenizer, residual_block=RESIDUAL_ALWAYS):
+        for row, tokens in _rows(batch, tokenizer):
+            draw = batch["predict_residual"][row]
+            if draw is None:
+                continue
+            seen += 1
+            start = tokens.index("<predict_residual>")
+            n_dims = len(draw["x"])
+            assert tokens[start + 1] == "<point>"
+            assert tokens[start + 2:start + 2 + n_dims] == ["<float>"] * n_dims
+            for k in range(n_dims):
+                assert float(batch["input_num"][row, start + 2 + k, 0]) == pytest.approx(
+                    float(draw["x"][k]), rel=0, abs=0)
+            assert tokens[start + 2 + n_dims:start + 4 + n_dims] == ["</point>", "<ieee754>"]
+            span = tokens[start + 4 + n_dims:start + 4 + n_dims + IEEE754_N_BYTES]
+            assert byte_tokens_to_float64(span) == draw["residual"]
+            assert tokens[start + 4 + n_dims + IEEE754_N_BYTES:start + 6 + n_dims + IEEE754_N_BYTES] \
+                == ["</ieee754>", "</predict_residual>"]
+            # Loss discipline: opener, point and closer force-fed; the bytes are the model's.
+            mask = batch["task_mask"][row].tolist()
+            assert all(mask[start:start + 4 + n_dims]), "opener and the query are force-fed"
+            assert not any(mask[start + 4 + n_dims:start + 4 + n_dims + IEEE754_N_BYTES])
+    assert seen > 0, "vacuous: no instance carried the block"
+
+
+def test_the_residual_point_is_not_held_out(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """The opposite of predict_y. The target is observed-minus-clean AT that point, and the
+    observation reaches the model only through the encoder -- delete the row and the target
+    becomes an unobserved noise draw whose irreducible loss is the noise entropy."""
+    checked = 0
+    for batch in _iterate_noisy(tokenizer, residual_block=RESIDUAL_ALWAYS):
+        for row, _ in _rows(batch, tokenizer):
+            draw = batch["predict_residual"][row]
+            if draw is None:
+                continue
+            n = int(batch["data_attn_mask"][row].sum())
+            n_dims = len(draw["x"])
+            x_rows = batch["x_tensors"][row, :n, :n_dims].numpy()
+            x_star = np.asarray(draw["x"], dtype=NUMERIC_DTYPE_NP)
+            assert np.any(np.all(x_rows == x_star, axis=1)), \
+                "the queried point MUST still be in the encoder's support set"
+            checked += 1
+    assert checked > 0, "vacuous"
+
+
+def test_the_residual_block_is_dropped_on_an_unconditioned_instance(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """predict_y survives a nulled memory by pinning to the suffix, where the expression
+    makes it function evaluation. The residual has no such fallback: with nulled memory the
+    observation is unreachable in BOTH placements, so the block is dropped."""
+    n_uncond = n_uncond_with_block = 0
+    for batch in _iterate_noisy(tokenizer, steps=3, batch_size=32,
+                                condition_dropout=0.5, residual_block=RESIDUAL_ALWAYS):
+        for row, tokens in _rows(batch, tokenizer):
+            if bool(batch["condition_mask"][row]):
+                continue
+            n_uncond += 1
+            if batch["predict_residual"][row] is not None or "<predict_residual>" in tokens:
+                n_uncond_with_block += 1
+    assert n_uncond > 0, "vacuous: no unconditioned instance was drawn"
+    assert n_uncond_with_block == 0, \
+        f"{n_uncond_with_block} of {n_uncond} unconditioned instances carried the block"
+
+
+def test_the_residual_block_requires_a_noise_mixture(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """Without one the observed targets ARE the clean ones and every target is exactly 0.0,
+    so the block would teach nothing but "emit eight zero bytes"."""
+    with pytest.raises(ValueError, match="noise mixture"):
+        FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                         target_dialect="tagged", residual_block=RESIDUAL_ALWAYS)
+
+
+def test_predict_y_and_the_residual_never_query_the_same_point(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    """predict_y deletes its row before the residual draws, so the two cannot collide."""
+    both = 0
+    for batch in _iterate_noisy(tokenizer, steps=3, batch_size=32,
+                                predict_y_block={"p_present": 1.0, "p_conditional": 0.5, "min_n_support": 2},
+                                residual_block=RESIDUAL_ALWAYS):
+        for row, _ in _rows(batch, tokenizer):
+            y_draw, r_draw = batch["predict_y"][row], batch["predict_residual"][row]
+            if y_draw is None or r_draw is None:
+                continue
+            both += 1
+            assert list(y_draw["x"]) != list(r_draw["x"]), \
+                "predict_y's held-out point was handed to the residual block as well"
+    assert both > 0, "vacuous: no instance carried both blocks"

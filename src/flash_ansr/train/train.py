@@ -93,7 +93,8 @@ def _enable_tf32_precision() -> None:
 _enable_tf32_precision()
 
 
-TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "predict_constants"}
+TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "predict_constants",
+                      4: "predict_residual"}
 
 
 def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Tensor,

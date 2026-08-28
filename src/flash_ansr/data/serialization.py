@@ -41,6 +41,14 @@ PREDICT_Y_END_TOKEN = "</predict_y>"
 POINT_START_TOKEN = "<point>"
 POINT_END_TOKEN = "</point>"
 PREDICT_Y_TOKENS = (PREDICT_Y_START_TOKEN, PREDICT_Y_END_TOKEN, POINT_START_TOKEN, POINT_END_TOKEN)
+
+#: The residual block: the displacement between what was OBSERVED at a point and what the
+#: law predicts there. Built exactly like <predict_y> and reusing its <point> wrapper --
+#: caller-supplied coordinates, so compact; a model-predicted answer, so an ieee754 span.
+PREDICT_RESIDUAL_START_TOKEN = "<predict_residual>"
+PREDICT_RESIDUAL_END_TOKEN = "</predict_residual>"
+PREDICT_RESIDUAL_TOKENS = (PREDICT_RESIDUAL_START_TOKEN, PREDICT_RESIDUAL_END_TOKEN,
+                           POINT_START_TOKEN, POINT_END_TOKEN)
 # The BOUNDARY (owner rulings 2026-08-24, refined 2026-08-27). A harness-inserted marker,
 # uttered at most once, that hands the pen over: everything BEFORE it is given -- fixed,
 # compact, force-fed and loss-masked -- and everything after it is the model's own, spelled
