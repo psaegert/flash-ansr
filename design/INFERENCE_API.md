@@ -108,11 +108,6 @@ Each is a separate public method, out of srbf's scope for now.
 # Per-point outlier scores. NOT sampled: one deterministic forward through a sigmoid head.
 p = ansr.score_outliers(X, y)                                   # -> np.ndarray
 
-# Per-point residual y_i - f(x_i): how far each observation sits off the true curve.
-# One encoder pass; the 8 IEEE-754 nibble softmaxes per point are SAMPLED, so this is a
-# distribution per point like every other predicted value.
-residuals = ansr.predict_residuals(X, y)                        # -> list[ValueDistribution]
-
 # The sampled verbs. n_samples / temperature / seed on each; all return distributions.
 y_star = ansr.predict_y(X, y, x_star)                           # -> list[ValueDistribution]
 mu = ansr.predict_complexity(X, y)                              # -> ComplexityDistribution
@@ -139,16 +134,9 @@ single lone outlier). Two caveats belong in the docstring: the head reads the da
 encoder only, so scores condition on `(X, y)` and never on any expression; and it degrades
 above roughly 10% contamination, the ceiling it was trained under.
 
-`predict_residuals` needs a checkpoint with `residual_head: true` (v24.0-T18 onward) and
-raises `CapabilityUnavailable` otherwise. Two things distinguish it from `score_outliers`,
-which reads the same per-point representations:
-
-* **different target.** `score_outliers` predicts the GENERATIVE contamination label; the
-  residual is the displacement. A kappa < 1 outlier is labelled while barely displaced, so
-  neither head subsumes the other and both are trained.
-* **it cannot go off-grammar.** The head emits exactly 8 nibble positions structurally, so
-  `off_grammar_steps` is always 0 and `closed_cleanly_fraction` always 1.0. A pattern can
-  still decode to nan/inf — `non_finite_fraction` reports how often.
+Per-point residual prediction is NOT exposed. The encoder head that once served it is gone;
+the capability returns as a `<predict_residual>` decoder block built like `<predict_y>`, and
+this section is rewritten against that when it lands.
 
 The honest framing for any number it produces: measured on the training prior (2026-08-27)
 the residual is invisible to model-free methods — a nearest-neighbour smoother recovers
@@ -236,5 +224,6 @@ prior): per-problem AUROC of |nearest-neighbour difference| on contaminated prob
 ~0.82 per problem, not 0.5, and the lone-outlier case is exactly where the trivial baseline
 is strongest and the head's measured median P ~ 0.42 looked weakest.
 
-The same applies to `predict_residuals`: its per-instance accuracy must be reported against
-the smoother baseline above, split by noise level, before any claim is made for it.
+The same will apply to residual prediction when the `<predict_residual>` block lands: its
+per-instance accuracy must be reported against the smoother baseline above, split by noise
+level, before any claim is made for it.

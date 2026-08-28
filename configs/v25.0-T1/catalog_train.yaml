@@ -1,22 +1,17 @@
-# v24.0-T14 pilot catalog: the T13 shape (v23.0-3M size/support, v24 generation
-# surface -- concrete numeric literals via the choice + rounded mixture, typed
-# exponent slots for pow/rootn) with two ruled changes: the acj-4 engine pinned
-# (pin-everything ruling, 2026-08-24) and support oversampling retired -- the
-# owner-ruled all-or-nothing whole-box rejection shapes the prior
-# (support_oversampling_max defaults to 1 and is deliberately absent here).
+# v25.0-T1 catalog: concrete numeric literals via the choice + rounded mixture, typed
+# exponent slots for pow/rootn, and the acj-4 engine pinned. Support oversampling is
+# retired -- all-or-nothing whole-box rejection shapes the prior, so
+# support_oversampling_max defaults to 1 and is deliberately absent here.
 type: lample_charton
 simplipy_engine: 'acj-4'
-# Holdout: fastsrb only. The v23 pattern also excluded the frozen val artifact
-# ("v23-val"), but that is a generation-1 artifact simplipy >= 0.12 refuses to load
-# (retired hyper-operator vocabulary) and T13 does not evaluate against it -- val here
-# is a fresh stream from THIS catalog (see dataset_val.yaml). The v24 line gets its
-# own frozen val artifact at the symbolic-data 0.15 freeze; it joins this list then.
+# Validation is a fresh stream from THIS catalog (see dataset_val.yaml), not a frozen
+# artifact, so nothing beyond the benchmark pools below needs excluding.
 holdout_pools: [
   # Every benchmark srbf may evaluate on. The training run must never see any of them, and
   # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
   # suite -- widening the benchmark later means retraining.
   #
-  # Measured 2026-08-27 (3,000 draws replayed against nested pools): widening from fastsrb
+  # Measured over 3,000 draws replayed against nested pools: widening from fastsrb
   # alone to all 29 costs over-rejection but nothing in time -- `is_held_out` is a hash lookup,
   # O(1) in pool size, and the per-draw cost is dominated by evaluating the candidate, which
   # the one-catalog pool already paid.

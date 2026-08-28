@@ -3,9 +3,8 @@ tokenizer: './tokenizer.yaml'
 
 pre_encoder_noise_scale: 0.1
 
-# v25: the numeric format, pinned explicitly rather than left to the code default (which
-# stays 32 so the frozen v24 checkpoints keep loading their own width). Everything that
-# reaches the encoder or the numeric channel is binary64 -- see flash_ansr.utils.numeric.
+# The numeric format, pinned explicitly rather than left to the code default: everything
+# reaching the encoder or the numeric channel is binary64. See flash_ansr.utils.numeric.
 pre_encoder_bits: 64
 
 encoder_max_n_variables: 18
@@ -25,6 +24,8 @@ decoder_input_dim: 192
 decoder_model_dim: 192
 decoder_n_heads: 3
 decoder_n_layers: 3
+# 256 holds the task set with room to spare: measured over this prior, the longest
+# instance runs 157 tokens and the 99th percentile 130.
 decoder_max_seq_len: 256
 decoder_ffn_hidden_dim: 576
 decoder_dropout: 0.1
@@ -41,12 +42,12 @@ use_checkpointing: false
 # First-class optional condition (classifier-free guidance). When true, the model carries a learned
 # `null_memory` and routes UNCONDITIONED examples (per-example condition_mask=False, set by the data
 # layer via `condition_dropout` in dataset_train.yaml) to it -- a data-driven, train/inference-symmetric
-# mode. Required whenever the dataset emits a condition_mask; the owner-ruled 10% dropout does.
+# mode. Required whenever the dataset emits a condition_mask, which the 10% dropout does.
 # null_memory_init_seed selects the init.
 optional_condition: true
 null_memory_init_seed: 0
 
-# v24 task extensions: per-point outlier head over the
-# encoder's pre-pooling representations, trained against the noise mixture's
-# generative contamination labels (see train.yaml: outlier_loss_weight).
+# Per-point outlier head over the encoder's pre-pooling representations, trained against
+# the noise mixture's generative contamination labels (see train.yaml: outlier_loss_weight).
+# The decoder-side tasks need no head: they are ordinary next-token prediction.
 outlier_head: true

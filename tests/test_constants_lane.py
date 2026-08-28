@@ -17,7 +17,7 @@ from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import BYTE_TOKENS, CONSTANTS_FORMAT, IEEE754_START_TOKEN
 
 #: Configurations this build serves, and configurations declaring a different format.
-SERVED = ("test", "v24-template", "v24.0-T17", "v24.0-T18")
+SERVED = ("test", "v24-template", "v25.0-T1")
 FOREIGN = ("v24.0-T13", "v24.0-T14", "v24.0-T14-base",
            "v24.0-T15", "v24.0-T15-base", "v24.0-T16")
 
