@@ -15,9 +15,8 @@
 #     (pow2..pow5, pow1_2..pow1_5, mult2..mult5, div2..div5 are all retired; `pow` and
 #     `rootn` carry them, with the exponent as an ieee754 literal).
 #  4. BYTE CONSTANTS AT BINARY64. A constant is <ieee754> + 8 byte tokens over the
-#     256-symbol <b00>..<bff> alphabet + </ieee754> = 10 tokens. The span width is
-#     unchanged from the nibble lane; the alphabet and the value semantics are not.
-#     <float> is the CALLER-supplied form only, never emitted.
+#     256-symbol <b00>..<bff> alphabet + </ieee754> = 10 tokens, so anything that budgets
+#     slots counts 10. <float> is the CALLER-supplied form only, never emitted.
 #
 # This is a TEMPLATE: `variables` mirrors the v23.0-120M run config (x1..x17) so vocabulary
 # sizes compare like for like; a concrete v24 run config copies it and adjusts.
@@ -26,9 +25,9 @@
 # they are EXPRESSION tokens and must survive `Tokenizer.decode(..., special_tokens=...)`,
 # which filters special tokens out.
 
-# The lane this vocabulary belongs to. Checked at Tokenizer.from_config, so a
-# nibble-lane config loaded against the byte codec fails by NAME rather than as a
-# confusing out-of-vocabulary error several layers down.
+# The lane this vocabulary belongs to. Checked at Tokenizer.from_config, so a config
+# built for a different constants codec fails by NAME rather than as a confusing
+# out-of-vocabulary error several layers down.
 constants_format: "ieee754_bytes_f64"
 
 special_tokens:

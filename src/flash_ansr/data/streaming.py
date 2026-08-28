@@ -72,7 +72,7 @@ def draw_condition_mask(rng: np.random.Generator, condition_dropout: float) -> b
     literally omitted from the sequence -- the cleaner formulation of the same ruling.
 
     Extracted as a seam so the draw is unit-testable with a seeded ``rng`` (rate and
-    determinism); the streaming worker drives it with its per-worker post-fork rng.
+    determinism); the streaming worker drives it with its own per-worker rng.
     """
     return bool(rng.random() >= condition_dropout)
 
@@ -95,6 +95,15 @@ class WorkerConfig:
     predict_y_block: dict[str, Any] | None = None
     residual_block: dict[str, Any] | None = None
     mask_block: dict[str, Any] | None = None
+
+
+#: Workers are SPAWNed, not forked. A trainer has CUDA initialised in the parent by the
+#: time it opens a stream, and forking a CUDA process is undefined -- the child inherits
+#: driver state it never initialised. Spawn costs a fresh interpreter per worker, paid
+#: once per pool; `iterate(keep_alive=True)` is what keeps that off the validation path.
+#: Everything the worker needs is picklable and passed explicitly: shared memory is
+#: attached by NAME, and the source config is rebuilt into its own ProblemSource.
+_MP = mp.get_context("spawn")
 
 
 class SharedMemoryWorkerPool:
@@ -238,11 +247,11 @@ class SharedMemoryWorkerPool:
             for name, cfg in shm_configs.items()
         }
 
-        self._manager = mp.Manager()
+        self._manager = _MP.Manager()
         self.metadata_pool = self._manager.list([None] * self.pool_size)
-        self._work_queue = mp.Queue()
-        self._result_queue = mp.Queue()
-        self._available_slots_queue = mp.Queue()
+        self._work_queue = _MP.Queue()
+        self._result_queue = _MP.Queue()
+        self._available_slots_queue = _MP.Queue()
         for idx in range(self.pool_size):
             self._available_slots_queue.put(idx)
 
@@ -274,7 +283,7 @@ class SharedMemoryWorkerPool:
 
         self._workers = []
         for _ in range(self._num_workers):
-            process = mp.Process(
+            process = _MP.Process(
                 target=_producer_worker,
                 args=(self._work_queue, self._result_queue, shm_configs, self.metadata_pool, worker_config),
                 daemon=True,
@@ -358,8 +367,8 @@ def _producer_worker(
     worker_config: WorkerConfig,
 ) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    # One per-worker Generator created POST-fork: distinct streams per worker for decorrelation
-    # (replaces the old getpid()-based global np.random/random seeding).
+    # One per-worker Generator created in the CHILD: distinct streams per worker for
+    # decorrelation (replaces the old getpid()-based global np.random/random seeding).
     worker_rng = np.random.default_rng()
 
     tokenizer = worker_config.tokenizer

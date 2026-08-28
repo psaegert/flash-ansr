@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Streaming workers are spawned, not forked.** A trainer has CUDA initialised in the
+  parent by the time it opens a stream, and forking a CUDA process is undefined — the
+  child inherits driver state it never initialised. The pool now uses an explicit spawn
+  context. Everything a worker needs is passed explicitly and picklably: shared memory is
+  attached by name, and the source config is rebuilt into the worker's own `ProblemSource`.
+
+  Two consequences for callers. A **script** that opens a pool now needs an
+  `if __name__ == "__main__":` guard, because the child re-imports the main module (the
+  `flash_ansr` console entry point already has one). And pool creation costs a fresh
+  interpreter per worker: measured at 8 workers, start-up plus first batch goes from
+  0.87 s to 7.7 s. Steady-state throughput is unchanged — median ms/batch by quarter over
+  480 batches is 7.6 / 7.9 / 7.8 / 6.6 forked against 7.6 / 7.3 / 8.0 / 5.6 spawned — so
+  the cost is one-off per pool, which is also what `iterate(keep_alive=True)` exists to
+  amortise.
+
 - **Placeholding is naive and positional.** Masking a constant no longer asks the engine to
   re-derive the expression and compare: each placeheld literal site simply becomes a
   `<constant>` the model predicts, and that site's value is the block's ground truth. A

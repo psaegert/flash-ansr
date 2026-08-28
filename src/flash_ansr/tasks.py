@@ -258,10 +258,9 @@ def _sample_span(
 
     Each row keeps its OWN history, so a multi-slot decode samples the joint distribution over
     slots rather than a product of per-slot marginals. Each byte is drawn from the softmax
-    restricted to the 256-token byte alphabet -- the same restriction training imposed. NOTE that a
-    given `temperature` now shapes 256 logits rather than 16, so it is NOT comparable to a nibble-lane
-    setting at the same number. The closing tag is
-    appended by the harness, but whether the model WANTED to close is measured first.
+    restricted to the 256-token byte alphabet -- the same restriction training imposed, so
+    `temperature` shapes 256 logits. The closing tag is appended by the harness, but whether
+    the model WANTED to close is measured first.
     """
     device = data.device
     byte_index = torch.tensor(byte_ids, dtype=torch.long, device=device)
