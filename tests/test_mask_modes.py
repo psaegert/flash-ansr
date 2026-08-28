@@ -123,7 +123,9 @@ class TestPredictConstantsBlock:
                 # first span decodes to the first placeheld value, positional binding
                 first = block.index(IEEE754_START_TOKEN)
                 nibbles = block[first + 1:first + 1 + IEEE754_N_BYTES]
-                assert byte_tokens_to_float64(nibbles) == float(np.float32(draw["values"][0]))
+                # EXACT, not narrowed: the span carries the value at the precision it was
+                # fitted at. This read float(np.float32(...)) while the serializer narrowed.
+                assert byte_tokens_to_float64(nibbles) == draw["values"][0]
                 # loss discipline: openers force-fed, nibbles + closers supervised
                 mask = batch["task_mask"][row].tolist()
                 assert mask[start], "the block opener is harness-owned"

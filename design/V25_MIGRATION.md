@@ -1,9 +1,10 @@
 # v25: float64 numerics + byte constant tokens — migration plan
 
-**Status: owner-approved 2026-08-27. S4 and S5 LANDED.** Mapped by a 7-way parallel audit of the four repos,
+**Status: owner-approved 2026-08-27. S4-S7 LANDED.** Mapped by a 7-way parallel audit of the four repos,
 then synthesized; every line number was verified against the working tree. Steps **S1, S2 and
 S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164), and **S4 is
-LANDED** on the flash-ansr side, **S5 with it**. Next: S6 (symbolic-data), S7 (srbf).
+LANDED** on the flash-ansr side, **S5 with it**, and **S6/S7 across symbolic-data
+(0a9302e) and srbf (16a6807)**. Next: S8 (re-baseline, needs a trained v25 model), S9 (docs).
 
 ~~**Do not launch a training run between S3 and S4.**~~ LIFTED: S4 closed that window. The
 nibble lane is preserved at the `compat/v24-nibbles` tag, which is what T13-T18 and the T16
@@ -430,12 +431,28 @@ Full site list: `generative.py:1103,1121,1133,1154,1156,1236,1266,1302` + the co
 
 Two independent wins to call out in the CHANGELOG: (a) the literal f32 snap at `:1103/:1236` is undone by the f64 widening at `:82`, so `substitute_constants` records the 17-digit f32 round-trip — 49.05% of literals change spelling, mean literal string 7.11 → 10.61 chars, defeating the `rounded` prior's entire purpose (description-length control); (b) `tools/audit_finite_fraction.py` measures `finite_fraction` in f64 while `catalog.py:398` rejects in f32, so the shipped metadata over-estimates the realizable fraction and undersizes the oversampling budget for exactly the extreme entries — the migration closes this for free.
 
+**LANDED** (symbolic-data 0a9302e). The internal ordering was satisfied by construction --
+one commit -- so none of the five silent-no-op traps could fire. Measured rather than
+asserted: 98.4% of generated y values are ones f32 could not hold; the `rounded` literal
+prior was being undone by the snap on 98.31% of float draws (mean repr 10.79 -> 18.09
+chars, ~49% over the full 50/50 prior, matching this audit's estimate); and RNG CONSUMPTION
+IS UNCHANGED -- byte-identical next-draw on all three pinned seeds, verified against the
+pre-change tree in a worktree. Acceptance widens and values change (inputs are no longer
+snapped), but the stream does not.
+
+The golden-digest test could not have caught the difference: it hashed `.tobytes()`, so a
+dtype change moves it even when every value is identical. It now pins the generator's next
+draw -- dtype-independent -- separately from the value digest.
+
 **Size:** ~130 lines across 7 src files, ~8 test files. **Depends on:** S4, Q4.
 
 ---
 
 ### S7 — srbf constants dtype (SR). Mechanical, ~5 lines.
 `data_sources.py:191` `constants` → `float64` — the only coercion between symbolic-data's `Problem` and the eval record, and the srbf-side twin of the generation gate. Test fixtures: `test_eval/test_catalog_source.py:18-21`, `test_eval/test_benchmark_config.py:368-369,437-438`, `test_benchmark.py:48`. **Do not** touch `test_eval/test_reference_metrics.py:52`'s f32-eps assertion. **Depends on:** S2; land with or after S6.
+
+**LANDED** (srbf 16a6807), 421 passed. The f32-eps bars were left alone -- they are
+tolerances, not storage widths.
 
 ---
 

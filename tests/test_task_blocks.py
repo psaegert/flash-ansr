@@ -8,6 +8,7 @@ import torch
 from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.data.serialization import HYPOTHESIS_TOKEN
+from flash_ansr.utils.numeric import NUMERIC_DTYPE_NP
 from flash_ansr.train.train import Trainer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import IEEE754_N_BYTES, byte_tokens_to_float64
@@ -82,7 +83,7 @@ def test_complexity_float_block_rides_the_numeric_channel(tokenizer) -> None:  #
             assert tokens[1:4] == ["<complexity>", "<float>", "</complexity>"]
             assert batch["complexity_variant"][row] == "float"
             value = float(batch["input_num"][row, 2, 0])
-            assert value == float(np.float32(batch["complexity_mu"][row]))
+            assert value == float(batch["complexity_mu"][row])
             assert all(batch["task_mask"][row][1:4].tolist()), \
                 "the summary variant is pure context: no loss anywhere in the block"
 
@@ -96,8 +97,10 @@ def test_predict_y_unconditional_before_expression(tokenizer) -> None:  # type: 
             n_dims = len(draw["x"])
             assert tokens[3:3 + n_dims] == ["<float>"] * n_dims
             for k in range(n_dims):
+                # The x coordinate rides the numeric channel EXACTLY as drawn: no
+                # narrowing anywhere between the generator and the batch.
                 assert float(batch["input_num"][row, 3 + k, 0]) == pytest.approx(
-                    float(np.float32(draw["x"][k])), rel=0, abs=0)
+                    float(draw["x"][k]), rel=0, abs=0)
             tail = tokens[3 + n_dims:3 + n_dims + 2]
             assert tail == ["</point>", "<ieee754>"]
             nibbles = tokens[5 + n_dims:5 + n_dims + IEEE754_N_BYTES]
@@ -108,7 +111,7 @@ def test_predict_y_unconditional_before_expression(tokenizer) -> None:  # type: 
             n = int(batch["data_attn_mask"][row].sum())
             assert batch["n_support"][row] == n
             x_rows = batch["x_tensors"][row, :n, :n_dims].numpy()
-            x_star = np.asarray(draw["x"], dtype=np.float32)
+            x_star = np.asarray(draw["x"], dtype=NUMERIC_DTYPE_NP)
             assert not np.any(np.all(x_rows == x_star, axis=1)), "holdout row must not be in the input set"
 
 
@@ -244,7 +247,7 @@ def test_hypothesis_mode_supervises_the_whole_block_after_the_flag(tokenizer, en
             assert batch["complexity_variant"][row] == "hypothesis"
             nibbles = tokens[4:4 + IEEE754_N_BYTES]
             mu = batch["complexity_mu"][row]
-            assert byte_tokens_to_float64(nibbles) == float(np.float32(mu))
+            assert byte_tokens_to_float64(nibbles) == float(mu)
             assert mu == engine.complexity(list(batch["skeleton"][row]))
             mask = batch["task_mask"][row].tolist()
             assert mask[1], "the flag itself is NEVER supervised (harness-only)"
