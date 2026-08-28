@@ -1,13 +1,6 @@
 # v24.0 TARGET-FORMAT TEMPLATE TOKENIZER
 #
-# Owner ruling 2026-08-18 (evening):
-#   "v24.0 will train on the tagged canonical form, without masking. All numbers will be
-#    represented by their ieee754 representation (meaning we also don't need the explicit
-#    integers -10 to 10 anymore). And I think we could also format the ieee754 bit strings
-#    as hexadecimal. Same representative power, fewer tokens."
-#
-# Consequences pinned by this file (acceptance: the T2 block in
-# tests/test_constant_representation.py, which verifies the tag set against a LIVE engine):
+# What this vocabulary pins (verified against a live engine by the template tests):
 #
 #  1. TARGETS ARE THE TAGGED CANONICAL FORM. The training target is simplipy's native
 #     `simplify` output -- n-ary bags delimited by <add>/</add> and <mul>/</mul>, with
@@ -32,9 +25,9 @@
 # they are EXPRESSION tokens and must survive `Tokenizer.decode(..., special_tokens=...)`,
 # which filters special tokens out.
 
-# FROZEN. This run belongs to the retired nibble lane (compat/v24-nibbles tag):
-# float32 constants over the 16-symbol <h0>..<hf> alphabet. The declaration is
-# what makes Tokenizer.from_config refuse it BY NAME under a byte-lane build,
+# This configuration serves the float32 constants format: 8 hex nibbles over the
+# 16-symbol <h0>..<hf> alphabet. The declaration below is what makes
+# Tokenizer.from_config name the mismatch when a build serves a different format,
 # rather than failing one out-of-vocabulary token at a time.
 constants_format: "ieee754_nibbles_f32"
 

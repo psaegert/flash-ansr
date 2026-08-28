@@ -7,15 +7,13 @@
 - This amortized approach turns symbolic regression into a language-like inference problem: data → tokens → refined expression.
 
 ## Generation methods (how we search the expression space)
-- **Softmax sampling**: stochastic draws from the model distribution over next tokens (via top-k / top-p sampling).
-- **Beam search**: deterministic, width-limited search with simplified-expression deduplication of completed beams.
-- **MCTS**: tree search with learned policy/value signals; better exploration when local decisions are ambiguous (highly experimental).
+- **Softmax sampling**: stochastic draws from the model distribution over next tokens (via top-k / top-p sampling), with optional constrained decoding that restricts every step to the tokens the constant grammar admits.
 
 Comparison baselines (such as prior sampling from operator priors without model guidance, and brute-force exhaustive search) moved out of flash-ansr in v0.6 into the standalone `srbf` package (Symbolic Regression Benchmark Framework: `pip install srbf`, https://github.com/psaegert/srbf). See the srbf repository for the available baselines and how to run them.
 
 ## Architecture (Training + Inference Workflow)
 - **Data synthesis**: During training, a `symbolic_data` catalog (a generative recipe over operators, expression length, and literal/support priors) is sampled into problems by a `ProblemSource` and wrapped by `FlashANSRDataset`; each problem is an expression skeleton plus its constants and support points.
-- **Pre-Encoder**: Encodes float input tensors of shape \((B, M, D)\) into their IEEE-754 bit representations, yielding \((B, M, D')\) binary tensors with batch size \(B\), support points \(M\), original variables \(D\), and bit-encoded variables \(D' = 32 \times D\).
+- **Pre-Encoder**: Encodes float input tensors of shape \((B, M, D)\) into their IEEE-754 bit representations, yielding \((B, M, D')\) binary tensors with batch size \(B\), support points \(M\), original variables \(D\), and bit-encoded variables \(D' = b \times D\), where \(b\) is the model's `pre_encoder_bits` (64 for binary64 inputs).
 - **Encoder**: The SetTransformer component consumes unordered support points of shape \((B, M, D')\) and produces an embedding of shape \((B, S, d)\) summarizing the dataset. Here, \(S\) is the number of seeds in the Multihead Attention based pooling and \(d\) is the internal model size.
 - **Decoder**: The Transformer decoder autoregressively emits tokens for expressions in prefix order, conditioned on the encoder output and optional prompts via cross-attention.
 - **Refiner**: The Refiner class optimizes the constants of predicted skeletons using one of many available methods (e.g., LM, BFGS, Nelder-Mead).
@@ -30,7 +28,7 @@ Comparison baselines (such as prior sampling from operator priors without model 
 
 ### Inference loop
 
-1. Load a checkpoint and select a generation config (beam, softmax, MCTS).
+1. Load a checkpoint and select a generation config.
 2. Encode the provided \(X, y\) pairs; decode candidate expressions.
 3. Refine constants; score candidates by $\log_{10}(\text{FVU}) + \lambda_\ell \cdot \text{length} + \lambda_c \cdot \text{n\_constants} + \lambda_L \cdot (-\log p)$; return the best expression and predictions. All diverse results are accessible.
 

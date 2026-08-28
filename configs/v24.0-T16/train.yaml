@@ -3,7 +3,7 @@
 # hypothesis mode, predict_y, promptable masking and the <predict_constants>
 # infilling block (collection-stability gated). T13/T15 architecture and batch;
 # the house 10/70/20 trapezoid stretched to 1.5M steps (v23 trained 1M; the v24
-# task mixture is harder -- owner ruling 2026-08-24). acj-4 pinned throughout.
+# task mixture is harder). acj-4 pinned throughout.
 model: ./model.yaml
 
 optimizer:

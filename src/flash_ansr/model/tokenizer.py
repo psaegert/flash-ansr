@@ -55,32 +55,29 @@ class Tokenizer:
         if "tokenizer" in config_.keys():
             config_ = config_["tokenizer"]
 
-        # Lane check (Q3, owner ruling 2026-08-27). The byte tokens are two hex digits, so a
-        # nibble-lane vocabulary shares NO content token with this one; without this the
-        # mismatch surfaces much later as an out-of-vocabulary error naming a single token.
-        # Absent key = an older config that predates the lane split; the span-token check
-        # downstream still catches a genuinely wrong vocabulary.
+        # A vocabulary built for a different constants format shares no content token with
+        # this one, so the mismatch is named here rather than surfacing much later as an
+        # out-of-vocabulary error for a single token. A config that declares nothing is
+        # checked by its alphabet instead, below.
         declared = config_.get("constants_format")
         if declared is not None and declared != CONSTANTS_FORMAT:
             raise ValueError(
                 f"This tokenizer declares constants_format {declared!r}, but this build serves "
-                f"{CONSTANTS_FORMAT!r}. A {declared!r} vocabulary spells constants over a "
-                f"different alphabet; regenerate the config or use a matching release.")
+                f"{CONSTANTS_FORMAT!r}, which spells constants over a different alphabet. "
+                f"Regenerate the configuration, or use a release that serves {declared!r}.")
 
         tokenizer = cls(vocab=config_["operators"] + config_["variables"],
                         special_tokens=config_["special_tokens"])
 
-        # The same check for vocabularies written BEFORE constants_format existed -- notably
-        # the tokenizer.yaml inside a v24 checkpoint directory. A vocabulary that serializes
-        # constants at all must carry this codec's alphabet; if it opens spans but has no
-        # <b00>, it belongs to the retired nibble lane and every content token would come
-        # back out-of-vocabulary one layer at a time.
+        # The same check for a vocabulary that declares no format, such as one stored
+        # alongside a checkpoint. A vocabulary that serializes constants at all must carry
+        # this codec's alphabet; without it every content token would come back
+        # out-of-vocabulary one layer at a time.
         if declared is None and IEEE754_START_TOKEN in tokenizer and BYTE_TOKENS[0] not in tokenizer:
             raise ValueError(
                 f"This tokenizer opens {IEEE754_START_TOKEN} spans but has no {BYTE_TOKENS[0]!r}, "
-                f"so it is not a {CONSTANTS_FORMAT!r} vocabulary -- it is from the retired "
-                f"nibble lane (see the compat/v24-nibbles tag). Regenerate the config, or use a "
-                f"release that serves that lane to load this checkpoint.")
+                f"so it does not serve {CONSTANTS_FORMAT!r}. Regenerate the configuration, or "
+                f"use a release that serves the format this vocabulary was built for.")
 
         return tokenizer
 

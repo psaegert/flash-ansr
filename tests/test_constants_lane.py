@@ -1,13 +1,13 @@
-"""The nibble/byte lane split (Q3, owner ruling 2026-08-27).
+"""The constants-format check at tokenizer construction.
 
-Byte tokens are two hex digits, so a nibble-lane vocabulary shares NO content token with a
-byte-lane one. Without an explicit check that mismatch surfaces far downstream, one
-out-of-vocabulary token at a time. Two mechanisms, because there are two kinds of stale
-config: those written since the split declare `constants_format`, and those written before
-it -- notably the tokenizer.yaml inside a v24 checkpoint directory -- declare nothing and
-are recognised by their alphabet.
+Byte tokens are two hex digits, so a vocabulary built for a different constants format
+shares NO content token with this one. Without an explicit check that mismatch surfaces far
+downstream, one out-of-vocabulary token at a time. Two mechanisms, because a configuration
+may or may not declare its format: a declaration is compared directly, and a configuration
+that declares nothing is recognised by its alphabet.
 """
 import copy
+import re
 
 import pytest
 
@@ -16,13 +16,14 @@ from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import BYTE_TOKENS, CONSTANTS_FORMAT, IEEE754_START_TOKEN
 
-BYTE_LANE = ("test", "v24-template", "v24.0-T17", "v24.0-T18")
-NIBBLE_LANE = ("v24.0-T13", "v24.0-T14", "v24.0-T14-base",
-               "v24.0-T15", "v24.0-T15-base", "v24.0-T16")
+#: Configurations this build serves, and configurations declaring a different format.
+SERVED = ("test", "v24-template", "v24.0-T17", "v24.0-T18")
+FOREIGN = ("v24.0-T13", "v24.0-T14", "v24.0-T14-base",
+           "v24.0-T15", "v24.0-T15-base", "v24.0-T16")
 
 
-@pytest.mark.parametrize("name", BYTE_LANE)
-def test_live_configs_are_byte_lane(name: str) -> None:
+@pytest.mark.parametrize("name", SERVED)
+def test_served_configs_carry_this_codecs_alphabet(name: str) -> None:
     config = load_config(get_path("configs", name, "tokenizer.yaml"))
     assert config["constants_format"] == CONSTANTS_FORMAT
     tokenizer = Tokenizer.from_config(config)
@@ -30,21 +31,22 @@ def test_live_configs_are_byte_lane(name: str) -> None:
     assert "<h0>" not in tokenizer and "<b0>" not in tokenizer
 
 
-@pytest.mark.parametrize("name", NIBBLE_LANE)
-def test_frozen_configs_are_refused_by_name(name: str) -> None:
-    """These runs happened on the retired lane and are frozen at the compat/v24-nibbles tag.
-    Loading one under a byte build must fail saying so, not half-work."""
+@pytest.mark.parametrize("name", FOREIGN)
+def test_foreign_format_configs_are_refused_by_name(name: str) -> None:
+    """A configuration that declares a different constants format must be refused saying so,
+    not half-work."""
     with pytest.raises(ValueError, match="constants_format"):
         Tokenizer.from_config(get_path("configs", name, "tokenizer.yaml"))
 
 
-def test_an_undeclared_nibble_vocabulary_is_caught_by_its_alphabet() -> None:
-    """The checkpoint case: tokenizer.yaml files written before the key existed declare
-    nothing, so the alphabet has to give them away."""
+def test_an_undeclared_foreign_vocabulary_is_caught_by_its_alphabet() -> None:
+    """A vocabulary stored alongside a checkpoint may declare no format, so the alphabet has
+    to give it away. Matched on the token it is missing rather than on the wording: the
+    contract is that the message NAMES the gap, not that it phrases it a particular way."""
     config = load_config(get_path("configs", "v24.0-T16", "tokenizer.yaml"))
     del config["constants_format"]
     assert IEEE754_START_TOKEN in config["special_tokens"]
-    with pytest.raises(ValueError, match="retired"):
+    with pytest.raises(ValueError, match=re.escape(BYTE_TOKENS[0])):
         Tokenizer.from_config(config)
 
 

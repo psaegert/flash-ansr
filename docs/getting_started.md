@@ -15,7 +15,7 @@ flash_ansr install <hf-repo>
 By default models are cached under `./models/` relative to the package root and can be uninstalled with `flash_ansr remove <repo>`.
 Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`, and `flash_ansr.get_path('models', repo)` resolves the cached directory.
 
-`FlashANSR.load` serves v24 checkpoints: a checkpoint whose vocabulary lacks the `<ieee754>` constant-span tokens is refused at load.
+`FlashANSR.load` requires a checkpoint whose vocabulary carries the `<ieee754>` constant spans and the `<b00>`..`<bff>` byte tokens they are built from; anything else is refused at load, naming what is missing.
 
 ## Minimal inference Example
 ```python
@@ -34,7 +34,7 @@ CHECKPOINT = "path/to/checkpoint"
 # Load the model (KV-cache, auto-batching and static decoding are on by default in v0.5)
 model = FlashANSR.load(
   directory=CHECKPOINT,
-  generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
+  generation_config=SoftmaxSamplingConfig(choices=1024),
   length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
 

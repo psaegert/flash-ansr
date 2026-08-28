@@ -47,7 +47,7 @@ CHECKPOINT = "path/to/checkpoint"
 # Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
 model = FlashANSR.load(
   directory=CHECKPOINT,
-  generation_config=SoftmaxSamplingConfig(choices=1024),  # or BeamSearchConfig / MCTSGenerationConfig
+  generation_config=SoftmaxSamplingConfig(choices=1024),
   length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
 

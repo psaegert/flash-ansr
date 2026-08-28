@@ -30,7 +30,7 @@ target_dialect: 'tagged'
 complexity_block:
   p_present: 0.4
   p_hypothesize: 0.2
-# Promptable masking + constant infilling (owner rulings 2026-08-24, audited):
+# Promptable masking + constant infilling:
 # flags 5/5/90 all/fittable/unmasked; partial on 10% of unflagged instances with
 # per-slot 50/25/25 placeheld/expanded/compact; <predict_constants> attaches at
 # 0.5 after flagged skeletons and 0.9 on partial instances (>=1 placeholder,

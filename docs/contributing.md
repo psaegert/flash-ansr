@@ -24,7 +24,7 @@
 - Update docs when adding CLIs or config fields.
 
 ## Style and docs
-- Add succinct comments only for non-obvious logic; keep tensors float32 unless a precision module requires otherwise.
+- Add succinct comments only for non-obvious logic; take every numeric tensor's dtype from `flash_ansr.utils.numeric.NUMERIC_DTYPE` rather than naming a width inline.
 - When adding dataloader fields, update `FlashANSRDataset.collate` to pad/stack consistently and document it.
 - Keep `README.md` lean; detailed usage belongs in `docs/` (API, training). Evaluation, baselines, and benchmarking moved to the `srbf` package in v0.6 (`pip install srbf`, https://github.com/psaegert/srbf).
 

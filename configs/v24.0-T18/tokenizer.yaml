@@ -1,13 +1,6 @@
 # v24.0 TARGET-FORMAT TEMPLATE TOKENIZER
 #
-# Owner ruling 2026-08-18 (evening):
-#   "v24.0 will train on the tagged canonical form, without masking. All numbers will be
-#    represented by their ieee754 representation (meaning we also don't need the explicit
-#    integers -10 to 10 anymore). And I think we could also format the ieee754 bit strings
-#    as hexadecimal. Same representative power, fewer tokens."
-#
-# Consequences pinned by this file (acceptance: the T2 block in
-# tests/test_constant_representation.py, which verifies the tag set against a LIVE engine):
+# What this vocabulary pins (verified against a live engine by the template tests):
 #
 #  1. TARGETS ARE THE TAGGED CANONICAL FORM. The training target is simplipy's native
 #     `simplify` output -- n-ary bags delimited by <add>/</add> and <mul>/</mul>, with
@@ -24,7 +17,7 @@
 #  4. BYTE CONSTANTS AT BINARY64. A constant is <ieee754> + 8 byte tokens over the
 #     256-symbol <b00>..<bff> alphabet + </ieee754> = 10 tokens. The span width is
 #     unchanged from the nibble lane; the alphabet and the value semantics are not.
-#     <float> is the CALLER-supplied form only (owner ruling 2026-08-27), never emitted.
+#     <float> is the CALLER-supplied form only, never emitted.
 #
 # This is a TEMPLATE: `variables` mirrors the v23.0-120M run config (x1..x17) so vocabulary
 # sizes compare like for like; a concrete v24 run config copies it and adjusts.
@@ -54,20 +47,20 @@ special_tokens:
   - "</expression>"
   - "<complexity>"
   - "</complexity>"
-  # v24 task blocks (owner ruling 2026-08-24): the predict_y auxiliary block --
+  # v24 task blocks: the predict_y auxiliary block --
   # <predict_y> <point> <float>*dims </point> <ieee754> 8 bytes </ieee754> </predict_y>.
   # Openers and the point are harness-fed and loss-masked; the model owns the y* bytes
   # and the closing tags.
   # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
   # open property blocks (e.g. <complexity>) on its own.
   - "<hypothesize>"
-  # Promptable-mask flags (owner ruling 2026-08-24): harness-owned, never supervised.
+  # Promptable-mask flags: harness-owned, never supervised.
   # Named after simplipy's masking policies; no flag = the unmasked default target.
   - "<mask_all>"
   - "<mask_fittable>"
   # The constant-infilling block: one <ieee754> span per <constant> placeholder, in
   # positional order, appended after </expression>. The placeholder is simplipy's
-  # native <constant> (owner ruling: emitted skeletons feed simplipy directly).
+  # native <constant>.
   - "<predict_constants>"
   - "</predict_constants>"
   - "<predict_y>"

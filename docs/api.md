@@ -63,23 +63,12 @@ The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refine
       show_root_toc_entry: false
 
 ## Generation configurations
-### BeamSearchConfig
-::: flash_ansr.utils.generation.BeamSearchConfig
-    options:
-      heading_level: 3
-      show_root_toc_entry: false
-
 ### SoftmaxSamplingConfig
 ::: flash_ansr.utils.generation.SoftmaxSamplingConfig
     options:
       heading_level: 3
       show_root_toc_entry: false
 
-### MCTSGenerationConfig
-::: flash_ansr.utils.generation.MCTSGenerationConfig
-    options:
-      heading_level: 3
-      show_root_toc_entry: false
 
 ## Utilities
 ::: flash_ansr.get_path

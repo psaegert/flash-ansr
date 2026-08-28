@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Constants are IEEE-754 binary64, spelled as 8 byte tokens.** A serialized constant is
+  `<ieee754>` + 8 tokens from the 256-symbol `<b00>`..`<bff>` alphabet + `</ieee754>` — 10
+  tokens, the same span width as before, over a wider alphabet and at double precision. The
+  serializer no longer narrows a fitted constant, and no longer refuses a finite value for
+  exceeding a narrower format's range. Measured on generated data, 46.5% of constants are
+  values binary32 could not represent.
+
+  `tokenizer.yaml` declares its `constants_format`, and `Tokenizer.from_config` refuses a
+  vocabulary built for a different one, naming it. A vocabulary that declares nothing is
+  checked by its alphabet, so a configuration stored alongside an older checkpoint is
+  recognised rather than failing one out-of-vocabulary token at a time.
+
+- **The numeric width has one name.** Every numeric surface — encoder input, numeric channel,
+  constants — takes its dtype from `flash_ansr.utils.numeric.NUMERIC_DTYPE`.
+
+- **A number's spelling follows its producer.** What the model predicts is spelled in IEEE-754
+  bytes: expression constants, `<predict_y>`'s target, `<predict_constants>`' values. What the
+  caller supplies is a compact `<float>` carrying its value on the numeric channel:
+  `<predict_y>`'s coordinates, a stated complexity. `<float>` is forbidden at every generation
+  position and never appears inside an expression.
+
+- **`<hypothesize>` marks the boundary between what is given and what is generated.** Properties
+  before it are stated by the caller, compact, and may not be restated after it; everything
+  after it is the model's own and spelled in bytes. At inference the prompt ends at
+  `<hypothesize>` when present and at `<expression>` otherwise, so generation always begins at
+  the last prompt token. `mu`, `hypothesize` and `mask` compose in `complexity_prefix`.
+  Query/answer blocks are exempt: inside them the loss mask decides, so caller-supplied
+  coordinates stay compact wherever the block sits.
+
+### Removed
+- **Beam search and MCTS.** `SoftmaxSamplingConfig` is the generation configuration;
+  `create_generation_config` rejects any other method by name.
+- **In-decode span compaction**, along with the per-row decode position it required.
+- **The per-point residual head** and `predict_residuals()`.
+
+
 ### Added
 - **Model weights are safetensors.** `model.safetensors` replaces `state_dict.pt` everywhere weights
   are written or read — `FlashANSRModel.save`/`load`, the set-encoder, `FlashANSR.load`, and the

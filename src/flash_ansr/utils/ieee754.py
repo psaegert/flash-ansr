@@ -1,4 +1,4 @@
-"""Token-level IEEE-754 binary64 codec for the v25 constants representation.
+"""Token-level IEEE-754 binary64 codec for the constants representation.
 
 A serialized constant occupies 10 tokens: ``<ieee754>``, the 8 BYTES of the value's
 IEEE-754 binary64 encoding as dedicated byte tokens ``<b00>``..``<bff>``, and ``</ieee754>``.
@@ -9,23 +9,15 @@ the top seven exponent bits) and ``tokens[7]`` carries bits ``7..0`` (the last e
 mantissa bits). ``-2.0`` (pattern ``0xc000000000000000``) therefore serializes as
 ``<bc0> <b00> <b00> <b00> <b00> <b00> <b00> <b00>``.
 
-Owner ruling 2026-08-27: "f64 and bytes, not nibbles." The 8 hex-nibble tokens over a
-16-symbol alphabet this replaces are retired, and so is the 32-bit value semantics beneath
-them. The SPAN WIDTH IS UNCHANGED -- 8 nibbles of binary32 and 8 bytes of binary64 are both
-8 content positions -- so :data:`IEEE754_SPAN_LENGTH` and every index computed from it
-carry over untouched. What changed is the alphabet (16 -> 256 symbols) and the value
-semantics (float32 -> float64).
-
-Byte tokens are spelled with TWO hex digits, always (Q3). One digit would re-emit
-``<b0>``..``<bf>`` for values 0..15 -- the RETIRED bit tokens -- so a stale vocabulary would
-satisfy a presence check while meaning something else entirely.
+Byte tokens are spelled with TWO hex digits, always: one digit would collide with unrelated
+single-character token spellings for values 0..15, so a vocabulary could satisfy a presence
+check while meaning something else entirely.
 
 This is the exact (``struct``-based) sibling of the tensor-level
-:func:`flash_ansr.model.pre_encoder.float_to_ieee754_bits` used for embeddings (which stays
-BIT-valued -- it is a numeric pre-embedding, not a token serialization). Non-finite values
+:func:`flash_ansr.model.pre_encoder.float_to_ieee754_bits` used for embeddings, which stays
+BIT-valued -- it is a numeric pre-embedding, not a token serialization. Non-finite values
 refuse to serialize: the data generator must never emit them, and this codec asserts that
-instead of assuming it. There is no longer an overflow refusal -- a float64 magnitude has no
-wider format to overflow, which is the point of the migration.
+instead of assuming it.
 """
 import math
 import struct
@@ -50,13 +42,13 @@ BYTE_TOKENS = tuple(f"<b{value:02x}>" for value in range(IEEE754_N_BYTE_SYMBOLS)
 #: All special tokens the serialized form introduces.
 IEEE754_SPECIAL_TOKENS = (IEEE754_START_TOKEN, IEEE754_END_TOKEN, *BYTE_TOKENS)
 
-#: Total width of a serialized-constant span including both tags. UNCHANGED across the
-#: nibble -> byte migration: 8 content positions either way.
+#: Total width of a serialized-constant span, including both tags.
 IEEE754_SPAN_LENGTH = IEEE754_N_BYTES + 2
 
-#: The lane name this codec serves, declared by ``constants_format`` in tokenizer.yaml.
-#: A vocabulary from the retired nibble lane shares no content token with this one, so the
-#: mismatch is worth naming rather than discovering as an out-of-vocabulary error.
+#: The constants format this codec serves, declared by ``constants_format`` in
+#: tokenizer.yaml. A vocabulary built for a different format shares no content token with
+#: this one, so the mismatch is named at load rather than surfacing as an
+#: out-of-vocabulary error.
 CONSTANTS_FORMAT = "ieee754_bytes_f64"
 
 #: Reverse map, byte token -> byte value.
