@@ -191,18 +191,21 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
 
     # THE ANCHOR (owner request 2026-08-24): expression CE on instances shaped exactly
     # like the base task -- nothing that precedes the expression informs it (complexity
-    # block absent; predict_y absent or in the CONDITIONAL position, which follows the
-    # expression and cannot reach its logits under causal masking). In a base arm every
-    # instance qualifies, so the anchor equals the plain expression CE; across arms it
+    # block absent; predict_y and predict_residual absent or in the CONDITIONAL
+    # position, which follows the expression and cannot reach its logits under causal
+    # masking). In a base arm every instance qualifies, so the anchor equals the plain expression CE; across arms it
     # is the like-for-like main-task curve. It does NOT equalize the data distribution:
     # arms trained under different noise configs still predict the expression from
     # different data -- hold the noise setting constant across arms for a clean read.
     complexity_variant_list = batch.get('complexity_variant')
     mask_mode_list = batch.get('mask_mode')
     n_placeholders_list = batch.get('n_placeholders')
+    predict_residual = batch.get('predict_residual')
     anchor = rows([
         (complexity_variant_list is None or complexity_variant_list[i] is None)
         and (predict_y is None or predict_y[i] is None or bool(predict_y[i]["conditional"]))
+        and (predict_residual is None or predict_residual[i] is None
+             or bool(predict_residual[i]["conditional"]))
         and (mask_mode_list is None or mask_mode_list[i] is None)
         and (n_placeholders_list is None or int(n_placeholders_list[i]) == 0)
         for i in range(n_rows)
@@ -235,6 +238,12 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
             ctx_masked = masked_rows | partial_rows
             splits.append(("predict_y/masked_ctx", 2, ctx_masked & conditional_rows))
             splits.append(("predict_y/unmasked_ctx", 2, ~ctx_masked & conditional_rows))
+        if predict_residual is not None:
+            residual_conditional = rows([draw is not None and bool(draw["conditional"])
+                                         for draw in predict_residual])
+            ctx_masked = masked_rows | partial_rows
+            splits.append(("predict_residual/masked_ctx", 4, ctx_masked & residual_conditional))
+            splits.append(("predict_residual/unmasked_ctx", 4, ~ctx_masked & residual_conditional))
         if n_placeholders_list is not None:
             splits.append(("expression/partial", 0, partial_rows))
             # The infilling block, split by how the placeholders arose: a flagged
@@ -247,6 +256,16 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         unconditional = rows([draw is not None and not draw["conditional"] for draw in predict_y])
         splits.append(("predict_y/conditional", 2, conditional))
         splits.append(("predict_y/unconditional", 2, unconditional))
+
+    if predict_residual is not None:
+        # Prefix and suffix residual are different tasks: the unconditional variant
+        # predicts the displacement with no expression in scope.
+        conditional = rows([draw is not None and bool(draw["conditional"])
+                            for draw in predict_residual])
+        unconditional = rows([draw is not None and not draw["conditional"]
+                              for draw in predict_residual])
+        splits.append(("predict_residual/conditional", 4, conditional))
+        splits.append(("predict_residual/unconditional", 4, unconditional))
 
     out: "dict[str, tuple[float, int]]" = {}
     for suffix, segment_id, row_mask in splits:
@@ -357,6 +376,13 @@ class Trainer:
         # scores) -- raise only if the head under-fires.
         self.outlier_loss_weight = float(self.config.get('outlier_loss_weight', 0.0))
         self.outlier_pos_weight = float(self.config.get('outlier_pos_weight', 1.0))
+        # AUROC/AUPRC are rank statistics: they need every micro-batch's scores on the
+        # host, which costs a device sync per micro-step on top of two sorts. Logged on
+        # an interval; the loss itself is unaffected and logged every step.
+        self.outlier_metrics_interval = int(self.config.get('outlier_metrics_interval', 50))
+        if self.outlier_metrics_interval < 1:
+            raise ValueError(
+                f"outlier_metrics_interval must be at least 1, got {self.outlier_metrics_interval}")
         if self.outlier_loss_weight > 0.0 and self.model.outlier_head is None:
             raise ValueError(
                 "outlier_loss_weight > 0 but the model has no outlier head "
@@ -618,12 +644,19 @@ class Trainer:
                     self._save_checkpoint(human_step, checkpoint_directory)
 
             pbar.close()
+            self._release_datasets()
             return self.model
 
         except Exception:
-            self.train_dataset.shutdown()
-            self.val_dataset.shutdown()
+            # Before re-raising: an AttributeError in here would replace the real one.
+            self._release_datasets()
             raise
+
+    def _release_datasets(self) -> None:
+        """Release both datasets' worker pools. `val_dataset` is optional."""
+        self.train_dataset.shutdown()
+        if self.val_dataset is not None:
+            self.val_dataset.shutdown()
 
     def run(
             self,
@@ -919,6 +952,10 @@ class Trainer:
         split_ce_sums: dict[str, list[float]] = {}
         train_outlier_scores: list[torch.Tensor] = []
         train_outlier_labels: list[torch.Tensor] = []
+        # Both halves of the ranking metrics share one cadence, so a step that logs them
+        # always has the complete set of scores behind it.
+        rank_metrics_step = (self.outlier_loss_weight > 0.0
+                             and step % self.outlier_metrics_interval == 0)
 
         # Split the batch into micro-batches to support gradient accumulation
         if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
@@ -967,8 +1004,9 @@ class Trainer:
                     scored = self._outlier_scores(micro_batch)
                     if scored is not None:
                         outlier_loss = self._outlier_loss(scored)
-                        train_outlier_scores.append(scored[0].detach().float().cpu())
-                        train_outlier_labels.append(scored[1].detach().cpu())
+                        if rank_metrics_step:
+                            train_outlier_scores.append(scored[0].detach().float().cpu())
+                            train_outlier_labels.append(scored[1].detach().cpu())
 
                 loss = (ce_loss
                         + self.outlier_loss_weight * outlier_loss) / self.gradient_accumulation_steps + zero_loss
@@ -1074,7 +1112,10 @@ class Trainer:
                     preprocess=preprocess,
                     preprocess_in_worker=worker_preprocess,
                     num_workers=self.num_workers,
-                    max_seq_len=self.decoder_max_seq_len):
+                    max_seq_len=self.decoder_max_seq_len,
+                    # Validation runs many times over the same settings; each cold start
+                    # would make every worker re-parse the holdout catalogs.
+                    keep_alive=True):
                 batch = self.val_dataset.collate(batch, device=self.device)
                 self._apply_prompt_mask(batch)
                 self._apply_task_mask(batch)

@@ -91,6 +91,9 @@ def test_run_training_uses_step_offset_for_resume_step_override() -> None:
             for _ in range(steps):
                 yield {"x_tensors": [], "y_tensors": [], "input_ids": [], "data_attn_mask": [], "labels": []}
 
+        def shutdown(self) -> None:
+            """The trainer releases both datasets' pools when it is done with them."""
+
     trainer.train_dataset = _IterDataset()
 
     trainer._setup_training_state = lambda device, verbose=False: None  # type: ignore[assignment]

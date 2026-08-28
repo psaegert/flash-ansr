@@ -648,6 +648,7 @@ class FlashANSRDataset:
         prefetch_factor: int = 2,
         persistent: bool = False,
         unconditional_prob: float | None = None,
+        keep_alive: bool = False,
         tqdm_kwargs: dict[str, Any] | None = None,
         verbose: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
@@ -683,6 +684,10 @@ class FlashANSRDataset:
             Jobs per worker to pre-schedule.
         persistent : bool, default False
             Clone tensors to detach from shared memory buffers.
+        keep_alive : bool, default False
+            Leave the worker pool running after a fully drained stream so the next
+            iterate with identical settings reuses it. The caller then owns the pool
+            and must call `shutdown()`.
         tqdm_kwargs : dict, optional
             Additional arguments forwarded to tqdm progress bars.
         verbose : bool, default False
@@ -766,6 +771,7 @@ class FlashANSRDataset:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
         pool_size = self._stream.pool_size
+        drained = False
 
         progress_kwargs = tqdm_kwargs.copy()
         progress_kwargs.setdefault("total", steps)
@@ -794,7 +800,7 @@ class FlashANSRDataset:
                 # Worker health counters ("counted, never silent" -- audit 2026-08-24:
                 # they were shipped in the payload and read by nobody). Monotone sums
                 # over the run, logged by the trainer.
-                for counter_key in ("n_skipped_task_blocks", "n_collection_restructured",
+                for counter_key in ("n_skipped_task_blocks",
                                     "n_dropped_nonfinite", "n_dropped_truncation"):
                     value = metadata_and_constants.get(counter_key)
                     if value is not None:
@@ -861,9 +867,14 @@ class FlashANSRDataset:
                 if step_id + pool_size < steps:
                     slot_to_refill = self._stream.acquire_slot()
                     self._stream.submit_job(slot_to_refill, n_support)
+            drained = True
         finally:
             pbar.close()
-            self.shutdown()
+            # Keeping the pool alive across calls saves the workers' catalog parse, which
+            # dominates a short run. Only a fully drained stream is safe to reuse: an
+            # abandoned generator leaves jobs in flight, so that case still shuts down.
+            if not (keep_alive and drained):
+                self.shutdown()
 
     def _benchmark(self, n_samples: int, batch_size: int, verbose: bool = False) -> dict[str, Any]:
         iteration_times = []

@@ -24,8 +24,8 @@ decoder_input_dim: 192
 decoder_model_dim: 192
 decoder_n_heads: 3
 decoder_n_layers: 3
-# 256 holds the task set with room to spare: measured over this prior, the longest
-# instance runs 157 tokens and the 99th percentile 130.
+# 256 holds the task set with room to spare: measured over 25,600 instances of this
+# prior, the longest runs 193 tokens, the 99th percentile 151 and the median 78.
 decoder_max_seq_len: 256
 decoder_ffn_hidden_dim: 576
 decoder_dropout: 0.1

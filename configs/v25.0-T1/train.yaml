@@ -50,4 +50,7 @@ steps: 1_500_000
 # pos_weight 1.0 yields calibrated suspicion scores rather than a tuned operating point.
 outlier_loss_weight: 0.05
 outlier_pos_weight: 1.0
+# Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
+# statistics need every micro-batch's scores on the host, so they run on an interval.
+outlier_metrics_interval: 50
 device: cuda

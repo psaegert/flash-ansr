@@ -47,8 +47,7 @@ from flash_ansr.utils.ieee754 import (
     float64_to_byte_tokens,
 )
 from flash_ansr.utils.skeleton import (
-    NonFiniteExpressionError, fittable_slots, mask_literals_positional,
-    mask_selected_sites, nonspecial_site_positions)
+    NonFiniteExpressionError, fittable_slots, mask_literals_positional)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
 
 
@@ -134,6 +133,7 @@ class SharedMemoryWorkerPool:
         self.pool_size = 0
         self.worker_preprocess_enabled = False
         self._is_initialized = False
+        self._init_signature: dict[str, Any] | None = None
 
     @property
     def is_initialized(self) -> bool:
@@ -154,8 +154,28 @@ class SharedMemoryWorkerPool:
         unconditional_prob: float = 0.0,
     ) -> None:
         """Allocate shared buffers and spin up producer workers."""
+        # The shared buffers are sized from these; a live pool cannot serve a different
+        # shape. Reuse is only valid for an identical request.
+        signature = {
+            "prefetch_factor": prefetch_factor,
+            "batch_size": batch_size,
+            "n_per_equation": n_per_equation,
+            "max_seq_len": max_seq_len,
+            "max_n_support": max_n_support,
+            "num_workers": num_workers,
+            "tokenizer_oov": tokenizer_oov,
+            "worker_preprocess": worker_preprocess,
+            "unconditional_prob": unconditional_prob,
+        }
         if self._is_initialized:
+            if self._init_signature != signature:
+                differing = sorted(k for k, v in signature.items()
+                                   if (self._init_signature or {}).get(k) != v)
+                raise RuntimeError(
+                    f"a live worker pool was built for different settings ({', '.join(differing)}); "
+                    "call `dataset.shutdown()` before iterating with new ones")
             return
+        self._init_signature = signature
 
         self.worker_preprocess_enabled = worker_preprocess
         self._num_workers = os.cpu_count() or 1 if num_workers is None else num_workers
@@ -292,6 +312,7 @@ class SharedMemoryWorkerPool:
                     pass
         finally:
             self._is_initialized = False
+            self._init_signature = None
             self._manager = None
             self._shms.clear()
             self.buffers = {}
@@ -442,7 +463,6 @@ def _producer_worker(
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
             n_skipped_task_blocks = 0
-            n_collection_restructured = 0
 
             i = 0
             while i < batch_size:
@@ -504,12 +524,10 @@ def _producer_worker(
                 if unconditional_prob > 0.0:
                     condition_mask_value = draw_condition_mask(worker_rng, unconditional_prob)
 
-                # Promptable-mask machinery (owner rulings 2026-08-24). Every decision
-                # is PER SLOT over the tagged canonical's literal sites -- exactly the
-                # slots the byte serialization fills (an exact rational spells
-                # structurally and contributes one slot per literal) -- so the
-                # placeheld values stay recoverable for the <predict_constants> block
-                # (a collect-style re-mask would lose them).
+                # Promptable-mask machinery. Every decision is PER SLOT over the tagged
+                # canonical's literal sites -- exactly the slots the byte serialization
+                # fills -- so the placeheld values stay recoverable for the
+                # <predict_constants> block.
                 #
                 #   flag 'all'       -> every slot placeheld (deterministic).
                 #   flag 'fittable'  -> simplipy's mask_fittable per slot (deterministic).
@@ -539,76 +557,14 @@ def _producer_worker(
                         partial_instance = True
                         placeheld = [bool(worker_rng.random() < float(mask_cfg["p_placeheld"]))
                                      for _ in range(n_slots)]
-                # COLLECTION-STABILITY check (owner ruling 2026-08-24): the engine's
-                # collected mask of the drawn sites is the reference; if it is
-                # token-identical to plain substitution, the site values ARE the
-                # placeholder ground truth (and no group has more than one member, so
-                # the block's posterior cannot be degenerate). If collection
-                # RESTRUCTURES (merges, absorbs signs, fires rules -- measured ~4-6%),
-                # the values are engine-internal until simplipy's value-carrying mask:
-                # a flagged instance then keeps the COLLECTED expression as its
-                # emission target but carries no block; a partial instance skips its
-                # decoration entirely (it exists only for the block). Counted, never
-                # silent.
-                collected_body: list[str] | None = None
-                if any(placeheld):
-                    source_tokens = list(target_expression if tagged_targets else expression)
-                    try:
-                        collected = mask_selected_sites(
-                            simplipy_engine, source_tokens, placeheld, collect=True)
-                        positions = nonspecial_site_positions(simplipy_engine, source_tokens)
-                        assert len(positions) == n_slots, "site alignment broke"
-                        expected = list(source_tokens)
-                        for pos, ph in zip(positions, placeheld):
-                            if ph:
-                                expected[pos] = "<constant>"
-                        stable = collected == expected
-                    except (NonFiniteExpressionError, ValueError):
-                        stable = False
-                        collected = None
-                    if not stable:
-                        n_collection_restructured += 1
-                        if mask_mode is None:
-                            # partial: undecorate -- a partial instance without a
-                            # sound block trains nothing.
-                            partial_instance = False
-                            placeheld = [False] * n_slots
-                        elif collected is not None:
-                            collected_body = list(collected)
-                        else:
-                            # the engine refused the mask outright: fall back unmasked.
-                            mask_mode = None
-                            placeheld = [False] * n_slots
-                placeheld_values = ([float(v) for v, ph in zip(literals, placeheld) if ph]
-                                    if collected_body is None else [])
+                # Placeholders are positional and naive: each placeheld literal site
+                # becomes a <constant> for the model to predict, and that site's value is
+                # the block's ground truth. A structurally spelled rational contributes one
+                # slot per literal, so `3 / 2` masks to `<constant> / <constant>` and trains
+                # as two predictions.
+                placeheld_values = [float(v) for v, ph in zip(literals, placeheld) if ph]
 
-                if collected_body is not None:
-                    # Restructured flagged target: the engine's collected output IS
-                    # the emission format. mask_literals_positional is 1:1 and
-                    # leaves the engine's <constant> placeholders alone, so
-                    # position p tells the two kinds apart: a value slot (was a
-                    # kept literal) vs a placeholder (stays, as a None entry).
-                    try:
-                        skeleton_mm, kept = mask_literals_positional(
-                            simplipy_engine, collected_body, keep_specials=True)
-                    except (NonFiniteExpressionError, ValueError):
-                        # A collected body the extractor refuses (a masked fold
-                        # minting a non-finite spelling): fall back unmasked
-                        # rather than kill the worker (audit 2026-08-24).
-                        collected_body = None
-                        mask_mode = None
-                        placeheld = [False] * n_slots
-                if collected_body is not None:
-                    kept_iter = iter(kept)
-                    collected_opt: list[float | None] = []
-                    for original, slot in zip(collected_body, skeleton_mm):
-                        if slot == "<constant>":
-                            collected_opt.append(None if original == "<constant>"
-                                                 else float(next(kept_iter)))
-                    assert next(kept_iter, None) is None, "positional value alignment broke"
-                    serialized_tokens, body_numeric = serialize_constant_tokens(
-                        skeleton_mm, collected_opt)
-                elif any(placeheld):
+                if any(placeheld):
                     # Placeholders ARE simplipy's <constant>: the serializer's
                     # None entries keep them, value entries fill the kept slots.
                     constants_opt: list[float | None] = [
@@ -1026,7 +982,6 @@ def _producer_worker(
             payload: dict[str, Any] = {"metadata": metadata_batch, "constants": constants_batch}
             if task_blocks_on:
                 payload["n_skipped_task_blocks"] = n_skipped_task_blocks
-                payload["n_collection_restructured"] = n_collection_restructured
             if preprocessed_batch is not None:
                 payload["preprocessed"] = preprocessed_batch
             # Instances dropped because truncation would have cut inside an <ieee754> span

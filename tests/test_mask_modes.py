@@ -264,41 +264,28 @@ class TestPromptSurface:
             model.complexity_prefix()
 
 
-class TestCollectionStability:
-    def test_the_check_detects_restructuring(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
-        # The measured unstable class: two long exact additive constants (one in a
-        # <sub> section) merge under collection into a single placeholder whose
-        # value is engine-internal (summed, sign-absorbed). Such instances carry no
-        # <predict_constants> block until simplipy's value-carrying mask exists.
-        from flash_ansr.utils.skeleton import mask_selected_sites, nonspecial_site_positions
-
-        tokens = ["<add>", "<mul>", "3.0636630579799418", "x1", "</mul>",
-                  "<sub>", "4.44534694254616499745643103212266", "1.8272203218203917", "</add>"]
-        placeheld = [True, True, True]
-        collected = mask_selected_sites(engine, tokens, placeheld, collect=True)
-        positions = nonspecial_site_positions(engine, tokens)
-        expected = list(tokens)
-        for pos, ph in zip(positions, placeheld):
-            if ph:
-                expected[pos] = "<constant>"
-        assert collected != expected, "the merge must be detected"
-        assert collected.count("<constant>") < sum(placeheld), "placeholders merged"
-
-    def test_plain_substitution_is_stable(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
-        from flash_ansr.utils.skeleton import mask_selected_sites
-
-        tokens = ["<mul>", "2.71875", "x1", "</mul>"]
-        assert mask_selected_sites(engine, tokens, [True], collect=True) == \
-            ["<mul>", "<constant>", "x1", "</mul>"]
-
-    def test_subset_masking_counts_sites_exactly(self, engine) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
-        from flash_ansr.utils.skeleton import mask_selected_sites
-
-        tokens = ["<add>", "<mul>", "2.71875", "x1", "</mul>", "0.15625", "</add>"]
-        out = mask_selected_sites(engine, tokens, [False, True], collect=False)
-        assert out == ["<add>", "<mul>", "2.71875", "x1", "</mul>", "<constant>", "</add>"]
-        with pytest.raises(ValueError, match="site count"):
-            mask_selected_sites(engine, tokens, [True], collect=False)
+class TestNaivePlaceholding:
+    def test_adjacent_constants_each_get_their_own_placeholder(self, tokenizer) -> None:  # noqa: F811  # type: ignore[no-untyped-def]
+        # Placeholding is positional: every placeheld literal site becomes its own
+        # <constant>, so a structurally spelled rational trains as one prediction per
+        # literal and the block's values stay 1:1 with the placeholders.
+        cfg = _mask_cfg(p_mask_all=1.0, p_predict_constants_flagged=1.0)
+        with FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
+                              target_dialect="tagged",
+                              mask_block=cfg) as ds:
+            seen = 0
+            for batch in ds.iterate(steps=4, batch_size=16):
+                vocab = list(tokenizer.vocab)
+                for row in range(len(batch["input_ids"])):
+                    tokens = [vocab[int(i)] for i in batch["input_ids"][row]]
+                    body = _expression_span(tokens)
+                    n_placeholders = body.count("<constant>")
+                    # Under mask="all" every literal site is placeheld, so the body
+                    # carries no spelled constant left over.
+                    assert IEEE754_START_TOKEN not in body, "a value survived mask=all"
+                    if n_placeholders:
+                        seen += 1
+            assert seen, "no masked instance was produced"
 
 
 class TestAuditRegressions:

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Placeholding is naive and positional.** Masking a constant no longer asks the engine to
+  re-derive the expression and compare: each placeheld literal site simply becomes a
+  `<constant>` the model predicts, and that site's value is the block's ground truth. A
+  structurally spelled rational contributes one slot per literal, so `3 / 2` masks to
+  `<constant> / <constant>` and trains as two predictions. The collection-stability check and
+  its `n_collection_restructured` counter are gone, along with `mask_selected_sites` and
+  `nonspecial_site_positions`. `<predict_constants>` now follows the configured priors.
+  Measured over 15,360 instances of the v25 prior: 76.6% of flagged instances carry at
+  least one placeholder (the rest have no eligible slot -- a literal-free expression under
+  `mask_all`, no fittable slot under `mask_fittable`), and those emit a block 43.6% of the
+  time against a configured 0.5, the difference being the 10% of instances `condition_dropout`
+  leaves unconditioned, where the block is skipped by design.
+- **The worker pool can outlive one `iterate()`.** `iterate(keep_alive=True)` leaves a fully
+  drained stream's pool running so the next identical call reuses it; the caller then owns
+  the pool and must `shutdown()`. Validation uses it, which is where it matters — every pass
+  used to cold-start and make each worker re-parse the holdout catalogs. An abandoned
+  generator still shuts down (its jobs are in flight), and a live pool now raises rather than
+  silently serving a request built for different settings.
+- **Outlier AUROC/AUPRC are logged on an interval**, `outlier_metrics_interval` (default 50).
+  They are rank statistics over every micro-batch's scores, so producing them every step cost
+  a device sync per micro-step plus two sorts. The outlier loss is still logged every step.
+
+### Fixed
+- The `expression/anchor` split excluded complexity, `predict_y` and mask circumstances but
+  not `predict_residual`, so prefix-placed residual rows entered a baseline the docstring
+  requires be shaped like the base task.
+- `ce_split` had no entry for task segment 4: `predict_residual` tokens were supervised but
+  never reported. It now carries the same conditional/unconditional and masked-context
+  curves as `predict_y`.
+
 - **Constants are IEEE-754 binary64, spelled as 8 byte tokens.** A serialized constant is
   `<ieee754>` + 8 tokens from the 256-symbol `<b00>`..`<bff>` alphabet + `</ieee754>` — 10
   tokens, the same span width as before, over a wider alphabet and at double precision. The
