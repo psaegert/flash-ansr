@@ -41,20 +41,5 @@ steps: 1_500_000
 # Outlier-head auxiliary loss (small: the head must not distort the encoder);
 # pos_weight 1.0 = calibrated suspicion scores (ruling 2026-08-24).
 outlier_loss_weight: 0.05
-
-# then over instances), so the head's 32.5x CE-term count does not inflate it -- this weight is
-# a straight 5% against the decoder CE gradient into the shared encoder. It is set low because
-# nibbles 3-7 are the low 20 mantissa bits of the displacement and measure at 99% of pure
-# chance on the T17 prior: 5/8 of this head's CE is irreducible, and weighting it heavily
-# spends encoder capacity on noise.
-#
-# The per-instance reduction matters on its own: pooling flat across the batch would give a
-# 512-point problem 512x the pull of an 8-point one.
-#
-# points are exactly +0.0 (clean instances), which is all-zero nibbles, so a head can score
-# well on the pooled accuracy by learning nothing but "is this instance clean". If the nonzero
-# split shows n0-n2 climbing while n3-n7 sit at 1/16 = 0.0625, the IEEE parameterization is
-# target (measured alternative: 34 outputs/point, ~1.8 nats, all of it learnable).
-# carries the magnitude, so no ruler is needed; 'mad' and 'y_plus_mad' are the alternatives.
 outlier_pos_weight: 1.0
 device: cuda

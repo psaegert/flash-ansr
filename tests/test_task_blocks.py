@@ -7,6 +7,7 @@ import torch
 
 from flash_ansr import FlashANSRDataset, get_path
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.data.serialization import HYPOTHESIS_TOKEN
 from flash_ansr.train.train import Trainer
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.ieee754 import IEEE754_N_BYTES, byte_tokens_to_float64
@@ -261,7 +262,13 @@ def test_hypothesis_config_validation(tokenizer) -> None:  # type: ignore[no-unt
         FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero",
                          target_dialect="tagged",
                          complexity_block={"p_present": 1.0})  # missing key
-    old_tokenizer = Tokenizer.from_config(load_config(get_path("configs", "v24.0-T13", "tokenizer.yaml")))
+    # A vocabulary WITHOUT the flag, built here rather than borrowed from a historical run
+    # config: the fixture's job is to lack <hypothesize>, and pinning that to a config that
+    # exists for other reasons couples this test to decisions it has no stake in.
+    flagless = load_config(get_path("configs", "v24-template", "tokenizer.yaml"))
+    flagless["special_tokens"] = [t for t in flagless["special_tokens"] if t != HYPOTHESIS_TOKEN]
+    old_tokenizer = Tokenizer.from_config(flagless)
+    assert HYPOTHESIS_TOKEN not in old_tokenizer
     with pytest.raises(ValueError, match="hypothesize"):
         FlashANSRDataset(source=_source(), tokenizer=old_tokenizer, padding="zero",
                          target_dialect="tagged",

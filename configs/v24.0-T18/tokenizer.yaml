@@ -55,8 +55,8 @@ special_tokens:
   - "<complexity>"
   - "</complexity>"
   # v24 task blocks (owner ruling 2026-08-24): the predict_y auxiliary block --
-  # <predict_y> <point> <float>*dims </point> <ieee754> nibbles </ieee754> </predict_y>.
-  # Openers and the point are harness-fed and loss-masked; the model owns the y* nibbles
+  # <predict_y> <point> <float>*dims </point> <ieee754> 8 bytes </ieee754> </predict_y>.
+  # Openers and the point are harness-fed and loss-masked; the model owns the y* bytes
   # and the closing tags.
   # Hypothesis-mode flag: harness-inserted, never model-emitted; licenses the model to
   # open property blocks (e.g. <complexity>) on its own.

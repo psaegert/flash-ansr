@@ -1,9 +1,9 @@
 # v25: float64 numerics + byte constant tokens — migration plan
 
-**Status: owner-approved 2026-08-27. S4 LANDED.** Mapped by a 7-way parallel audit of the four repos,
+**Status: owner-approved 2026-08-27. S4 and S5 LANDED.** Mapped by a 7-way parallel audit of the four repos,
 then synthesized; every line number was verified against the working tree. Steps **S1, S2 and
 S3 are LANDED** (flash-ansr 3e2cca1 / 60ec46a / the cast sweep, srbf 4f97164), and **S4 is
-LANDED** on the flash-ansr side. Next: S5 (the rest of the configs), S6, S7.
+LANDED** on the flash-ansr side, **S5 with it**. Next: S6 (symbolic-data), S7 (srbf).
 
 ~~**Do not launch a training run between S3 and S4.**~~ LIFTED: S4 closed that window. The
 nibble lane is preserved at the `compat/v24-nibbles` tag, which is what T13-T18 and the T16
@@ -393,6 +393,24 @@ Everything here moves *tensor dtypes*. The codec still snaps to f32 (`serializat
 
 ### S5 — Regenerate configs (FA). Mechanical, but generate the token list, never hand-type it.
 Regenerate `configs/v24-template`, `configs/v24.0-T17`, `configs/v24.0-T18`, `configs/test` tokenizer.yaml (256 `<b00>`..`<bff>` entries in byte order; header point 4 restated as \"8 byte tokens over the 256-symbol alphabet … = 10 tokens\", now carrying float64; add `constants_format:` per Q3). Add `pre_encoder_bits: 64` explicitly to every new model.yaml. Update `T18/model.yaml:49-54` and `T18/train.yaml:46-65` per Q2 — every quoted number there (32.5× CE-term count, 1/16 chance line, \"low 20 mantissa bits\", \"raw float32 residual\") is an f32/16-symbol fact. Rename `p_nibbles` → `p_expanded`/`p_byte_block` if desired: flash-ansr only, and it must move with `streaming.py:695` **and** `data.py:192`'s `probability_keys` tuple (C1). **Freeze** `configs/v24.0-T13..T16` and both `runs/v24.0-T16/checkpoint_*/tokenizer.yaml` as belonging to the `compat/v24-nibbles` tag.
+
+**LANDED.** The tokenizer regeneration rode along with S4. What S5 added: the T18 configs
+lost the orphaned residual-head prose (every quoted number there -- the 32.5x CE-term count,
+the 1/16 chance line, "low 20 mantissa bits", "raw float32 residual" -- was an f32/16-symbol
+fact about a head that no longer exists); `pre_encoder_bits: 64` was already explicit in all
+three model.yaml files; and the `p_nibbles` rename is moot, the knob having been deleted.
+
+The FREEZE is implemented rather than merely declared. `configs/v24.0-T13..T16` (and the two
+`-base` arms) are restored to their nibble spelling and now DECLARE
+`constants_format: ieee754_nibbles_f32`, so a byte-lane build refuses them by name. Their
+`runs/v24.0-T16/checkpoint_*/tokenizer.yaml` counterparts predate the key entirely, so
+`Tokenizer.from_config` also recognises the lane by its ALPHABET: a vocabulary that opens
+`<ieee754>` spans but has no `<b00>` is refused with a message naming the compat tag. Both
+directions are covered by `tests/test_constants_lane.py`.
+
+One test had to be decoupled first: `test_hypothesis_config_validation` borrowed
+`configs/v24.0-T13/tokenizer.yaml` as its "vocabulary without `<hypothesize>`" fixture, which
+coupled it to a decision it has no stake in. It builds the flagless vocabulary itself now.
 
 **Size:** ~10 files, mostly generated. **Depends on:** S4.
 

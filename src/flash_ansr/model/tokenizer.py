@@ -6,7 +6,7 @@ from typing import Iterator, Any, Literal
 import torch
 
 from flash_ansr.utils.config_io import load_config
-from flash_ansr.utils.ieee754 import CONSTANTS_FORMAT
+from flash_ansr.utils.ieee754 import BYTE_TOKENS, CONSTANTS_FORMAT, IEEE754_START_TOKEN
 
 
 class Tokenizer:
@@ -67,7 +67,22 @@ class Tokenizer:
                 f"{CONSTANTS_FORMAT!r}. A {declared!r} vocabulary spells constants over a "
                 f"different alphabet; regenerate the config or use a matching release.")
 
-        return cls(vocab=config_["operators"] + config_["variables"], special_tokens=config_["special_tokens"])
+        tokenizer = cls(vocab=config_["operators"] + config_["variables"],
+                        special_tokens=config_["special_tokens"])
+
+        # The same check for vocabularies written BEFORE constants_format existed -- notably
+        # the tokenizer.yaml inside a v24 checkpoint directory. A vocabulary that serializes
+        # constants at all must carry this codec's alphabet; if it opens spans but has no
+        # <b00>, it belongs to the retired nibble lane and every content token would come
+        # back out-of-vocabulary one layer at a time.
+        if declared is None and IEEE754_START_TOKEN in tokenizer and BYTE_TOKENS[0] not in tokenizer:
+            raise ValueError(
+                f"This tokenizer opens {IEEE754_START_TOKEN} spans but has no {BYTE_TOKENS[0]!r}, "
+                f"so it is not a {CONSTANTS_FORMAT!r} vocabulary -- it is from the retired "
+                f"nibble lane (see the compat/v24-nibbles tag). Regenerate the config, or use a "
+                f"release that serves that lane to load this checkpoint.")
+
+        return tokenizer
 
     def encode(self, tokens: list[str], return_tensors: bool = False, add_bos: bool = False, add_eos: bool = False, oov: Literal['raise', 'unk'] = 'raise') -> list[int] | torch.Tensor:
         '''
