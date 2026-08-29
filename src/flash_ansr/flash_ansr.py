@@ -74,7 +74,6 @@ class Result(TypedDict):
     score: float
     requested_complexity: int | float | None
     fvu: float
-    prompt_metadata: dict[str, list[list[str]]] | None
     pruned_variant: bool
 
 
@@ -280,7 +279,6 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
             cov_payload = np.asarray(constants_cov)
         serialized_fits.append((np.asarray(constants), cov_payload, float(fit_loss)))
 
-    metadata_snapshot = payload.get('metadata_snapshot')
     result = {
         'log_prob': payload['log_prob'],
         'fvu': fvu,
@@ -294,7 +292,6 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'raw_beam_decoded': payload['raw_beam_decoded'],
         'fits': serialized_fits,
         'valid_fit': refiner.valid_fit,
-        'prompt_metadata': copy.deepcopy(metadata_snapshot) if metadata_snapshot is not None else None,
         'pruned_variant': bool(payload.get('pruned_variant', False)),
         # The model's OWN constants (contract T11's verbatim init). They were decoded, used as the
         # optimizer seed and then dropped on the floor -- so nothing downstream could compare what
@@ -370,7 +367,6 @@ class GenState:
     y_np: np.ndarray
     y_variance: float
     prompt_prefix: Any
-    metadata_snapshot: Any
     memory_for_scoring: Any
     device: Any
     variable_mapping: dict
@@ -391,7 +387,6 @@ class FitResult:
     generation_time: float
     variable_mapping: dict
     input_dim: int | None
-    prompt_metadata: Any
 
 
 class FlashANSR(BaseEstimator):
@@ -801,7 +796,6 @@ class FlashANSR(BaseEstimator):
 
         self.variable_mapping: dict[str, str] = {}
         self._prompt_prefix: PromptPrefix | None = None
-        self._prompt_metadata: dict[str, list[list[str]]] | None = None
 
         # Optional persistent pre-CUDA fork pool (inference-speed Step 3). When set (via
         # ``load(persistent_refine_pool=True)``) refinement + simplify route onto it instead of
@@ -1022,7 +1016,6 @@ class FlashANSR(BaseEstimator):
                 'constants_penalty': self.constants_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': None,
-                'metadata_snapshot': None,
                 'seed': None,
                 'X': X,
                 'y': y,
@@ -1502,7 +1495,6 @@ class FlashANSR(BaseEstimator):
             'function': refiner.expression_lambda,
             'refiner': refiner,
             'fits': copy.deepcopy(refiner._all_constants_values),
-            'prompt_metadata': copy.deepcopy(payload.get('prompt_metadata')) if payload.get('prompt_metadata') is not None else None,
             'pruned_variant': bool(payload.get('pruned_variant', False)),
             'constants_emitted': payload.get('constants_emitted'),
         }
@@ -1586,7 +1578,6 @@ class FlashANSR(BaseEstimator):
             # Generation-phase state, applied so callers see it even if refinement raises.
             self.variable_mapping = gen_state.variable_mapping
             self._generation_time = gen_state.generation_time
-            self._prompt_metadata = copy.deepcopy(gen_state.metadata_snapshot) if gen_state.metadata_snapshot is not None else None
 
             fit_result = self._fit_refine(
                 gen_state,
@@ -1745,12 +1736,6 @@ class FlashANSR(BaseEstimator):
                 complexity=complexity,
             )
 
-            metadata_snapshot: dict[str, list[list[str]]] | None
-            if prompt_prefix is not None:
-                metadata_snapshot = copy.deepcopy(prompt_prefix.metadata)
-            else:
-                metadata_snapshot = None
-
             _t_gen = time.time()
             raw_beams, log_probs, _completed_flags, _rewards = self.generate(
                 data_tensor,
@@ -1771,7 +1756,6 @@ class FlashANSR(BaseEstimator):
             y_np=y_np,
             y_variance=y_variance,
             prompt_prefix=prompt_prefix,
-            metadata_snapshot=metadata_snapshot,
             memory_for_scoring=memory_for_scoring,
             device=data_tensor.device,
             variable_mapping=variable_mapping,
@@ -1867,7 +1851,6 @@ class FlashANSR(BaseEstimator):
                 'constants_penalty': self.constants_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': gs.complexity,
-                'metadata_snapshot': gs.metadata_snapshot,
             }
             refinement_jobs.append(job)
 
@@ -2046,7 +2029,6 @@ class FlashANSR(BaseEstimator):
                                 'constants_penalty': self.constants_penalty,
                                 'likelihood_penalty': self.likelihood_penalty,
                                 'complexity': gs.complexity,
-                                'metadata_snapshot': gs.metadata_snapshot,
                             }
                             pruning_jobs.append(pruning_job)
 
@@ -2064,7 +2046,6 @@ class FlashANSR(BaseEstimator):
             generation_time=gs.generation_time,
             variable_mapping=gs.variable_mapping,
             input_dim=input_dim,
-            prompt_metadata=gs.metadata_snapshot,
         )
 
     def _apply_fit_result(self, fit_result: "FitResult") -> None:
@@ -2075,7 +2056,6 @@ class FlashANSR(BaseEstimator):
         self._generation_time = fit_result.generation_time
         self._input_dim = fit_result.input_dim
         self.variable_mapping = fit_result.variable_mapping
-        self._prompt_metadata = copy.deepcopy(fit_result.prompt_metadata) if fit_result.prompt_metadata is not None else None
 
     def compile_results(
             self,

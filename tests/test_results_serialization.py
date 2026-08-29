@@ -34,7 +34,6 @@ def _make_result_entry(expr: list[str]) -> dict:
         "function": None,
         "refiner": None,
         "fits": fits,
-        "prompt_metadata": None,
     }
 
 

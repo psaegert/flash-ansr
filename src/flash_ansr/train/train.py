@@ -7,8 +7,7 @@ initialisation and experiment logging.
 
 import copy
 import os
-from collections import Counter
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 import torch
 
@@ -397,8 +396,6 @@ class Trainer:
         self._prompt_token_ids: dict[str, int | None] = {
             "complexity": tokenizer_mapping.get("<complexity>"),
         }
-        self.prompt_combo_counts: Counter[tuple] = Counter()
-        self.prompt_total_samples = 0
         self.decoder_max_seq_len = self._resolve_decoder_max_seq_len()
 
     @classmethod
@@ -868,40 +865,6 @@ class Trainer:
 
         mask_float_targets(labels, input_ids, float_token_id, int(self.metrics_ignore_index))
 
-    @staticmethod
-    def _canonicalize_prompt_terms(terms: Any) -> tuple[tuple[str, ...], ...]:
-        """Return a hashable representation of prompt terms."""
-        if not isinstance(terms, Sequence) or isinstance(terms, (str, bytes)):
-            if terms is None or terms == []:
-                return tuple()
-            return ((str(terms),),)
-
-        canonical_terms: list[tuple[str, ...]] = []
-        for term in terms:
-            if isinstance(term, Sequence) and not isinstance(term, (str, bytes)):
-                canonical_terms.append(tuple(str(t) for t in term))
-            elif term is not None:
-                canonical_terms.append((str(term),))
-        return tuple(sorted(canonical_terms))
-
-    def _update_prompt_statistics(self, batch: dict[str, Any]) -> None:
-        """Track prompt metadata usage statistics for diagnostics."""
-        prompt_metadata = batch.get('prompt_metadata')
-        if not prompt_metadata or not isinstance(prompt_metadata, Sequence):
-            return
-
-        for metadata in prompt_metadata:
-            if not isinstance(metadata, dict):
-                continue
-
-            allowed = self._canonicalize_prompt_terms(metadata.get('allowed_terms'))
-            include = self._canonicalize_prompt_terms(metadata.get('include_terms'))
-            exclude = self._canonicalize_prompt_terms(metadata.get('exclude_terms'))
-            key = (allowed, include, exclude)
-
-            self.prompt_combo_counts[key] += 1
-            self.prompt_total_samples += 1
-
     def _outlier_scores(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Per-point outlier-head logits and contamination labels over valid support points.
 
@@ -970,8 +933,6 @@ class Trainer:
             micro_batch_size = len(batch['x_tensors']) // self.gradient_accumulation_steps
             micro_batch = {k: v[acc_step * micro_batch_size:(acc_step + 1) * micro_batch_size] for k, v in batch.items()}
             micro_batch = self.train_dataset.collate(micro_batch, device=self.device)
-            if preprocess:
-                self._update_prompt_statistics(micro_batch)
             self._apply_prompt_mask(micro_batch)
             self._apply_task_mask(micro_batch)
             self._apply_float_target_mask(micro_batch)

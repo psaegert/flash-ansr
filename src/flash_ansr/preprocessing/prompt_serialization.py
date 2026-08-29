@@ -1,127 +1,23 @@
-"""Prompt serialization helpers shared across preprocessing and inference.
+"""Prompt-prefix serialization shared across preprocessing and inference.
 
-LEGACY LANE (owner ruling 2026-08-26: keep, mark, revisit). :meth:`PromptSerializer.
-serialize_prompt` and the term sections below are the FIRST-GENERATION promptable-property
-mechanism: one ``<prompt>`` ... ``</prompt>`` wrapper enclosing typed sections, with the
-allowed/include/exclude term lists carried out-of-band in ``prompt_metadata``. It is superseded
-in spirit by the v24 grammar, where each property is a BARE prefix element the harness
-force-feeds and loss-masks (``<complexity> <float> </complexity>``, ``<mask_all>``,
-``<hypothesize>``) -- elements that permute per instance rather than nesting inside a wrapper.
-
-No v24 config reaches this path: v24 datasets set no preprocessor, and the term arguments are
-withdrawn from the public inference surface (they emitted tokens no v24 checkpoint saw and were
-enforced nowhere at decode time). :meth:`PromptSerializer.serialize_prompt_prefix` -- the lane
-inference actually uses -- already emits the bare v24 form.
-
-WHEN MORE PROMPTABLE PROPERTIES LAND, RECONCILE THE TWO RATHER THAN EXTENDING THIS ONE. A new
-property added as another ``<prompt>`` section inherits a wrapper the model was never trained to
-read, a metadata side-channel with no decode-time meaning, and a fixed section order. The v24
-element grammar is the target shape; this code is what the migration has to absorb or delete.
+Promptable properties are BARE prefix elements the harness force-feeds and loss-masks
+(``<complexity> <float> </complexity>``, ``<mask_all>``, ``<hypothesize>``) -- elements that
+permute per instance. :meth:`PromptSerializer.serialize_prompt_prefix` emits the decoding
+prefix in this form; :func:`apply_emission_flag` inserts the emission-format flags.
 """
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import numpy as np
 
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocessing.schemas import PromptFeatures, PromptPrefix
+from flash_ansr.preprocessing.schemas import PromptPrefix
 
 
 class PromptSerializer:
-    """Convert prompt features into token sequences consumable by the model."""
+    """Serialize decoding prompt prefixes into token sequences consumable by the model."""
 
     def __init__(self, tokenizer: Tokenizer) -> None:
         self.tokenizer = tokenizer
-
-    def serialize_prompt(
-        self,
-        features: PromptFeatures,
-        *,
-        include_complexity: bool,   # LEGACY <prompt>-wrapper lane -- see the module docstring
-        include_allowed_terms: bool,
-        include_include_terms: bool,
-        include_exclude_terms: bool,
-    ) -> dict[str, Any]:
-        """Serialize a full training example (prompt plus expression) into token ids.
-
-        Emits ``<bos>``, an optional ``<prompt>`` block (complexity and the enabled term sections),
-        the ``<expression>`` body, and a trailing ``<eos>``.
-
-        Parameters
-        ----------
-        features : PromptFeatures
-            The extracted prompt features and the expression tokens to serialize.
-        include_complexity : bool
-            Whether to emit the complexity sub-section.
-        include_allowed_terms : bool
-            Whether to emit the allowed-terms sub-section (only if features has allowed terms).
-        include_include_terms : bool
-            Whether to emit the include-terms sub-section (only if features has include terms).
-        include_exclude_terms : bool
-            Whether to emit the exclude-terms sub-section (only if features has exclude terms).
-
-        Returns
-        -------
-        dict[str, Any]
-            A dict with ``complexity``, ``input_ids``, ``input_num``, ``prompt_mask`` and
-            ``prompt_metadata`` (the allowed / include / exclude term lists).
-
-        Raises
-        ------
-        KeyError
-            If any emitted token is missing from the tokenizer vocabulary.
-        """
-        tokens: list[str] = []
-        numeric_values: list[float] = []
-        prompt_mask: list[bool] = []
-
-        def append(token: str, *, value: float = float("nan"), is_prompt: bool = False) -> None:
-            tokens.append(token)
-            numeric_values.append(value)
-            prompt_mask.append(is_prompt)
-
-        append("<bos>")
-
-        append("<prompt>", is_prompt=True)
-        if include_complexity:
-            append("<complexity>", is_prompt=True)
-            append("<float>", value=float(features.complexity), is_prompt=True)
-            append("</complexity>", is_prompt=True)
-
-        if include_allowed_terms and features.allowed_terms:
-            self._append_term_section("allowed", features.allowed_terms, append)
-
-        if include_include_terms and features.include_terms:
-            self._append_term_section("include", features.include_terms, append)
-
-        if include_exclude_terms and features.exclude_terms:
-            self._append_term_section("exclude", features.exclude_terms, append)
-
-        append("</prompt>", is_prompt=True)
-
-        append("<expression>")
-        for token in features.expression_tokens:
-            append(token)
-        append("</expression>")
-        append("<eos>")
-
-        try:
-            input_ids = [self.tokenizer[token] for token in tokens]
-        except KeyError as exc:
-            raise KeyError(
-                f"Token '{exc.args[0]}' missing from tokenizer vocabulary while serializing prompt."
-            ) from exc
-
-        return {
-            "complexity": features.complexity,
-            "input_ids": input_ids,
-            "input_num": numeric_values,
-            "prompt_mask": prompt_mask,
-            "prompt_metadata": {
-                "allowed_terms": features.allowed_terms,
-                "include_terms": features.include_terms,
-                "exclude_terms": features.exclude_terms,
-            },
-        }
 
     def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
         """Serialize a decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
@@ -183,35 +79,6 @@ Training emits the complexity block BARE, as a prefix element -- ``<complexity>`
             "prompt_disabled": not emit_complexity,
             "missing_tokens": missing_tokens,
         }
-
-    def _normalize_prompt_terms_collection(terms: Iterable[Sequence[Any]] | None) -> list[list[str]]:
-        if not terms:
-            return []
-
-        normalized: list[list[str]] = []
-        for term in terms:
-            if isinstance(term, str):
-                raise TypeError("Prompt term collections must be sequences of tokens, not raw strings.")
-
-            normalized_term = [str(token) for token in term]
-            if not normalized_term:
-                continue
-            normalized.append(normalized_term)
-        return normalized
-
-    @staticmethod
-    def _append_term_section(
-        prefix: str,
-        terms: Iterable[Sequence[str]],
-        append_fn: Any,
-    ) -> None:
-        open_token = f"<{prefix}_term>"
-        close_token = f"</{prefix}_term>"
-        for term in terms:
-            append_fn(open_token, is_prompt=True)
-            for token in term:
-                append_fn(str(token), is_prompt=True)
-            append_fn(close_token, is_prompt=True)
 
 
 class CapabilityUnavailable(ValueError):

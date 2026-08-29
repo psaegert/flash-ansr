@@ -1,86 +1,20 @@
-"""Preprocessing pipeline responsible for prompt enrichment."""
+"""Preprocessing pipeline responsible for batch formatting and prompt-prefix serialization."""
 from __future__ import annotations  # necessary for type annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 from simplipy import SimpliPyEngine
 
 from symbolic_data import LampleChartonCatalog
 from flash_ansr.model.tokenizer import Tokenizer
-from flash_ansr.preprocessing.feature_extractor import (
-    PromptFeatureExtractor,
-    PromptFeatureExtractorConfig,
-)
 from flash_ansr.preprocessing.prompt_serialization import PromptSerializer
-from flash_ansr.preprocessing.schemas import PromptFeatures
 from flash_ansr.utils.config_io import load_config
 from flash_ansr.utils.numeric import merge_numeric_sequence
 
 
-@dataclass
-class FlashANSRPreprocessorConfig:
-    """Configuration describing how prompts are serialized."""
-
-    prompt_feature: PromptFeatureExtractorConfig = field(default_factory=PromptFeatureExtractorConfig)
-
-    @classmethod
-    def from_dict(
-        cls,
-        data: "FlashANSRPreprocessorConfig" | dict[str, Any] | None,
-    ) -> "FlashANSRPreprocessorConfig":
-        """Build a :class:`FlashANSRPreprocessorConfig` from a dict or an existing instance.
-
-        The ``prompt_feature`` entry is parsed into a :class:`PromptFeatureExtractorConfig` (a
-        string value is treated as a config path and loaded first). An optional ``section_probs``
-        mapping overrides individual section probabilities via
-        :meth:`PromptFeatureExtractorConfig.with_section_probabilities`.
-
-        Parameters
-        ----------
-        data : FlashANSRPreprocessorConfig or dict or None
-            An existing instance (passed through), ``None`` (defaults), or a dict of options.
-
-        Returns
-        -------
-        FlashANSRPreprocessorConfig
-            The parsed preprocessor configuration.
-
-        Raises
-        ------
-        TypeError
-            If ``data`` is neither ``None``, an instance, nor a dict.
-        """
-        if isinstance(data, cls):
-            return data
-        if data is None:
-            return cls()
-        if not isinstance(data, dict):
-            raise TypeError(f"Expected dict for preprocessor config, got {type(data).__name__}")
-
-        feature_cfg = data.get("prompt_feature")
-        if isinstance(feature_cfg, str):
-            feature_cfg = load_config(feature_cfg)
-
-        prompt_feature = PromptFeatureExtractorConfig.from_dict(feature_cfg)
-
-        section_prob_overrides: dict[str, float] = {}
-        section_probs_raw = data.get("section_probs")
-        if isinstance(section_probs_raw, dict):
-            for key, value in section_probs_raw.items():
-                try:
-                    section_prob_overrides[key] = float(value)
-                except (TypeError, ValueError):
-                    continue
-            if section_prob_overrides:
-                prompt_feature = prompt_feature.with_section_probabilities(section_prob_overrides)
-
-        return cls(prompt_feature=prompt_feature)
-
-
 class FlashANSRPreprocessor:
-    """Format batch inputs and optionally enrich them with prompt metadata."""
+    """Format batch inputs and serialize decoding prompt prefixes."""
 
     def __init__(
         self,
@@ -88,7 +22,7 @@ class FlashANSRPreprocessor:
         tokenizer: Tokenizer,
         catalog: LampleChartonCatalog | None = None,
         *,
-        prompt_config: FlashANSRPreprocessorConfig | dict[str, Any] | None = None,
+        prompt_config: dict[str, Any] | None = None,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.simplipy_engine = simplipy_engine
@@ -96,21 +30,9 @@ class FlashANSRPreprocessor:
         self.catalog = catalog
         self._rng = rng if rng is not None else np.random.default_rng()
 
-        self.prompt_config = FlashANSRPreprocessorConfig.from_dict(prompt_config)
-        self._prompt_enabled = (
-            catalog is not None
-            and self.prompt_config.prompt_feature.prompt_probability > 0
-        )
-
-        self._feature_extractor: PromptFeatureExtractor | None = None
-        if self._prompt_enabled:
-            self._feature_extractor = PromptFeatureExtractor(
-                simplipy_engine=simplipy_engine,
-                tokenizer=tokenizer,
-                config=self.prompt_config.prompt_feature,
-                catalog=catalog,
-                rng=self._rng,
-            )
+        # Carried opaquely so dataset workers can rebuild an identical preprocessor
+        # (data.py deep-copies it; streaming.py passes it back into this constructor).
+        self.prompt_config: dict[str, Any] = prompt_config if prompt_config is not None else {}
 
         self._serializer = PromptSerializer(tokenizer)
 
@@ -130,17 +52,15 @@ class FlashANSRPreprocessor:
         ----------
         config : dict[str, Any] or str or None
             Config mapping or path to a config file. A top-level ``"preprocessor"`` key is
-            unwrapped, and its ``"prompt"`` section configures prompt enrichment. ``None`` or a
-            non-mapping config yields default (prompt-disabled) settings.
+            unwrapped. ``None`` or a non-mapping config yields default settings.
         simplipy_engine : SimpliPyEngine
             Engine used to manipulate and evaluate symbolic expressions.
         tokenizer : Tokenizer
-            Tokenizer used to serialize prompts and expressions.
+            Tokenizer used to serialize prompt prefixes and expressions.
         catalog : LampleChartonCatalog, optional
-            Catalog enabling prompt-feature extraction; prompts are only emitted when a catalog
-            is supplied and the configured prompt probability is positive.
+            Catalog supplying variables to dataset workers rebuilding this preprocessor.
         rng : numpy.random.Generator, optional
-            Random generator driving stochastic prompt inclusion. Defaults to a fresh generator.
+            Random generator. Defaults to a fresh generator.
 
         Returns
         -------
@@ -166,11 +86,10 @@ class FlashANSRPreprocessor:
         )
 
     def format(self, batch: dict[str, Any]) -> dict[str, Any]:
-        """Format a batch instance-by-instance, optionally enriching it with prompt metadata.
+        """Format a batch instance-by-instance.
 
-        Each instance in ``batch`` is formatted (adding ``input_num`` / ``prompt_mask`` /
-        ``prompt_metadata`` and, when enabled, a sampled prompt prefix), then the results are
-        re-stacked back into per-key lists.
+        Each instance in ``batch`` is formatted (adding ``input_num`` / ``prompt_mask``), then
+        the results are re-stacked back into per-key lists.
 
         Parameters
         ----------
@@ -218,51 +137,6 @@ class FlashANSRPreprocessor:
         return self._serializer.serialize_prompt_prefix(complexity=complexity)
 
     def _format_single(self, instance: dict[str, Any]) -> dict[str, Any]:
-        if self._prompt_enabled and self._feature_extractor is not None and self._should_include("prompt"):
-            skeleton_tokens = instance.get("skeletons")
-            if skeleton_tokens is None:
-                skeleton_tokens = instance.get("skeleton")
-            if skeleton_tokens is None:
-                return self._format_single_fallback(instance)
-
-            if isinstance(skeleton_tokens, np.ndarray):
-                skeleton_tokens = skeleton_tokens.tolist()
-
-            skeleton_tokens = list(self._ensure_iterable_of_str(skeleton_tokens))
-
-            try:
-                features = self._feature_extractor.extract(skeleton_tokens)
-                serialized = self._serialize_prompt(features)
-                existing_numeric = instance.get("input_num")
-                if existing_numeric is not None:
-                    serialized["input_num"] = merge_numeric_sequence(existing_numeric, serialized["input_num"])
-                return serialized
-            except ValueError:
-                return self._format_single_fallback(instance)
-
-        return self._format_single_fallback(instance)
-
-    def _serialize_prompt(self, features: PromptFeatures) -> dict[str, Any]:
-        # The one seam into the legacy <prompt>-wrapper lane (see the prompt_serialization
-        # module docstring). Reached only with a configured preprocessor, which no v24
-        # dataset config sets.
-        include_complexity = self._should_include("complexity")
-        include_allowed = self._should_include("allowed_terms")
-        include_include = self._should_include("include_terms")
-        include_exclude = self._should_include("exclude_terms")
-
-        return self._serializer.serialize_prompt(
-            features,
-            include_complexity=include_complexity,
-            include_allowed_terms=include_allowed,
-            include_include_terms=include_include,
-            include_exclude_terms=include_exclude,
-        )
-
-    # ------------------------------------------------------------------
-    # Legacy formatting path
-    # ------------------------------------------------------------------
-    def _format_single_fallback(self, instance: dict[str, Any]) -> dict[str, Any]:
         input_ids = instance["input_ids"]
         if hasattr(input_ids, "detach") and callable(getattr(input_ids, "detach")):
             input_ids = input_ids.detach().cpu().tolist()
@@ -280,11 +154,6 @@ class FlashANSRPreprocessor:
             "input_ids": modified_input_ids,
             "input_num": input_num,
             "prompt_mask": [False] * len(modified_input_ids),
-            "prompt_metadata": {
-                "allowed_terms": [],
-                "include_terms": [],
-                "exclude_terms": [],
-            },
         }
 
         existing_numeric = instance.get("input_num")
@@ -292,18 +161,6 @@ class FlashANSRPreprocessor:
             serialized["input_num"] = merge_numeric_sequence(existing_numeric, serialized["input_num"])
 
         return serialized
-
-    def _should_include(self, section: str) -> bool:
-        probability = self.prompt_config.prompt_feature.get_probability(section)
-        if probability <= 0:
-            return False
-        if probability >= 1:
-            return True
-        return self._rng.random() < probability
-
-    @staticmethod
-    def _ensure_iterable_of_str(tokens: Iterable[Any]) -> Iterable[str]:
-        return [str(token) for token in tokens]
 
     @staticmethod
     def _select_batch_item(value: Any, index: int) -> Any:

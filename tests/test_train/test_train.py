@@ -1,7 +1,6 @@
 import contextlib
 import datetime
 import unittest
-from collections import Counter
 from typing import Any
 
 from unittest import mock
@@ -46,7 +45,6 @@ class _DummyDataset:
             'y_tensors': torch.zeros((1, 1, 1), dtype=torch.float32),
             'labels': torch.tensor([[1]], dtype=torch.long),
             'data_attn_mask': torch.ones((1, 2, 2), dtype=torch.bool),
-            'prompt_metadata': micro_batch.get('prompt_metadata', []),
         }
 
 
@@ -87,8 +85,6 @@ def _build_dummy_trainer() -> Trainer:
     trainer.encoder_parameters = sum(p.numel() for p in trainer.model.encoder.parameters() if p.requires_grad)
     trainer.decoder_parameters = sum(p.numel() for p in trainer.model.decoder.parameters() if p.requires_grad)
     trainer._prompt_token_ids = {"complexity": None}
-    trainer.prompt_combo_counts = Counter()
-    trainer.prompt_total_samples = 0
     trainer._apply_prompt_mask = lambda batch: None
     trainer._update_total_pflops = lambda **_: None
     trainer._log_metrics = lambda *args, **kwargs: None
@@ -100,34 +96,7 @@ def _make_dummy_batch() -> dict[str, Any]:
         'x_tensors': [torch.zeros((1, 1, 1), dtype=torch.float32)],
         'y_tensors': [torch.zeros((1, 1, 1), dtype=torch.float32)],
         'input_ids': [[1, 2]],
-        'prompt_metadata': [
-            {'allowed_terms': [], 'include_terms': [], 'exclude_terms': []},
-        ],
     }
-
-
-def test_train_step_updates_prompt_statistics_when_preprocess_enabled() -> None:
-    trainer = _build_dummy_trainer()
-    spy = mock.Mock()
-    trainer._update_prompt_statistics = spy  # type: ignore[assignment]
-
-    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
-        trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=True)
-
-    spy.assert_called_once()
-    call_batch = spy.call_args.args[0]
-    assert call_batch['prompt_metadata'][0] == {'allowed_terms': [], 'include_terms': [], 'exclude_terms': []}
-
-
-def test_train_step_skips_prompt_statistics_when_preprocess_disabled() -> None:
-    trainer = _build_dummy_trainer()
-    spy = mock.Mock()
-    trainer._update_prompt_statistics = spy  # type: ignore[assignment]
-
-    with mock.patch('torch.autocast', lambda *args, **kwargs: contextlib.nullcontext()):
-        trainer._train_step(batch=_make_dummy_batch(), step=0, preprocess=False)
-
-    spy.assert_not_called()
 
 
 def _grads(trainer: Trainer) -> list[torch.Tensor]:
