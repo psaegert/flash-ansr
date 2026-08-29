@@ -16,7 +16,7 @@ holdout_pools: [
   # O(1) in pool size, and the per-draw cost is dominated by evaluating the candidate, which
   # the one-catalog pool already paid.
   #
-  # Not listed: `fastsrb.v2` (ResolverError -- the asset exists but does not resolve by name).
+  # `fastsrb` resolves to v2 by default (fastsrb@2, the 2026-07-10 audit repair), so v2 is what this pool holds out.
   # `srsd-dummy` is listed for provenance though it adds ZERO keys: it is the same law set with
   # dummy variables, and the structure layer already generalizes over variable relabeling.
   "fastsrb",
