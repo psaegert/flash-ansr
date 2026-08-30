@@ -1,7 +1,10 @@
-# v25.0-T3: the permissive-target-canon arm (3M params, 1.5M steps, host TBD).
+# v25.0-T3: the permissive-target-canon arm (3M params, 1.5M steps, solomon RTX 4090).
 #
 # Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
-# is target-canon-only by construction. Queued behind the T1/T2 arms.
+# is target-canon-only by construction. Two OPERATIONAL keys differ and touch no data:
+# the catalog's simplipy_engine_modes (lean per-worker engines, identical outputs) and
+# validate_num_workers below (validation-pool size; owner 2026-08-30: all cores for the
+# training pool).
 #
 # Numeric format: IEEE-754 binary64 throughout. Constants are 8 byte tokens over the
 # 256-symbol alphabet; the encoder and the numeric channel are binary64.
@@ -36,6 +39,11 @@ batch_size: 128
 train_dataset: ./dataset_train.yaml
 val_dataset: "./dataset_val.yaml"
 val_batch_size: 128
+# The validation pool is kept alive NEXT TO the training pool, so both coexist in memory:
+# at num_workers=32 a same-size val pool would put ~64 x ~1.1 GB workers on the 60 GB box
+# (T2 measured ~1.2 GB/worker at 18+18). 6 val workers cap the coexisting fleet at 38
+# and only stretch validation wall time.
+validate_num_workers: 6
 # Sized for the per-task validation curves: 2,048 instances leaves too much
 # variance on them to read a per-task trend.
 val_size: 8_192

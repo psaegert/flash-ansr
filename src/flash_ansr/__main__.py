@@ -20,6 +20,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     train_parser.add_argument('-ci', '--checkpoint-interval', type=int, default=None, help='Interval for saving checkpoints')
     train_parser.add_argument('-vi', '--validate-interval', type=int, default=None, help='Interval for validating the model')
     train_parser.add_argument('-w', '--num_workers', type=int, default=None, help='Number of worker processes for data generation')
+    train_parser.add_argument('-vw', '--validate_num_workers', type=int, default=None, help='Worker count for the validation pool (kept alive next to the training pool; default: num_workers)')
     train_parser.add_argument('--project', type=str, default='neural-symbolic-regression', help='Name of the wandb project')
     train_parser.add_argument('--entity', type=str, default='psaegert', help='Name of the wandb entity')
     train_parser.add_argument('--name', type=str, default=None, help='Name of the wandb run')
@@ -99,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     wandb_watch_log_freq=config.get('wandb_watch_log_freq', 1000),
                     wandb_mode=args.mode,
                     num_workers=args.num_workers,
+                    validate_num_workers=args.validate_num_workers,
                     resume_from=args.resume_from,
                     resume_step=args.resume_step,
                     verbose=args.verbose,

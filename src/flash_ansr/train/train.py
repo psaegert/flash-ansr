@@ -319,6 +319,7 @@ class Trainer:
             val_dataset: FlashANSRDataset,
             gradient_accumulation_steps: int = 1,
             num_workers: int | None = None,
+            validate_num_workers: int | None = None,
             config: dict[str, Any] = None) -> None:
         """Create a fully configured trainer instance.
 
@@ -344,6 +345,11 @@ class Trainer:
             Number of micro-batches per optimizer step.
         num_workers : int or None, optional
             Number of worker processes for data generation.
+        validate_num_workers : int or None, optional
+            Worker count for the validation pool. The validation pool is kept
+            alive next to the training pool, so both coexist in memory; a
+            smaller validation pool trades validation wall time for the RAM
+            the training pool can then spend. ``None`` = ``num_workers``.
         config : dict[str, Any] or None, optional
             Trainer configuration metadata (used for logging).
         """
@@ -359,6 +365,7 @@ class Trainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.config = config or {}
         self.num_workers = num_workers
+        self.validate_num_workers = validate_num_workers
         self.device = torch.device("cpu")  # Updated during ``run``
         default_worker_preprocess = self.train_dataset.preprocessor is not None
         if isinstance(self.config, dict) and 'worker_preprocess' in self.config:
@@ -466,6 +473,8 @@ class Trainer:
 
         num_workers = config_.get("num_workers", None)
         print(f'Using num_workers={num_workers} for data generation (set by config, may be overridden by run() arguments)')
+        validate_num_workers = config_.get("validate_num_workers", None)
+        print(f'Using validate_num_workers={validate_num_workers} for the validation pool (None = num_workers)')
         print(f'Loading train_dataset with config {config_["train_dataset"]}')
         train_dataset = FlashANSRDataset.from_config(config_["train_dataset"])
 
@@ -496,6 +505,7 @@ class Trainer:
             val_dataset=val_dataset,
             gradient_accumulation_steps=config_.get("gradient_accumulation_steps", 1),
             num_workers=num_workers,
+            validate_num_workers=validate_num_workers,
             config=config_,
         )
 
@@ -674,6 +684,7 @@ class Trainer:
             wandb_watch_log_freq: int = 1000,
             preprocess_in_worker: bool | None = None,
             num_workers: int | None = None,
+            validate_num_workers: int | None = None,
             resume_from: str | None = None,
             resume_step: int | None = None,
             verbose: bool = False) -> FlashANSRModel:
@@ -718,6 +729,8 @@ class Trainer:
             preprocessing when available).
         num_workers : int or None, optional
             Number of worker processes for data generation.
+        validate_num_workers : int or None, optional
+            Override the validation-pool worker count (see the constructor).
         resume_from : str or None, optional
             Path to a checkpoint directory from which to resume training.
         resume_step : int or None, optional
@@ -738,8 +751,13 @@ class Trainer:
             print(f'Overriding trainer num_workers to {num_workers}')
             self.num_workers = num_workers
 
+        if validate_num_workers is not None:
+            print(f'Overriding trainer validate_num_workers to {validate_num_workers}')
+            self.validate_num_workers = validate_num_workers
+
         wandb_config = unfold_config(copy.deepcopy(self.config))
-        wandb_config.update({"steps": steps, "device": device, "verbose": verbose, "num_workers": num_workers})
+        wandb_config.update({"steps": steps, "device": device, "verbose": verbose, "num_workers": num_workers,
+                             "validate_num_workers": self.validate_num_workers})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
             if wandb_mode != 'disabled':
@@ -1033,6 +1051,10 @@ class Trainer:
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
+    def _effective_validate_num_workers(self) -> int | None:
+        """Worker count for the validation pool: the explicit override, else ``num_workers``."""
+        return self.num_workers if self.validate_num_workers is None else self.validate_num_workers
+
     def _validate_step(self, step: int, size: int | None, batch_size: int, preprocess: bool, worker_preprocess: bool, verbose: bool) -> None:
         """Evaluate the model on the validation split and log aggregate metrics.
 
@@ -1072,7 +1094,7 @@ class Trainer:
                     batch_size=batch_size,
                     preprocess=preprocess,
                     preprocess_in_worker=worker_preprocess,
-                    num_workers=self.num_workers,
+                    num_workers=self._effective_validate_num_workers(),
                     max_seq_len=self.decoder_max_seq_len,
                     # Validation runs many times over the same settings; each cold start
                     # would make every worker re-parse the holdout catalogs.

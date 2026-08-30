@@ -8,6 +8,12 @@
 # support_oversampling_max defaults to 1 and is deliberately absent here).
 type: lample_charton
 simplipy_engine: 'acj-5-4-llm'
+# Lean engine profile (simplipy >= 0.14.2, symbolic-data >= 0.16.1): f64 is the always-eager
+# construction substrate; permissive carries BOTH the target canon (simplify_mode below) and
+# the holdout family key (HOLDOUT_SIMPLIFY_MODE). The real tier is never touched on this
+# arm's data path, and would lazily load on first use if it ever were -- the profile moves
+# worker memory (~100 MB each) and startup, never an output.
+simplipy_engine_modes: ['f64', 'permissive']
 # Validation is a fresh stream from THIS catalog (see dataset_val.yaml), not a frozen
 # artifact, so nothing beyond the benchmark pools below needs excluding.
 holdout_pools: [
