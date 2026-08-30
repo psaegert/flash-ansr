@@ -1,0 +1,59 @@
+# v25.0-T3: the permissive-target-canon arm (3M params, 1.5M steps, host TBD).
+#
+# Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
+# is target-canon-only by construction. Queued behind the T1/T2 arms.
+#
+# Numeric format: IEEE-754 binary64 throughout. Constants are 8 byte tokens over the
+# 256-symbol alphabet; the encoder and the numeric channel are binary64.
+#
+# Task set, all trained together:
+#   - expression emission (the primary cross-entropy);
+#   - the <complexity> block -- stated by the caller as a compact <float>, hypothesized by
+#     the model in bytes after <hypothesize>, or absent;
+#   - <predict_y>, one held-out point per instance;
+#   - <predict_constants>, one span per masked placeholder (collection-stability gated);
+#   - promptable masking (<mask_all> / <mask_fittable> / partial);
+#   - the per-point outlier head, against the noise mixture's contamination labels.
+#
+# The 10/70/20 trapezoid over 1.5M steps. acj-5-4-llm pinned throughout.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [150_000, 1e-4]  # 10% of steps warmup
+  - [1_200_000, 1e-4]
+  - [1_500_000, 0.0]  # 20% of steps cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+# Sized for the per-task validation curves: 2,048 instances leaves too much
+# variance on them to read a per-task trend.
+val_size: 8_192
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 1_500_000
+
+# Outlier-head auxiliary loss, kept small so the head does not distort the encoder.
+# pos_weight 1.0 yields calibrated suspicion scores rather than a tuned operating point.
+outlier_loss_weight: 0.05
+outlier_pos_weight: 1.0
+# Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
+# statistics need every micro-batch's scores on the host, so they run on an interval.
+outlier_metrics_interval: 50
+device: cuda
