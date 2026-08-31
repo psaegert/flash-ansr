@@ -1,4 +1,4 @@
-# v25.0-T3: the permissive-target-canon arm (3M params, 1.5M steps, solomon RTX 4090).
+# v25.0-T4: the v23.8-priors arm (3M params, 1.5M steps, solomon RTX 4090). Everything below identical to T3.
 #
 # Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
 # is target-canon-only by construction. Two OPERATIONAL keys differ and touch no data:
