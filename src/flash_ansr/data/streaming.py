@@ -16,6 +16,13 @@ import numpy as np
 from symbolic_data import ProblemSource
 from simplipy.utils import substitute_constants
 from symbolic_data.token_ops import tagged_canonical
+
+
+def _tagged_canonical_mode(catalog: object) -> str | None:
+    """The catalog's configured target canon (``simplify_mode``), or None for catalogs
+    without the knob -- None keeps the engine-default tagged canonicalization."""
+    mode = getattr(catalog, "simplify_mode", None)
+    return str(mode) if mode is not None else None
 from flash_ansr.data.serialization import (
     COMPACT_CONSTANT_TOKEN,
     HYPOTHESIS_TOKEN,
@@ -404,6 +411,11 @@ def _producer_worker(
     # produced by simplify IN the tagged dialect per problem (literals fold canonically, so
     # it cannot be cached per skeleton). 'explicit' (default) keeps today's prefix targets.
     tagged_targets = worker_config.target_dialect == TARGET_DIALECT_TAGGED
+    # The tagged canonicalization runs in the catalog's CONFIGURED target canon
+    # (owner ruling 2026-08-31): a corpus whose prefix targets are permissive-canonical
+    # is permissive-canonical in the tagged dialect too. Catalogs without the knob
+    # (curated pools) resolve to None = the engine's default mode, the historical call.
+    tagged_canon_mode = _tagged_canonical_mode(catalog)
     # Task blocks: <complexity> conditioning/prediction and <predict_y> auxiliary
     # blocks (validated at dataset init: mixed constants + wrapper/block tokens present).
     # The harness owns the grammar; the model owns the content: every opener / format
@@ -504,7 +516,8 @@ def _producer_worker(
                     # symbolic_data.token_ops.tagged_canonical. np.pi/np.e stay symbolic
                     # tokens; every NUMERIC literal is extracted for ieee754 serialization.
                     try:
-                        target_expression = tagged_canonical(simplipy_engine, expression)
+                        target_expression = tagged_canonical(
+                            simplipy_engine, expression, mode=tagged_canon_mode)
                         skeleton, literal_values = mask_literals_positional(
                             simplipy_engine, target_expression, keep_specials=True)
                     except NonFiniteExpressionError:
