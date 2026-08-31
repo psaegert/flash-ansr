@@ -767,7 +767,7 @@ class FlashANSRDataset:
             unconditional_prob=effective_unconditional_prob,
         )
 
-        if self._stream.metadata_pool is None or not self._stream.buffers:
+        if not self._stream.buffers:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
 
         pool_size = self._stream.pool_size
@@ -786,8 +786,7 @@ class FlashANSRDataset:
                 self._stream.submit_job(slot_idx, n_support)
 
             for step_id in range(steps):
-                completed_slot_idx = self._stream.get_completed_slot()
-                metadata_and_constants = self._stream.metadata_pool[completed_slot_idx]
+                completed_slot_idx, metadata_and_constants = self._stream.get_completed_slot()
                 if metadata_and_constants is None:
                     raise RuntimeError("Worker returned empty payload.")
 

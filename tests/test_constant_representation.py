@@ -479,10 +479,8 @@ def test_mixed_streaming_drops_instances_instead_of_cutting_spans(tokenizer: Tok
                     if position not in inside:
                         assert token not in byte_ids
                         assert token != start_id and token != end_id
-            pool = dataset._stream.metadata_pool
-            for payload in list(pool):
-                if isinstance(payload, dict) and payload.get("n_dropped_truncation", 0) > 0:
-                    saw_drop_counter = True
+            if dataset.stream_counters.get("n_dropped_truncation", 0) > 0:
+                saw_drop_counter = True
     assert saw_drop_counter, "expected the worker to count dropped mid-span instances"
     assert saw_intact_span, "vacuous: no surviving sequence carried a span to check"
 

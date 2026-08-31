@@ -6,7 +6,6 @@ import signal
 import warnings
 from dataclasses import dataclass
 from multiprocessing import shared_memory
-from multiprocessing.managers import ListProxy, SyncManager
 from typing import Any, Literal
 
 import math
@@ -137,10 +136,8 @@ class SharedMemoryWorkerPool:
         self.residual_block = residual_block
         self.mask_block = mask_block
 
-        self._manager: SyncManager | None = None
         self._shms: dict[str, shared_memory.SharedMemory] = {}
         self.buffers: dict[str, np.ndarray] = {}
-        self.metadata_pool: ListProxy | None = None
         self._work_queue: mp.Queue | None = None
         self._result_queue: mp.Queue | None = None
         self._available_slots_queue: mp.Queue | None = None
@@ -254,8 +251,6 @@ class SharedMemoryWorkerPool:
             for name, cfg in shm_configs.items()
         }
 
-        self._manager = _MP.Manager()
-        self.metadata_pool = self._manager.list([None] * self.pool_size)
         self._work_queue = _MP.Queue()
         self._result_queue = _MP.Queue()
         self._available_slots_queue = _MP.Queue()
@@ -292,7 +287,7 @@ class SharedMemoryWorkerPool:
         for _ in range(self._num_workers):
             process = _MP.Process(
                 target=_producer_worker,
-                args=(self._work_queue, self._result_queue, shm_configs, self.metadata_pool, worker_config),
+                args=(self._work_queue, self._result_queue, shm_configs, worker_config),
                 daemon=True,
             )
             process.start()
@@ -317,9 +312,6 @@ class SharedMemoryWorkerPool:
                 if process.is_alive():
                     process.terminate()
 
-            if self._manager is not None:
-                self._manager.shutdown()
-
             for shm in self._shms.values():
                 shm.close()
                 try:
@@ -329,10 +321,8 @@ class SharedMemoryWorkerPool:
         finally:
             self._is_initialized = False
             self._init_signature = None
-            self._manager = None
             self._shms.clear()
             self.buffers = {}
-            self.metadata_pool = None
             self._work_queue = None
             self._result_queue = None
             self._available_slots_queue = None
@@ -353,8 +343,16 @@ class SharedMemoryWorkerPool:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         self._work_queue.put((slot_idx, n_support))
 
-    def get_completed_slot(self) -> int:
-        """Block until a filled slot is available."""
+    def get_completed_slot(self) -> "tuple[int, dict[str, Any] | None]":
+        """Block until a filled slot is available; returns (slot_idx, metadata payload).
+
+        The payload rides the result queue itself (a direct pipe with a per-process
+        feeder thread) instead of a SyncManager list proxy: every proxy access was a
+        synchronous round-trip through the single-threaded manager process, pickling
+        the full 128-instance payload -- one global serialization point shared by all
+        workers AND the consumer, measured to cap the whole pool at ~2.4 batches/s
+        regardless of worker count (2026-08-31).
+        """
         if self._result_queue is None:
             raise RuntimeError("Multiprocessing resources are not properly initialized.")
         return self._result_queue.get()
@@ -370,7 +368,6 @@ def _producer_worker(
     work_queue: mp.Queue,
     result_queue: mp.Queue,
     shm_configs: dict[str, dict[str, Any]],
-    metadata_list: list,
     worker_config: WorkerConfig,
 ) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -1013,8 +1010,7 @@ def _producer_worker(
                 # Instances whose tagged canonicalization folded a degenerate sub-expression
                 # to a non-finite spelling while filling THIS batch (tagged targets only).
                 payload["n_dropped_nonfinite"] = n_dropped_nonfinite
-            metadata_list[slot_idx] = payload
-            result_queue.put(slot_idx)
+            result_queue.put((slot_idx, payload))
     except Exception as exc:  # noqa: BLE001 - a dead worker must not become a silent hang
         # Without this the loop was `try: while True: ... finally: shm.close()` with NO except.
         # Any raise from serialization killed the worker, and the pool then blocked forever in
@@ -1023,11 +1019,10 @@ def _producer_worker(
         # the worker die; the pool's own supervision decides what to do about a missing producer.
         import traceback
         try:
-            metadata_list[slot_idx] = {
+            result_queue.put((slot_idx, {
                 "worker_error": f"{type(exc).__name__}: {exc}",
                 "worker_traceback": traceback.format_exc(),
-            }
-            result_queue.put(slot_idx)
+            }))
         except Exception:  # noqa: BLE001 - the slot index may not exist yet; nothing left to do
             pass
         raise
