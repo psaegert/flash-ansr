@@ -1,4 +1,6 @@
-# v25.0-T4 catalog: T3 + the v23.8 support prior restored (see support_sampler).
+# v25.0-T4 catalog: T3 + the v23.8 sampling priors restored (owner ruling 2026-08-31):
+# support endpoints cauchy(0,10) UNCAPPED, literal_prior cauchy(0,5), n_support 1-1024,
+# max_tries 4. Typed slots, operator weights, holdout pools, canon: unchanged from T3.
 # Base: v25.0-T3, the corrected target canon. Identical to v25.0-T2 in every pin
 # except simplify_mode: targets canonicalize in the PERMISSIVE corpus tier, the
 # designed choice -- data generates FROM the simplified skeleton (target == data),
@@ -49,28 +51,21 @@ sample_strategy:
   power: 0.7
   lambda: 1
   max_length: 35
-  max_tries: 8
+  max_tries: 4
   independent_dimensions: true
 
 allow_nan: false
 simplify: true
 simplify_mode: 'permissive'
 
-# Concrete literals at constant leaves: half small integers, half rounded floats.
+# Literals at constant leaves: cauchy(0, 5), the v23.8 prior (owner ruling 2026-08-31;
+# replaces the v24-era int/rounded mixture on this arm). Typed slots below keep their own
+# priors -- they belong to the typed-exponent redesign, not to the literal prior.
 literal_prior:
-- weight: 0.5
-  name: choice
+  name: cauchy
   kwargs:
-    values: [1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
-    weights: [5, 5, 4, 4, 3, 3, 2, 2, 1, 1]
-- weight: 0.5
-  name: rounded
-  kwargs:
-    base:
-      name: normal
-      kwargs:
-        loc: 0
-        scale: 5
+    loc: 0
+    scale: 5
 
 typed_slots:
   pow:
@@ -119,9 +114,9 @@ support_sampler:
     name: "uniform"
     kwargs:
       low: 1
-      high: 512
+      high: 1024
       min_value: 1
-      max_value: 512
+      max_value: 1024
 
 variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17']
 
