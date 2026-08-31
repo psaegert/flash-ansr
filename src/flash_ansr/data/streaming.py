@@ -371,6 +371,18 @@ def _producer_worker(
     worker_config: WorkerConfig,
 ) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # One torch thread per worker (the policy torch's own DataLoader workers use).
+    # The default gives EVERY worker an intra-op pool sized to all cores: measured 66
+    # threads per worker, ~2,100 threads across 32 workers, spin-waiting the machine
+    # away between the workers' tiny elementwise slot writes -- the pool's throughput
+    # was a workers-count-independent ~330 inst/s pie while 32 bare generation
+    # processes did 957 inst/s on the same box (2026-08-31). The ops here are
+    # elementwise (mask/pad/copy), so the thread count cannot change any value.
+    # (torch is already loaded in this process via flash_ansr's import chain; it is
+    # just not bound in this module's namespace.)
+    import torch
+
+    torch.set_num_threads(1)
     # One per-worker Generator created in the CHILD: distinct streams per worker for
     # decorrelation (replaces the old getpid()-based global np.random/random seeding).
     worker_rng = np.random.default_rng()
