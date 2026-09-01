@@ -113,6 +113,7 @@ class FlashANSRModel(nn.Module):
         optional_condition: bool = False,
         null_memory_init_seed: int = 0,
         outlier_head: bool = False,
+        head_pre_logits_norm: bool = False,
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
@@ -188,11 +189,23 @@ class FlashANSRModel(nn.Module):
             use_checkpointing=use_checkpointing,
         )
 
-        self.next_token_head = nn.Sequential(
+        # Optional LayerNorm between the head MLP and the logit projection. The T4
+        # divergence forensics (2026-09-01) localized the v25 grad-norm runaway to a
+        # mutual amplification between this projection's byte-token rows and the head's
+        # internal activations (||h|| 22 -> 207 over 500k steps at byte positions; the
+        # trunk is protected by decoder.output_norm, the head MLP re-amplifies). The norm
+        # bounds h and removes the amplifier structurally. Owner ruling 2026-09-01:
+        # v26 trains with this norm and WITHOUT z-loss; z-loss is the v25 resume patch
+        # only. Default False so existing checkpoints load unchanged.
+        self.head_pre_logits_norm = bool(head_pre_logits_norm)
+        head_layers: list[nn.Module] = [
             nn.Linear(decoder_model_dim, decoder_model_dim),
             nn.GELU(),
-            nn.Dropout(p=decoder_dropout),
-            nn.Linear(decoder_model_dim, len(self.tokenizer)))
+            nn.Dropout(p=decoder_dropout)]
+        if self.head_pre_logits_norm:
+            head_layers.append(nn.LayerNorm(decoder_model_dim))
+        head_layers.append(nn.Linear(decoder_model_dim, len(self.tokenizer)))
+        self.next_token_head = nn.Sequential(*head_layers)
 
         # Per-point outlier head (noise mixture): a small MLP over the encoder's post-ISAB
         # per-point representations (pre-pooling), trained with BCE against the source's
@@ -417,6 +430,7 @@ class FlashANSRModel(nn.Module):
             optional_condition=config_.get("optional_condition", False),
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
             outlier_head=config_.get("outlier_head", False),
+            head_pre_logits_norm=config_.get("head_pre_logits_norm", False),
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),

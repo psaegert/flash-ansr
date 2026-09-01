@@ -64,4 +64,10 @@ outlier_pos_weight: 1.0
 # Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
 # statistics need every micro-batch's scores on the host, so they run on an interval.
 outlier_metrics_interval: 50
+# z-loss (PaLM log^2 Z, coefficient 1e-4): the restoring force on the shared byte-logit
+# offset that diverged this arm at ~648k (forensics 2026-09-01: byte rows of the logit
+# head carried 94% of the gradient energy along a loss-flat direction; max byte-position
+# logit had drifted to -110). Owner ruling 2026-09-01: resume T4 from checkpoint_600000
+# with z-loss; v26 will use head_pre_logits_norm instead and NO z-loss.
+z_loss_weight: 1.0e-4
 device: cuda

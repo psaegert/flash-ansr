@@ -96,6 +96,18 @@ TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "pred
                       4: "predict_residual"}
 
 
+def _z_loss(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> torch.Tensor:
+    """Mean squared log-partition (PaLM z-loss) over the supervised positions, in fp32.
+
+    Cross-entropy is shift-invariant, so a shared logit offset is loss-flat and Adam's
+    sign-persistence slides along it without bound (the T4 byte-row runaway, 2026-09-01:
+    byte-position max logit drifted to -110 and the head carried 94% of the gradient
+    energy). log^2 Z is the restoring force on exactly that direction. Computed in fp32:
+    at the offsets this loss exists to shrink, bf16 logsumexp is the wrong tool."""
+    log_z = torch.logsumexp(flat_logits[valid_labels].float(), dim=-1)
+    return (log_z * log_z).mean()
+
+
 def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Tensor,
                  ignore_index: int) -> "dict[str, tuple[float, int]]":
     """CE sum and token count per task segment, over the SUPERVISED labels only (the
@@ -386,6 +398,10 @@ class Trainer:
         # host, which costs a device sync per micro-step on top of two sorts. Logged on
         # an interval; the loss itself is unaffected and logged every step.
         self.outlier_metrics_interval = int(self.config.get('outlier_metrics_interval', 50))
+        # z-loss (log^2 Z) weight. 0.0 <=> off (the pre-2026-09-01 loss, bit-identical).
+        # The v25 resume arms run 1e-4 (PaLM's coefficient); v26 replaces it with
+        # head_pre_logits_norm in the model (owner ruling 2026-09-01).
+        self.z_loss_weight = float(self.config.get('z_loss_weight', 0.0))
         if self.outlier_metrics_interval < 1:
             raise ValueError(
                 f"outlier_metrics_interval must be at least 1, got {self.outlier_metrics_interval}")
@@ -928,6 +944,7 @@ class Trainer:
 
         total_ce_loss = 0.0
         total_outlier_loss = 0.0
+        total_z_loss = 0.0
         total_loss = 0.0
         task_ce_sums: dict[str, list[float]] = {}
         split_ce_sums: dict[str, list[float]] = {}
@@ -987,8 +1004,13 @@ class Trainer:
                             train_outlier_scores.append(scored[0].detach().float().cpu())
                             train_outlier_labels.append(scored[1].detach().cpu())
 
+                z_loss = torch.zeros((), device=self.device, dtype=ce_loss.dtype)
+                if self.z_loss_weight > 0.0 and valid_labels.any():
+                    z_loss = _z_loss(flat_logits, valid_labels)
+
                 loss = (ce_loss
-                        + self.outlier_loss_weight * outlier_loss) / self.gradient_accumulation_steps + zero_loss
+                        + self.outlier_loss_weight * outlier_loss
+                        + self.z_loss_weight * z_loss) / self.gradient_accumulation_steps + zero_loss
 
             # If the loss is nan or inf, stop the training
             if not torch.isfinite(loss):
@@ -997,6 +1019,7 @@ class Trainer:
             self.scaler.scale(loss).backward()
             total_ce_loss += ce_loss.item()
             total_outlier_loss += outlier_loss.item()
+            total_z_loss += z_loss.item()
             with torch.no_grad():
                 if 'task_segments' in micro_batch:
                     for name, (ce_sum, count) in _per_task_ce(
@@ -1030,6 +1053,8 @@ class Trainer:
             # Log metrics and update scheduler after the optimizer step
             # Positional call when no extras: monkeypatched/legacy 4-arg loggers keep working.
             extra: dict[str, float] = {}
+            if self.z_loss_weight > 0.0:
+                extra["train_z_loss"] = total_z_loss
             if self.outlier_loss_weight > 0.0:
                 extra["train_outlier_loss"] = total_outlier_loss
                 if train_outlier_scores:
@@ -1076,6 +1101,7 @@ class Trainer:
         self.model.eval()
 
         val_ce_loss = 0.0
+        val_z_loss = 0.0
         total_items = 0
         val_outlier_scores: list[torch.Tensor] = []
         val_outlier_labels: list[torch.Tensor] = []
@@ -1116,6 +1142,9 @@ class Trainer:
                         ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
                     else:
                         ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+
+                    if self.z_loss_weight > 0.0 and valid_labels.any():
+                        val_z_loss += _z_loss(flat_logits, valid_labels).item() * flat_labels.shape[0]
 
                     # Accumulate metrics for each batch
                     val_ce_loss += ce_loss.item() * flat_labels.shape[0]
@@ -1168,6 +1197,10 @@ class Trainer:
         if outlier_metrics is not None and "val_outlier_loss" in outlier_metrics:
             val_composite = avg_val_ce_loss + self.outlier_loss_weight * outlier_metrics["val_outlier_loss"]
         outlier_metrics = dict(outlier_metrics or {})
+        if self.z_loss_weight > 0.0:
+            avg_val_z_loss = val_z_loss / total_items if total_items > 0 else 0.0
+            outlier_metrics["val_z_loss"] = avg_val_z_loss
+            val_composite = val_composite + self.z_loss_weight * avg_val_z_loss
         outlier_metrics["val_loss"] = val_composite
 
         # Log averaged validation metrics (positional when the feature is off, see _log_metrics)
