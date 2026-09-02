@@ -1,4 +1,4 @@
-# v25.0-T5: the operator-reweight arm (3M params, 1.5M steps, solomon RTX 4090). Identical to T4 except catalog_train.yaml operator_weights (pow/rootn 4 -> 5). z-loss 1e-4 kept (v25.x); v26 replaces it with head_pre_logits_norm.
+# v25.0-T5: the operator-reweight arm (3M params, 1.5M steps, solomon RTX 4090). Identical to T4 except catalog_train.yaml operator_weights (pow/rootn 4 -> 5) and warmup 10% -> 1% (15k steps). z-loss 1e-4 kept (v25.x); v26 replaces it with head_pre_logits_norm.
 #
 # Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
 # is target-canon-only by construction. Two OPERATIONAL keys differ and touch no data:
@@ -30,7 +30,7 @@ optimizer:
 
 lr_schedule:
   - [0, 0.0]
-  - [150_000, 1e-4]  # 10% of steps warmup
+  - [15_000, 1e-4]  # 1% of steps warmup (owner ruling 2026-09-02; T4 used 10% = 150k)
   - [1_200_000, 1e-4]
   - [1_500_000, 0.0]  # 20% of steps cooldown
 
