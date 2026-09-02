@@ -67,16 +67,33 @@ literal_prior:
     loc: 0
     scale: 5
 
+# Typed slots (owner ruling 2026-09-02: priors follow elegant, accurate ideas and are only
+# minimally shaped by the benchmark distribution). Three ideas, no fitted numbers:
+#   sign symmetry     -- the canonical spells a negative exponent / root index in its own way,
+#                        so the sign is a spelling choice the prior does not weight;
+#   quadratic decay   -- integers 2..5 and root indices 2..5 at 16 : 9 : 4 : 1 (0 and +-1 fold
+#                        to structure before delivery and are not drawn);
+#   description length-- dyadic rationals p/q at 1/(|p| q), the same cost the MDL measure
+#                        charges a literal; a 5% rounded-real tail keeps a non-rational
+#                        exponent representable.
+# Delivered (1,500 instances, same seed): exponent sites 85% integer / 2% decimal real /
+# 13% rational (T5: 65 / 21 / 14); root index 2 at 44% (T5: 24%). The T5 rounded(normal) half
+# put a multi-decimal real on one exponent site in five.
 typed_slots:
   pow:
     argument: 1
     prior:
-    - weight: 0.5
+    - weight: 0.65            # integers 2..5, sign-symmetric, quadratic decay in rank (16, 9, 4, 1)
       name: choice
       kwargs:
-        values: [2, -2, 3, -3, 4, -4, 5, -5, 1, -1, 0]
-        weights: [4, 4, 3, 3, 2, 2, 1, 1, 1, 1, 1]
-    - weight: 0.5
+        values: [2, -2, 3, -3, 4, -4, 5, -5]
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
+    - weight: 0.30            # dyadic rationals p/q, sign-symmetric, weight 1/(|p| q): description length
+      name: choice
+      kwargs:
+        values: [0.5, -0.5, 0.25, -0.25, 1.5, -1.5, 2.5, -2.5, 0.75, -0.75]
+        weights: [6, 6, 3, 3, 2, 2, 1.2, 1.2, 1, 1]
+    - weight: 0.05            # real tail (rounded normal), so a non-rational exponent stays representable
       name: rounded
       kwargs:
         base:
@@ -89,8 +106,8 @@ typed_slots:
     prior:
       name: choice
       kwargs:
-        values: [2, -2, 3, -3, 4, -4, 5, -5]
-        weights: [4, 4, 3, 3, 2, 2, 1, 1]
+        values: [2, -2, 3, -3, 4, -4, 5, -5]   # sign-symmetric, quadratic decay in rank (owner 2026-09-02)
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
 
 # Support prior restored to the v23.8 form (wandb run v238-1b-resync is the source of
 # truth): box endpoints are cauchy(0, 10) and the box is UNCAPPED -- no [-30, 30] clip.
