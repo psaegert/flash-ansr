@@ -31,6 +31,11 @@ decoder_ffn_hidden_dim: 576
 decoder_dropout: 0.1
 decoder_block_self_attn_norm: 'rms'
 decoder_block_cross_attn_norm: 'rms'
+# LayerNorm on the decoder output before the final logit projection (owner ruling
+# 2026-09-02). The T4 runaway was a loss-flat growth of the head-internal norm (22 -> 207)
+# carried by the byte rows; normalizing the head input removes that pathway, so T6 trains
+# without the z-loss stopgap. First run on it.
+head_pre_logits_norm: true
 decoder_block_ffn_norm: 'rms'
 decoder_cross_attn_kv_norm: 'rms'
 decoder_output_norm: 'rms'
