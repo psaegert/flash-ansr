@@ -1,4 +1,4 @@
-# v25.0-T6: the operator-reweight arm (3M params, 1.5M steps, solomon RTX 4090). Identical to T4 except catalog_train.yaml operator_weights (pow/rootn 4 -> 5) and warmup 10% -> 1% (15k steps). z-loss 1e-4 kept (v25.x); v26 replaces it with head_pre_logits_norm.
+# v25.0-T6: the families-and-typed-priors arm (3M params, 1.5M steps, solomon RTX 4090). Identical to T5 in every training pin (warmup 15k, z-loss 1e-4, trapezoid); the delta is catalog_train.yaml: operator_families by coin, typed-slot priors from stated ideas, cancellation-artefact rejection (symbolic-data >= 10aa68b).
 #
 # Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
 # is target-canon-only by construction. Two OPERATIONAL keys differ and touch no data:

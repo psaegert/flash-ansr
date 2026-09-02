@@ -1,6 +1,7 @@
 # v25.0-T6 catalog: T5 + per-expression operator FAMILIES (symbolic-data operator_families) + typed-slot priors from stated ideas.
 # support endpoints cauchy(0,10) UNCAPPED, literal_prior cauchy(0,5), n_support 1-1024,
-# max_tries 4. Typed slots, operator weights, holdout pools, canon: unchanged from T3.
+# max_tries 4. Operator weights (pow/rootn 5, T5), holdout pools, canon: unchanged from T3;
+# typed slots and operator families are T6's (see their blocks below).
 # Base: v25.0-T3, the corrected target canon. Identical to v25.0-T2 in every pin
 # except simplify_mode: targets canonicalize in the PERMISSIVE corpus tier, the
 # designed choice -- data generates FROM the simplified skeleton (target == data),
