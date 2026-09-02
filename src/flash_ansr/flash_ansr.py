@@ -38,7 +38,8 @@ from flash_ansr.generation import run_softmax_sampling
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.preprocessing import (
     CapabilityUnavailable, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
-from flash_ansr.refine import Refiner, ConvergenceError, fit_sort_key
+from flash_ansr.refine import (Refiner, ConvergenceError, fit_sort_key, RefineScope,
+                               DEFAULT_REFINE_SCOPE, refinement_slots, literal_value)
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
     predict_constants, predict_y, score_outliers)
@@ -192,6 +193,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
                 p0_noise=None,
                 p0_noise_kwargs=None,
                 converge_error='ignore',
+                refine_scope=payload.get('refine_scope', DEFAULT_REFINE_SCOPE),
             )
             if refiner.valid_fit:
                 verbatim_fits = list(refiner._all_constants_values)
@@ -220,6 +222,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
                 p0_noise=payload['p0_noise'],
                 p0_noise_kwargs=payload['p0_noise_kwargs'],
                 converge_error=payload['converge_error'],
+                refine_scope=payload.get('refine_scope', DEFAULT_REFINE_SCOPE),
             )
             if verbatim_fits:
                 # Keep the BETTER of the two, never the last one: `fit` resets the fit list, so
@@ -748,6 +751,7 @@ class FlashANSR(BaseEstimator):
             ] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
+            refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             length_penalty: float = 0.05,
             constants_penalty: float = 0.0,
@@ -769,6 +773,11 @@ class FlashANSR(BaseEstimator):
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
         self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
+        if refiner_scope not in ('placeholders', 'fittable', 'all'):
+            raise ValueError(f"refiner_scope must be 'placeholders', 'fittable' or 'all'; got {refiner_scope!r}")
+        # Which literals of a candidate the refiner may move (owner ruling 2026-09-02): the model
+        # predicts the typed literals (exponents, root indices), the refiner fits the rest.
+        self.refiner_scope: RefineScope = refiner_scope
         self.numpy_errors = numpy_errors
         self.length_penalty = length_penalty
         self.constants_penalty = float(constants_penalty)
@@ -830,6 +839,7 @@ class FlashANSR(BaseEstimator):
             ] = 'curve_fit_lm',
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
+            refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             length_penalty: float = 0.05,
             constants_penalty: float = 0.0,
@@ -915,6 +925,7 @@ class FlashANSR(BaseEstimator):
             refiner_method=refiner_method,
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
+            refiner_scope=refiner_scope,
             numpy_errors=numpy_errors,
             length_penalty=length_penalty,
             constants_penalty=constants_penalty,
@@ -1009,6 +1020,7 @@ class FlashANSR(BaseEstimator):
                 'method': self.refiner_method,
                 'p0_noise': self.refiner_p0_noise,
                 'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                'refine_scope': self.refiner_scope,
                 'converge_error': 'ignore',
                 'numpy_errors': self.numpy_errors,
                 'y_variance': 1.0,
@@ -1476,6 +1488,7 @@ class FlashANSR(BaseEstimator):
             expression=payload['expression'],
             n_inputs=input_dim,
             fits=fits_payload,
+            refine_scope=payload.get('refine_scope', self.refiner_scope),
         )
 
         if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
@@ -1814,21 +1827,23 @@ class FlashANSR(BaseEstimator):
 
             constant_count = self._count_constants(beam_decoded)
 
-            # Verbatim init (T11), one slot per constant IN ORDER OF APPEARANCE: the mapper
-            # guarantees every '<constant>' is a span slot. Digit-only literals (which
-            # identify_constants ALSO turns into fittable constants) seed at their literal
-            # values so the slots stay aligned -- unreachable under tokenizers whose
-            # numerals are special tokens (dropped by the decode above), load-bearing for
-            # vocabularies that keep them as ordinary tokens.
+            # Verbatim init (T11), one slot per REFINEMENT SLOT in order of appearance -- the
+            # same slot list the refiner symbolizes (`refinement_slots`, under this model's
+            # refiner_scope), so the seeds stay aligned by construction: a '<constant>' slot
+            # seeds at its predicted span value (the mapper guarantees every placeholder is a
+            # span slot), a spelled literal the scope frees seeds at its spelled value. Typed
+            # literals outside the scope are not slots and stay verbatim in the compiled
+            # expression. No spans (skeleton / fittable emission) -> no p0 -> random inits.
             p0: list[float] | None = None
             if span_values:
                 p0 = []
                 span_value_iter = iter(span_values)
-                for token in beam_decoded:
+                for index in refinement_slots(beam_decoded, self.simplipy_engine, self.refiner_scope):
+                    token = beam_decoded[index]
                     if token == '<constant>':
                         p0.append(next(span_value_iter))
-                    elif token.isnumeric():
-                        p0.append(float(token))
+                    else:
+                        p0.append(literal_value(token))
 
             job: dict[str, Any] = {
                 'raw_beam': raw_beam,
@@ -1844,6 +1859,7 @@ class FlashANSR(BaseEstimator):
                 'method': self.refiner_method,
                 'p0_noise': self.refiner_p0_noise,
                 'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                'refine_scope': self.refiner_scope,
                 'converge_error': converge_error,
                 'numpy_errors': self.numpy_errors,
                 'y_variance': gs.y_variance,
@@ -2022,6 +2038,7 @@ class FlashANSR(BaseEstimator):
                                 'method': self.refiner_method,
                                 'p0_noise': self.refiner_p0_noise,
                                 'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                                'refine_scope': self.refiner_scope,
                                 'converge_error': converge_error,
                                 'numpy_errors': self.numpy_errors,
                                 'y_variance': gs.y_variance,

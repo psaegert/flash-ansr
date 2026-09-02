@@ -14,7 +14,8 @@ from scipy.optimize import curve_fit, minimize, OptimizeWarning, least_squares
 
 from simplipy import SimpliPyEngine
 
-from simplipy.utils import codify, explicit_constant_placeholders as identify_constants
+from simplipy import masking
+from simplipy.utils import codify, explicit_constant_placeholders as identify_constants, is_constant_placeholder
 from symbolic_data.token_ops import apply_variable_mapping
 from flash_ansr.utils.tensor_ops import pad_input_set
 
@@ -40,6 +41,54 @@ def fit_sort_key(fit: tuple) -> tuple[bool, float]:
     loss = float(fit[-1])
     finite = bool(np.isfinite(loss))
     return (not finite, loss if finite else 0.0)
+
+
+RefineScope = Literal['placeholders', 'fittable', 'all']
+
+#: Which literals of a candidate the refiner is allowed to move (owner ruling 2026-09-02): the
+#: model PREDICTS the typed literals (pow exponents, rootn indices -- the ones whose value fixes
+#: the DOMAIN, not the magnitude) and the refiner fits the rest. ``'fittable'`` is that doctrine:
+#: every ``<constant>`` slot plus every spelled literal simplipy's ``mask_fittable`` policy would
+#: abstract; typed literals stay verbatim. ``'placeholders'`` fits ONLY the slots (every spelled
+#: literal is verbatim, typed or not); ``'all'`` frees every literal including the typed ones --
+#: the old behaviour, made coherent (it used to free digit-only spellings: ``2`` but not ``-2``,
+#: ``2.5`` or ``3/2``).
+DEFAULT_REFINE_SCOPE: RefineScope = 'fittable'
+
+
+def refinement_slots(expression: list[str], simplipy_engine: SimpliPyEngine,
+                     refine_scope: RefineScope = DEFAULT_REFINE_SCOPE) -> list[int]:
+    """Token indices of ``expression`` that become fitted constants under ``refine_scope``,
+    in order of appearance -- the ONE definition shared by the refiner (which symbolizes
+    exactly these tokens) and the inference harness (which seeds ``p0`` per slot in the same
+    order). Placeholders (``<constant>`` / ``C_i``) are always slots; spelled literals are
+    slots per the scope's simplipy masking policy (``mask_fittable`` / ``mask_all``); special
+    constants (``np.pi``, ``np.e``) follow the same policy as any other literal site.
+    """
+    if refine_scope not in ('placeholders', 'fittable', 'all'):
+        raise ValueError(f"refine_scope must be 'placeholders', 'fittable' or 'all'; got {refine_scope!r}")
+    slots = [i for i, tok in enumerate(expression) if is_constant_placeholder(tok)]
+    if refine_scope == 'placeholders':
+        return slots
+    policy = masking.mask_fittable if refine_scope == 'fittable' else masking.mask_all
+    for index, value, role in masking.literal_sites(list(expression), simplipy_engine):
+        if policy(value, role) is not None:
+            slots.append(index)
+    return sorted(set(slots))
+
+
+def literal_value(token: str) -> float:
+    """Numeric value of a spelled literal site: plain int/float, one-token rational
+    (``3/2``) or a special constant."""
+    if token == 'np.pi':
+        return float(np.pi)
+    if token == 'np.e':
+        return float(np.e)
+    try:
+        return float(token)
+    except ValueError:
+        numerator, _, denominator = token.partition('/')
+        return float(numerator) / float(denominator)
 
 
 class Refiner:
@@ -95,16 +144,25 @@ class Refiner:
             if module not in globals():
                 globals()[module] = importlib.import_module(module)
 
-    def _initialize_expression(self, expression: list[str], n_inputs: int) -> None:
+    def _initialize_expression(self, expression: list[str], n_inputs: int,
+                               refine_scope: RefineScope = DEFAULT_REFINE_SCOPE) -> None:
         '''
         Prepare internal state for the given expression without fitting constants.
+
+        ``refine_scope`` decides which tokens become fitted constants (see
+        :func:`refinement_slots`); every other literal is compiled in verbatim.
         '''
         if not self.simplipy_engine.is_valid(expression, verbose=True):
             raise ValueError("The expression is not valid")
 
         self.input_expression = expression
+        self.refine_scope = refine_scope
+        self.slot_indices = refinement_slots(list(expression), self.simplipy_engine, refine_scope)
         self.executable_prefix_expression = self.simplipy_engine.operators_to_realizations(self.input_expression)
-        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(self.input_expression, convert_numbers_to_constant=True)
+        # Abstract exactly the scoped slots, then let simplipy's MECHANICAL helper name them
+        # (its deprecated digit-only conversion is what used to free `2` in `pow x1 2`).
+        abstracted = [('<constant>' if i in set(self.slot_indices) else tok) for i, tok in enumerate(self.input_expression)]
+        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(abstracted, convert_numbers_to_constant=False)
         self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
 
         self.expression_code = codify(
@@ -148,12 +206,13 @@ class Refiner:
             n_variables: int,
             expression: list[str],
             n_inputs: int,
-            fits: list[tuple[np.ndarray, np.ndarray | None, float]]) -> 'Refiner':
+            fits: list[tuple[np.ndarray, np.ndarray | None, float]],
+            refine_scope: RefineScope = DEFAULT_REFINE_SCOPE) -> 'Refiner':
         '''
-        Reconstruct a Refiner from cached fit results.
+        Reconstruct a Refiner from cached fit results (``refine_scope`` must match the fit's).
         '''
         refiner = cls(simplipy_engine=simplipy_engine, n_variables=n_variables)
-        refiner._initialize_expression(expression, n_inputs)
+        refiner._initialize_expression(expression, n_inputs, refine_scope)
         refiner._assign_fits(fits)
         return refiner
 
@@ -177,7 +236,8 @@ class Refiner:
             ] = 'curve_fit_lm',
             no_constants_error: Literal['raise', 'ignore'] = 'ignore',
             optimizer_kwargs: dict | None = None,
-            converge_error: Literal['raise', 'ignore'] = 'ignore') -> 'Refiner':
+            converge_error: Literal['raise', 'ignore'] = 'ignore',
+            refine_scope: RefineScope = DEFAULT_REFINE_SCOPE) -> 'Refiner':
         '''
         Fit the constants of the expression to the data
 
@@ -220,6 +280,11 @@ class Refiner:
             What to do if the optimization does not converge. One of
             - 'raise': Raise an error
             - 'ignore': Ignore the error
+        refine_scope : {'placeholders', 'fittable', 'all'}, optional
+            Which literals are fitted (see :func:`refinement_slots`). ``'fittable'`` (default):
+            every placeholder plus every spelled literal a constant optimizer can move; typed
+            literals (pow exponents, rootn indices) stay verbatim. ``'placeholders'``: only the
+            placeholder slots. ``'all'``: every literal, typed ones included.
 
         Returns
         -------
@@ -231,7 +296,7 @@ class Refiner:
         y = np.asarray(y)
         if y.ndim == 1:
             y = y.reshape(-1, 1)
-        self._initialize_expression(expression, X.shape[1])
+        self._initialize_expression(expression, X.shape[1], refine_scope)
 
         def pred_function(X: np.ndarray, *constants: np.ndarray | None) -> np.ndarray:
             if len(constants) == 0:

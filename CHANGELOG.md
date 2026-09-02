@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`refiner_scope`: which literals the refiner may move.** The predict-vs-refine doctrine
+  (owner ruling 2026-09-02): the model PREDICTS the typed literals -- `pow` exponents and
+  `rootn` indices, whose value fixes the expression's domain rather than its magnitude -- and
+  the refiner fits the rest. `Refiner.fit(..., refine_scope=)`, `FlashANSR(refiner_scope=)` /
+  `FlashANSR.load(refiner_scope=)` accept `'fittable'` (default: every `<constant>` slot plus
+  every spelled literal simplipy's `mask_fittable` policy would abstract; typed literals stay
+  verbatim), `'placeholders'` (only the slots; every spelled literal is compiled in) and
+  `'all'` (every literal, typed ones included). `flash_ansr.refine.refinement_slots` is the
+  one slot definition the refiner and the T11 verbatim seeding share, so `p0` stays aligned
+  by construction and now seeds every freed spelling (`-2`, `2.5`, `3/2`), not only digit-only
+  tokens.
+
+### Changed
+- **The refiner no longer frees `pow` exponents by default.** It used simplipy's deprecated
+  digit-only conversion, which turned `pow x1 2` into `pow x1 C_0` and then fitted a real
+  exponent from a random init -- `nan` on half the axis, the mechanism behind the measured
+  pow-family failures (oracle recovery on fastsrb 24% with exponents freed vs 77% with the
+  literals fixed). Pass `refine_scope='all'` for the old behaviour.
+
 ### Changed
 - **Streaming workers are spawned, not forked.** A trainer has CUDA initialised in the
   parent by the time it opens a stream, and forking a CUDA process is undefined — the
