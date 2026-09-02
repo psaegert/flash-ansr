@@ -150,11 +150,12 @@ variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 
 # skeletons carried a transcendental, 53% carried all four classes). The coins are
 # heuristics rounded to 5% -- powers less often than not, each transcendental family one in
 # five, hyperbolics one in ten -- not fitted to the benchmark. Every present family carries
-# the same total weight as the arithmetic base, uniform within the family.
+# the same total weight as the arithmetic base, uniform within the family. No operator is
+# dropped by omission: the sampler refuses a family list that leaves a weighted operator out.
 # Implied per-expression composition: pure arithmetic 40%, any transcendental 42%,
 # two or more optional families 18%, all four 0.1%.
 operator_families:
-  - {name: arith,  p: 1.0,  operators: ["+", "-", "*", "/"]}
+  - {name: arith,  p: 1.0,  operators: ["+", "-", "*", "/", abs, inv, neg]}   # + the structural unaries at their catalog weights (1 each), as T5 drew them
   - {name: pow,    p: 0.30, operators: [pow, rootn]}
   - {name: trig,   p: 0.20, operators: [sin, cos, tan, asin, acos, atan]}
   - {name: explog, p: 0.20, operators: [exp, log]}
