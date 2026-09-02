@@ -133,6 +133,16 @@ variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 
 # the profile's weight mass. Profile-local weights balance the unary classes so the class the
 # profile names actually appears. Mixture weights are tuned to the measured law composition;
 # the delivered composition is re-measured (class_purity.py) before launch.
+# Per-expression prior on the number of distinct variables (task #112, second axis). The legacy
+# draw is uniform up to the leaf count: 49% of delivered T4 skeletons used 6+ variables vs 12%
+# of the benchmark laws (medians 5 vs 3). Weights follow the measured law distribution
+# (1: 14%, 2: 25%, 3: 21%, 4: 17%, 5: 11%, 6: 6%, 7: 5%, 8: 1%); truncated to the leaf count.
+n_unique_variables_prior:
+  name: choice
+  kwargs:
+    values: [1, 2, 3, 4, 5, 6, 7, 8]
+    weights: [14, 25, 21, 17, 11, 6, 5, 1]
+
 operator_profiles:
   - {name: arith,           weight: 0.20, operators: ["+", "-", "*", "/"]}
   - {name: arith+pow,       weight: 0.28, operators: {"+": 10, "-": 10, "*": 10, "/": 10, pow: 8, rootn: 6}}
