@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tokens.
 
 ### Changed
+- **The default `emission` is `'fittable'`** (`FlashANSR.fit` / `infer` / `predict`; was
+  `'constants'`): the application mode -- the model spells the typed literals and leaves every
+  fittable constant as a placeholder, which the refiner fits from random inits. Pass
+  `emission='constants'` for the unflagged training format.
 - **The refiner no longer frees `pow` exponents by default.** It used simplipy's deprecated
   digit-only conversion, which turned `pow x1 2` into `pow x1 C_0` and then fitted a real
   exponent from a random init -- `nan` on half the axis, the mechanism behind the measured

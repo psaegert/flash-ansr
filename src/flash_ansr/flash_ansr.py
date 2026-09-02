@@ -1455,7 +1455,7 @@ class FlashANSR(BaseEstimator):
             self,
             *,
             complexity: int | float | None,
-            emission: str = 'constants') -> PromptPrefix | None:
+            emission: str = 'fittable') -> PromptPrefix | None:
         preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
         prompt_prefix = prepare_prompt_prefix(preprocessor, complexity=complexity)
 
@@ -1523,7 +1523,7 @@ class FlashANSR(BaseEstimator):
             verbose: bool = False,
             *,
             complexity: int | float | None = None,
-            emission: str = 'constants',
+            emission: str = 'fittable',
             conditioned: bool = True,
             refine_seed: int | None = None) -> None:
         """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
@@ -1539,10 +1539,12 @@ class FlashANSR(BaseEstimator):
         converge_error : {'raise', 'ignore', 'print'}, optional
             Handling strategy when the refiner fails to converge.
         emission : {'constants', 'skeleton', 'fittable'}, optional
-            Emission FORMAT the model is directed to use, by default ``'constants'`` -- the
-            unflagged default the checkpoint saw on 90% of training instances, where constants
-            are spelled out as ieee754 spans. ``'skeleton'`` sends ``<mask_all>`` (placeholders
-            only; the refiner fits every slot) and ``'fittable'`` sends ``<mask_fittable>``.
+            Emission FORMAT the model is directed to use, by default ``'fittable'`` -- the
+            application mode (owner ruling 2026-09-02): ``<mask_fittable>`` makes the model
+            spell the typed literals (pow exponents, rootn indices) and leave every fittable
+            constant as a placeholder for the refiner. ``'skeleton'`` sends ``<mask_all>``
+            (placeholders only; the refiner fits every slot) and ``'constants'`` is the
+            unflagged training format, where constants are spelled out as ieee754 spans.
             Raises ``CapabilityUnavailable`` on a checkpoint whose vocabulary lacks the flag.
         verbose : bool, optional
             If ``True`` progress bars and diagnostic output are displayed.
@@ -1609,7 +1611,7 @@ class FlashANSR(BaseEstimator):
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             *,
             complexity: int | float | None = None,
-            emission: str = 'constants',
+            emission: str = 'fittable',
             conditioned: bool = True,
             verbose: bool = False) -> "GenState":
         """GPU generation phase of :meth:`fit`: prepare inputs, sample candidates, return a GenState.
@@ -2438,7 +2440,7 @@ class FlashANSR(BaseEstimator):
             *,
             X_val: np.ndarray | torch.Tensor | pd.DataFrame | None = None,
             complexity: int | float | None = None,
-            emission: str = 'constants',
+            emission: str = 'fittable',
             conditioned: bool = True,
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             refine_seed: int | None = None,
