@@ -1,0 +1,73 @@
+# v25.0-T5: the operator-reweight arm (3M params, 1.5M steps, solomon RTX 4090). Identical to T4 except catalog_train.yaml operator_weights (pow/rootn 4 -> 5). z-loss 1e-4 kept (v25.x); v26 replaces it with head_pre_logits_norm.
+#
+# Identical to v25.0-T2 except the catalog's simplify_mode: the contrast against T2
+# is target-canon-only by construction. Two OPERATIONAL keys differ and touch no data:
+# the catalog's simplipy_engine_modes (lean per-worker engines, identical outputs) and
+# validate_num_workers below (validation-pool size; owner 2026-08-30: all cores for the
+# training pool).
+#
+# Numeric format: IEEE-754 binary64 throughout. Constants are 8 byte tokens over the
+# 256-symbol alphabet; the encoder and the numeric channel are binary64.
+#
+# Task set, all trained together:
+#   - expression emission (the primary cross-entropy);
+#   - the <complexity> block -- stated by the caller as a compact <float>, hypothesized by
+#     the model in bytes after <hypothesize>, or absent;
+#   - <predict_y>, one held-out point per instance;
+#   - <predict_constants>, one span per masked placeholder (collection-stability gated);
+#   - promptable masking (<mask_all> / <mask_fittable> / partial);
+#   - the per-point outlier head, against the noise mixture's contamination labels.
+#
+# The 10/70/20 trapezoid over 1.5M steps. acj-5-4-llm pinned throughout.
+model: ./model.yaml
+
+optimizer:
+  name: AdamW
+  kwargs:
+    lr: 1  # Will be multiplied by scheduler
+    weight_decay: 0.01
+    betas: [0.9, 0.95]
+
+lr_schedule:
+  - [0, 0.0]
+  - [150_000, 1e-4]  # 10% of steps warmup
+  - [1_200_000, 1e-4]
+  - [1_500_000, 0.0]  # 20% of steps cooldown
+
+batch_size: 128
+
+train_dataset: ./dataset_train.yaml
+val_dataset: "./dataset_val.yaml"
+val_batch_size: 128
+# The validation pool is kept alive NEXT TO the training pool, so both coexist in memory:
+# at num_workers=32 a same-size val pool would put ~64 x ~1.1 GB workers on the 60 GB box
+# (T2 measured ~1.2 GB/worker at 18+18). 6 val workers cap the coexisting fleet at 38
+# and only stretch validation wall time.
+validate_num_workers: 6
+# Sized for the per-task validation curves: 2,048 instances leaves too much
+# variance on them to read a per-task trend.
+val_size: 8_192
+
+compile_mode: 'reduce-overhead'
+gradient_checkpointing: False
+preprocess: false
+
+wandb_watch_log: null
+wandb_watch_log_freq: 1000
+
+steps: 1_500_000
+
+# Outlier-head auxiliary loss, kept small so the head does not distort the encoder.
+# pos_weight 1.0 yields calibrated suspicion scores rather than a tuned operating point.
+outlier_loss_weight: 0.05
+outlier_pos_weight: 1.0
+# Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
+# statistics need every micro-batch's scores on the host, so they run on an interval.
+outlier_metrics_interval: 50
+# z-loss (PaLM log^2 Z, coefficient 1e-4): the restoring force on the shared byte-logit
+# offset that diverged this arm at ~648k (forensics 2026-09-01: byte rows of the logit
+# head carried 94% of the gradient energy along a loss-flat direction; max byte-position
+# logit had drifted to -110). Owner ruling 2026-09-01: resume T4 from checkpoint_600000
+# with z-loss; v26 will use head_pre_logits_norm instead and NO z-loss.
+z_loss_weight: 1.0e-4
+device: cuda
