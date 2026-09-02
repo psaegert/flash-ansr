@@ -1,4 +1,4 @@
-# v25.0-T6 catalog: T5 + per-expression operator PROFILES (symbolic-data operator_profiles).
+# v25.0-T6 catalog: T5 + per-expression operator FAMILIES (symbolic-data operator_families) + typed-slot priors from stated ideas.
 # support endpoints cauchy(0,10) UNCAPPED, literal_prior cauchy(0,5), n_support 1-1024,
 # max_tries 4. Typed slots, operator weights, holdout pools, canon: unchanged from T3.
 # Base: v25.0-T3, the corrected target canon. Identical to v25.0-T2 in every pin
@@ -143,29 +143,25 @@ variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 
 # training token frequency and pow at x2-4.4; configured draw shares move
 # transcendentals 22.6% -> 20.9%, pow+rootn 12.9% -> 14.9%. Delivered frequencies are
 # re-measured before launch (canonicalization and rejection reshape them).
-# Per-expression operator profiles (owner design 2026-09-02; task #112). Measured on the T4
-# prior, the per-node draw left 89% of skeletons with a transcendental and 0.9% single-class,
-# vs 45% / 19% for the 656 benchmark laws (arith+pow 28%, arith+pow+trans 20%, pure arith 18%,
-# arith+trans 13%). A profile is drawn once per expression; the unary/binary recursion runs on
-# the profile's weight mass. Profile-local weights balance the unary classes so the class the
-# profile names actually appears. Mixture weights are tuned to the measured law composition;
-# the delivered composition is re-measured (class_purity.py) before launch.
-# Per-expression prior on the number of distinct variables (task #112, second axis). The legacy
-# draw is uniform up to the leaf count: 49% of delivered T4 skeletons used 6+ variables vs 12%
-# of the benchmark laws (medians 5 vs 3). Weights follow the measured law distribution
-# (1: 14%, 2: 25%, 3: 21%, 4: 17%, 5: 11%, 6: 6%, 7: 5%, 8: 1%); truncated to the leaf count.
-n_unique_variables_prior:
-  name: choice
-  kwargs:
-    values: [1, 2, 3, 4, 5, 6, 7, 8]
-    weights: [14, 25, 21, 17, 11, 6, 5, 1]
+# Operator FAMILIES (owner ruling 2026-09-02, task #112): one independent coin per family,
+# drawn once per expression, so the number of families is fixed per expression whatever its
+# length (the per-node draw let every long expression collect every class: 89% of T4
+# skeletons carried a transcendental, 53% carried all four classes). The coins are
+# heuristics rounded to 5% -- powers less often than not, each transcendental family one in
+# five, hyperbolics one in ten -- not fitted to the benchmark. Every present family carries
+# the same total weight as the arithmetic base, uniform within the family.
+# Implied per-expression composition: pure arithmetic 40%, any transcendental 42%,
+# two or more optional families 18%, all four 0.1%.
+operator_families:
+  - {name: arith,  p: 1.0,  operators: ["+", "-", "*", "/"]}
+  - {name: pow,    p: 0.30, operators: [pow, rootn]}
+  - {name: trig,   p: 0.20, operators: [sin, cos, tan, asin, acos, atan]}
+  - {name: explog, p: 0.20, operators: [exp, log]}
+  - {name: hyp,    p: 0.10, operators: [sinh, cosh, tanh, asinh, acosh, atanh]}
 
-operator_profiles:
-  - {name: arith,           weight: 0.20, operators: ["+", "-", "*", "/"]}
-  - {name: arith+pow,       weight: 0.28, operators: {"+": 10, "-": 10, "*": 10, "/": 10, pow: 8, rootn: 6}}
-  - {name: arith+trans,     weight: 0.16, operators: {"+": 10, "-": 10, "*": 10, "/": 10, sin: 3, cos: 3, tan: 1, exp: 3, log: 3, asin: 1, acos: 1, atan: 1, sinh: 1, cosh: 1, tanh: 1, asinh: 1, acosh: 1, atanh: 1}}
-  - {name: arith+pow+trans, weight: 0.28, operators: {"+": 10, "-": 10, "*": 10, "/": 10, pow: 6, rootn: 4, sin: 2, cos: 2, tan: 1, exp: 2, log: 2, asin: 1, acos: 1, atan: 1, sinh: 1, cosh: 1, tanh: 1, asinh: 1, acosh: 1, atanh: 1}}
-  - {name: all,             weight: 0.08, operators: ["+", "-", "*", "/", pow, rootn, abs, inv, neg, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, exp, log]}
+# Variables: the legacy draw (number of distinct leaf kinds uniform up to the leaf count, kinds
+# uniform over x1..x17 plus the constant slot) stays -- owner ruling 2026-09-02: it makes sense
+# on its own and a length-coupled replacement would have been shaped on the benchmark.
 
 operator_weights:
   "+": 10
