@@ -43,7 +43,19 @@ from flash_ansr.refine import (Refiner, ConvergenceError, fit_sort_key, RefineSc
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
     predict_constants, predict_y, score_outliers)
-from flash_ansr.scoring import compute_fvu, count_constants, is_constant_token, normalize_variance, score_from_fvu
+from flash_ansr.scoring import (
+    PARETO_RANK_NOT_COMPUTED,
+    RANKING_METRICS,
+    RankingError,
+    compute_fvu,
+    count_constants,
+    is_constant_token,
+    non_dominated_ranks,
+    normalize_variance,
+    objective_vector,
+    resolve_ranking,
+    score_from_fvu,
+)
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
@@ -2181,6 +2193,9 @@ class FlashANSR(BaseEstimator):
             likelihood_penalty: float,
             mdl_penalty: float = 0.0,
             *,
+            ranking_mode: str = 'weighted',
+            ranking_metrics: tuple[str, ...] | None = None,
+            ranking_tie_break: str | None = None,
             allow_empty: bool = False) -> tuple[list[Any], "pd.DataFrame"]:
         """Pure core of :meth:`compile_results`: score + sort + build the DataFrame for a results
         list, returning ``(sorted_results, results_df)``.
@@ -2202,7 +2217,7 @@ class FlashANSR(BaseEstimator):
         # spelling. That is the aggregate case, and it is the one that must raise -- a SINGLE
         # unpriceable row must not, or one pathological candidate would abort a whole problem and
         # discard the ~283 good ones beside it. Rate on the reference population: 0 of 8,476.
-        if mdl_penalty != 0.0:
+        if mdl_penalty != 0.0 and ranking_mode != 'pareto':
             priceable = sum(1 for r in results
                             if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
             if priceable == 0:
@@ -2244,11 +2259,51 @@ class FlashANSR(BaseEstimator):
         # refinement completion order. Candidates are deduplicated to distinct expressions
         # (unique=True), so the token tuple is a total order over ties -> the final ranking is
         # independent of completion order (a prerequisite for byte-identical overlap).
-        sorted_results = list(sorted(results, key=lambda x: (
-            x['score'] if not np.isnan(x['score']) else float('inf'),
-            np.isnan(x['score']),
-            tuple(map(str, x.get('expression', [])))
-        )))
+        if ranking_mode == 'pareto':
+            # NON-DOMINATED. The scalar score does not order this run, so it is set to nan -- nothing
+            # downstream may read a stale number as if it had.
+            _, _, metrics, tie_break = resolve_ranking('pareto', None, ranking_metrics, ranking_tie_break)
+            V = objective_vector(results, metrics)
+            if 'mdl' in metrics:
+                blind = int(np.isinf(V[:, metrics.index('mdl')]).sum())
+                if blind == len(results):
+                    raise RankingError(
+                        f"'mdl' is a declared front metric but none of the {len(results)} candidates "
+                        f"could be priced, so that axis ordered nothing.")
+                if blind:
+                    warnings.warn(
+                        f"{blind} of {len(results)} candidates could not be priced; they lose the "
+                        f"'mdl' axis rather than being dropped.", RuntimeWarning, stacklevel=2)
+            ranks = non_dominated_ranks(V)
+            read_tie = RANKING_METRICS[tie_break]
+            for result, rank in zip(results, ranks):
+                result['pareto_rank'] = int(rank)
+                result['score'] = np.nan
+
+            def _tie_value(r: dict[str, Any]) -> float:
+                # Undefined or non-finite sorts LAST within its front, so the order stays total even
+                # when the tie-break names a metric some rows lack.
+                v = read_tie(r)
+                if v is None:
+                    return float('inf')
+                v = float(v)
+                return v if np.isfinite(v) else float('inf')
+
+            sorted_results = list(sorted(results, key=lambda x: (
+                x['pareto_rank'],
+                _tie_value(x),
+                tuple(map(str, x.get('expression', [])))
+            )))
+        else:
+            # SCALAR ('mdl' and 'weighted'). Character for character what 0.13.0 sorted by; the
+            # golden in tests/data/golden_scalar_ranking_0130.json holds these three keys to it.
+            for result in results:
+                result['pareto_rank'] = PARETO_RANK_NOT_COMPUTED
+            sorted_results = list(sorted(results, key=lambda x: (
+                x['score'] if not np.isnan(x['score']) else float('inf'),
+                np.isnan(x['score']),
+                tuple(map(str, x.get('expression', [])))
+            )))
 
         # Attach only the best fit (lowest loss) per beam for readability
         best_fit_payloads: list[tuple[np.ndarray, np.ndarray | None, float]] = []

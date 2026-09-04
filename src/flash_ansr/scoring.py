@@ -15,7 +15,7 @@ deliberately separate signature for a different call site: the two share the FVU
 """
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -164,3 +164,135 @@ def count_constants(expression: Iterable[str] | None) -> int:
     if expression is None:
         return 0
     return sum(1 for token in expression if is_constant_token(str(token)))
+
+
+# --- ranking modes (RANKING_SPEC.md) --------------------------------------------------------------
+
+#: Every metric a ranking may declare, and how to read it off a result row. All are LOWER IS BETTER
+#: -- the front construction and the tie-break both assume it, so a "higher is better" metric would
+#: have to enter negated. `fvu` is required in every mode: it is the only term that measures fit, and
+#: a ranking without it would order candidates purely on shape.
+#:
+#: `mdl` is priced on the REALIZED expression; `n_nodes`, `n_constant_placeholders` and
+#: `n_typed_literals` are counted on the EMITTED one. That is deliberate (RANKING_SPEC.md section 3):
+#: the two spellings answer different questions, and mixing them silently would be the bug.
+RANKING_METRICS: dict[str, Any] = {
+    'fvu': lambda r: r.get('fvu'),
+    'mdl': lambda r: r.get('mdl'),
+    'n_nodes': lambda r: len(r.get('expression', []) or []),
+    'n_constants': lambda r: r.get('constant_count'),
+    'n_constant_placeholders': lambda r: sum(1 for t in (r.get('expression') or []) if t == '<constant>'),
+    'n_typed_literals': lambda r: sum(1 for t in (r.get('expression') or [])
+                                      if t != '<constant>' and _parses_as_float(str(t))),
+    'neg_log_prob': lambda r: (None if r.get('log_prob') is None else -float(r['log_prob'])),
+}
+
+#: Above this many candidates the pairwise front is refused rather than silently allocating: the
+#: domination matrix is 2 * k^2 bytes (8 MB at k=2048, 134 MB here). The doctrine arm draws 1024.
+ND_MAX_CANDIDATES = 8192
+
+#: `pareto_rank` on a row that was ranked by the SCALAR mode. Not 0 -- 0 is the best front, and a
+#: scalar row must never be mistaken for a front-0 member by a downstream consumer.
+PARETO_RANK_NOT_COMPUTED = -1
+
+
+def _parses_as_float(token: str) -> bool:
+    try:
+        float(token)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+class RankingError(ValueError):
+    """A ranking could not be produced: the declared criterion ordered nothing."""
+
+
+def resolve_ranking(
+        mode: str,
+        weights: dict[str, float] | None,
+        metrics: tuple[str, ...] | None,
+        tie_break: str | None) -> tuple[str, dict[str, float], tuple[str, ...], str]:
+    """Validate a ranking request and fill its defaults. Raises on anything unrecognised."""
+    if mode not in ('mdl', 'weighted', 'pareto'):
+        raise ValueError(f"unknown ranking_mode {mode!r}; expected 'mdl', 'weighted' or 'pareto'")
+
+    weights = dict(weights or {})
+    unknown = sorted(set(weights) - set(RANKING_METRICS))
+    if unknown:
+        raise ValueError(f"unknown ranking_weights {unknown}; known metrics: {sorted(RANKING_METRICS)}")
+
+    metrics = tuple(metrics or ('fvu', 'n_nodes'))
+    unknown = sorted(set(metrics) - set(RANKING_METRICS))
+    if unknown:
+        raise ValueError(f"unknown ranking_metrics {unknown}; known metrics: {sorted(RANKING_METRICS)}")
+    if 'fvu' not in metrics:
+        raise ValueError(
+            "ranking_metrics must contain 'fvu': it is the only term that measures FIT, and a front "
+            "without it would order candidates on shape alone.")
+
+    # The tie-break may name a metric OUTSIDE the declared set -- that is deliberate (owner ruling):
+    # ordering within a front is a separate question from which axes define the front.
+    tie_break = tie_break or 'fvu'
+    if tie_break not in RANKING_METRICS:
+        raise ValueError(f"unknown ranking_tie_break {tie_break!r}; known metrics: {sorted(RANKING_METRICS)}")
+    return mode, weights, metrics, tie_break
+
+
+def objective_vector(results: list[dict[str, Any]], metrics: tuple[str, ...]) -> np.ndarray:
+    """(n_candidates, n_metrics) of finite objective values; unrankable entries become +inf.
+
+    +inf, not nan: a candidate that cannot be measured on an axis must LOSE on that axis rather than
+    poison every comparison it takes part in (nan compares False both ways, which would silently
+    make such a row non-dominated and float it into front 0).
+    """
+    out = np.full((len(results), len(metrics)), np.inf, dtype=float)
+    for j, name in enumerate(metrics):
+        read = RANKING_METRICS[name]
+        for i, r in enumerate(results):
+            v = read(r)
+            if v is None:
+                continue
+            v = float(v)
+            if np.isfinite(v):
+                out[i, j] = v
+    return out
+
+
+def non_dominated_ranks(V: np.ndarray) -> np.ndarray:
+    """Front index per row (0 = non-dominated), by repeated peeling.
+
+    Memory is 2*k^2 bytes rather than k^2*m: the domination matrix accumulates PER OBJECTIVE instead
+    of materialising an (k, k, m) comparison tensor.
+    """
+    n = V.shape[0]
+    if n > ND_MAX_CANDIDATES:
+        raise RankingError(
+            f"non-dominated ranking refused for {n} candidates (limit {ND_MAX_CANDIDATES}): the "
+            f"pairwise front is quadratic. Use ranking_mode='mdl' or 'weighted', or reduce `choices`.")
+    if n == 0:
+        return np.zeros(0, dtype=int)
+
+    le = np.ones((n, n), dtype=bool)      # i is <= j on every objective
+    lt = np.zeros((n, n), dtype=bool)     # i is <  j on at least one
+    for j in range(V.shape[1]):
+        col = V[:, j]
+        le &= col[:, None] <= col[None, :]
+        lt |= col[:, None] < col[None, :]
+    dominates = le & lt                    # i dominates j
+
+    ranks = np.full(n, -1, dtype=int)
+    alive = np.ones(n, dtype=bool)
+    front = 0
+    while alive.any():
+        # rows are already restricted to alive dominators, so a second mask would misbroadcast
+        dominated_by_alive = dominates[alive, :].any(axis=0)
+        current = alive & ~dominated_by_alive
+        if not current.any():          # every survivor dominates another: cycle-free math says
+            current = alive.copy()     # impossible, but never loop forever on a numeric surprise
+        ranks[current] = front
+        alive &= ~current
+        front += 1
+    # An all-unrankable pool peels as one front; callers that need "nothing ordered" raise on that
+    # separately. Never return 0 fronts.
+    return ranks
