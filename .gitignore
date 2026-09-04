@@ -3,6 +3,11 @@
 data
 !/src/flash_ansr/data
 !/src/flash_ansr/data/**/*.py
+# test fixtures live under tests/data; keep them tracked but stay narrow so a stray
+# large artefact cannot be committed by accident
+!/tests/data
+!/tests/data/*.py
+!/tests/data/*.json
 /results
 /nesymres
 /e2e

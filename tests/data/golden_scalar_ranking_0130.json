@@ -1,0 +1,1638 @@
+{
+ "note": "Frozen scalar ranking captured through FlashANSR._compile_results_pure before the ranking-modes change. Floats are repr() strings so the comparison is exact; 'nan'/'inf'/'-inf' are spelled out.",
+ "n_cases": 12,
+ "cells": [
+  {
+   "node_penalty": 0.0,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.653559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-3.0",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-2.0",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-1.0",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-1.0",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.6989700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.0,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.623559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.96",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.98",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-1.0",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.94",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.6989700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.0,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.553559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.8",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.9",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.9",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.9",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.49897000433601874",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.3010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.0,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.523559774527023",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.76",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.88",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.9",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.8400000000000001",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.49897000433601874",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2910299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.05,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.453559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.75",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.85",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.85",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.85",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.5489700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2510299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.2010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.15102999566398118",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.05,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.423559774527023",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.71",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.83",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.85",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.79",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.5489700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2410299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.19102999566398118",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.14102999566398117",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.05,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.353559774527023",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.55",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.75",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.75",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.75",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.3489700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2510299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.2010299956639812",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.15102999566398118",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.05,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-15.323559774527023",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.51",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.73",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.75",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.69",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.3489700043360187",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.2410299956639812",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "-0.19102999566398118",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "-0.14102999566398117",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.2,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-14.853559774527021",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-2.0",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.4",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.3999999999999999",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.3999999999999999",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.10102999566398119",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.09897000433601866",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "0.09897000433601882",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "0.2989700043360189",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.2,
+   "constants_penalty": 0.0,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-14.823559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-1.96",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.38",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.3999999999999999",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.3399999999999999",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "-0.09897000433601866",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.09102999566398119",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "0.10897000433601882",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "0.3089700043360189",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.2,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.0,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-14.753559774527021",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-1.8",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.2999999999999998",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.29999999999999993",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.29999999999999993",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.10102999566398119",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "0.09897000433601882",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "0.10102999566398135",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "0.2989700043360189",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  },
+  {
+   "node_penalty": 0.2,
+   "constants_penalty": 0.1,
+   "likelihood_penalty": 0.01,
+   "order": [
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "sin",
+      "x1"
+     ],
+     "score": "-14.723559774527022",
+     "fvu": "0.0",
+     "n_nodes": 4,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "+",
+      "*",
+      "<constant>",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-1.76",
+     "fvu": "0.001",
+     "n_nodes": 5,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "*",
+      "<constant>",
+      "x1"
+     ],
+     "score": "-1.2799999999999998",
+     "fvu": "0.01",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "/",
+      "x1",
+      "<constant>"
+     ],
+     "score": "-0.29999999999999993",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "pow",
+      "x1",
+      "2"
+     ],
+     "score": "-0.23999999999999994",
+     "fvu": "0.1",
+     "n_nodes": 3,
+     "constant_count": 1
+    },
+    {
+     "expression": [
+      "x1"
+     ],
+     "score": "-0.09102999566398119",
+     "fvu": "0.5",
+     "n_nodes": 1,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "<constant>",
+      "<constant>"
+     ],
+     "score": "0.10102999566398135",
+     "fvu": "0.2",
+     "n_nodes": 3,
+     "constant_count": 2
+    },
+    {
+     "expression": [
+      "sin",
+      "x1"
+     ],
+     "score": "0.10897000433601882",
+     "fvu": "0.5",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "+",
+      "x1",
+      "x2"
+     ],
+     "score": "0.3089700043360189",
+     "fvu": "0.5",
+     "n_nodes": 3,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "cos",
+      "x1"
+     ],
+     "score": "inf",
+     "fvu": "-1.0",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "exp",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "inf",
+     "n_nodes": 2,
+     "constant_count": 0
+    },
+    {
+     "expression": [
+      "log",
+      "x1"
+     ],
+     "score": "nan",
+     "fvu": "nan",
+     "n_nodes": 2,
+     "constant_count": 0
+    }
+   ]
+  }
+ ]
+}
