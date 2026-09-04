@@ -189,3 +189,225 @@ def test_pre_rename_results_payload_is_refused(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="predates the length_penalty -> node_penalty rename"):
         FlashANSR.load_results(_Stub(), str(stale))
+
+
+class TestMdlEndToEnd:
+    """`mdl` must survive the whole pipeline, not just be computed.
+
+    `_create_result_entry` is a selective key-by-key whitelist: a key the refine worker produces but
+    that literal omits is dropped SILENTLY. With mdl dropped, every score at mdl_penalty != 0 is nan,
+    the sort degenerates to the expression-token tie-break, and a 21-hour run ranks ALPHABETICALLY
+    while fit() reports success. Computing mdl correctly and never checking it arrives is exactly the
+    failure this class exists to catch.
+    """
+
+    def test_the_whitelist_carries_mdl(self) -> None:
+        """Pin the literal itself: if someone adds a worker key without adding it here, this fails."""
+        import inspect
+
+        from flash_ansr.flash_ansr import FlashANSR
+
+        source = inspect.getsource(FlashANSR._create_result_entry)
+        assert "'mdl': payload.get('mdl')" in source, (
+            "_create_result_entry is a whitelist; mdl must be listed or it is dropped silently"
+        )
+
+    def test_result_typeddict_declares_mdl(self) -> None:
+        from flash_ansr.flash_ansr import Result
+
+        assert "mdl" in Result.__annotations__
+        assert "constants_emitted" in Result.__annotations__, (
+            "constants_emitted was carried but never declared"
+        )
+
+    def test_candidate_declares_mdl_and_keeps_mu_separate(self) -> None:
+        """mdl and mu are different quantities on different spellings; neither may absorb the other."""
+        import dataclasses
+
+        from flash_ansr.inference import Candidate
+
+        names = {f.name for f in dataclasses.fields(Candidate)}
+        assert {"mdl", "mu"} <= names, "both must exist -- mu is the skeleton unit fit(complexity=) eats"
+
+    def test_worker_prices_the_realized_spelling_not_the_emitted_one(self) -> None:
+        """The owner's R1 ruling: mdl is priced AFTER the constants are substituted.
+
+        Pricing the emitted spelling would make mdl a re-parameterisation of (n_nodes, n_constants)
+        to 99% of within-problem pairs, and would be blind to constant precision -- the axis a future
+        coarse-graining of constants has to be able to move.
+        """
+        import inspect
+
+        from flash_ansr import flash_ansr as module
+
+        source = inspect.getsource(module._refine_candidate_worker)
+        assert "refiner.transform(" in source, "mdl must be priced on the realized expression"
+        assert "return_prefix=True" in source
+        # the pricer call must sit AFTER the transform, on its output
+        transform_at = source.index("refiner.transform(")
+        price_at = source.index("simplipy_engine.complexity(")
+        assert transform_at < price_at, "the pricer must see the realized tokens, not the emitted ones"
+        assert "mode=Mode.f64" in source and "canon='default'" in source, (
+            "mode and canon are written out, never inherited -- mode moves mu"
+        )
+
+
+class TestMdlPenaltyAddend:
+    """The mdl addend must be inert by default and live when asked for."""
+
+    def test_default_is_bit_identical_to_the_frozen_golden(self, golden: dict) -> None:
+        """mdl_penalty defaults to 0.0, so every pre-existing config scores EXACTLY as before.
+
+        The golden was captured before mdl existed. If adding the addend perturbed the default path
+        by even one ULP this fails -- which is the whole point of having captured it first.
+        """
+        for cell in golden["cells"]:
+            if cell["likelihood_penalty"] != 0.0:
+                continue
+            rows = _rebuild_inputs(cell)[::-1]
+            # every row carries an mdl, but mdl_penalty is left at its default
+            for r in rows:
+                r["mdl"] = 123456.0
+            sorted_results, _ = FlashANSR._compile_results_pure(
+                _Shim(), rows, cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"],
+            )
+            assert [r["expression"] for r in sorted_results] == [e["expression"] for e in cell["order"]]
+            for got, want in zip(sorted_results, cell["order"]):
+                assert _same(float(got["score"]), _unjson(want["score"])), (
+                    "a populated mdl changed the score at mdl_penalty=0 -- the addend is not inert"
+                )
+
+    def test_a_live_penalty_reorders_on_mdl_alone(self) -> None:
+        """Two candidates identical in fvu, nodes and constants, differing ONLY in mdl."""
+        def rows() -> list[dict]:
+            return [
+                {"expression": ["a", "b"], "fvu": 0.25, "log_prob": None, "constant_count": 1,
+                 "mdl": 200000.0, "score": float("nan")},
+                {"expression": ["c", "d"], "fvu": 0.25, "log_prob": None, "constant_count": 1,
+                 "mdl": 100000.0, "score": float("nan")},
+            ]
+        inert, _ = FlashANSR._compile_results_pure(_Shim(), rows(), 0.0, 0.0, 0.0, 0.0)
+        # tie on score -> the token tie-break decides, so 'a b' comes first
+        assert [r["expression"] for r in inert] == [["a", "b"], ["c", "d"]]
+
+        live, _ = FlashANSR._compile_results_pure(_Shim(), rows(), 0.0, 0.0, 0.0, 4.5e-3)
+        assert [r["expression"] for r in live] == [["c", "d"], ["a", "b"]], (
+            "the cheaper mdl must win once mdl_penalty is live"
+        )
+        # and the gap is exactly the bits-converted difference
+        assert live[1]["score"] - live[0]["score"] == pytest.approx((200000.0 - 100000.0) / 1000.0 * 4.5e-3)
+
+    def test_unpriceable_is_harmless_while_the_penalty_is_off(self) -> None:
+        """mdl_penalty=0 -> mdl is not part of the ranking, so a missing price cannot matter."""
+        rows = [
+            {"expression": ["a"], "fvu": 0.5, "log_prob": None, "constant_count": 0,
+             "mdl": None, "score": float("nan")},
+            {"expression": ["b"], "fvu": 0.9, "log_prob": None, "constant_count": 0,
+             "mdl": 1000.0, "score": float("nan")},
+        ]
+        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0, 0.0)
+        assert out[0]["expression"] == ["a"], "the better fvu wins; the missing price is irrelevant"
+        assert np.isfinite(out[0]["score"])
+
+    def test_unpriceable_is_never_ADVANTAGED_while_the_penalty_is_live(self) -> None:
+        """The trap: contributing 0 is not neutral, it is a ~0.63-decade head start.
+
+        At the calibrated strength a typical candidate pays mdl_penalty * 140 bits ~ 0.63 decades of
+        FVU. A row that contributes 0 would out-rank a priced row that is genuinely better, so an
+        unpriceable candidate must sort BELOW every priced one.
+        """
+        rows = [
+            {"expression": ["a"], "fvu": 0.10, "log_prob": None, "constant_count": 0,
+             "mdl": None, "score": float("nan")},          # best fvu, but no price
+            {"expression": ["b"], "fvu": 0.11, "log_prob": None, "constant_count": 0,
+             "mdl": 140000.0, "score": float("nan")},      # slightly worse fvu, priced
+        ]
+        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0, 4.5e-3)
+        assert out[0]["expression"] == ["b"], (
+            "an unpriceable candidate must not out-rank a priced one on a free pass"
+        )
+        assert out[-1]["score"] == float("inf")
+
+    def test_unpriceable_still_outranks_a_diverged_fit(self) -> None:
+        """+inf sorts above nan: 'fitted but unjudgeable' beats 'did not fit'."""
+        rows = [
+            {"expression": ["a"], "fvu": 0.10, "log_prob": None, "constant_count": 0,
+             "mdl": None, "score": float("nan")},
+            {"expression": ["b"], "fvu": float("inf"), "log_prob": None, "constant_count": 0,
+             "mdl": 1000.0, "score": float("nan")},
+        ]
+        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0, 4.5e-3)
+        assert out[0]["expression"] == ["a"]
+        assert np.isnan(out[-1]["score"])
+
+    def test_all_unpriceable_raises_only_when_the_penalty_is_live(self) -> None:
+        """Aggregate failure: nothing priceable means the criterion produced no ordering.
+
+        Returning an answer there would mean ranking by expression spelling while reporting success.
+        One unpriceable row must NOT raise -- that would let a single pathological candidate abort a
+        problem and discard the good ones beside it.
+        """
+        rows = [
+            {"expression": ["a"], "fvu": 0.5, "log_prob": None, "constant_count": 0,
+             "mdl": None, "score": float("nan")},
+            {"expression": ["b"], "fvu": 0.9, "log_prob": None, "constant_count": 0,
+             "mdl": None, "score": float("nan")},
+        ]
+        with pytest.raises(ValueError, match="none of the 2 candidates could be priced"):
+            FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0, 4.5e-3)
+        # same rows, penalty off -> perfectly fine
+        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0, 0.0)
+        assert len(out) == 2
+
+    def test_milli_bit_to_bit_conversion_is_explicit(self) -> None:
+        """mdl is stored in milli-bits; mdl_penalty is per bit. Multiplying directly is 1000x wrong."""
+        from flash_ansr.scoring import MILLIBITS_PER_BIT, score_from_fvu
+
+        assert MILLIBITS_PER_BIT == 1000.0
+        base = score_from_fvu(0.1, 5, 1, None, 0.0, 0.0, 0.0)
+        live = score_from_fvu(0.1, 5, 1, None, 0.0, 0.0, 0.0, mdl=67000.0, mdl_penalty=4.5e-3)
+        assert live - base == pytest.approx(67.0 * 4.5e-3), "one <constant> is 67 bits, not 67000"
+
+
+class TestUnpriceable:
+    """What "unpriceable" actually means, measured 2026-09-04 rather than assumed.
+
+    Rate on the 8,476-candidate reference population: 0. These pin the triggers so the guard's scope
+    stays honest if simplipy's tokeniser changes.
+    """
+
+    @pytest.mark.parametrize("bad", ["inf", "nan", "-inf"])
+    def test_non_finite_constants_are_what_actually_raise(self, bad: str) -> None:
+        """The realistic trigger: a fit that passes valid_fit but carries inf/nan.
+
+        `transform` substitutes repr(float(v)), and repr(inf) is the literal token 'inf', which
+        simplipy rejects as a reserved numeric spelling. Everything else survives: 1e308 and 5e-324
+        both price fine, so it is non-finiteness and not magnitude that breaks pricing.
+        """
+        from simplipy import Mode, SimpliPyEngine
+
+        engine = SimpliPyEngine.load("acj-5-4-llm", install=True)
+        with pytest.raises(Exception):
+            engine.complexity(["*", bad, "x1"], certified=True, mode=Mode.f64, canon="default")
+        # a finite extreme is NOT a failure -- the guard must not be read as "big numbers break it"
+        assert engine.complexity(["*", "1e308", "x1"], certified=True, mode=Mode.f64,
+                                 canon="default") > 0
+
+    def test_a_leftover_placeholder_is_refused_not_priced(self) -> None:
+        """The dangerous case: a partial substitution prices at 67,000 WITHOUT raising.
+
+        simplipy prices '<constant>' happily, so without an explicit check a half-substituted
+        expression would be recorded as a realized price. This asserts the worker refuses it.
+        """
+        import inspect
+
+        from flash_ansr import flash_ansr as module
+
+        source = inspect.getsource(module._refine_candidate_worker)
+        assert "still carries a <constant> placeholder" in source, (
+            "a partially substituted expression must be refused, not priced as a skeleton"
+        )
+        # and the check must precede the pricer call
+        guard_at = source.index("still carries a <constant> placeholder")
+        price_at = source.index("simplipy_engine.complexity(")
+        assert guard_at < price_at

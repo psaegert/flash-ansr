@@ -40,6 +40,7 @@ class Candidate:
     fvu: float
     complexity: int                     # TOKEN COUNT of the expression (what the length penalty prices)
     mu: float | None                    # simplipy complexity of the skeleton -- the unit fit(complexity=) consumes
+    mdl: float | None                   # simplipy mu of the REALIZED expression (constants substituted) -- the RANKING currency; None if unpriceable
     constant_count: int
     pruned_variant: bool                # synthesized during constant-pruning (not from generation)
     y_pred: np.ndarray | None = None        # on support X -- populated only for the top_k (opt-in; OOM otherwise)

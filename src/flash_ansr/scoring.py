@@ -70,6 +70,12 @@ def compute_fvu(loss: float, sample_count: int, variance: float) -> float:
     return loss / variance
 
 
+#: simplipy reports complexity in MILLI-bits; `mdl_penalty` is specified per BIT so that its
+#: calibrated value (4.5e-3) is legible next to `node_penalty` (0.05) in a config file. 4.5e-6 per
+#: milli-bit three lines from 0.05 is a typo waiting to happen. The conversion happens once, here.
+MILLIBITS_PER_BIT = 1000.0
+
+
 def score_from_fvu(
         fvu: float,
         n_nodes: int,
@@ -77,7 +83,9 @@ def score_from_fvu(
         log_prob: float | None,
         node_penalty: float,
         constants_penalty: float,
-        likelihood_penalty: float) -> float:
+        likelihood_penalty: float,
+        mdl: float | None = None,
+        mdl_penalty: float = 0.0) -> float:
     """Parsimony-penalised selection score ``log10(FVU) + structural penalties`` (lower is better).
 
     A genuine perfect fit (``fvu == 0``) is floored at :data:`FLOAT64_EPS` so it gets the best FINITE
@@ -96,10 +104,33 @@ def score_from_fvu(
     if log_prob is not None and np.isfinite(log_prob):
         likelihood_term = likelihood_penalty * (-float(log_prob))
 
+    # The MDL addend. `mdl` arrives in MILLI-bits (simplipy's native unit, and what the ledger
+    # stores); `mdl_penalty` is per BIT. The conversion is explicit and happens exactly here --
+    # multiplying the two directly would be wrong by a factor of 1000.
+    #
+    # UNPRICEABLE CANDIDATES. When `mdl_penalty` is 0 -- the default, and every pre-existing config
+    # -- `mdl` is not part of the ranking at all, so a missing price is irrelevant and the term is
+    # exactly 0.0: the score stays character-for-character what 0.13.0 produced.
+    #
+    # When `mdl_penalty` is LIVE, a missing price must never contribute 0. At the calibrated
+    # strength a typical candidate pays ~0.63 decades of FVU, so a free pass is not a small mercy --
+    # it is a ~4x FVU advantage that would float every unpriceable candidate to the top of the
+    # ranking. Such a row maps to +inf instead: it sorts below every priced candidate, and above a
+    # diverged fit (whose score is nan), which is the correct relative standing for "fitted, but
+    # cannot be judged on the declared criterion". The aggregate case -- NOTHING priceable, so the
+    # criterion produced no ranking at all -- is caught by the caller, not here; see
+    # `_compile_results_pure`.
+    mdl_term = 0.0
+    if mdl_penalty != 0.0:
+        if mdl is None or not np.isfinite(mdl):
+            return float('inf')
+        mdl_term = mdl_penalty * (float(mdl) / MILLIBITS_PER_BIT)
+
     return float(np.log10(safe_fvu)
                  + node_penalty * n_nodes
                  + constants_penalty * max(int(constant_count), 0)
-                 + likelihood_term)
+                 + likelihood_term
+                 + mdl_term)
 
 
 def is_constant_token(token: str) -> bool:

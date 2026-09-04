@@ -52,6 +52,8 @@ from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS, replace_ieee7
 from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN, IEEE754_END_TOKEN, BYTE_TOKENS
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
+from simplipy.engine import Mode
+
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -76,6 +78,13 @@ class Result(TypedDict):
     requested_complexity: int | float | None
     fvu: float
     pruned_variant: bool
+    #: simplipy mu of the REALIZED expression in milli-bits, or None when the candidate could not be
+    #: priced. Distinct from `Candidate.mu`, which is the masked-SKELETON unit `fit(complexity=)`
+    #: consumes -- see RANKING_SPEC.md section 3.
+    mdl: float | None
+    #: The model's own decoded constants, before refinement. Carried since the v24 constants lane but
+    #: never declared here.
+    constants_emitted: list[float] | None
 
 
 _GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
@@ -263,6 +272,38 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         constant_count = sum(1 for tok in expression_tokens if FlashANSR._is_constant_token(tok))
         payload['constant_count'] = constant_count
 
+    # `mdl` is priced on the REALIZED expression -- the fitted constants substituted in -- per the
+    # owner's ruling of 2026-09-04 (RANKING_SPEC.md section 2). The emitted spelling carries only
+    # <constant> placeholders at a flat 67,000 mB each, which makes mu a re-parameterisation of
+    # (n_nodes, n_constants) to 99% of within-problem pairs; the realized spelling additionally
+    # prices constant PRECISION, which no count can express and which a future coarse-graining of
+    # constants must be able to move. Measured cost: 3.9 us for the transform + 30.9 us for the
+    # pricer per candidate = 0.04% of fit wall-clock.
+    #
+    # mode= and canon= are written out, never inherited: mode routes the parse and moves mu
+    # (permissive differs on 1.0-1.7% of holdout laws, up to +62%), and training data is generated
+    # at simplify_mode: permissive.
+    mdl: float | None
+    try:
+        realized_tokens = list(refiner.transform(
+            expression=expression_tokens, return_prefix=True, variable_mapping=None))
+        # A PARTIALLY substituted expression must not be priced. `transform` breaks out of its
+        # substitution loop on StopIteration when there are fewer fitted values than constant sites
+        # (refine.py:686), leaving '<constant>' in place -- and simplipy prices a leftover
+        # placeholder happily, at the flat 67,000 mB skeleton rate, without raising. That would make
+        # mdl silently WRONG (a skeleton price masquerading as a realized one) rather than absent,
+        # which is the worse failure and the invisible one. Measured: never happens on the 8,476
+        # real candidates, but it costs one check to make it impossible.
+        if any(tok == '<constant>' for tok in realized_tokens):
+            raise ValueError("realized expression still carries a <constant> placeholder")
+        mdl = float(simplipy_engine.complexity(
+            realized_tokens, certified=True, mode=Mode.f64, canon='default'))
+    except Exception:
+        # An unpriceable candidate is not a failed one: it keeps its fvu and its place in the
+        # scalar ranking. mdl=None is the explicit "no price" marker; the scorer decides what a
+        # missing price means, not this worker.
+        mdl = None
+
     score = FlashANSR._score_from_fvu(
         fvu,
         len(expression_tokens),
@@ -288,6 +329,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'score': score,
         'expression': payload['expression'],
         'constant_count': payload['constant_count'],
+        'mdl': mdl,
         'complexity': len(payload['expression']),
         'requested_complexity': payload['complexity'],
         'raw_beam': payload['raw_beam'],
@@ -449,15 +491,17 @@ class FlashANSR(BaseEstimator):
     def _score_from_fvu(
             cls,
             fvu: float,
-            complexity: int,
+            n_nodes: int,
             constant_count: int,
             log_prob: float | None,
             node_penalty: float,
             constants_penalty: float,
-            likelihood_penalty: float) -> float:
+            likelihood_penalty: float,
+            mdl: float | None = None,
+            mdl_penalty: float = 0.0) -> float:
         return score_from_fvu(
-            fvu, complexity, constant_count, log_prob,
-            node_penalty, constants_penalty, likelihood_penalty)
+            fvu, n_nodes, constant_count, log_prob,
+            node_penalty, constants_penalty, likelihood_penalty, mdl, mdl_penalty)
 
     def _score_log_probs_batch(
             self,
@@ -755,6 +799,7 @@ class FlashANSR(BaseEstimator):
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             node_penalty: float = 0.05,
             constants_penalty: float = 0.0,
+            mdl_penalty: float = 0.0,
             likelihood_penalty: float = 0.0,
             refiner_workers: int | None = None,
             prune_constant_budget: float | int = 0):
@@ -781,6 +826,7 @@ class FlashANSR(BaseEstimator):
         self.numpy_errors = numpy_errors
         self.node_penalty = node_penalty
         self.constants_penalty = float(constants_penalty)
+        self.mdl_penalty = float(mdl_penalty)
         self.likelihood_penalty = float(likelihood_penalty)
         self.prune_constant_budget = max(0.0, float(prune_constant_budget))
 
@@ -843,6 +889,7 @@ class FlashANSR(BaseEstimator):
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             node_penalty: float = 0.05,
             constants_penalty: float = 0.0,
+            mdl_penalty: float = 0.0,
             likelihood_penalty: float = 0.0,
             device: str = 'cpu',
             refiner_workers: int | None = None,
@@ -929,6 +976,7 @@ class FlashANSR(BaseEstimator):
             numpy_errors=numpy_errors,
             node_penalty=node_penalty,
             constants_penalty=constants_penalty,
+            mdl_penalty=mdl_penalty,
             likelihood_penalty=likelihood_penalty,
             refiner_workers=refiner_workers,
             prune_constant_budget=prune_constant_budget)
@@ -1026,6 +1074,7 @@ class FlashANSR(BaseEstimator):
                 'y_variance': 1.0,
                 'node_penalty': self.node_penalty,
                 'constants_penalty': self.constants_penalty,
+                'mdl_penalty': self.mdl_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': None,
                 'seed': None,
@@ -1500,6 +1549,12 @@ class FlashANSR(BaseEstimator):
             'score': payload['score'],
             'expression': payload['expression'],
             'constant_count': int(payload.get('constant_count', self._count_constants(payload['expression']))),
+            # `_create_result_entry` is a SELECTIVE key-by-key whitelist, not a dict copy. A key the
+            # worker produces but this literal omits is dropped silently: every mdl would be None,
+            # every score with mdl_penalty != 0 would be nan, the sort would degenerate to the token
+            # tie-break, and the run would rank ALPHABETICALLY while fit() reported success. All
+            # three design critiques found this line; all three designs missed it.
+            'mdl': payload.get('mdl'),
             'complexity': payload['complexity'],
             'requested_complexity': payload.get('requested_complexity'),
             'raw_beam': payload['raw_beam'],
@@ -1867,6 +1922,7 @@ class FlashANSR(BaseEstimator):
                 'y_variance': gs.y_variance,
                 'node_penalty': self.node_penalty,
                 'constants_penalty': self.constants_penalty,
+                'mdl_penalty': self.mdl_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': gs.complexity,
             }
@@ -2046,6 +2102,7 @@ class FlashANSR(BaseEstimator):
                                 'y_variance': gs.y_variance,
                                 'node_penalty': self.node_penalty,
                                 'constants_penalty': self.constants_penalty,
+                                'mdl_penalty': self.mdl_penalty,
                                 'likelihood_penalty': self.likelihood_penalty,
                                 'complexity': gs.complexity,
                             }
@@ -2056,7 +2113,7 @@ class FlashANSR(BaseEstimator):
                     refinement_time += time.time() - _t_prune_ref
 
         sorted_results, results_df = self._compile_results_pure(
-            results, self.node_penalty, self.constants_penalty, self.likelihood_penalty, allow_empty=allow_empty)
+            results, self.node_penalty, self.constants_penalty, self.likelihood_penalty, self.mdl_penalty, allow_empty=allow_empty)
 
         return FitResult(
             results=sorted_results,
@@ -2080,7 +2137,8 @@ class FlashANSR(BaseEstimator):
             self,
             node_penalty: float | None = None,
             constants_penalty: float | None = None,
-            likelihood_penalty: float | None = None) -> None:
+            likelihood_penalty: float | None = None,
+            mdl_penalty: float | None = None) -> None:
         """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
 
         Parameters
@@ -2110,9 +2168,10 @@ class FlashANSR(BaseEstimator):
         effective_length = self.node_penalty if node_penalty is None else float(node_penalty)
         effective_constants = self.constants_penalty if constants_penalty is None else float(constants_penalty)
         effective_likelihood = self.likelihood_penalty if likelihood_penalty is None else float(likelihood_penalty)
+        effective_mdl = self.mdl_penalty if mdl_penalty is None else float(mdl_penalty)
 
         self._results, self.results = self._compile_results_pure(
-            self._results, effective_length, effective_constants, effective_likelihood)
+            self._results, effective_length, effective_constants, effective_likelihood, effective_mdl)
 
     def _compile_results_pure(
             self,
@@ -2120,6 +2179,7 @@ class FlashANSR(BaseEstimator):
             node_penalty: float,
             constants_penalty: float,
             likelihood_penalty: float,
+            mdl_penalty: float = 0.0,
             *,
             allow_empty: bool = False) -> tuple[list[Any], "pd.DataFrame"]:
         """Pure core of :meth:`compile_results`: score + sort + build the DataFrame for a results
@@ -2136,12 +2196,33 @@ class FlashANSR(BaseEstimator):
                 return [], pd.DataFrame()
             raise ConvergenceError("The optimization did not converge for any beam")
 
+        # NOTHING priceable while the MDL penalty is live means the declared ranking criterion
+        # produced no ordering at all: every candidate would score +inf and the sort would fall
+        # through to the alphabetical token tie-break, returning a confident answer chosen by
+        # spelling. That is the aggregate case, and it is the one that must raise -- a SINGLE
+        # unpriceable row must not, or one pathological candidate would abort a whole problem and
+        # discard the ~283 good ones beside it. Rate on the reference population: 0 of 8,476.
+        if mdl_penalty != 0.0:
+            priceable = sum(1 for r in results
+                            if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
+            if priceable == 0:
+                raise ValueError(
+                    f"ranking asked for mdl_penalty={mdl_penalty} but none of the {len(results)} "
+                    f"candidates could be priced, so the ranking would be decided by the "
+                    f"expression-token tie-break alone. Check the simplipy engine and the refine "
+                    f"worker's pricer, or rank with mdl_penalty=0."
+                )
+
         # Compute the new score for each result
         for result in results:
             if 'score' in result:
                 fvu = result.get('fvu', np.nan)
                 log_prob = result.get('log_prob')
                 constant_count = int(result.get('constant_count', self._count_constants(result.get('expression', []))))
+                # Read through, never recomputed: the pricer already ran in the refine worker on the
+                # REALIZED expression. Recomputing here would price the EMITTED spelling and quietly
+                # score a different quantity from the one the ledger records.
+                mdl = result.get('mdl')
                 if np.isfinite(fvu):
                     result['score'] = self._score_from_fvu(
                         float(fvu),
@@ -2151,6 +2232,8 @@ class FlashANSR(BaseEstimator):
                         node_penalty,
                         constants_penalty,
                         likelihood_penalty,
+                        mdl,
+                        mdl_penalty,
                     )
                 else:
                     result['score'] = np.nan
@@ -2539,6 +2622,10 @@ class FlashANSR(BaseEstimator):
                 # feeding a result's complexity back into a prompt was measurably worse than
                 # passing nothing. Computed here (bounded by the refined survivors), never per beam.
                 mu=self._skeleton_mu(skeleton_prefix),
+                # The RANKING currency, priced by the refine worker on the REALIZED expression.
+                # Read through, never recomputed here: recomputing would price a different spelling
+                # from the one that produced the score, and the two would drift apart silently.
+                mdl=r.get('mdl'),
                 constant_count=int(r.get('constant_count', 0)),
                 pruned_variant=bool(r.get('pruned_variant', False)),
                 y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
@@ -2564,6 +2651,7 @@ class FlashANSR(BaseEstimator):
             "format_version": RESULTS_FORMAT_VERSION,
             "node_penalty": self.node_penalty,
             "constants_penalty": self.constants_penalty,
+            "mdl_penalty": self.mdl_penalty,
             "likelihood_penalty": self.likelihood_penalty,
             "n_variables": self.n_variables,
             "input_dim": input_dim,
@@ -2599,6 +2687,7 @@ class FlashANSR(BaseEstimator):
 
         node_penalty = float(metadata.get("node_penalty", getattr(self, "node_penalty", 0.0)))
         constants_penalty = float(metadata.get("constants_penalty", getattr(self, "constants_penalty", 0.0)))
+        mdl_penalty = float(metadata.get("mdl_penalty", getattr(self, "mdl_penalty", 0.0)))
         likelihood_penalty = float(metadata.get("likelihood_penalty", getattr(self, "likelihood_penalty", 0.0)))
         n_variables = int(metadata.get("n_variables", self.n_variables))
         input_dim = int(metadata.get("input_dim", n_variables))
@@ -2609,6 +2698,7 @@ class FlashANSR(BaseEstimator):
         # for every subsequent fit(). Warn when they differ so the difference is visible.
         for name, restored_value in (("node_penalty", node_penalty),
                                      ("constants_penalty", constants_penalty),
+                                     ("mdl_penalty", mdl_penalty),
                                      ("likelihood_penalty", likelihood_penalty)):
             current = float(getattr(self, name, 0.0))
             if restored_value != current:
@@ -2630,6 +2720,7 @@ class FlashANSR(BaseEstimator):
         self.compile_results(
             node_penalty=node_penalty,
             constants_penalty=constants_penalty,
+            mdl_penalty=mdl_penalty,
             likelihood_penalty=likelihood_penalty,
         )
 
