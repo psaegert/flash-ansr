@@ -4,18 +4,19 @@ from __future__ import annotations
 import copy
 import pickle
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 import numpy as np
-import pandas as pd
 
-from flash_ansr.refine import ConvergenceError, Refiner
+from flash_ansr.refine import Refiner
 from flash_ansr.scoring import count_constants, is_constant_token
 from flash_ansr.utils.paths import substitute_root_path
 
-# 2: `length_penalty` renamed to `node_penalty` in the saved metadata (2026-09-04). The rename is a
-# clean break with no alias, so a v1 payload's penalty CANNOT be read by this version -- see
-# FlashANSR.load_results, which refuses it rather than silently rescoring at the estimator default.
+# 2 (2026-09-04): the metadata carries `ranking` -- the resolved RankingConfig (mode + the knobs of
+# that mode) that ordered the saved results -- in place of v1's four loose penalties, one of which
+# (`length_penalty`) was renamed on the way. A clean break with no alias: a v1 payload's ordering
+# CANNOT be reproduced by this version, and FlashANSR.load_results refuses it rather than silently
+# re-ranking under the estimator's own configuration.
 RESULTS_FORMAT_VERSION = 2
 
 
@@ -25,57 +26,6 @@ def _is_constant_token(token: str) -> bool:
 
 def _count_constants(expression: Iterable[str] | None) -> int:
     return count_constants(expression)
-
-
-def compile_results_table(
-    results: Iterable[dict[str, Any]],
-    *,
-    node_penalty: float,
-    constants_penalty: float,
-    likelihood_penalty: float,
-    score_from_fvu: Callable[[float, int, int, float | None, float, float, float], float],
-) -> tuple[list[dict[str, Any]], pd.DataFrame]:
-    """Recompute scores and return a sorted result list plus dataframe."""
-    result_list = list(results)
-    if not result_list:
-        raise ConvergenceError("The optimization did not converge for any beam")
-
-    for result in result_list:
-        if "score" not in result:
-            continue
-        fvu = result.get("fvu", np.nan)
-        log_prob = result.get("log_prob")
-        constant_count = int(result.get("constant_count", _count_constants(result.get("expression"))))
-        if np.isfinite(fvu):
-            result["score"] = score_from_fvu(
-                float(fvu),
-                len(result.get("expression", [])),
-                constant_count,
-                log_prob,
-                node_penalty,
-                constants_penalty,
-                likelihood_penalty,
-            )
-        else:
-            result["score"] = np.nan
-
-    sorted_results = sorted(
-        result_list,
-        key=lambda item: (
-            item["score"] if not np.isnan(item["score"]) else float("inf"),
-            np.isnan(item["score"]),
-        ),
-    )
-
-    results_df = pd.DataFrame(sorted_results)
-    results_df = results_df.explode("fits")
-    results_df["beam_id"] = results_df.index
-    results_df.reset_index(drop=True, inplace=True)
-
-    fits_columns = pd.DataFrame(results_df["fits"].tolist(), columns=["fit_constants", "fit_covariances", "fit_loss"])
-    results_df = pd.concat([results_df.drop(columns=["fits"]), fits_columns], axis=1)
-
-    return sorted_results, results_df
 
 
 def _serialize_fit(fit: tuple[Any, Any, float]) -> dict[str, Any]:

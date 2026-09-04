@@ -48,7 +48,10 @@ CHECKPOINT = "path/to/checkpoint"
 model = FlashANSR.load(
   directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),
-  node_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
+  # Candidate ranking (default): log10(FVU) + 4.5e-3 per bit of the refined expression's description
+  # length. Alternatives: ranking_mode="weighted" with ranking_weights={"n_nodes": 0.05}, or
+  # ranking_mode="pareto" with ranking_metrics=("fvu", "n_nodes").
+  ranking_mode="mdl",
 ).to(device)
 
 # Define data: a small synthetic example, y = 2.5 * sin(x) + x^2 / 3
@@ -108,7 +111,7 @@ To reproduce v0.4.x inference behavior, opt out of the new defaults:
 SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-> **Breaking change (v0.5):** the candidate-selection penalty `parsimony` was renamed to `node_penalty`. Replace any `parsimony=` arguments with `node_penalty=`.
+> **Candidate ranking.** Three modes, one sort: `ranking_mode="mdl"` (default; `log10(FVU)` plus `mdl_strength` decades per bit of the refined expression's description length), `"weighted"` (`ranking_weights` over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl`, `neg_log_prob`) and `"pareto"` (the non-dominated front over `ranking_metrics`, ordered by `ranking_tie_break`). Each knob belongs to one mode and raises under another. The pre-0.14 ranking is `ranking_mode="weighted", ranking_weights={"n_nodes": 0.05}`.
 
 # Overview
 

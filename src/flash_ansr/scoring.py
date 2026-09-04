@@ -15,7 +15,8 @@ deliberately separate signature for a different call site: the two share the FVU
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -178,9 +179,14 @@ def count_constants(expression: Iterable[str] | None) -> int:
 #: the two spellings answer different questions, and mixing them silently would be the bug.
 RANKING_METRICS: dict[str, Any] = {
     'fvu': lambda r: r.get('fvu'),
-    'mdl': lambda r: r.get('mdl'),
+    # BITS, converted from the milli-bit price the row stores, so every weight in `weighted` mode
+    # is per natural unit (a node, a constant, a bit, a nat).
+    'mdl': lambda r: (None if r.get('mdl') is None else float(r['mdl']) / MILLIBITS_PER_BIT),
     'n_nodes': lambda r: len(r.get('expression', []) or []),
-    'n_constants': lambda r: r.get('constant_count'),
+    # The legacy total (placeholders, spans and typed literals alike -- count_constants), read off
+    # the row when the worker already counted it.
+    'n_constants': lambda r: (r['constant_count'] if r.get('constant_count') is not None
+                              else count_constants(r.get('expression'))),
     'n_constant_placeholders': lambda r: sum(1 for t in (r.get('expression') or []) if t == '<constant>'),
     'n_typed_literals': lambda r: sum(1 for t in (r.get('expression') or [])
                                       if t != '<constant>' and _parses_as_float(str(t))),
@@ -208,35 +214,170 @@ class RankingError(ValueError):
     """A ranking could not be produced: the declared criterion ordered nothing."""
 
 
+#: Mode 1's engineered strength, per BIT of realized-expression description length. Calibrated
+#: against `node_penalty = 0.05` on the reference population (RANKING_SPEC.md section 4): a
+#: typical candidate's ~140 bits then cost ~0.63 decades of FVU. Not a tuning surface: a run that
+#: wants a different weight on `mdl` says so in `weighted` mode, where the number is visible.
+MDL_STRENGTH_DEFAULT = 4.5e-3
+
+RANKING_MODES = ('mdl', 'weighted', 'pareto')
+
+#: Metrics a `weighted` ranking may put a weight on: everything in the registry except `fvu`,
+#: which is the base term of the score (log10) and not a weighted addend.
+WEIGHTABLE_METRICS = tuple(m for m in RANKING_METRICS if m != 'fvu')
+
+
+@dataclass(frozen=True)
+class RankingConfig:
+    """The resolved ranking actually in force: one of the three modes with ITS knobs, nothing
+    dormant. Built only through :func:`resolve_ranking`, which validates."""
+
+    mode: str
+    mdl_strength: float | None = None                 # 'mdl' only
+    weights: Mapping[str, float] = field(default_factory=dict)   # 'weighted' only
+    metrics: tuple[str, ...] = ()                     # 'pareto' only
+    tie_break: str | None = None                      # 'pareto' only
+
+    @property
+    def effective_weights(self) -> dict[str, float]:
+        """The scalar addends this ranking applies (empty for `pareto`, whose score is nan)."""
+        if self.mode == 'mdl':
+            return {'mdl': float(self.mdl_strength)}
+        if self.mode == 'weighted':
+            return {k: float(v) for k, v in self.weights.items()}
+        return {}
+
+    def as_dict(self) -> dict[str, Any]:
+        """Plain, picklable, YAML-able record of the resolved values -- what provenance stores."""
+        out: dict[str, Any] = {'mode': self.mode}
+        if self.mode == 'mdl':
+            out['mdl_strength'] = float(self.mdl_strength)
+        elif self.mode == 'weighted':
+            out['weights'] = {k: float(v) for k, v in sorted(self.weights.items())}
+        else:
+            out['metrics'] = list(self.metrics)
+            out['tie_break'] = self.tie_break
+        return out
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RankingConfig":
+        payload = dict(payload)
+        mode = payload.pop('mode', None)
+        if mode is None:
+            raise ValueError("a ranking record must carry 'mode'")
+        cfg = resolve_ranking(
+            mode,
+            mdl_strength=payload.pop('mdl_strength', None),
+            weights=payload.pop('weights', None),
+            metrics=payload.pop('metrics', None),
+            tie_break=payload.pop('tie_break', None),
+        )
+        if payload:
+            raise ValueError(f"unknown keys in ranking record: {sorted(payload)}")
+        return cfg
+
+
 def resolve_ranking(
-        mode: str,
-        weights: dict[str, float] | None,
-        metrics: tuple[str, ...] | None,
-        tie_break: str | None) -> tuple[str, dict[str, float], tuple[str, ...], str]:
-    """Validate a ranking request and fill its defaults. Raises on anything unrecognised."""
-    if mode not in ('mdl', 'weighted', 'pareto'):
-        raise ValueError(f"unknown ranking_mode {mode!r}; expected 'mdl', 'weighted' or 'pareto'")
+        mode: str = 'mdl',
+        *,
+        mdl_strength: float | None = None,
+        weights: Mapping[str, float] | None = None,
+        metrics: Sequence[str] | None = None,
+        tie_break: str | None = None) -> RankingConfig:
+    """Validate a ranking request and fill the defaults OF ITS MODE. Raises on anything unrecognised.
 
-    weights = dict(weights or {})
-    unknown = sorted(set(weights) - set(RANKING_METRICS))
-    if unknown:
-        raise ValueError(f"unknown ranking_weights {unknown}; known metrics: {sorted(RANKING_METRICS)}")
+    Every knob belongs to exactly one mode, and passing a knob to another mode raises rather than
+    being ignored: a `ranking_weights` typed next to `ranking_mode='mdl'` would otherwise lie
+    dormant until someone flipped the mode, and a `ranking_metrics` typo would wait for the first
+    pareto run. The user-facing spellings are ``ranking_mode``, ``mdl_strength``,
+    ``ranking_weights``, ``ranking_metrics`` and ``ranking_tie_break`` (RANKING_SPEC.md section 4).
+    """
+    if mode not in RANKING_MODES:
+        raise ValueError(f"unknown ranking_mode {mode!r}; expected one of {RANKING_MODES}")
 
-    metrics = tuple(metrics or ('fvu', 'n_nodes'))
-    unknown = sorted(set(metrics) - set(RANKING_METRICS))
+    def _refuse(name: str, value: Any, owner: str) -> None:
+        if value is not None:
+            raise ValueError(
+                f"{name} belongs to ranking_mode={owner!r} and was given with ranking_mode={mode!r}; "
+                f"it would be silently ignored. Drop it, or switch the mode.")
+
+    if mode == 'mdl':
+        _refuse('ranking_weights', weights, 'weighted')
+        _refuse('ranking_metrics', metrics, 'pareto')
+        _refuse('ranking_tie_break', tie_break, 'pareto')
+        strength = MDL_STRENGTH_DEFAULT if mdl_strength is None else float(mdl_strength)
+        if not np.isfinite(strength) or strength < 0.0:
+            raise ValueError(f"mdl_strength must be a finite non-negative number of decades per bit; got {mdl_strength!r}")
+        return RankingConfig(mode='mdl', mdl_strength=strength)
+
+    if mode == 'weighted':
+        _refuse('mdl_strength', mdl_strength, 'mdl')
+        _refuse('ranking_metrics', metrics, 'pareto')
+        _refuse('ranking_tie_break', tie_break, 'pareto')
+        resolved = {str(k): float(v) for k, v in dict(weights or {}).items()}
+        unknown = sorted(set(resolved) - set(WEIGHTABLE_METRICS))
+        if unknown:
+            raise ValueError(
+                f"unknown ranking_weights {unknown}; weightable metrics: {sorted(WEIGHTABLE_METRICS)}"
+                + (" ('fvu' is the base term of the score, not a weighted addend)" if 'fvu' in unknown else ""))
+        for k, v in resolved.items():
+            if not np.isfinite(v):
+                raise ValueError(f"ranking_weights[{k!r}] must be finite; got {v!r}")
+        return RankingConfig(mode='weighted', weights=resolved)
+
+    # pareto
+    _refuse('mdl_strength', mdl_strength, 'mdl')
+    _refuse('ranking_weights', weights, 'weighted')
+    declared = tuple(str(m) for m in (metrics if metrics is not None else ('fvu', 'n_nodes')))
+    unknown = sorted(set(declared) - set(RANKING_METRICS))
     if unknown:
         raise ValueError(f"unknown ranking_metrics {unknown}; known metrics: {sorted(RANKING_METRICS)}")
-    if 'fvu' not in metrics:
+    if len(set(declared)) != len(declared):
+        raise ValueError(f"ranking_metrics repeats a metric: {declared}")
+    if 'fvu' not in declared:
         raise ValueError(
             "ranking_metrics must contain 'fvu': it is the only term that measures FIT, and a front "
             "without it would order candidates on shape alone.")
-
     # The tie-break may name a metric OUTSIDE the declared set -- that is deliberate (owner ruling):
     # ordering within a front is a separate question from which axes define the front.
-    tie_break = tie_break or 'fvu'
-    if tie_break not in RANKING_METRICS:
-        raise ValueError(f"unknown ranking_tie_break {tie_break!r}; known metrics: {sorted(RANKING_METRICS)}")
-    return mode, weights, metrics, tie_break
+    tb = 'fvu' if tie_break is None else str(tie_break)
+    if tb not in RANKING_METRICS:
+        raise ValueError(f"unknown ranking_tie_break {tb!r}; known metrics: {sorted(RANKING_METRICS)}")
+    return RankingConfig(mode='pareto', metrics=declared, tie_break=tb)
+
+
+def score_row(result: Mapping[str, Any], weights: Mapping[str, float]) -> float:
+    """The scalar score of one result row under `weights` (the `effective_weights` of a resolved
+    `mdl` or `weighted` ranking): ``log10(fvu) + sum_k w_k * m_k``.
+
+    Routed through :func:`score_from_fvu` for the four terms it knows (nodes, constants,
+    likelihood, mdl) so the frozen 0.13 behaviour -- the eps floor, +inf for a non-finite or
+    negative fvu, +inf for an unpriced row under a live mdl weight -- is inherited rather than
+    re-implemented; the two count metrics it does not know are plain addends. Adding ``0.0``
+    leaves a float bit-identical, so an absent weight changes nothing.
+    """
+    fvu = result.get('fvu', np.nan)
+    expression = result.get('expression') or []
+    constant_count = result.get('constant_count')
+    if constant_count is None:
+        constant_count = count_constants(expression)
+    base = score_from_fvu(
+        float(fvu),
+        len(expression),
+        int(constant_count),
+        result.get('log_prob'),
+        float(weights.get('n_nodes', 0.0)),
+        float(weights.get('n_constants', 0.0)),
+        float(weights.get('neg_log_prob', 0.0)),
+        result.get('mdl'),
+        float(weights.get('mdl', 0.0)),
+    )
+    extra = 0.0
+    for name in ('n_constant_placeholders', 'n_typed_literals'):
+        w = float(weights.get(name, 0.0))
+        if w != 0.0:
+            extra += w * float(RANKING_METRICS[name](result))
+    return base + extra
 
 
 def objective_vector(results: list[dict[str, Any]], metrics: tuple[str, ...]) -> np.ndarray:

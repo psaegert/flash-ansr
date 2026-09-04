@@ -35,7 +35,7 @@ from flash_ansr import SoftmaxSamplingConfig
 SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-Also note the v0.5 rename: the candidate-selection penalty `parsimony` is now `node_penalty`.
+Candidate ranking is configured with `ranking_mode` (`mdl`, `weighted` or `pareto`) and that mode's knobs; the pre-0.14 length penalty is `ranking_mode="weighted", ranking_weights={"n_nodes": 0.05}`.
 
 ### How do I evaluate a model and run benchmarks?
 

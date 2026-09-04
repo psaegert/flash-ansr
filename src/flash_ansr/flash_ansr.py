@@ -46,6 +46,7 @@ from flash_ansr.tasks import (
 from flash_ansr.scoring import (
     PARETO_RANK_NOT_COMPUTED,
     RANKING_METRICS,
+    RankingConfig,
     RankingError,
     compute_fvu,
     count_constants,
@@ -55,6 +56,7 @@ from flash_ansr.scoring import (
     objective_vector,
     resolve_ranking,
     score_from_fvu,
+    score_row,
 )
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
@@ -97,6 +99,9 @@ class Result(TypedDict):
     #: The model's own decoded constants, before refinement. Carried since the v24 constants lane but
     #: never declared here.
     constants_emitted: list[float] | None
+    #: Front index under a `pareto` ranking (0 = non-dominated); PARETO_RANK_NOT_COMPUTED (-1) when
+    #: the row was ordered by a scalar score instead.
+    pareto_rank: int
 
 
 _GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
@@ -316,14 +321,13 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         # missing price means, not this worker.
         mdl = None
 
-    score = FlashANSR._score_from_fvu(
-        fvu,
-        len(expression_tokens),
-        constant_count,
-        payload.get('log_prob'),
-        payload['node_penalty'],
-        payload['constants_penalty'],
-        payload['likelihood_penalty'],
+    # The provisional score under the run's ranking weights (compile_results re-scores the whole
+    # pool under the same weights before the sort; in pareto mode there are none and this is the
+    # bare log10 fvu).
+    score = score_row(
+        {'fvu': fvu, 'expression': expression_tokens, 'constant_count': constant_count,
+         'log_prob': payload.get('log_prob'), 'mdl': mdl},
+        payload['ranking_weights'],
     )
 
     serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
@@ -472,12 +476,24 @@ class FlashANSR(BaseEstimator):
         ``{'loc': 0.0, 'scale': 5.0}`` for the normal distribution.
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
         Desired NumPy error handling strategy applied during constant refinement.
-    node_penalty : float, optional
-        Penalty coefficient that discourages overly long expressions.
-    constants_penalty : float, optional
-        Penalty coefficient applied to the number of constants present in an expression.
-    likelihood_penalty : float, optional
-        Penalty coefficient applied to the negative log likelihood of the generated beam.
+    ranking_mode : {'mdl', 'weighted', 'pareto'}, optional
+        How refined candidates are ordered (RANKING_SPEC.md). ``'mdl'`` (default): ``log10(fvu)``
+        plus ``mdl_strength`` times the description length, in bits, of the REALIZED expression.
+        ``'weighted'``: ``log10(fvu)`` plus ``ranking_weights`` over the metric registry.
+        ``'pareto'``: the non-dominated front over ``ranking_metrics``, ordered within a front by
+        ``ranking_tie_break``. Each knob belongs to one mode; passing it with another raises.
+    mdl_strength : float or None, optional
+        Mode ``'mdl'`` only: decades of FVU per bit. ``None`` -> the engineered default
+        :data:`flash_ansr.scoring.MDL_STRENGTH_DEFAULT` (4.5e-3).
+    ranking_weights : dict[str, float] or None, optional
+        Mode ``'weighted'`` only: weight per metric name (``n_nodes``, ``n_constants``,
+        ``n_constant_placeholders``, ``n_typed_literals``, ``mdl`` (per bit), ``neg_log_prob``).
+        Absent metrics weigh 0. The pre-0.14 default ranking is ``{'n_nodes': 0.05}``.
+    ranking_metrics : sequence of str or None, optional
+        Mode ``'pareto'`` only: the front's axes; must include ``'fvu'``. ``None`` -> ``('fvu', 'n_nodes')``.
+    ranking_tie_break : str or None, optional
+        Mode ``'pareto'`` only: the metric ordering candidates within a front (may lie outside
+        ``ranking_metrics``). ``None`` -> ``'fvu'``.
     refiner_workers : int or None, optional
         Number of worker processes to run during constant refinement. ``None``
         (the default) uses all available CPU cores, while explicit integers
@@ -809,10 +825,11 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            node_penalty: float = 0.05,
-            constants_penalty: float = 0.0,
-            mdl_penalty: float = 0.0,
-            likelihood_penalty: float = 0.0,
+            ranking_mode: str = 'mdl',
+            mdl_strength: float | None = None,
+            ranking_weights: dict[str, float] | None = None,
+            ranking_metrics: Sequence[str] | None = None,
+            ranking_tie_break: str | None = None,
             refiner_workers: int | None = None,
             prune_constant_budget: float | int = 0):
         self.simplipy_engine = simplipy_engine
@@ -836,10 +853,12 @@ class FlashANSR(BaseEstimator):
         # predicts the typed literals (exponents, root indices), the refiner fits the rest.
         self.refiner_scope: RefineScope = refiner_scope
         self.numpy_errors = numpy_errors
-        self.node_penalty = node_penalty
-        self.constants_penalty = float(constants_penalty)
-        self.mdl_penalty = float(mdl_penalty)
-        self.likelihood_penalty = float(likelihood_penalty)
+        # Validated in every mode at construction, so a metric typo cannot lie dormant until
+        # someone flips the mode. Read-only from here on: compile_results() takes call-scoped
+        # overrides and never writes them back.
+        self.ranking: RankingConfig = resolve_ranking(
+            ranking_mode, mdl_strength=mdl_strength, weights=ranking_weights,
+            metrics=ranking_metrics, tie_break=ranking_tie_break)
         self.prune_constant_budget = max(0.0, float(prune_constant_budget))
 
         cpu_count = os.cpu_count() or 1
@@ -899,10 +918,11 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            node_penalty: float = 0.05,
-            constants_penalty: float = 0.0,
-            mdl_penalty: float = 0.0,
-            likelihood_penalty: float = 0.0,
+            ranking_mode: str = 'mdl',
+            mdl_strength: float | None = None,
+            ranking_weights: dict[str, float] | None = None,
+            ranking_metrics: Sequence[str] | None = None,
+            ranking_tie_break: str | None = None,
             device: str = 'cpu',
             refiner_workers: int | None = None,
             prune_constant_budget: float | int = 0,
@@ -927,13 +947,8 @@ class FlashANSR(BaseEstimator):
             resolves to ``{'loc': 0.0, 'scale': 5.0}``.
         numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
             NumPy floating-point error policy applied during refinement.
-        node_penalty : float, optional
-            Length penalty used when compiling results.
-        constants_penalty : float, optional
-            Penalty applied per constant present in the expression during
-            scoring.
-        likelihood_penalty : float, optional
-            Penalty applied to the negative log likelihood of each beam.
+        ranking_mode, mdl_strength, ranking_weights, ranking_metrics, ranking_tie_break : optional
+            The candidate ranking; see :class:`FlashANSR`.
         device : str, optional
             Torch device where the model weights will be loaded.
         refiner_workers : int or None, optional
@@ -986,10 +1001,11 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             refiner_scope=refiner_scope,
             numpy_errors=numpy_errors,
-            node_penalty=node_penalty,
-            constants_penalty=constants_penalty,
-            mdl_penalty=mdl_penalty,
-            likelihood_penalty=likelihood_penalty,
+            ranking_mode=ranking_mode,
+            mdl_strength=mdl_strength,
+            ranking_weights=ranking_weights,
+            ranking_metrics=ranking_metrics,
+            ranking_tie_break=ranking_tie_break,
             refiner_workers=refiner_workers,
             prune_constant_budget=prune_constant_budget)
 
@@ -1084,10 +1100,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': 'ignore',
                 'numpy_errors': self.numpy_errors,
                 'y_variance': 1.0,
-                'node_penalty': self.node_penalty,
-                'constants_penalty': self.constants_penalty,
-                'mdl_penalty': self.mdl_penalty,
-                'likelihood_penalty': self.likelihood_penalty,
+                'ranking_weights': self.ranking.effective_weights,
                 'complexity': None,
                 'seed': None,
                 'X': X,
@@ -1932,10 +1945,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': converge_error,
                 'numpy_errors': self.numpy_errors,
                 'y_variance': gs.y_variance,
-                'node_penalty': self.node_penalty,
-                'constants_penalty': self.constants_penalty,
-                'mdl_penalty': self.mdl_penalty,
-                'likelihood_penalty': self.likelihood_penalty,
+                'ranking_weights': self.ranking.effective_weights,
                 'complexity': gs.complexity,
             }
             refinement_jobs.append(job)
@@ -2112,10 +2122,7 @@ class FlashANSR(BaseEstimator):
                                 'converge_error': converge_error,
                                 'numpy_errors': self.numpy_errors,
                                 'y_variance': gs.y_variance,
-                                'node_penalty': self.node_penalty,
-                                'constants_penalty': self.constants_penalty,
-                                'mdl_penalty': self.mdl_penalty,
-                                'likelihood_penalty': self.likelihood_penalty,
+                                'ranking_weights': self.ranking.effective_weights,
                                 'complexity': gs.complexity,
                             }
                             pruning_jobs.append(pruning_job)
@@ -2125,7 +2132,7 @@ class FlashANSR(BaseEstimator):
                     refinement_time += time.time() - _t_prune_ref
 
         sorted_results, results_df = self._compile_results_pure(
-            results, self.node_penalty, self.constants_penalty, self.likelihood_penalty, self.mdl_penalty, allow_empty=allow_empty)
+            results, ranking=self.ranking, allow_empty=allow_empty)
 
         return FitResult(
             results=sorted_results,
@@ -2145,25 +2152,27 @@ class FlashANSR(BaseEstimator):
         self._input_dim = fit_result.input_dim
         self.variable_mapping = fit_result.variable_mapping
 
+    def ranking_config(self) -> dict[str, Any]:
+        """The resolved ranking actually in force, as a plain dict -- what a benchmark writes to its
+        provenance record (mode plus the knobs of THAT mode, nothing dormant)."""
+        return self.ranking.as_dict()
+
     def compile_results(
             self,
-            node_penalty: float | None = None,
-            constants_penalty: float | None = None,
-            likelihood_penalty: float | None = None,
-            mdl_penalty: float | None = None) -> None:
-        """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
+            *,
+            ranking_mode: str | None = None,
+            mdl_strength: float | None = None,
+            ranking_weights: dict[str, float] | None = None,
+            ranking_metrics: Sequence[str] | None = None,
+            ranking_tie_break: str | None = None) -> None:
+        """Re-score and re-sort the fitted results into ``self.results`` (a tidy ``DataFrame``).
 
-        Parameters
-        ----------
-        node_penalty : float, optional
-            Length penalty applied during score recomputation. Defaults to the
-            current ``node_penalty`` value on the model.
-        constants_penalty : float, optional
-            Constant-count penalty applied during score recomputation. Defaults
-            to the current ``constants_penalty`` value on the model.
-        likelihood_penalty : float, optional
-            Negative log-likelihood penalty applied during score recomputation.
-            Defaults to the current ``likelihood_penalty`` value on the model.
+        With no arguments the estimator's own ranking (``self.ranking``) is applied. Any argument
+        given makes a CALL-SCOPED ranking: ``ranking_mode`` defaults to the estimator's mode and
+        the remaining knobs are resolved for that mode exactly as at construction (so a knob of
+        another mode raises rather than being ignored). Nothing is written back onto ``self`` --
+        a sweep (``for s in ...: compile_results(mdl_strength=s)``) must not leave the estimator
+        reconfigured at the last value for every subsequent ``fit()``.
 
         Raises
         ------
@@ -2173,83 +2182,65 @@ class FlashANSR(BaseEstimator):
         if not self._results:
             raise ConvergenceError("The optimization did not converge for any beam")
 
-        # CALL-SCOPED overrides. These used to be written onto self, so a parsimony sweep
-        # (`for lp in (...): compile_results(node_penalty=lp)`) left the estimator permanently
-        # reconfigured at the last value swept, and every SUBSEQUENT fit() silently scored and
-        # ranked under it. Scoring parameters change ranking; they must not change by side effect.
-        effective_length = self.node_penalty if node_penalty is None else float(node_penalty)
-        effective_constants = self.constants_penalty if constants_penalty is None else float(constants_penalty)
-        effective_likelihood = self.likelihood_penalty if likelihood_penalty is None else float(likelihood_penalty)
-        effective_mdl = self.mdl_penalty if mdl_penalty is None else float(mdl_penalty)
+        if all(v is None for v in (ranking_mode, mdl_strength, ranking_weights, ranking_metrics, ranking_tie_break)):
+            ranking = self.ranking
+        else:
+            ranking = resolve_ranking(
+                self.ranking.mode if ranking_mode is None else ranking_mode,
+                mdl_strength=mdl_strength, weights=ranking_weights,
+                metrics=ranking_metrics, tie_break=ranking_tie_break)
 
-        self._results, self.results = self._compile_results_pure(
-            self._results, effective_length, effective_constants, effective_likelihood, effective_mdl)
+        self._results, self.results = self._compile_results_pure(self._results, ranking=ranking)
 
     def _compile_results_pure(
             self,
             results: list[Any],
-            node_penalty: float,
-            constants_penalty: float,
-            likelihood_penalty: float,
-            mdl_penalty: float = 0.0,
             *,
-            ranking_mode: str = 'weighted',
-            ranking_metrics: tuple[str, ...] | None = None,
-            ranking_tie_break: str | None = None,
+            ranking: RankingConfig,
             allow_empty: bool = False) -> tuple[list[Any], "pd.DataFrame"]:
         """Pure core of :meth:`compile_results`: score + sort + build the DataFrame for a results
-        list, returning ``(sorted_results, results_df)``.
+        list under ``ranking``, returning ``(sorted_results, results_df)``.
 
-        Reads ``self`` only for the read-only scoring helpers and config; writes NOTHING to ``self``,
-        so the refinement phase (and the overlap engine) can compile a problem's results without
-        touching shared state. Raises ConvergenceError if ``results`` is empty, UNLESS ``allow_empty``
-        (then returns ``([], empty_df)`` -- the path :meth:`infer` uses to still return its full
-        candidate ledger when no beam converged, rather than raising).
+        Writes NOTHING to ``self``, so the refinement phase (and the overlap engine) can compile a
+        problem's results without touching shared state. Raises ConvergenceError if ``results`` is
+        empty, UNLESS ``allow_empty`` (then returns ``([], empty_df)`` -- the path :meth:`infer`
+        uses to still return its full candidate ledger when no beam converged, rather than raising).
         """
         if not results:
             if allow_empty:
                 return [], pd.DataFrame()
             raise ConvergenceError("The optimization did not converge for any beam")
 
-        # NOTHING priceable while the MDL penalty is live means the declared ranking criterion
+        weights = ranking.effective_weights
+        mdl_weight = float(weights.get('mdl', 0.0))
+
+        # NOTHING priceable while the MDL weight is live means the declared ranking criterion
         # produced no ordering at all: every candidate would score +inf and the sort would fall
         # through to the alphabetical token tie-break, returning a confident answer chosen by
         # spelling. That is the aggregate case, and it is the one that must raise -- a SINGLE
         # unpriceable row must not, or one pathological candidate would abort a whole problem and
         # discard the ~283 good ones beside it. Rate on the reference population: 0 of 8,476.
-        if mdl_penalty != 0.0 and ranking_mode != 'pareto':
+        if mdl_weight != 0.0 and ranking.mode != 'pareto':
             priceable = sum(1 for r in results
                             if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
             if priceable == 0:
-                raise ValueError(
-                    f"ranking asked for mdl_penalty={mdl_penalty} but none of the {len(results)} "
-                    f"candidates could be priced, so the ranking would be decided by the "
+                raise RankingError(
+                    f"ranking_mode={ranking.mode!r} weighs mdl at {mdl_weight} per bit but none of the "
+                    f"{len(results)} candidates could be priced, so the ranking would be decided by the "
                     f"expression-token tie-break alone. Check the simplipy engine and the refine "
-                    f"worker's pricer, or rank with mdl_penalty=0."
+                    f"worker's pricer, or rank without mdl."
                 )
 
-        # Compute the new score for each result
+        # Compute the new score for each result. `mdl` is read through, never recomputed: the
+        # pricer already ran in the refine worker on the REALIZED expression, and recomputing here
+        # would price the EMITTED spelling and quietly score a different quantity from the one the
+        # ledger records.
         for result in results:
             if 'score' in result:
-                fvu = result.get('fvu', np.nan)
-                log_prob = result.get('log_prob')
-                constant_count = int(result.get('constant_count', self._count_constants(result.get('expression', []))))
-                # Read through, never recomputed: the pricer already ran in the refine worker on the
-                # REALIZED expression. Recomputing here would price the EMITTED spelling and quietly
-                # score a different quantity from the one the ledger records.
-                mdl = result.get('mdl')
-                if np.isfinite(fvu):
-                    result['score'] = self._score_from_fvu(
-                        float(fvu),
-                        len(result['expression']),
-                        constant_count,
-                        log_prob,
-                        node_penalty,
-                        constants_penalty,
-                        likelihood_penalty,
-                        mdl,
-                        mdl_penalty,
-                    )
+                if 'constant_count' not in result:
+                    result['constant_count'] = int(self._count_constants(result.get('expression', [])))
+                if np.isfinite(result.get('fvu', np.nan)):
+                    result['score'] = score_row(result, weights)
                 else:
                     result['score'] = np.nan
 
@@ -2259,10 +2250,10 @@ class FlashANSR(BaseEstimator):
         # refinement completion order. Candidates are deduplicated to distinct expressions
         # (unique=True), so the token tuple is a total order over ties -> the final ranking is
         # independent of completion order (a prerequisite for byte-identical overlap).
-        if ranking_mode == 'pareto':
+        if ranking.mode == 'pareto':
             # NON-DOMINATED. The scalar score does not order this run, so it is set to nan -- nothing
             # downstream may read a stale number as if it had.
-            _, _, metrics, tie_break = resolve_ranking('pareto', None, ranking_metrics, ranking_tie_break)
+            metrics, tie_break = ranking.metrics, ranking.tie_break
             V = objective_vector(results, metrics)
             if 'mdl' in metrics:
                 blind = int(np.isinf(V[:, metrics.index('mdl')]).sum())
@@ -2583,7 +2574,7 @@ class FlashANSR(BaseEstimator):
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             refine_seed: int | None = None,
             predict_val: bool = True,
-            top_k: int | None = None,
+            top_k: int | Literal['all'] | None = None,
             verbose: bool = False) -> InferenceResult:
         """Run symbolic regression on ``(X, y)`` and return ALL candidates directly.
 
@@ -2610,8 +2601,10 @@ class FlashANSR(BaseEstimator):
             As in :meth:`fit`.
         predict_val : bool, optional
             Whether to compute validation predictions for the top candidates.
-        top_k : int or None, optional
-            Compute ``y_pred`` / ``y_pred_val`` for the top ``top_k`` candidates; ``None`` -> best only.
+        top_k : int or 'all' or None, optional
+            Compute ``y_pred`` / ``y_pred_val`` for the top ``top_k`` candidates; ``None`` -> best
+            only; ``'all'`` -> every refined candidate (what a benchmark needs to score the whole
+            pool on the validation split; ~300 candidates x n_val floats held for the call).
 
         Returns
         -------
@@ -2643,7 +2636,15 @@ class FlashANSR(BaseEstimator):
             decode_expr=_decode_expr, is_valid=self.simplipy_engine.is_valid,
         )
 
-        n_pred = (1 if top_k is None else int(top_k)) if results else 0
+        if top_k is None:
+            n_pred = 1
+        elif isinstance(top_k, str):
+            if top_k != 'all':
+                raise ValueError(f"top_k must be an int, None or 'all'; got {top_k!r}")
+            n_pred = len(results)
+        else:
+            n_pred = int(top_k)
+        n_pred = n_pred if results else 0
         X_support_p = pad_input_set(self._truncate_input(X), self.n_variables) if n_pred else None
         X_val_p = (pad_input_set(self._truncate_input(X_val), self.n_variables)
                    if (n_pred and predict_val and X_val is not None) else None)
@@ -2671,7 +2672,7 @@ class FlashANSR(BaseEstimator):
                 log_prob=float(r.get('log_prob', float('nan'))),
                 score=float(r.get('score', float('nan'))),
                 fvu=float(r.get('fvu', float('nan'))),
-                complexity=int(r.get('complexity', len(r['expression']))),
+                n_nodes=int(r.get('complexity', len(r['expression']))),
                 # mu, NOT the token count: fit(complexity=) consumes simplipy mu (1e3-1e6) while
                 # `complexity` above is a token count (~1e1). Reporting only the latter is why
                 # feeding a result's complexity back into a prompt was measurably worse than
@@ -2683,6 +2684,8 @@ class FlashANSR(BaseEstimator):
                 mdl=r.get('mdl'),
                 constant_count=int(r.get('constant_count', 0)),
                 pruned_variant=bool(r.get('pruned_variant', False)),
+                pareto_rank=int(r.get('pareto_rank', PARETO_RANK_NOT_COMPUTED)),
+                rank=rank,
                 y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
                 y_pred_val=(refiner.predict(X_val_p) if want_pred and X_val_p is not None else None),
             ))
@@ -2696,7 +2699,7 @@ class FlashANSR(BaseEstimator):
         )
 
     def save_results(self, path: str) -> None:
-        """Persist fitted results (minus lambdas) for later reuse."""
+        """Persist fitted results (minus lambdas) for later reuse, with the ranking that ordered them."""
 
         if not self._results:
             raise ValueError("No results available to save. Run `fit` first.")
@@ -2704,10 +2707,7 @@ class FlashANSR(BaseEstimator):
         input_dim = self._input_dim if self._input_dim is not None else self.n_variables
         metadata = {
             "format_version": RESULTS_FORMAT_VERSION,
-            "node_penalty": self.node_penalty,
-            "constants_penalty": self.constants_penalty,
-            "mdl_penalty": self.mdl_penalty,
-            "likelihood_penalty": self.likelihood_penalty,
+            "ranking": self.ranking.as_dict(),
             "n_variables": self.n_variables,
             "input_dim": input_dim,
             "variable_mapping": copy.deepcopy(self.variable_mapping),
@@ -2717,50 +2717,43 @@ class FlashANSR(BaseEstimator):
         save_results_payload(payload, path)
 
     def load_results(self, path: str, *, rebuild_refiners: bool = True) -> None:
-        """Load previously saved results and rebuild refiners if requested."""
+        """Load previously saved results, rebuild refiners if requested, and re-rank them under the
+        ranking RECORDED IN THE FILE (call-scoped: this estimator's own ranking is not changed)."""
 
         payload = load_results_payload(path)
         metadata = payload.get("metadata", {})
 
         version = int(payload.get("version", 0))
-        if version < 2 or "length_penalty" in metadata:
-            # v1 spelled the node penalty `length_penalty`. Reading such a payload here would hit
-            # the `metadata.get("node_penalty", <estimator default>)` fallback below and SILENTLY
-            # rescore the restored table at this estimator's penalty instead of the file's -- the
-            # same silent-default-inheritance defect that left every srbf run ranking at 0.0. The
-            # rename is a clean break, so refuse the payload and say exactly what to do about it.
+        if version < 2 or "length_penalty" in metadata or "ranking" not in metadata:
+            # v1 spelled the node penalty `length_penalty` and carried no ranking record. Reading
+            # such a payload here would have to fall back to THIS estimator's ranking and SILENTLY
+            # rescore the restored table under it instead of the file's -- the same
+            # silent-default-inheritance defect that left every srbf run ranking at 0.0. The
+            # format is a clean break, so refuse the payload and say exactly what to do about it.
             raise ValueError(
-                f"Results payload version {version} predates the length_penalty -> node_penalty "
-                f"rename (format version {RESULTS_FORMAT_VERSION}). Its penalty cannot be read "
-                f"without silently substituting this estimator's own value. Re-save it with a "
-                f"build from before the rename, or re-run fit() and save again."
+                f"Results payload version {version} predates the ranking record (format version "
+                f"{RESULTS_FORMAT_VERSION}: metadata['ranking'] with mode + its knobs). Its ordering "
+                f"cannot be reproduced without silently substituting this estimator's own ranking. "
+                f"Re-run fit() and save again."
             )
         if version != RESULTS_FORMAT_VERSION:
             warnings.warn(
                 f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
             )
 
-        node_penalty = float(metadata.get("node_penalty", getattr(self, "node_penalty", 0.0)))
-        constants_penalty = float(metadata.get("constants_penalty", getattr(self, "constants_penalty", 0.0)))
-        mdl_penalty = float(metadata.get("mdl_penalty", getattr(self, "mdl_penalty", 0.0)))
-        likelihood_penalty = float(metadata.get("likelihood_penalty", getattr(self, "likelihood_penalty", 0.0)))
+        ranking = RankingConfig.from_dict(metadata["ranking"])
         n_variables = int(metadata.get("n_variables", self.n_variables))
         input_dim = int(metadata.get("input_dim", n_variables))
 
         self._input_dim = input_dim
-        # The file's penalties are USED to rescore the restored results, but they are not adopted:
-        # loading someone else's saved run must not silently reconfigure this estimator's scoring
+        # The file's ranking is USED to re-order the restored results, but it is not adopted:
+        # loading someone else's saved run must not silently reconfigure this estimator's ranking
         # for every subsequent fit(). Warn when they differ so the difference is visible.
-        for name, restored_value in (("node_penalty", node_penalty),
-                                     ("constants_penalty", constants_penalty),
-                                     ("mdl_penalty", mdl_penalty),
-                                     ("likelihood_penalty", likelihood_penalty)):
-            current = float(getattr(self, name, 0.0))
-            if restored_value != current:
-                warnings.warn(
-                    f"The loaded results were scored with {name}={restored_value} but this "
-                    f"estimator uses {name}={current}. The restored table keeps the file's value; "
-                    f"the estimator is unchanged.", RuntimeWarning, stacklevel=2)
+        if ranking != self.ranking:
+            warnings.warn(
+                f"The loaded results were ranked under {ranking.as_dict()} but this estimator ranks "
+                f"under {self.ranking.as_dict()}. The restored table keeps the file's ranking; the "
+                f"estimator is unchanged.", RuntimeWarning, stacklevel=2)
         self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
 
         restored = deserialize_results_payload(
@@ -2771,13 +2764,7 @@ class FlashANSR(BaseEstimator):
             rebuild_refiners=rebuild_refiners,
         )
 
-        self._results = restored
-        self.compile_results(
-            node_penalty=node_penalty,
-            constants_penalty=constants_penalty,
-            mdl_penalty=mdl_penalty,
-            likelihood_penalty=likelihood_penalty,
-        )
+        self._results, self.results = self._compile_results_pure(restored, ranking=ranking)
 
     def to(self, device: str) -> "FlashANSR":
         """Move the transformer weights to ``device``.

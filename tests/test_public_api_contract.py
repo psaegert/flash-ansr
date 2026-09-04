@@ -268,7 +268,7 @@ class TestFlashANSR:
 
         _assert_has_params(
             FlashANSR.compile_results,
-            {"node_penalty", "constants_penalty", "likelihood_penalty"},
+            {"ranking_mode", "mdl_strength", "ranking_weights", "ranking_metrics", "ranking_tie_break"},
         )
 
     def test_results_attribute_present(self):

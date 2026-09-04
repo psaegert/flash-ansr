@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Candidate ranking is one of three modes, and the default is MDL.** `FlashANSR` /
+  `FlashANSR.load` take `ranking_mode` (`'mdl'` | `'weighted'` | `'pareto'`) and that mode's
+  knobs -- `mdl_strength` (decades of FVU per bit; default 4.5e-3), `ranking_weights` (a dict
+  over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl` (per bit),
+  `neg_log_prob`), `ranking_metrics` + `ranking_tie_break` (the non-dominated front's axes and
+  its within-front order; the tie-break may name a metric outside the set). A knob given with
+  another mode RAISES instead of lying dormant. `ranking_config()` returns the resolved values.
+  `compile_results` takes the same knobs, call-scoped, and never writes them back. The
+  `mdl` metric is simplipy's `complexity()` of the REALIZED expression (refined constants
+  substituted), priced in the refine worker; a candidate that cannot be priced sorts below every
+  priced one while `mdl` is weighted, and a pool with nothing priceable raises `RankingError`.
+  **Breaking:** the loose `node_penalty` / `constants_penalty` / `likelihood_penalty` /
+  `mdl_penalty` estimator arguments are gone; the pre-0.14 ranking is
+  `ranking_mode='weighted', ranking_weights={'n_nodes': 0.05}`.
+- **Results format 2.** `save_results` writes the resolved `ranking` record in place of the four
+  loose penalties; `load_results` re-orders the restored table under the FILE's ranking (warning
+  when it differs from the estimator's, never adopting it) and refuses a payload without one.
+- **`Candidate.complexity` is `Candidate.n_nodes`**; `Candidate` gains `mdl` (milli-bits of the
+  realized expression), `pareto_rank` (-1 under a scalar ranking) and `rank` (position in the
+  sorted list). `InferenceResult.to_dataframe()` carries them plus `mu`.
+- **`infer(top_k='all')`** predicts every refined candidate on the support and validation sets;
+  `CandidateLedger` carries `n_nodes`, `n_constants`, `mdl`, `score`, `pareto_rank`, `rank` and
+  `result_index` (copied from the refined rows, never re-derived from beam ids) so a persisted
+  ledger can be re-ranked offline and checked against the live rank 0.
+
+### Removed
+- `flash_ansr.results.compile_results_table`: a second scoring/sort implementation with a subtly
+  different guard. `FlashANSR._compile_results_pure` is the one sort.
+
 ### Added
 - **`refiner_scope`: which literals the refiner may move.** The predict-vs-refine doctrine
   (owner ruling 2026-09-02): the model PREDICTS the typed literals -- `pow` exponents and

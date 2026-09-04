@@ -43,9 +43,7 @@ def test_serialize_and_deserialize_rebuilds_refiner(tmp_path, simplipy_engine: S
 
     metadata = {
         "format_version": RESULTS_FORMAT_VERSION,
-        "node_penalty": 0.1,
-        "constants_penalty": 0.0,
-        "likelihood_penalty": 0.0,
+        "ranking": {"mode": "weighted", "weights": {"n_nodes": 0.1}},
         "n_variables": 1,
         "input_dim": 1,
         "variable_mapping": {"x1": "x"},
@@ -84,9 +82,7 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     results = [_make_result_entry(expr)]
 
     payload = serialize_results_payload(results, metadata={
-        "node_penalty": 0.1,
-        "constants_penalty": 0.0,
-        "likelihood_penalty": 0.0,
+        "ranking": {"mode": "weighted", "weights": {"n_nodes": 0.1}},
     })
 
     path = tmp_path / "results.pkl"
@@ -132,9 +128,7 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        node_penalty=0.0,
-        constants_penalty=0.0,
-        likelihood_penalty=0.0,
+        ranking_mode="weighted",
     )
 
     x = np.linspace(-2.0, 2.0, 24, dtype=float).reshape(-1, 1)
@@ -152,12 +146,27 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        node_penalty=0.0,
-        constants_penalty=0.0,
-        likelihood_penalty=0.0,
+        ranking_mode="weighted",
     )
     reloaded.load_results(save_path)
 
     preds_after = reloaded.predict(val)
 
     np.testing.assert_allclose(preds_before, preds_after, rtol=1e-6, atol=1e-8)
+
+    # The file carries the ranking that ordered it. An estimator ranking differently re-orders the
+    # restored table under the FILE's ranking and says so; it does not adopt it.
+    other = FlashANSR.load(directory=model_dir, generation_config=generation_config, n_restarts=4)
+    assert other.ranking.mode == 'mdl'
+    with pytest.warns(RuntimeWarning, match="ranked under"):
+        other.load_results(save_path)
+    assert other.ranking.mode == 'mdl', "loading must not reconfigure the estimator"
+    assert [list(r['expression']) for r in other._results] == [list(r['expression']) for r in reloaded._results]
+
+    # A payload without a ranking record cannot be re-ordered faithfully and is refused outright.
+    payload = load_results_payload(save_path)
+    del payload["metadata"]["ranking"]
+    stripped = tmp_path / "no_ranking.pkl"
+    save_results_payload(payload, stripped)
+    with pytest.raises(ValueError, match="predates the ranking record"):
+        reloaded.load_results(stripped)

@@ -88,8 +88,8 @@ class TestInference(unittest.TestCase):
         ).to(self.device)
         # fit's path (allow_empty=False) raises on empty; infer's path (allow_empty=True) returns empty.
         with self.assertRaises(ConvergenceError):
-            nsr._compile_results_pure([], 0.0, 0.0, 0.0)
-        results, results_df = nsr._compile_results_pure([], 0.0, 0.0, 0.0, allow_empty=True)
+            nsr._compile_results_pure([], ranking=nsr.ranking)
+        results, results_df = nsr._compile_results_pure([], ranking=nsr.ranking, allow_empty=True)
         self.assertEqual(results, [])
         self.assertEqual(len(results_df), 0)
 
@@ -153,6 +153,29 @@ class TestInference(unittest.TestCase):
 
         # infer() did NOT call _apply_fit_result -> instance state is still exactly what fit() set
         self.assertEqual([list(r['expression']) for r in nsr._results], [list(r['expression']) for r in ref])
+
+        # top_k='all' populates y_pred for EVERY candidate, and the widened ledger's ranking columns
+        # line up with the candidates through result_index (rank == position in the sorted list).
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            everything = nsr.infer(x, y, refine_seed=0, top_k='all', X_val=x)
+        self.assertTrue(all(c.y_pred is not None and c.y_pred_val is not None for c in everything.candidates))
+        self.assertEqual([c.rank for c in everything.candidates], list(range(len(everything.candidates))))
+        led = everything.ledger
+        self.assertEqual(len(led.rank), len(led))
+        for i, (ri, rk) in enumerate(zip(led.result_index, led.rank)):
+            if ri >= 0:
+                cand = everything.candidates[ri]
+                self.assertEqual(rk, cand.rank)
+                self.assertEqual(led.n_nodes[i], cand.n_nodes)
+                self.assertEqual(led.n_constants[i], cand.constant_count)
+                self.assertEqual(led.pareto_rank[i], cand.pareto_rank)
+                np.testing.assert_equal(led.score[i], cand.score)
+            else:
+                self.assertEqual(rk, -1)
+                self.assertTrue(np.isnan(led.score[i]) and np.isnan(led.mdl[i]))
+        with self.assertRaises(ValueError):
+            nsr.infer(x, y, refine_seed=0, top_k='some')
 
     def _assert_valid_results(self, nsr: FlashANSR) -> None:
         self.assertFalse(nsr.results.empty, "Expected at least one candidate result")
