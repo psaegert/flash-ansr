@@ -268,7 +268,7 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         len(expression_tokens),
         constant_count,
         payload.get('log_prob'),
-        payload['length_penalty'],
+        payload['node_penalty'],
         payload['constants_penalty'],
         payload['likelihood_penalty'],
     )
@@ -418,7 +418,7 @@ class FlashANSR(BaseEstimator):
         ``{'loc': 0.0, 'scale': 5.0}`` for the normal distribution.
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
         Desired NumPy error handling strategy applied during constant refinement.
-    length_penalty : float, optional
+    node_penalty : float, optional
         Penalty coefficient that discourages overly long expressions.
     constants_penalty : float, optional
         Penalty coefficient applied to the number of constants present in an expression.
@@ -452,12 +452,12 @@ class FlashANSR(BaseEstimator):
             complexity: int,
             constant_count: int,
             log_prob: float | None,
-            length_penalty: float,
+            node_penalty: float,
             constants_penalty: float,
             likelihood_penalty: float) -> float:
         return score_from_fvu(
             fvu, complexity, constant_count, log_prob,
-            length_penalty, constants_penalty, likelihood_penalty)
+            node_penalty, constants_penalty, likelihood_penalty)
 
     def _score_log_probs_batch(
             self,
@@ -753,7 +753,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            length_penalty: float = 0.05,
+            node_penalty: float = 0.05,
             constants_penalty: float = 0.0,
             likelihood_penalty: float = 0.0,
             refiner_workers: int | None = None,
@@ -779,7 +779,7 @@ class FlashANSR(BaseEstimator):
         # predicts the typed literals (exponents, root indices), the refiner fits the rest.
         self.refiner_scope: RefineScope = refiner_scope
         self.numpy_errors = numpy_errors
-        self.length_penalty = length_penalty
+        self.node_penalty = node_penalty
         self.constants_penalty = float(constants_penalty)
         self.likelihood_penalty = float(likelihood_penalty)
         self.prune_constant_budget = max(0.0, float(prune_constant_budget))
@@ -841,7 +841,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            length_penalty: float = 0.05,
+            node_penalty: float = 0.05,
             constants_penalty: float = 0.0,
             likelihood_penalty: float = 0.0,
             device: str = 'cpu',
@@ -868,7 +868,7 @@ class FlashANSR(BaseEstimator):
             resolves to ``{'loc': 0.0, 'scale': 5.0}``.
         numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
             NumPy floating-point error policy applied during refinement.
-        length_penalty : float, optional
+        node_penalty : float, optional
             Length penalty used when compiling results.
         constants_penalty : float, optional
             Penalty applied per constant present in the expression during
@@ -927,7 +927,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             refiner_scope=refiner_scope,
             numpy_errors=numpy_errors,
-            length_penalty=length_penalty,
+            node_penalty=node_penalty,
             constants_penalty=constants_penalty,
             likelihood_penalty=likelihood_penalty,
             refiner_workers=refiner_workers,
@@ -1024,7 +1024,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': 'ignore',
                 'numpy_errors': self.numpy_errors,
                 'y_variance': 1.0,
-                'length_penalty': self.length_penalty,
+                'node_penalty': self.node_penalty,
                 'constants_penalty': self.constants_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': None,
@@ -1865,7 +1865,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': converge_error,
                 'numpy_errors': self.numpy_errors,
                 'y_variance': gs.y_variance,
-                'length_penalty': self.length_penalty,
+                'node_penalty': self.node_penalty,
                 'constants_penalty': self.constants_penalty,
                 'likelihood_penalty': self.likelihood_penalty,
                 'complexity': gs.complexity,
@@ -2044,7 +2044,7 @@ class FlashANSR(BaseEstimator):
                                 'converge_error': converge_error,
                                 'numpy_errors': self.numpy_errors,
                                 'y_variance': gs.y_variance,
-                                'length_penalty': self.length_penalty,
+                                'node_penalty': self.node_penalty,
                                 'constants_penalty': self.constants_penalty,
                                 'likelihood_penalty': self.likelihood_penalty,
                                 'complexity': gs.complexity,
@@ -2056,7 +2056,7 @@ class FlashANSR(BaseEstimator):
                     refinement_time += time.time() - _t_prune_ref
 
         sorted_results, results_df = self._compile_results_pure(
-            results, self.length_penalty, self.constants_penalty, self.likelihood_penalty, allow_empty=allow_empty)
+            results, self.node_penalty, self.constants_penalty, self.likelihood_penalty, allow_empty=allow_empty)
 
         return FitResult(
             results=sorted_results,
@@ -2078,16 +2078,16 @@ class FlashANSR(BaseEstimator):
 
     def compile_results(
             self,
-            length_penalty: float | None = None,
+            node_penalty: float | None = None,
             constants_penalty: float | None = None,
             likelihood_penalty: float | None = None) -> None:
         """Aggregate refiner outputs into a tidy `pandas.DataFrame`.
 
         Parameters
         ----------
-        length_penalty : float, optional
+        node_penalty : float, optional
             Length penalty applied during score recomputation. Defaults to the
-            current ``length_penalty`` value on the model.
+            current ``node_penalty`` value on the model.
         constants_penalty : float, optional
             Constant-count penalty applied during score recomputation. Defaults
             to the current ``constants_penalty`` value on the model.
@@ -2104,10 +2104,10 @@ class FlashANSR(BaseEstimator):
             raise ConvergenceError("The optimization did not converge for any beam")
 
         # CALL-SCOPED overrides. These used to be written onto self, so a parsimony sweep
-        # (`for lp in (...): compile_results(length_penalty=lp)`) left the estimator permanently
+        # (`for lp in (...): compile_results(node_penalty=lp)`) left the estimator permanently
         # reconfigured at the last value swept, and every SUBSEQUENT fit() silently scored and
         # ranked under it. Scoring parameters change ranking; they must not change by side effect.
-        effective_length = self.length_penalty if length_penalty is None else float(length_penalty)
+        effective_length = self.node_penalty if node_penalty is None else float(node_penalty)
         effective_constants = self.constants_penalty if constants_penalty is None else float(constants_penalty)
         effective_likelihood = self.likelihood_penalty if likelihood_penalty is None else float(likelihood_penalty)
 
@@ -2117,7 +2117,7 @@ class FlashANSR(BaseEstimator):
     def _compile_results_pure(
             self,
             results: list[Any],
-            length_penalty: float,
+            node_penalty: float,
             constants_penalty: float,
             likelihood_penalty: float,
             *,
@@ -2148,7 +2148,7 @@ class FlashANSR(BaseEstimator):
                         len(result['expression']),
                         constant_count,
                         log_prob,
-                        length_penalty,
+                        node_penalty,
                         constants_penalty,
                         likelihood_penalty,
                     )
@@ -2562,7 +2562,7 @@ class FlashANSR(BaseEstimator):
         input_dim = self._input_dim if self._input_dim is not None else self.n_variables
         metadata = {
             "format_version": RESULTS_FORMAT_VERSION,
-            "length_penalty": self.length_penalty,
+            "node_penalty": self.node_penalty,
             "constants_penalty": self.constants_penalty,
             "likelihood_penalty": self.likelihood_penalty,
             "n_variables": self.n_variables,
@@ -2580,12 +2580,24 @@ class FlashANSR(BaseEstimator):
         metadata = payload.get("metadata", {})
 
         version = int(payload.get("version", 0))
+        if version < 2 or "length_penalty" in metadata:
+            # v1 spelled the node penalty `length_penalty`. Reading such a payload here would hit
+            # the `metadata.get("node_penalty", <estimator default>)` fallback below and SILENTLY
+            # rescore the restored table at this estimator's penalty instead of the file's -- the
+            # same silent-default-inheritance defect that left every srbf run ranking at 0.0. The
+            # rename is a clean break, so refuse the payload and say exactly what to do about it.
+            raise ValueError(
+                f"Results payload version {version} predates the length_penalty -> node_penalty "
+                f"rename (format version {RESULTS_FORMAT_VERSION}). Its penalty cannot be read "
+                f"without silently substituting this estimator's own value. Re-save it with a "
+                f"build from before the rename, or re-run fit() and save again."
+            )
         if version != RESULTS_FORMAT_VERSION:
             warnings.warn(
                 f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
             )
 
-        length_penalty = float(metadata.get("length_penalty", getattr(self, "length_penalty", 0.0)))
+        node_penalty = float(metadata.get("node_penalty", getattr(self, "node_penalty", 0.0)))
         constants_penalty = float(metadata.get("constants_penalty", getattr(self, "constants_penalty", 0.0)))
         likelihood_penalty = float(metadata.get("likelihood_penalty", getattr(self, "likelihood_penalty", 0.0)))
         n_variables = int(metadata.get("n_variables", self.n_variables))
@@ -2595,7 +2607,7 @@ class FlashANSR(BaseEstimator):
         # The file's penalties are USED to rescore the restored results, but they are not adopted:
         # loading someone else's saved run must not silently reconfigure this estimator's scoring
         # for every subsequent fit(). Warn when they differ so the difference is visible.
-        for name, restored_value in (("length_penalty", length_penalty),
+        for name, restored_value in (("node_penalty", node_penalty),
                                      ("constants_penalty", constants_penalty),
                                      ("likelihood_penalty", likelihood_penalty)):
             current = float(getattr(self, name, 0.0))
@@ -2616,7 +2628,7 @@ class FlashANSR(BaseEstimator):
 
         self._results = restored
         self.compile_results(
-            length_penalty=length_penalty,
+            node_penalty=node_penalty,
             constants_penalty=constants_penalty,
             likelihood_penalty=likelihood_penalty,
         )

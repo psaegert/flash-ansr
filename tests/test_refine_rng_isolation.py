@@ -29,7 +29,7 @@ def _payload(seed):
         'converge_error': 'ignore',
         'numpy_errors': 'ignore',
         'y_variance': float(np.var(y)),
-        'length_penalty': 0.0,
+        'node_penalty': 0.0,
         'constants_penalty': 0.0,
         'likelihood_penalty': 0.0,
         'log_prob': None,

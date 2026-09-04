@@ -43,7 +43,7 @@ def test_serialize_and_deserialize_rebuilds_refiner(tmp_path, simplipy_engine: S
 
     metadata = {
         "format_version": RESULTS_FORMAT_VERSION,
-        "length_penalty": 0.1,
+        "node_penalty": 0.1,
         "constants_penalty": 0.0,
         "likelihood_penalty": 0.0,
         "n_variables": 1,
@@ -84,7 +84,7 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     results = [_make_result_entry(expr)]
 
     payload = serialize_results_payload(results, metadata={
-        "length_penalty": 0.1,
+        "node_penalty": 0.1,
         "constants_penalty": 0.0,
         "likelihood_penalty": 0.0,
     })
@@ -132,7 +132,7 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        length_penalty=0.0,
+        node_penalty=0.0,
         constants_penalty=0.0,
         likelihood_penalty=0.0,
     )
@@ -152,7 +152,7 @@ def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engi
         directory=model_dir,
         generation_config=generation_config,
         n_restarts=4,
-        length_penalty=0.0,
+        node_penalty=0.0,
         constants_penalty=0.0,
         likelihood_penalty=0.0,
     )

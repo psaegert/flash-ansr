@@ -48,7 +48,7 @@ CHECKPOINT = "path/to/checkpoint"
 model = FlashANSR.load(
   directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),
-  length_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
+  node_penalty=0.05,  # prefer shorter expressions when scoring candidates (renamed from `parsimony` in v0.5)
 ).to(device)
 
 # Define data: a small synthetic example, y = 2.5 * sin(x) + x^2 / 3
@@ -108,7 +108,7 @@ To reproduce v0.4.x inference behavior, opt out of the new defaults:
 SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-> **Breaking change (v0.5):** the candidate-selection penalty `parsimony` was renamed to `length_penalty`. Replace any `parsimony=` arguments with `length_penalty=`.
+> **Breaking change (v0.5):** the candidate-selection penalty `parsimony` was renamed to `node_penalty`. Replace any `parsimony=` arguments with `node_penalty=`.
 
 # Overview
 

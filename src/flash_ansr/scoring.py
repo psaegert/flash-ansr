@@ -72,10 +72,10 @@ def compute_fvu(loss: float, sample_count: int, variance: float) -> float:
 
 def score_from_fvu(
         fvu: float,
-        complexity: int,
+        n_nodes: int,
         constant_count: int,
         log_prob: float | None,
-        length_penalty: float,
+        node_penalty: float,
         constants_penalty: float,
         likelihood_penalty: float) -> float:
     """Parsimony-penalised selection score ``log10(FVU) + structural penalties`` (lower is better).
@@ -97,7 +97,7 @@ def score_from_fvu(
         likelihood_term = likelihood_penalty * (-float(log_prob))
 
     return float(np.log10(safe_fvu)
-                 + length_penalty * complexity
+                 + node_penalty * n_nodes
                  + constants_penalty * max(int(constant_count), 0)
                  + likelihood_term)
 

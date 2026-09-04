@@ -13,7 +13,10 @@ from flash_ansr.refine import ConvergenceError, Refiner
 from flash_ansr.scoring import count_constants, is_constant_token
 from flash_ansr.utils.paths import substitute_root_path
 
-RESULTS_FORMAT_VERSION = 1
+# 2: `length_penalty` renamed to `node_penalty` in the saved metadata (2026-09-04). The rename is a
+# clean break with no alias, so a v1 payload's penalty CANNOT be read by this version -- see
+# FlashANSR.load_results, which refuses it rather than silently rescoring at the estimator default.
+RESULTS_FORMAT_VERSION = 2
 
 
 def _is_constant_token(token: str) -> bool:
@@ -27,7 +30,7 @@ def _count_constants(expression: Iterable[str] | None) -> int:
 def compile_results_table(
     results: Iterable[dict[str, Any]],
     *,
-    length_penalty: float,
+    node_penalty: float,
     constants_penalty: float,
     likelihood_penalty: float,
     score_from_fvu: Callable[[float, int, int, float | None, float, float, float], float],
@@ -49,7 +52,7 @@ def compile_results_table(
                 len(result.get("expression", [])),
                 constant_count,
                 log_prob,
-                length_penalty,
+                node_penalty,
                 constants_penalty,
                 likelihood_penalty,
             )

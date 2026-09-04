@@ -157,3 +157,35 @@ def test_score_less_row_raises_keyerror_documented_inconsistency() -> None:
     rows = [{"expression": ["x1"], "fvu": 0.25, "log_prob": None, "constant_count": 0}]
     with pytest.raises(KeyError):
         FlashANSR._compile_results_pure(_Shim(), rows, 0.0, 0.0, 0.0)
+
+
+def test_pre_rename_results_payload_is_refused(tmp_path) -> None:
+    """A v1 payload spelled the penalty `length_penalty`; loading it must raise, not default.
+
+    Without this, ``metadata.get("node_penalty", <estimator default>)`` would silently rescore the
+    restored table at this estimator's penalty instead of the file's.
+    """
+    import pickle
+
+    from flash_ansr.results import RESULTS_FORMAT_VERSION
+
+    assert RESULTS_FORMAT_VERSION >= 2, "the rename bumped the format version"
+
+    # save_results_payload writes a pickle, so the stale fixture must be one too
+    stale = tmp_path / "v1_results.pkl"
+    with stale.open("wb") as handle:
+        pickle.dump({
+            "version": 1,
+            "metadata": {"length_penalty": 0.2, "constants_penalty": 0.0, "likelihood_penalty": 0.0},
+            "results": [],
+        }, handle)
+
+    from flash_ansr.flash_ansr import FlashANSR
+
+    class _Stub:
+        node_penalty = 0.05
+        constants_penalty = 0.0
+        likelihood_penalty = 0.0
+
+    with pytest.raises(ValueError, match="predates the length_penalty -> node_penalty rename"):
+        FlashANSR.load_results(_Stub(), str(stale))

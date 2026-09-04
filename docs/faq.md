@@ -35,7 +35,7 @@ from flash_ansr import SoftmaxSamplingConfig
 SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-Also note the v0.5 rename: the candidate-selection penalty `parsimony` is now `length_penalty`.
+Also note the v0.5 rename: the candidate-selection penalty `parsimony` is now `node_penalty`.
 
 ### How do I evaluate a model and run benchmarks?
 

@@ -76,10 +76,10 @@ class TestScoringPrimitives:
             score_from_fvu,
             {
                 "fvu",
-                "complexity",
+                "n_nodes",
                 "constant_count",
                 "log_prob",
-                "length_penalty",
+                "node_penalty",
                 "constants_penalty",
                 "likelihood_penalty",
             },
@@ -268,7 +268,7 @@ class TestFlashANSR:
 
         _assert_has_params(
             FlashANSR.compile_results,
-            {"length_penalty", "constants_penalty", "likelihood_penalty"},
+            {"node_penalty", "constants_penalty", "likelihood_penalty"},
         )
 
     def test_results_attribute_present(self):
