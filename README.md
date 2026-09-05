@@ -56,9 +56,9 @@ model = FlashANSR.load(
   ranking_mode="mdl",
 ).to(device)
 
-# Define data: a small synthetic example, y = 2.5 * sin(x) + x^2 / 3
+# Define data: a small synthetic example, y = 2 * x + sin(3 * x)
 X = np.linspace(-5, 5, 100).reshape(-1, 1)
-y = 2.5 * np.sin(X[:, 0]) + X[:, 0] ** 2 / 3
+y = 2 * X[:, 0] + np.sin(3 * X[:, 0])
 
 # Fit the model to the data
 model.fit(X, y, verbose=True)

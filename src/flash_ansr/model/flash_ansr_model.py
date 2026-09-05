@@ -194,9 +194,8 @@ class FlashANSRModel(nn.Module):
         # mutual amplification between this projection's byte-token rows and the head's
         # internal activations (||h|| 22 -> 207 over 500k steps at byte positions; the
         # trunk is protected by decoder.output_norm, the head MLP re-amplifies). The norm
-        # bounds h and removes the amplifier structurally. Owner ruling 2026-09-01:
-        # v26 trains with this norm and WITHOUT z-loss; z-loss is the v25 resume patch
-        # only. Default False so existing checkpoints load unchanged.
+        # bounds h and removes the amplifier structurally. Default False so existing
+        # checkpoints load unchanged.
         self.head_pre_logits_norm = bool(head_pre_logits_norm)
         head_layers: list[nn.Module] = [
             nn.Linear(decoder_model_dim, decoder_model_dim),

@@ -114,8 +114,7 @@ remains their pairing. Requires `simplipy>=0.14.6,<0.15` and `symbolic-data>=0.1
   numeric-token bit encodings at positions without a numeric payload; the previous guard checked
   `isnan` on the bit encodings, which are never NaN, and so never fired). All default to the
   legacy behaviour so existing checkpoints load and run bit-identically.
-- **Trainer.** `z_loss_weight` (default 0): a log² Z regulariser on the supervised positions,
-  logged as `train_z_loss` / `val_z_loss`. `validate_num_workers` (config key, `-vw` on the CLI,
+- **Trainer.** `validate_num_workers` (config key, `-vw` on the CLI,
   `run()` override): the validation pool coexists with the training pool for the whole run, so it
   gets its own worker count instead of doubling the fleet.
 - **Streaming worker pools can outlive one `iterate()`.** `iterate(keep_alive=True)` leaves a

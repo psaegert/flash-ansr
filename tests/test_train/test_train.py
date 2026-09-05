@@ -78,7 +78,6 @@ def _build_dummy_trainer() -> Trainer:
     trainer.metrics_ignore_index = -100
     trainer.cross_entropy_loss = torch.nn.CrossEntropyLoss(ignore_index=-100)
     trainer.outlier_loss_weight = 0.0
-    trainer.z_loss_weight = 0.0
     trainer.outlier_pos_weight = 1.0
     trainer.residual_loss_weight = 0.0
     trainer.residual_scale = 'none'

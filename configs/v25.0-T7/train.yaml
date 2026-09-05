@@ -64,9 +64,4 @@ outlier_pos_weight: 1.0
 # Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
 # statistics need every micro-batch's scores on the host, so they run on an interval.
 outlier_metrics_interval: 50
-# No z-loss (owner ruling 2026-09-02: no old workarounds since T6). The v25.x runs carried
-# z_loss_weight 1e-4 as the stopgap against the shared byte-logit offset runaway (T4 at
-# ~648k); T6 removed the pathway instead: model.yaml head_pre_logits_norm normalizes the
-# head input before the final projection. val_z_loss stays logged (weight 0) as a monitor.
-z_loss_weight: 0.0
 device: cuda

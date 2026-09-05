@@ -1,6 +1,6 @@
 # v25.0-T7-20M: the T7 arm at 20M parameters over 1.5M steps (solomon RTX 4090). Data and training
 # pins are T7's verbatim (catalog_train.yaml with the depth and width priors on the plain sampler,
-# trapezoid, AdamW, head_pre_logits_norm, z-loss 0, symbolic-data 0.18.0, simplipy 0.14.6); only
+# trapezoid, AdamW, head_pre_logits_norm, symbolic-data 0.18.0, simplipy 0.14.6); only
 # model.yaml (the 20M shape) and the step budget differ.
 #
 # Steps: 1.5M (owner ruling 2026-09-04). The trapezoid keeps T7's 1/79/20 proportions: warmup 15k,
@@ -65,9 +65,4 @@ outlier_pos_weight: 1.0
 # Cadence for the outlier head's AUROC/AUPRC. The loss is logged every step; the rank
 # statistics need every micro-batch's scores on the host, so they run on an interval.
 outlier_metrics_interval: 50
-# No z-loss (owner ruling 2026-09-02: no old workarounds since T6). The v25.x runs carried
-# z_loss_weight 1e-4 as the stopgap against the shared byte-logit offset runaway (T4 at
-# ~648k); T6 removed the pathway instead: model.yaml head_pre_logits_norm normalizes the
-# head input before the final projection. val_z_loss stays logged (weight 0) as a monitor.
-z_loss_weight: 0.0
 device: cuda
