@@ -43,7 +43,7 @@ The `catalog_*.yaml` itself is a generative recipe; its `type: lample_charton` r
 ```bash
 ./scripts/train.sh test   # uses tiny fixtures; finishes quickly
 ```
-Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokenizer.yaml`, and `state_dict.pt`.
+Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokenizer.yaml`, and `model.safetensors`.
 
 ## Helper scripts
 - `./scripts/train.sh <config>`: convenience wrapper to launch `flash_ansr train` with the bundle (`configs/<config>/train.yaml`).
@@ -94,7 +94,7 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 6. **Resume**: continue from any checkpoint directory using `--resume-from` (optionally `--resume-step` when the step cannot be inferred).
 
 ### Resuming training
-- Checkpoints are written under `<output-dir>/checkpoint_<step>/` when `-ci/--checkpoint-interval` is set. Each checkpoint contains `state_dict.pt` (model), `optimizer.pt`, `lr_scheduler.pt`, `scaler.pt`, and `training_state.pt` with the recorded `step`.
+- Checkpoints are written under `<output-dir>/checkpoint_<step>/` when `-ci/--checkpoint-interval` is set. Each checkpoint contains `model.safetensors` (model, with `model.yaml` and `tokenizer.yaml`), `optimizer.pt`, `lr_scheduler.pt`, `scaler.pt`, and `training_state.pt` with the recorded `step`.
 - Resume with the same config you trained with and point `--resume-from` at the checkpoint directory:
     ```bash
     flash_ansr train \
@@ -120,4 +120,4 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 - Set the validation frequency (`-vi/--validate-interval`) to track generalization.
 
 ## Exporting checkpoints
-- Use `FlashANSRModel.save` outputs (`model.yaml`, `tokenizer.yaml`, `state_dict.pt`) together; consumers expect the trio.
+- Use `FlashANSRModel.save` outputs (`model.yaml`, `tokenizer.yaml`, `model.safetensors`) together; consumers expect the trio.

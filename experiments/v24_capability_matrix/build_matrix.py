@@ -45,15 +45,15 @@ F32_EPS = float(np.finfo(np.float32).eps)
 
 #: arm label -> (row file, key within the file, fvu field). `key` indexes into a dict-of-lists file.
 ARMS: dict[str, tuple[str, str | None, str]] = {
-    "1. v23.0-3M baseline":                ("t16_vs_v23_fastsrb_rows.json", "v23.0-3M", "fvu"),
-    "2. mask_all + random init":           ("cap1b_rows.json", None, "fvu"),
-    "3. mask_fittable + random init":      ("cap6a_rows.json", None, "fvu"),
-    "4. mask_all + infill init":           ("cap6_mask_all_infill_rows.json", None, "fvu"),
-    "5. mask_fittable + infill init":      ("cap6_mask_fittable_infill_rows.json", None, "fvu"),
-    "6. unflagged, as emitted":            ("cap1_rows.json", None, "fvu_emitted"),
-    "7. compacted, as emitted":            ("cap6d_rows.json", None, "fvu_emitted"),
-    "8. compacted + refine":               ("cap6d_rows.json", None, "fvu_refined"),
-    "9. spans kept + refine (reference)":  ("cap1_rows.json", None, "fvu_refined"),
+    "1. v23.0-3M baseline": ("t16_vs_v23_fastsrb_rows.json", "v23.0-3M", "fvu"),
+    "2. mask_all + random init": ("cap1b_rows.json", None, "fvu"),
+    "3. mask_fittable + random init": ("cap6a_rows.json", None, "fvu"),
+    "4. mask_all + infill init": ("cap6_mask_all_infill_rows.json", None, "fvu"),
+    "5. mask_fittable + infill init": ("cap6_mask_fittable_infill_rows.json", None, "fvu"),
+    "6. unflagged, as emitted": ("cap1_rows.json", None, "fvu_emitted"),
+    "7. compacted, as emitted": ("cap6d_rows.json", None, "fvu_emitted"),
+    "8. compacted + refine": ("cap6d_rows.json", None, "fvu_refined"),
+    "9. spans kept + refine (reference)": ("cap1_rows.json", None, "fvu_refined"),
 }
 
 BASELINE = "1. v23.0-3M baseline"

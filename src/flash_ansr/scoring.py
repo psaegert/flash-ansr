@@ -242,11 +242,16 @@ class RankingConfig:
     metrics: tuple[str, ...] = ()                     # 'pareto' only
     tie_break: str | None = None                      # 'pareto' only
 
+    def _mdl_strength_value(self) -> float:
+        if self.mdl_strength is None:
+            raise RankingError("ranking_mode='mdl' carries no mdl_strength; build the config through resolve_ranking")
+        return float(self.mdl_strength)
+
     @property
     def effective_weights(self) -> dict[str, float]:
         """The scalar addends this ranking applies (empty for `pareto`, whose score is nan)."""
         if self.mode == 'mdl':
-            return {'mdl': float(self.mdl_strength)}
+            return {'mdl': self._mdl_strength_value()}
         if self.mode == 'weighted':
             return {k: float(v) for k, v in self.weights.items()}
         return {}
@@ -255,7 +260,7 @@ class RankingConfig:
         """Plain, picklable, YAML-able record of the resolved values -- what provenance stores."""
         out: dict[str, Any] = {'mode': self.mode}
         if self.mode == 'mdl':
-            out['mdl_strength'] = float(self.mdl_strength)
+            out['mdl_strength'] = self._mdl_strength_value()
         elif self.mode == 'weighted':
             out['weights'] = {k: float(v) for k, v in sorted(self.weights.items())}
         else:

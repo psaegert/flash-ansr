@@ -18,9 +18,14 @@ from flash_ansr.tasks import (
 
 
 class _Tok:
-    def __init__(self, names): self._m = {n: i for i, n in enumerate(names)}
-    def __contains__(self, k): return k in self._m
-    def __getitem__(self, k): return self._m[k]
+    def __init__(self, names):
+        self._m = {n: i for i, n in enumerate(names)}
+
+    def __contains__(self, k):
+        return k in self._m
+
+    def __getitem__(self, k):
+        return self._m[k]
 
 
 class _Engine:

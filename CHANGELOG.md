@@ -6,272 +6,326 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-05
+
+The first release of the third model generation. Constants are binary64 values spelled as byte
+tokens, weights are safetensors, candidate ranking has three modes with MDL as the default, and
+every circumstance a model is trained on has a public verb. The reference checkpoint is
+[`psaegert/flash-ansr-v25.0-T7-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T7-3M).
+Generation-1 (v23) checkpoints and configs are not served by this line; `pip install "flash-ansr<0.13"`
+remains their pairing. Requires `simplipy>=0.14.6,<0.15` and `symbolic-data>=0.18,<0.19`.
+
+### Added
+- **One verb per trained circumstance.** `fit` and `infer` are the fitting verbs. `predict_y`
+  interpolates a point set (or, with `expression=`, evaluates the given expression at the query
+  points), `predict_complexity` asks the model for its own complexity hypothesis under the
+  `<hypothesize>` licence and records whether it would have opened the block unprompted,
+  `predict_constants` samples the constants of an expression from the model's posterior (the
+  `<predict_constants>` infilling block, restricted to the byte alphabet as in training, with
+  per-byte log-probabilities and a count of steps whose unrestricted argmax would have left it),
+  and `score_outliers` returns raw per-point outlier probabilities from the encoder head. Every
+  verb refuses at call time, before the encoder runs, when the checkpoint lacks the block it needs,
+  and `v1..vn` variable aliases resolve once at the boundary.
+- **`conditioned=` on every decoder verb, and `predict_y(expression=...)`.** `condition_dropout`
+  routes a share of training instances to the learned `null_memory`, and the `<predict_y>` block
+  is written in two placements, before `<expression>` (data alone) or after it (data and
+  expression). `fit`, `infer`, `predict_y`, `predict_constants` and `predict_complexity` take
+  `conditioned=` (default `True`); `predict_y` takes `expression=`; `X`/`y` may be `None`
+  whenever `conditioned=False`. On a checkpoint without `optional_condition` the knob raises
+  `CapabilityUnavailable` rather than silently conditioning. `score_outliers` has no such knob:
+  the head reads the encoder directly and has no null path. `fit(conditioned=False)` proposes
+  from the prior and fits to the data; the data still selects the winner, it just does not shape
+  the proposals.
+- **`emission=` on `fit` / `infer` / `predict`**: `'fittable'` (default) has the model spell the
+  typed literals and leave every fittable constant as a placeholder for the refiner;
+  `'constants'` is the unflagged training format in which the model predicts every constant.
+- **`complexity=` conditioning speaks the trained grammar.** The `<complexity> <float>
+  </complexity>` block is emitted bare as a prefix element with mu on the numeric channel, exactly
+  as training wrote it. `Candidate.mu` reports simplipy's complexity of the skeleton (the unit the
+  prompt consumes), computed over the refined survivors and `None` when the engine will not price
+  a dialect.
+- **`refiner_scope`: which literals the refiner may move.** The model predicts the typed
+  literals, `pow` exponents and `rootn` indices, whose value fixes the expression's domain rather
+  than its magnitude, and the refiner fits the rest. `Refiner.fit(..., refine_scope=)`,
+  `FlashANSR(refiner_scope=)` / `FlashANSR.load(refiner_scope=)` accept `'fittable'` (default:
+  every `<constant>` slot plus every spelled literal simplipy's `mask_fittable` policy would
+  abstract; typed literals stay verbatim), `'placeholders'` (only the slots; every spelled literal
+  is compiled in) and `'all'` (every literal, typed ones included).
+  `flash_ansr.refine.refinement_slots` is the one slot definition the refiner and the verbatim
+  seeding share, so `p0` stays aligned by construction and seeds every freed spelling (`-2`,
+  `2.5`, `3/2`), not only digit-only tokens.
+- **`infer(top_k='all')`** predicts every refined candidate on the support and validation sets;
+  `CandidateLedger` carries `n_nodes`, `n_constants`, `mdl`, `score`, `pareto_rank`, `rank` and
+  `result_index` (copied from the refined rows, never re-derived from beam ids) so a persisted
+  ledger can be re-ranked offline and checked against the live rank 0. `Candidate` gains
+  `constants_emitted`, the constants as the model predicted them before refinement, next to the
+  refined `constants`.
+- **Model weights are safetensors.** `model.safetensors` replaces `state_dict.pt` everywhere
+  weights are written or read: `FlashANSRModel.save`/`load`, the set encoder, `FlashANSR.load`,
+  and the trainer's resume path. Weights are the artifact people download, so they are stored in
+  the format the ecosystem reads: a flat tensor map with a JSON header, no pickle, memory-mappable,
+  framework-agnostic. Optimiser, scaler, scheduler and `training_state` stay on `torch.save`.
+  `flash_ansr convert-weights <dir>...` writes `model.safetensors` beside an existing
+  `state_dict.pt`; legacy pickles are no longer read, and the `FileNotFoundError` names the
+  command. The converter refuses a state dict carrying non-tensor entries rather than dropping
+  them silently.
+- **Training tasks around the expression.** All of them are config-gated, absent from the batch
+  surface when unconfigured, and pin their priors explicitly:
+  - a **noise mixture** streams noisy targets to the encoder, keeps the clean targets for the
+    tasks that must not learn the noise, and labels every contaminated support point;
+  - a **per-point outlier head** on the set encoder trains against those labels with a BCE
+    auxiliary loss (`outlier_loss_weight`, `outlier_pos_weight`), parameter-free when off so
+    existing checkpoints load unchanged;
+  - the **`<complexity>` block** conditions on or predicts the complexity of the masked target,
+    as a full-precision byte span or as a one-token `<float>` summary; under the
+    **`<hypothesize>`** flag, inserted by the harness and never supervised, the model opens the
+    block itself and everything after the flag carries loss;
+  - the **`<predict_y>` block** holds out one accepted support point and has the model spell its
+    clean target, placed before the expression (interpolation) or after it (evaluation);
+  - the **`<mask_all>` / `<mask_fittable>` flags** select simplipy's masking policy for the emitted
+    expression, so a caller chooses per call whether constants are predicted or placeheld for a
+    downstream fitter;
+  - the **`<predict_constants>` block** carries one byte span per placeholder after the
+    expression, positionally bound, so which constants to predict is stated by the expression
+    itself; a partial circumstance masks a random subset of slots on a share of unflagged
+    instances so infilling stays in-distribution without a flag;
+  - the **`<predict_residual>` block** reports how far the observation at a queried point sits off
+    the law (`residual_block`, requires a noise mixture): the coordinates are caller-supplied and
+    compact, the displacement is predicted and therefore a byte span; the point stays in the
+    encoder's support and is drawn from what `<predict_y>` left, so the two never query the same
+    one, and the block is dropped on an unconditioned instance rather than moved.
+  Commutative prompt elements are permuted per instance so none welds to a position; the
+  hypothesis element is pinned last.
+- **Training metrics.** Per-task cross-entropy curves, the `ce_split/{train,val}/` family (every
+  task crossed with its conditioning circumstance: expression by data conditioning, by complexity
+  presence, by mask policy; `predict_y` by placement and by masked context; constants by flagged
+  or partial), the `expression/anchor` split shared by every arm, the composite `val_loss`, and
+  every model-quality metric on both sides: `train_outlier_auroc` next to `val_outlier_auroc`,
+  with AUPRC alongside. Outlier AUROC/AUPRC are logged on an interval (`outlier_metrics_interval`,
+  default 50) because they are rank statistics over every micro-batch's scores; the outlier loss
+  is logged every step.
+- **Model flags.** `pre_encoder_bits` (16, 32 or 64: one `IEEE754PreEncoder` over every width,
+  with the encoder input dimension following the format; the named subclasses stay as aliases),
+  `head_pre_logits_norm` (a LayerNorm between the head MLP and the logit projection, bounding the
+  norm growth of the byte-token logit rows that cross-entropy cannot see), `outlier_head`,
+  `encoder_mask_query_norms` (threads the support-set padding mask into the ISAB self-refinement
+  blocks' query and residual-stream SetNorms and zeroes sub-layer outputs on padded query rows,
+  so a sample's encoding is invariant to padding length) and `sanitize_input_num` (zeroes the
+  numeric-token bit encodings at positions without a numeric payload; the previous guard checked
+  `isnan` on the bit encodings, which are never NaN, and so never fired). All default to the
+  legacy behaviour so existing checkpoints load and run bit-identically.
+- **Trainer.** `z_loss_weight` (default 0): a log² Z regulariser on the supervised positions,
+  logged as `train_z_loss` / `val_z_loss`. `validate_num_workers` (config key, `-vw` on the CLI,
+  `run()` override): the validation pool coexists with the training pool for the whole run, so it
+  gets its own worker count instead of doubling the fleet.
+- **Streaming worker pools can outlive one `iterate()`.** `iterate(keep_alive=True)` leaves a
+  fully drained stream's pool running so the next identical call reuses it; the caller then owns
+  the pool and must `shutdown()`. Validation uses it. An abandoned generator still shuts down,
+  and a live pool raises rather than silently serving a request built for different settings.
+- **Forbidden non-finite token guard on the simplification path.** `float("inf")` /
+  `float("-inf")` / `float("nan")` are encodable vocabulary tokens, and SimpliPy folds a
+  degenerate sub-expression to one instead of failing, so such skeletons re-entered the candidate
+  stream as valid predictions. `flash_ansr.utils.skeleton.simplify_and_mask` now raises
+  `NonFiniteExpressionError`, every candidate producer drops the candidate and counts it
+  (`flash_ansr.utils.non_finite_drops()` / `reset_non_finite_drops()`), and the training-data
+  ingest direction propagates instead, since symbolic-data rejects these before yielding and one
+  arriving means a broken producer contract.
+- **`tokenizer.yaml` declares its `constants_format`**, and `Tokenizer.from_config` refuses a
+  vocabulary built for a different one, naming it. A vocabulary that declares nothing is
+  recognised by its alphabet: one that opens `<ieee754>` spans over the retired 16-symbol nibble
+  alphabet is refused with a message naming the `compat/v24-nibbles` tag that still serves it.
+- **Run configurations** for the third generation under `configs/v25.0-*` (the 3M `v25.0-T7`
+  recipe the reference checkpoint was trained with, and its 20M shape `v25.0-T7-20M`), with the
+  `v24.0-T13`..`T16` pilot and full-run configurations of the nibble lane kept for provenance.
+  The training catalogs hold out every catalog `srbf` evaluates on, 6,660 expressions across 29
+  catalogs, not only FastSRB.
+
 ### Changed
+- **Constants are IEEE-754 binary64, spelled as 8 byte tokens.** A serialized constant is
+  `<ieee754>` + 8 tokens from the 256-symbol `<b00>`..`<bff>` alphabet + `</ieee754>`: 10
+  tokens, the same span width as the retired hex-nibble format, over a wider alphabet and at
+  double precision. The serializer no longer narrows a fitted constant and no longer refuses a
+  finite value for exceeding a narrower format's range. Measured on generated data, 46.5% of
+  constants are values binary32 could not represent.
+- **The numeric width has one name.** Every numeric surface, encoder input, numeric channel,
+  constants, takes its dtype from `flash_ansr.utils.numeric.NUMERIC_DTYPE`. A width mismatch is
+  refused where it arises instead of surfacing as a silent cast.
+- **A number's spelling follows its producer.** What the model predicts is spelled in IEEE-754
+  bytes: expression constants, `<predict_y>`'s target, `<predict_constants>`' values. What the
+  caller supplies is a compact `<float>` carrying its value on the numeric channel: `<predict_y>`'s
+  coordinates, a stated complexity. `<float>` is forbidden at every generation position and never
+  appears inside an expression.
+- **`<hypothesize>` marks the boundary between what is given and what is generated.** Properties
+  before it are stated by the caller, compact, and may not be restated after it; everything after
+  it is the model's own and spelled in bytes. At inference the prompt ends at `<hypothesize>` when
+  present and at `<expression>` otherwise, so generation always begins at the last prompt token.
+  `mu`, `hypothesize` and `mask` compose in `complexity_prefix`. Query/answer blocks are exempt:
+  inside them the loss mask decides, so caller-supplied coordinates stay compact wherever the
+  block sits.
 - **Candidate ranking is one of three modes, and the default is MDL.** `FlashANSR` /
   `FlashANSR.load` take `ranking_mode` (`'mdl'` | `'weighted'` | `'pareto'`) and that mode's
-  knobs -- `mdl_strength` (decades of FVU per bit; default 1e-2, one decade per 100 bits), `ranking_weights` (a dict
-  over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl` (per bit),
-  `neg_log_prob`), `ranking_metrics` + `ranking_tie_break` (the non-dominated front's axes and
-  its within-front order; the tie-break may name a metric outside the set). A knob given with
-  another mode RAISES instead of lying dormant. `ranking_config()` returns the resolved values.
-  `compile_results` takes the same knobs, call-scoped, and never writes them back. The
-  `mdl` metric is simplipy's `complexity()` of the REALIZED expression (refined constants
-  substituted), priced in the refine worker; a candidate that cannot be priced sorts below every
-  priced one while `mdl` is weighted, and a pool with nothing priceable raises `RankingError`.
-  **Breaking:** the loose `node_penalty` / `constants_penalty` / `likelihood_penalty` /
-  `mdl_penalty` estimator arguments are gone; the pre-0.14 ranking is
-  `ranking_mode='weighted', ranking_weights={'n_nodes': 0.05}`.
+  knobs: `mdl_strength` (decades of FVU per bit; default 1e-2, one decade per 100 bits),
+  `ranking_weights` (a dict over `n_nodes`, `n_constants`, `n_constant_placeholders`,
+  `n_typed_literals`, `mdl` (per bit), `neg_log_prob`), `ranking_metrics` + `ranking_tie_break`
+  (the non-dominated front's axes and its within-front order; the tie-break may name a metric
+  outside the set). A knob given with another mode raises instead of lying dormant.
+  `ranking_config()` returns the resolved values. `compile_results` takes the same knobs,
+  call-scoped, and never writes them back. The `mdl` metric is simplipy's `complexity()` of the
+  realized expression (refined constants substituted), priced in the refine worker; a candidate
+  that cannot be priced sorts below every priced one while `mdl` is weighted, and a pool with
+  nothing priceable raises `RankingError`. **Breaking:** the loose `node_penalty` /
+  `constants_penalty` / `likelihood_penalty` / `mdl_penalty` estimator arguments are gone; the
+  pre-0.14 ranking is `ranking_mode='weighted', ranking_weights={'n_nodes': 0.05}`.
 - **Results format 2.** `save_results` writes the resolved `ranking` record in place of the four
-  loose penalties; `load_results` re-orders the restored table under the FILE's ranking (warning
+  loose penalties; `load_results` re-orders the restored table under the file's ranking (warning
   when it differs from the estimator's, never adopting it) and refuses a payload without one.
 - **`Candidate.complexity` is `Candidate.n_nodes`**; `Candidate` gains `mdl` (milli-bits of the
   realized expression), `pareto_rank` (-1 under a scalar ranking) and `rank` (position in the
   sorted list). `InferenceResult.to_dataframe()` carries them plus `mu`.
-- **`infer(top_k='all')`** predicts every refined candidate on the support and validation sets;
-  `CandidateLedger` carries `n_nodes`, `n_constants`, `mdl`, `score`, `pareto_rank`, `rank` and
-  `result_index` (copied from the refined rows, never re-derived from beam ids) so a persisted
-  ledger can be re-ranked offline and checked against the live rank 0.
-
-### Removed
-- `flash_ansr.results.compile_results_table`: a second scoring/sort implementation with a subtly
-  different guard. `FlashANSR._compile_results_pure` is the one sort.
-
-### Added
-- **`refiner_scope`: which literals the refiner may move.** The predict-vs-refine doctrine
-  (owner ruling 2026-09-02): the model PREDICTS the typed literals -- `pow` exponents and
-  `rootn` indices, whose value fixes the expression's domain rather than its magnitude -- and
-  the refiner fits the rest. `Refiner.fit(..., refine_scope=)`, `FlashANSR(refiner_scope=)` /
-  `FlashANSR.load(refiner_scope=)` accept `'fittable'` (default: every `<constant>` slot plus
-  every spelled literal simplipy's `mask_fittable` policy would abstract; typed literals stay
-  verbatim), `'placeholders'` (only the slots; every spelled literal is compiled in) and
-  `'all'` (every literal, typed ones included). `flash_ansr.refine.refinement_slots` is the
-  one slot definition the refiner and the T11 verbatim seeding share, so `p0` stays aligned
-  by construction and now seeds every freed spelling (`-2`, `2.5`, `3/2`), not only digit-only
-  tokens.
-
-### Changed
-- **The default `emission` is `'fittable'`** (`FlashANSR.fit` / `infer` / `predict`; was
-  `'constants'`): the application mode -- the model spells the typed literals and leaves every
-  fittable constant as a placeholder, which the refiner fits from random inits. Pass
-  `emission='constants'` for the unflagged training format.
+- **The default `emission` is `'fittable'`** (was `'constants'`): the application mode, in which
+  the model spells the typed literals and leaves every fittable constant as a placeholder that
+  the refiner fits from random inits. Pass `emission='constants'` for the unflagged format.
 - **The refiner no longer frees `pow` exponents by default.** It used simplipy's deprecated
   digit-only conversion, which turned `pow x1 2` into `pow x1 C_0` and then fitted a real
-  exponent from a random init -- `nan` on half the axis, the mechanism behind the measured
-  pow-family failures (oracle recovery on fastsrb 24% with exponents freed vs 77% with the
+  exponent from a random init, `nan` on half the axis and the mechanism behind the measured
+  pow-family failures (oracle recovery on FastSRB 24% with exponents freed against 77% with the
   literals fixed). Pass `refine_scope='all'` for the old behaviour.
-
-### Changed
-- **Streaming workers are spawned, not forked.** A trainer has CUDA initialised in the
-  parent by the time it opens a stream, and forking a CUDA process is undefined — the
-  child inherits driver state it never initialised. The pool now uses an explicit spawn
-  context. Everything a worker needs is passed explicitly and picklably: shared memory is
-  attached by name, and the source config is rebuilt into the worker's own `ProblemSource`.
-
-  Two consequences for callers. A **script** that opens a pool now needs an
-  `if __name__ == "__main__":` guard, because the child re-imports the main module (the
-  `flash_ansr` console entry point already has one). And pool creation costs a fresh
-  interpreter per worker: measured at 8 workers, start-up plus first batch goes from
-  0.87 s to 7.7 s. Steady-state throughput is unchanged — median ms/batch by quarter over
-  480 batches is 7.6 / 7.9 / 7.8 / 6.6 forked against 7.6 / 7.3 / 8.0 / 5.6 spawned — so
-  the cost is one-off per pool, which is also what `iterate(keep_alive=True)` exists to
-  amortise.
-
+- **Published constants are round-trip exact.** Every returned expression used to round its
+  constants to two decimals, so a converged `6.674e-11` printed as the zero function while the
+  reported FVU stayed near zero. Substitution is exact by default; `precision=` on
+  `get_expression` is a display-only opt-in.
+- **The decode boundary keeps what the model emitted.** `np.pi` and `np.e` sit in the tokenizer's
+  special-token section and were deleted from every candidate at decode, leaving an arity-short
+  token list the validity gate rejected; `Tokenizer.EXPRESSION_SPECIAL_TOKENS` names the specials
+  that are expression content and `decode_expression` keeps them. Sampled candidates are
+  de-duplicated on the skeleton with its constant values, not the value-erased skeleton, so three
+  draws of the same skeleton with different constants are three candidates and the refiner's
+  inits. `initial_tokens` without `input_num` defaults to the numeric channel the checkpoint was
+  trained with instead of skipping the numeric embedding.
+- **The tagged canonicalization runs in the catalog's configured target canon.** The final
+  target spelling follows the same `simplify_mode` as the prefix target; a catalog without the
+  knob keeps the historical call byte-identically.
+- **Streaming workers are spawned, not forked.** A trainer has CUDA initialised in the parent by
+  the time it opens a stream, and forking a CUDA process is undefined. The pool uses an explicit
+  spawn context; everything a worker needs is passed explicitly and picklably, shared memory is
+  attached by name, and the source config is rebuilt into the worker's own `ProblemSource`. A
+  script that opens a pool needs an `if __name__ == "__main__":` guard, because the child
+  re-imports the main module (the `flash_ansr` console entry point has one). Pool creation costs
+  a fresh interpreter per worker (measured at 8 workers, start-up plus first batch goes from
+  0.87 s to 7.7 s); steady-state throughput is unchanged, which is what `iterate(keep_alive=True)`
+  amortises.
+- **The streaming pool no longer serialises through a manager process.** Per-batch metadata
+  rode a `SyncManager` list proxy, one global serialization point that capped the pool at about
+  300 instances per second regardless of worker count; it now rides the result queue with the
+  batch. Each spawned worker runs with one torch thread, as torch's own `DataLoader` workers do,
+  instead of inheriting the full intra-op pool and spin-waiting on it.
 - **Placeholding is naive and positional.** Masking a constant no longer asks the engine to
-  re-derive the expression and compare: each placeheld literal site simply becomes a
-  `<constant>` the model predicts, and that site's value is the block's ground truth. A
-  structurally spelled rational contributes one slot per literal, so `3 / 2` masks to
-  `<constant> / <constant>` and trains as two predictions. The collection-stability check and
-  its `n_collection_restructured` counter are gone, along with `mask_selected_sites` and
-  `nonspecial_site_positions`. `<predict_constants>` now follows the configured priors.
-  Measured over 15,360 instances of the v25 prior: 76.6% of flagged instances carry at
-  least one placeholder (the rest have no eligible slot -- a literal-free expression under
-  `mask_all`, no fittable slot under `mask_fittable`), and those emit a block 43.6% of the
-  time against a configured 0.5, the difference being the 10% of instances `condition_dropout`
-  leaves unconditioned, where the block is skipped by design.
-- **The worker pool can outlive one `iterate()`.** `iterate(keep_alive=True)` leaves a fully
-  drained stream's pool running so the next identical call reuses it; the caller then owns
-  the pool and must `shutdown()`. Validation uses it, which is where it matters — every pass
-  used to cold-start and make each worker re-parse the holdout catalogs. An abandoned
-  generator still shuts down (its jobs are in flight), and a live pool now raises rather than
-  silently serving a request built for different settings.
-- **Outlier AUROC/AUPRC are logged on an interval**, `outlier_metrics_interval` (default 50).
-  They are rank statistics over every micro-batch's scores, so producing them every step cost
-  a device sync per micro-step plus two sorts. The outlier loss is still logged every step.
+  re-derive the expression and compare: each placeheld literal site simply becomes a `<constant>`
+  the model predicts, and that site's value is the block's ground truth. A structurally spelled
+  rational contributes one slot per literal, so `3 / 2` masks to `<constant> / <constant>` and
+  trains as two predictions. The collection-stability check and its `n_collection_restructured`
+  counter are gone, along with `mask_selected_sites` and `nonspecial_site_positions`.
+- **`batch_size='auto'` sizes against the device that can report its memory.** A device that
+  cannot (CPU, and MPS before its budget query) gets the conservative cap instead of the caps
+  measured on a 24 GiB card; MPS reports through `torch.mps.recommended_max_memory()`.
+- **Requirements.** `simplipy>=0.14.6,<0.15`, `symbolic-data>=0.18,<0.19`, `safetensors`.
 
 ### Fixed
-- The `expression/anchor` split excluded complexity, `predict_y` and mask circumstances but
-  not `predict_residual`, so prefix-placed residual rows entered a baseline the docstring
-  requires be shaped like the base task.
-- `ce_split` had no entry for task segment 4: `predict_residual` tokens were supervised but
-  never reported. It now carries the same conditional/unconditional and masked-context
-  curves as `predict_y`.
-
-- **Constants are IEEE-754 binary64, spelled as 8 byte tokens.** A serialized constant is
-  `<ieee754>` + 8 tokens from the 256-symbol `<b00>`..`<bff>` alphabet + `</ieee754>` — 10
-  tokens, the same span width as before, over a wider alphabet and at double precision. The
-  serializer no longer narrows a fitted constant, and no longer refuses a finite value for
-  exceeding a narrower format's range. Measured on generated data, 46.5% of constants are
-  values binary32 could not represent.
-
-  `tokenizer.yaml` declares its `constants_format`, and `Tokenizer.from_config` refuses a
-  vocabulary built for a different one, naming it. A vocabulary that declares nothing is
-  checked by its alphabet, so a configuration stored alongside an older checkpoint is
-  recognised rather than failing one out-of-vocabulary token at a time.
-
-- **The numeric width has one name.** Every numeric surface — encoder input, numeric channel,
-  constants — takes its dtype from `flash_ansr.utils.numeric.NUMERIC_DTYPE`.
-
-- **A number's spelling follows its producer.** What the model predicts is spelled in IEEE-754
-  bytes: expression constants, `<predict_y>`'s target, `<predict_constants>`' values. What the
-  caller supplies is a compact `<float>` carrying its value on the numeric channel:
-  `<predict_y>`'s coordinates, a stated complexity. `<float>` is forbidden at every generation
-  position and never appears inside an expression.
-
-- **`<hypothesize>` marks the boundary between what is given and what is generated.** Properties
-  before it are stated by the caller, compact, and may not be restated after it; everything
-  after it is the model's own and spelled in bytes. At inference the prompt ends at
-  `<hypothesize>` when present and at `<expression>` otherwise, so generation always begins at
-  the last prompt token. `mu`, `hypothesize` and `mask` compose in `complexity_prefix`.
-  Query/answer blocks are exempt: inside them the loss mask decides, so caller-supplied
-  coordinates stay compact wherever the block sits.
-
-### Added
-- **`<predict_residual>`, the displacement block.** Given a point, the model reports how far
-  the observation there sits off the law: `<predict_residual> <point> <float>*dims </point>
-  <ieee754> 8 bytes </ieee754> </predict_residual>`. The coordinates are caller-supplied and
-  compact; the displacement is predicted and therefore a byte span. Enabled by
-  `residual_block` in the dataset configuration, which requires a source with a noise
-  mixture — without one the observed targets are the clean ones and every answer is zero.
-
-  It differs from `<predict_y>` in three ways that matter. The queried point stays IN the
-  encoder's support, because the observation reaches the model only through the encoder.
-  The block is dropped on an unconditioned instance rather than moved, because a nulled
-  memory puts the observation out of reach in either placement. And it draws its point from
-  what `<predict_y>` left, so the two never query the same one.
-
-### Removed
-- **Beam search and MCTS.** `SoftmaxSamplingConfig` is the generation configuration;
-  `create_generation_config` rejects any other method by name.
-- **In-decode span compaction**, along with the per-row decode position it required.
-- **The per-point residual head** and `predict_residuals()`.
-
-
-### Added
-- **Model weights are safetensors.** `model.safetensors` replaces `state_dict.pt` everywhere weights
-  are written or read — `FlashANSRModel.save`/`load`, the set-encoder, `FlashANSR.load`, and the
-  trainer's resume path (which delegates its write to `model.save`). Weights are the artifact people
-  download, so they are stored in the format the ecosystem reads: a flat tensor map with a JSON
-  header, no pickle, memory-mappable, framework-agnostic. Optimiser, scaler, scheduler and
-  `training_state` stay on `torch.save`: they are not all tensors (param groups, step counters,
-  Python scalars) and they never leave the machine that wrote them.
-- **`flash_ansr convert-weights <dir>...`** writes `model.safetensors` beside an existing
-  `state_dict.pt`, leaving the pickle exactly where it is. Legacy pickles are no longer READ — one
-  format, one code path — so a checkpoint that predates this must be converted once. The
-  `FileNotFoundError` names the command when it finds an unconverted `state_dict.pt`. The converter
-  refuses a state dict carrying non-tensor entries rather than dropping them silently.
-- **`conditioned=` on every decoder verb, and `predict_y(expression=...)`: the trained
-  circumstances that had no entry point.** `condition_dropout: 0.1` routes one training instance in
-  ten to the learned `null_memory`, and `predict_y_block.p_conditional: 0.5` writes the block in two
-  placements — before `<expression>` (data alone) or after it (data AND expression). Neither knob
-  was reachable: `fit`/`infer`/`predict_*` always conditioned, and `predict_y` only ever emitted the
-  prefix placement. Now `fit`, `infer`, `predict_y`, `predict_constants` and `predict_complexity`
-  all take `conditioned=` (default `True`), and `predict_y` takes `expression=`. `X`/`y` may be
-  `None` whenever `conditioned=False`. On a checkpoint without `optional_condition` the knob raises
-  `CapabilityUnavailable` rather than silently conditioning. `score_outliers` deliberately has no
-  such knob: the head reads the encoder directly and has no null path.
-  `fit(conditioned=False)` is the "propose from the prior, fit to the data" arm — the data still
-  selects the winner, it just does not shape the proposals.
-- **Forbidden non-finite token guard on the simplification path.** `float("inf")` / `float("-inf")` /
-  `float("nan")` are encodable vocabulary tokens (ids 25/26/27), and SimpliPy folds a degenerate
-  sub-expression to one instead of failing (`['/', 'x1', '-', 'x2', 'x2']` -> `['*', 'float("inf")',
-  'x1']`, `is_valid` True), so such skeletons re-entered the candidate stream as valid predictions.
-  `flash_ansr.utils.skeleton.simplify_and_mask` — the one seam every candidate producer shares —
-  now raises `NonFiniteExpressionError`, and each producer (beam search, softmax post-processing,
-  MCTS canonicalization, the constant-pruning lane, the forked simplify pool, dataset conversion)
-  DROPS the candidate and counts it: `flash_ansr.utils.non_finite_drops()` /
-  `reset_non_finite_drops()` expose the tally. The token set matches symbolic-data's generator-side
-  forbidden list (`float("inf")`, `float("-inf")`, `float("nan")`, `zoo`, `nan`, `oo`). On the
-  training-data INGEST direction (`mask_literals_positional`) it does NOT drop but propagates:
-  symbolic-data rejects these before yielding, so one arriving means a broken producer contract,
-  and skipping it would silently reshape the training distribution.
-- **`encoder_mask_query_norms` model flag (default `False`)**: threads the support-set padding mask
-  into the ISAB self-refinement blocks' query/residual-stream SetNorms (`norm_q`/`norm_ffn`) and zeroes
-  sub-layer outputs on padded query rows. Legacy (default) behavior computes those shared set statistics
-  over the zero-padding too, which understates the set RMS by `sqrt(n_valid/set_len)` — inflating valid
-  rows by up to 32x for a 1-point support set padded to 1024 during training — and, for small sets, lets
-  projection-bias "garbage" rows dominate the `norm_ffn` statistic. With the flag enabled, a sample's
-  encoding is invariant to padding length (tested). Existing checkpoints were trained with the legacy
-  semantics and load/run bit-identically under the default.
-- **`sanitize_input_num` model flag (default `False`)**: zeroes the numeric-token bit encodings at
-  positions whose `input_num` is NaN (no numeric payload). The previous guard checked `isnan` on the
-  IEEE-754 *bit encodings* — which are ±1 for any input, including NaN — and therefore never fired
-  (dead code, removed); non-constant positions received a learned NaN-bit-pattern embedding instead of
-  zero. Checkpoints trained before this flag (v23- and v24-era alike) keep the legacy behavior
-  under the default. Under the mixed constants representation (0.13.0), `input_num` is NaN at
-  every non-payload position by design, so enabling this flag is recommended for models trained
-  from now on.
-
-### Fixed
-- **Unconditioned instances no longer lose their `<predict_y>` block.** The gate excluded the block
-  from every condition-dropout instance, on the reasoning that "predicting y* with a nulled memory
-  is a nonsense task". That holds for the PREFIX placement — nulled memory and no expression is
-  nothing to condition on — but not for the suffix: with the expression in scope it is FUNCTION
-  EVALUATION, a well-posed task that grounds the expression tokens semantically. The block is now
-  pinned to the suffix on unconditioned instances instead of being dropped (owner ruling
-  2026-08-26). Takes effect from the next training run; T16 was trained under the old gate, so
-  `predict_y(expression=..., conditioned=False)` on a T16 checkpoint queries an untrained
-  circumstance.
+- **Seven public-API surfaces that said one thing and did another.** `Refiner.transform` wrote
+  fitted values into the wrong slots whenever the expression carried a numeric literal (on
+  `['+','*','2','x1','<constant>']` fitted to `7*x1 + 100` it published `2*x1 + 7.0`); it now walks
+  the same token list the fit was built from. `pad_input_set` returned a DataFrame unchanged, so
+  `infer` on a DataFrame raised a positional-argument error from the compiled lambda; it converts
+  and refuses what it cannot. `compile_results` wrote its overrides onto the estimator, so a
+  sweep left every later `fit` ranked under the last value swept; it is call-scoped. Pruned-
+  candidate rescoring skipped the numeric channel and so scored under a different model than the
+  one that generated the candidate. An unencodable candidate vanished silently; it is a counted
+  drop. `constrain_ieee754` on an unsupported checkpoint fails at load with the reason instead of
+  after a full encoder forward. `generate()`'s documented `memory=` is forwarded.
+- **Selection can no longer be won by a fit that did not happen.** A `NaN` restart loss poisoned
+  the fit sort (NaN compares false against everything, so a divergent restart was published while
+  an exact fit sat two slots down); `fit_sort_key` sinks non-finite losses and `valid_fit`
+  describes index 0. A verbatim constant init was treated as terminal on finiteness alone, so a
+  converged-but-catastrophic local optimum cancelled the restarts; the fallback is skipped only
+  when the verbatim fit is already perfect, and the two fit sets are merged so the better one
+  wins. One non-finite `y` collapsed the ranking to alphabetical order while `fit` reported
+  success; the variance is taken over the finite rows and the dropped rows are warned about. The
+  finiteness gate re-checks after the float cast, which can manufacture `inf`. A failed `fit`
+  no longer leaves the previous problem's results in place.
+- **Third-generation checkpoints serve through `FlashANSR.fit`.** The model emits the engine's
+  tagged canonical dialect, which the decode boundary now normalises to explicit prefix; a
+  sequence carrying tagged delimiters that does not parse is an invalid candidate, not an error.
+  A constant-free candidate is a completed fit judged by whether its loss is finite; the zero-
+  constant early path used to leave `valid_fit` false, so every constant-free candidate was
+  silently discarded.
+- **An unrealizable candidate is dropped, not fatal.** A candidate naming an operator the loaded
+  engine does not define killed the whole problem's refinement batch; it is dropped like any
+  invalid fit, surfaced under `converge_error='print'` and re-raised under `'raise'`.
+- **Unconditioned instances no longer lose their `<predict_y>` block.** The gate excluded the
+  block from every condition-dropout instance; with the expression in scope the suffix placement
+  is function evaluation, a well-posed task, so the block is pinned to the suffix on unconditioned
+  instances instead of being dropped.
 - **Raw batches held past their turn were a use-after-free, and it segfaulted.** The tensors
-  `FlashANSRDataset.iterate` yields VIEW the streaming pool's shared-memory ring and are valid only
-  until the pool refills that block. `Trainer` kept two of them by reference — `first_raw_batch` in
-  `_validate_step` and `_last_raw_train_batch` in `_train_step` — for the T12 paired constant-span
-  eval, then read them after the loop. That dereferences unmapped memory: a hard `SIGSEGV`,
-  reproducible in twenty lines (keep batch 0, iterate twice, read `batch["x_tensors"][0]`), not an
-  exception anything could catch. The paired eval now takes a copy at capture (`_detach_raw_batch`),
-  and `tests/test_data/test_raw_batch_lifetime.py` pins the contract. The crash was invisible
-  because the eval is gated on `constant_representation == 'ieee754_mixed'` and that was not the
-  default; making it the default made the segfault deterministic.
+  `FlashANSRDataset.iterate` yields view the streaming pool's shared-memory ring and are valid
+  only until the pool refills that block. The trainer kept two of them by reference for the
+  paired constant-span eval and read them after the loop, a hard `SIGSEGV`. The eval takes a
+  copy at capture (`_detach_raw_batch`), and `tests/test_data/test_raw_batch_lifetime.py` pins
+  the contract.
+- **The `expression/anchor` split** excluded complexity, `predict_y` and mask circumstances but
+  not `predict_residual`, so prefix-placed residual rows entered a baseline the docstring
+  requires be shaped like the base task. **`ce_split`** had no entry for the residual segment:
+  `predict_residual` tokens were supervised but never reported.
 - **Encoder padding masks are coerced to `bool` (with a warning) at the `SetTransformer` entry.**
-  `scaled_dot_product_attention` interprets float masks as *additive logit biases*, so a float 0/1
-  padding mask silently masked nothing. The standard pipeline (`FlashANSRDataset.collate`) already
-  passes bool masks and is unaffected; direct callers passing float masks were silently unprotected.
-- **Trainer raises on gradient-accumulation remainder.** `_train_step` split micro-batches with an
-  integer division that silently dropped `batch_size % gradient_accumulation_steps` samples from every
-  step; it now fails loudly. No shipped config was affected (all use `gradient_accumulation_steps=1`).
+  `scaled_dot_product_attention` interprets float masks as additive logit biases, so a float 0/1
+  padding mask silently masked nothing.
+- **Cross-attention K/V batches are normalised before the attention call.** Cross-attention
+  decodes `choices` rows against a single encoder memory, and leaving the batch dimension to
+  broadcast inside `scaled_dot_product_attention` is outside its documented contract: correct on
+  CPU and CUDA, silently wrong on MPS once `head_dim >= 64`. The static cross-attention path keeps
+  its expanded K/V as a stride-0 view instead of materialising a per-row copy of the encoder
+  memory in every layer.
+- **The per-candidate refine seed no longer leaks into the caller's global RNG.** The worker
+  seeds `np.random` per candidate so a fit is reproducible from its expression hash; run
+  in-process, that seeding landed on the caller's global state. The state is saved and restored
+  around the fit.
+- **Gradient accumulation.** `do_optimizer_step=False` now accumulates: `zero_grad`,
+  `unscale_` and gradient clipping moved inside the stepping guard. The trainer raises on a
+  `batch_size % gradient_accumulation_steps` remainder instead of silently dropping those samples
+  from every step.
 
 ### Removed
-- **v23 is gone from this line entirely (owner ruling, 2026-08-26): one generation, one code path.**
-  `constant_representation` had `'v23'` as its DEFAULT in the data layer, so a training config that
-  omitted the key silently produced v23 data — the ieee754 format the whole v24 line rests on was
-  opt-in. `'ieee754_mixed'` is now the only legal value and the default; a tokenizer without the span
-  tokens is refused at dataset construction. The dead conditionals that guarded it are gone with it:
-  the byte-identical passthrough in `serialize_constant_tokens`, the four `!= 'ieee754_mixed'`
-  preconditions in `FlashANSRDataset.__init__`, the `mixed_constants` branches in the streaming
-  worker, and the unreachable `if IEEE754_START_TOKEN in self.tokenizer` span-mapping branch in
-  `_fit_refine` (`_validate_checkpoint` has refused such a vocabulary at load since it was added).
-- **The v23 model bundles and their register are deleted**: `configs/v23.0-*`, `configs/v23.2-120M`
-  and `configs/VERSIONS.md` — 177 files. They pinned the retired generation-1 `dev_7-3` engine and
-  produced checkpoints this line cannot load; `git` keeps them for anyone who needs the recipes under
-  a pinned `flash-ansr<0.13`. `configs/v24-template/tokenizer.yaml` drops the eight tokens no v24 run
-  ever trained on (`<prompt>`, `</prompt>`, and the six `<allowed_term>` / `<include_term>` /
-  `<exclude_term>` delimiters). Trained-run tokenizers (`v24.0-T13`..`T16`) are untouched: their
-  vocabularies are pinned by their checkpoints.
-- **The `simplify='sympy'` simplification path is gone (owner ruling, 2026-08-18).** SymPy
-  simplification was an *ablation* of the product simplifier (SimpliPy), and the standing rule is that
-  production code stays clean and minimal: experiments and ablations branch off it or patch it, they
-  never live inside it. Removed: the `simplify == 'sympy'` branch in `FlashANSRModel._postprocess_sampled`,
-  the `flash_ansr.utils.sympy_timeout` helper module, and the `[sympy]` optional-dependency extra.
-  `simplify` is now a two-state `bool` (`True` = SimpliPy, the product default; `False` = no
-  simplification) everywhere it is accepted.
-- **A config that asks for the removed path FAILS LOUDLY; it never falls back.** `simplify='sympy'` is
-  refused by `SoftmaxSamplingConfig` / `create_generation_config` and by `sample_top_kp` /
-  `_sample_top_kp_static` / `_postprocess_sampled` with a `ValueError` naming the removal. Silently
-  re-serving such a config with SimpliPy would swap the canonicalizer a config explicitly named — a
-  behaviour change wearing a removal's clothes — so the request is refused instead.
-- **Catalog configs requesting the SymPy skeleton path are refused at the flash-ansr boundary.**
-  `simplify` in a *catalog* config is symbolic-data's parameter, which flash-ansr only passes through;
-  symbolic-data keeps its own `simplify='sympy'` path and is unchanged. `FlashANSRDataset.from_config`
-  now raises rather than build a data source that routes into it.
+- **Generation-1 (v23) support, entirely: one generation, one code path.**
+  `constant_representation` had `'v23'` as its default in the data layer, so a training config
+  that omitted the key silently produced v23 data. `'ieee754_mixed'` is the only legal value and
+  the default; a tokenizer without the span tokens is refused at dataset construction. The dead
+  conditionals that guarded it are gone with it. The v23 model bundles and their register
+  (`configs/v23.0-*`, `configs/v23.2-120M`, `configs/VERSIONS.md`) are deleted; `git` keeps them
+  for anyone who needs the recipes under a pinned `flash-ansr<0.13`.
+  `configs/v24-template/tokenizer.yaml` drops the eight tokens no run of this generation trained
+  on (`<prompt>`, `</prompt>`, and the six term-constraint delimiters).
+- **Beam search and MCTS.** `SoftmaxSamplingConfig` is the generation configuration;
+  `create_generation_config` rejects any other method by name. In-decode span compaction, the
+  per-row decode position it required, `tail_zero_bits`, the per-point residual head and
+  `predict_residuals()` go with them.
+- **The `<prompt>` wrapper lane.** `PromptFeatureExtractor` and its module, the legacy
+  `serialize_prompt` half of `prompt_serialization`, the `PromptFeatures` schema and the metadata
+  threading through the estimator, pipeline and trainer. Its successor, bare prefix elements the
+  harness force-feeds and loss-masks, is what the models are trained on;
+  `serialize_prompt_prefix` stays. `allowed_terms` / `include_terms` / `exclude_terms` are gone
+  from `fit()`: they were documented as constraining generation, emitted tokens no checkpoint had
+  seen, and were enforced nowhere.
+- **The `simplify='sympy'` simplification path.** SymPy simplification was an ablation of the
+  product simplifier, and production code carries no ablations. `simplify` is a two-state `bool`
+  (`True` = SimpliPy, the default; `False` = no simplification) everywhere it is accepted, and a
+  config that asks for the removed path fails loudly at `SoftmaxSamplingConfig` /
+  `create_generation_config` / `sample_top_kp` and at `FlashANSRDataset.from_config` for a
+  catalog requesting the SymPy skeleton path; it never falls back.
+- `flash_ansr.results.compile_results_table`: a second scoring/sort implementation with a subtly
+  different guard. `FlashANSR._compile_results_pure` is the one sort.
+- Reading `state_dict.pt` checkpoints (see `flash_ansr convert-weights`).
+
+Thanks to Kianté Fernandez (@kiante-fernandez) for the cross-attention, gradient-accumulation,
+refine-RNG and batch-sizing fixes (#52, #53, #54, #55, #58).
 
 ## [0.13.0] - 2026-08-18
 

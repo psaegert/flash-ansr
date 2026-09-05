@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.13.0"
+version = "0.14.0"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
@@ -100,8 +100,6 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-# Ship production code only; the interp research subpackage is clone-only (not in the wheel).
-exclude = ["flash_ansr.interp*"]
 
 
 [build-system]

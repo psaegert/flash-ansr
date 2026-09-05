@@ -28,6 +28,7 @@ Requires Python >= 3.12.
 
 ```sh
 pip install flash-ansr
+flash_ansr install psaegert/flash-ansr-v25.0-T7-3M   # the reference checkpoint (see "Models")
 ```
 
 ```python
@@ -41,8 +42,9 @@ from flash_ansr import (
   SoftmaxSamplingConfig,
 )
 
-# Point at a checkpoint directory
-CHECKPOINT = "path/to/checkpoint"
+# The installed checkpoint directory
+from flash_ansr import get_path
+CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T7-3M")
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
 model = FlashANSR.load(
@@ -82,9 +84,21 @@ Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/
 
 **Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/).
 
+# Models
+
+| Checkpoint | Parameters | Training | Notes |
+|---|---|---|---|
+| [`psaegert/flash-ansr-v25.0-T7-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T7-3M) | 3.5M | 1M steps, batch 128, `configs/v25.0-T7` | the reference checkpoint for this release |
+
+```sh
+flash_ansr install psaegert/flash-ansr-v25.0-T7-3M
+```
+
+Every catalog that [srbf](https://github.com/psaegert/srbf) evaluates on is held out of the training data by canonical form (6,660 expressions across 29 catalogs).
+
 # Inference speed
 
-Flash-ANSR v0.5 ships several inference-speed improvements, **enabled by default** and designed to be quality-neutral, so the quickstart above already runs in the fast regime. The speed-relevant settings live on the generation config:
+Several inference-speed features are **enabled by default** and designed to be quality-neutral, so the quickstart above already runs in the fast regime. The speed-relevant settings live on the generation config:
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -105,7 +119,7 @@ config = SoftmaxSamplingConfig(
 
 Constant refinement runs in parallel; control it via `FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)`. By default (`refiner_workers=None`) the pool uses every available CPU core, which oversubscribes shared machines; pass an explicit integer to cap it (`0` disables multiprocessing).
 
-To reproduce v0.4.x inference behavior, opt out of the new defaults:
+To opt out of these defaults:
 
 ```python
 SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
@@ -176,7 +190,7 @@ simplification of on-the-fly generated training expressions.</p>
   title   = {Flash Amortized Neural Symbolic Regression},
   year    = {2024},
   publisher   = {GitHub},
-  version = {0.12.1},
+  version = {0.14.0},
   url     = {https://github.com/psaegert/flash-ansr}
 }
 ```

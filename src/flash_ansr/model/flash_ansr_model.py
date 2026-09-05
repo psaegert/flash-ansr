@@ -1329,19 +1329,18 @@ class FlashANSRModel(nn.Module):
         :func:`flash_ansr.data.serialization.replace_ieee754_spans_with_constants`).
         A vocabulary without span tokens takes the identity path.
         """
-        span_ids = getattr(self, '_ieee754_span_ids', False)
-        if span_ids is False:
+        if not hasattr(self, '_ieee754_span_ids'):
             from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, BYTE_TOKENS
             if IEEE754_START_TOKEN in self.tokenizer:
-                span_ids = (
+                self._ieee754_span_ids: tuple[int, int, tuple[int, ...], int] | None = (
                     int(self.tokenizer[IEEE754_START_TOKEN]),
                     int(self.tokenizer[IEEE754_END_TOKEN]),
                     tuple(int(self.tokenizer[token]) for token in BYTE_TOKENS),
                     int(self.tokenizer['<constant>']),
                 )
             else:
-                span_ids = None
-            self._ieee754_span_ids = span_ids
+                self._ieee754_span_ids = None
+        span_ids = self._ieee754_span_ids
         if span_ids is None or span_ids[0] not in encoded_expression:
             return list(encoded_expression), None
         from flash_ansr.data.serialization import replace_ieee754_spans_with_constants

@@ -5,6 +5,7 @@ constants against ``(X, y)`` data using SciPy least-squares / minimize backends,
 :class:`ConvergenceError` when no restart converges.
 """
 import importlib
+from collections.abc import Iterable
 from typing import Literal, Callable, Any
 import warnings
 
@@ -667,7 +668,7 @@ class Refiner:
             # publishing 2*x1 + 7.0 for a function that had fitted EXACTLY as 7*x1 + 100.
             fitted_sites = getattr(self, 'prefix_expression_with_constants', None) or []
             if len(fitted_sites) == len(expression_tokens):
-                site_iter = zip(range(len(expression_tokens)), fitted_sites)
+                site_iter: Iterable[tuple[int, str]] = zip(range(len(expression_tokens)), fitted_sites)
             else:
                 # The caller passed a different expression than the one that was fitted (a legal use
                 # of transform). Fall back to the token test, which is right whenever no numeric

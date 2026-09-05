@@ -26,9 +26,9 @@ FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)
 
 Pass an explicit integer to cap the pool size (`0` disables multiprocessing). This is the right knob on shared machines where the default (all cores) would oversubscribe the CPUs.
 
-### How do I reproduce v0.4.x inference behavior?
+### How do I turn off the inference-speed defaults?
 
-The v0.5 speed defaults (KV-cache, auto-batching, static decoding) are enabled by default and designed to be quality-neutral. To opt out:
+KV-cache decoding, auto-batching and static decoding are enabled by default and designed to be quality-neutral. To opt out:
 
 ```python
 from flash_ansr import SoftmaxSamplingConfig
@@ -39,7 +39,7 @@ Candidate ranking is configured with `ranking_mode` (`mdl`, `weighted` or `paret
 
 ### How do I evaluate a model and run benchmarks?
 
-As of v0.6, the evaluation engine, baseline adapters, benchmarks, and metrics have moved out of flash-ansr into the companion package [**srbf**](https://github.com/psaegert/srbf) (Symbolic Regression Benchmark Framework). Install it with `pip install srbf` and see the [srbf repository](https://github.com/psaegert/srbf) for usage. Flash-ANSR itself still provides the `FlashANSR` API (`.load`, `.fit`, `.predict`, `.compile_results`) and training, but systematic evaluation and benchmarking now live in srbf.
+The evaluation engine, baseline adapters, benchmarks, and metrics live in the companion package [**srbf**](https://github.com/psaegert/srbf) (Symbolic Regression Benchmark Framework). Install it with `pip install srbf` and see the [srbf repository](https://github.com/psaegert/srbf) for usage. Flash-ANSR itself still provides the `FlashANSR` API (`.load`, `.fit`, `.predict`, `.compile_results`) and training, but systematic evaluation and benchmarking now live in srbf.
 
 ### Where do I report bugs or ask questions?
 

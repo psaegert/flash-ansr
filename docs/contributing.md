@@ -12,7 +12,7 @@
 - Large assets (models/data) are pulled via scripts or `flash_ansr install`.
 
 ## Quality checks
-- Tests: `./scripts/pytest.sh` (full suite). For a fast spot check: `pytest tests/test_inference.py`. (Baseline tests moved to the `srbf` package in v0.6.)
+- Tests: `./scripts/pytest.sh` (full suite). For a fast spot check: `pytest tests/test_inference.py`. (Baseline tests live in the `srbf` package.)
 - Lint: `./scripts/pylint.sh` (respects repo config).
 - Formatting: follow existing style; stick to ASCII unless a file already uses Unicode.
 
@@ -26,8 +26,8 @@
 ## Style and docs
 - Add succinct comments only for non-obvious logic; take every numeric tensor's dtype from `flash_ansr.utils.numeric.NUMERIC_DTYPE` rather than naming a width inline.
 - When adding dataloader fields, update `FlashANSRDataset.collate` to pad/stack consistently and document it.
-- Keep `README.md` lean; detailed usage belongs in `docs/` (API, training). Evaluation, baselines, and benchmarking moved to the `srbf` package in v0.6 (`pip install srbf`, https://github.com/psaegert/srbf).
+- Keep `README.md` lean; detailed usage belongs in `docs/` (API, training). Evaluation, baselines, and benchmarking live in the `srbf` package (`pip install srbf`, https://github.com/psaegert/srbf).
 
 ## Releasing
-- Ensure checkpoints include `model.yaml`, `tokenizer.yaml`, and `state_dict.pt`.
+- Ensure checkpoints include `model.yaml`, `tokenizer.yaml`, and `model.safetensors`.
 - Sanity-check bundles by loading them via `flash_ansr install <repo>` in a clean environment.

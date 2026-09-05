@@ -47,9 +47,10 @@ Training emits the complexity block BARE, as a prefix element -- ``<complexity>`
         numeric_values: list[float] = [np.nan]
         prompt_mask: list[bool] = [False]
 
-        emit_complexity = complexity is not None and all(
-            token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>"))
-        if emit_complexity:
+        emit_complexity = False
+        if complexity is not None and all(
+                token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>")):
+            emit_complexity = True
             tokens.extend(["<complexity>", "<float>", "</complexity>"])
             numeric_values.extend([np.nan, float(complexity), np.nan])
             prompt_mask.extend([True, True, True])

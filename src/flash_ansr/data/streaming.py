@@ -6,6 +6,7 @@ import signal
 import warnings
 from dataclasses import dataclass
 from multiprocessing import shared_memory
+from multiprocessing.process import BaseProcess
 from typing import Any, Literal
 
 import math
@@ -16,12 +17,6 @@ from symbolic_data import ProblemSource
 from simplipy.utils import substitute_constants
 from symbolic_data.token_ops import tagged_canonical
 
-
-def _tagged_canonical_mode(catalog: object) -> str | None:
-    """The catalog's configured target canon (``simplify_mode``), or None for catalogs
-    without the knob -- None keeps the engine-default tagged canonicalization."""
-    mode = getattr(catalog, "simplify_mode", None)
-    return str(mode) if mode is not None else None
 from flash_ansr.data.serialization import (
     COMPACT_CONSTANT_TOKEN,
     HYPOTHESIS_TOKEN,
@@ -55,6 +50,13 @@ from flash_ansr.utils.ieee754 import (
 from flash_ansr.utils.skeleton import (
     NonFiniteExpressionError, fittable_slots, mask_literals_positional)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
+
+
+def _tagged_canonical_mode(catalog: object) -> str | None:
+    """The catalog's configured target canon (``simplify_mode``), or None for catalogs
+    without the knob -- None keeps the engine-default tagged canonicalization."""
+    mode = getattr(catalog, "simplify_mode", None)
+    return str(mode) if mode is not None else None
 
 
 # Per-position task-segment ids (metadata "task_segments"): the trainer splits the CE
@@ -141,7 +143,7 @@ class SharedMemoryWorkerPool:
         self._work_queue: mp.Queue | None = None
         self._result_queue: mp.Queue | None = None
         self._available_slots_queue: mp.Queue | None = None
-        self._workers: list[mp.Process] = []
+        self._workers: list[BaseProcess] = []
         self._num_workers = 0
         self.pool_size = 0
         self.worker_preprocess_enabled = False

@@ -1590,6 +1590,7 @@ class FlashANSR(BaseEstimator):
             'fits': copy.deepcopy(refiner._all_constants_values),
             'pruned_variant': bool(payload.get('pruned_variant', False)),
             'constants_emitted': payload.get('constants_emitted'),
+            'pareto_rank': PARETO_RANK_NOT_COMPUTED,
         }
 
         return entry

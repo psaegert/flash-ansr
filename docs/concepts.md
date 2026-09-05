@@ -9,7 +9,7 @@
 ## Generation methods (how we search the expression space)
 - **Softmax sampling**: stochastic draws from the model distribution over next tokens (via top-k / top-p sampling), with optional constrained decoding that restricts every step to the tokens the constant grammar admits.
 
-Comparison baselines (such as prior sampling from operator priors without model guidance, and brute-force exhaustive search) moved out of flash-ansr in v0.6 into the standalone `srbf` package (Symbolic Regression Benchmark Framework: `pip install srbf`, https://github.com/psaegert/srbf). See the srbf repository for the available baselines and how to run them.
+Comparison baselines (such as prior sampling from operator priors without model guidance, and brute-force exhaustive search) live in the standalone `srbf` package (Symbolic Regression Benchmark Framework: `pip install srbf`, https://github.com/psaegert/srbf). See the srbf repository for the available baselines and how to run them.
 
 ## Architecture (Training + Inference Workflow)
 - **Data synthesis**: During training, a `symbolic_data` catalog (a generative recipe over operators, expression length, and literal/support priors) is sampled into problems by a `ProblemSource` and wrapped by `FlashANSRDataset`; each problem is an expression skeleton plus its constants and support points.
@@ -24,7 +24,7 @@ Comparison baselines (such as prior sampling from operator priors without model 
 
 1. Stream skeletons and support points from a `symbolic_data` catalog (via a `ProblemSource`) and build batches with `FlashANSRDataset`.
 2. Encode sets with the SetTransformer; decode prefix tokens with teacher forcing.
-3. Optimize cross-entropy loss; validate on a held-out synthetic catalog; checkpoint `model.yaml`, `tokenizer.yaml`, `state_dict.pt` together.
+3. Optimize cross-entropy loss; validate on a held-out synthetic catalog; checkpoint `model.yaml`, `tokenizer.yaml`, `model.safetensors` together.
 
 ### Inference loop
 

@@ -10,8 +10,9 @@ This also pulls in `symbolic-data` and `simplipy` automatically, so no manual se
 
 ## Download a checkpoint
 ```bash
-flash_ansr install <hf-repo>
+flash_ansr install psaegert/flash-ansr-v25.0-T7-3M
 ```
+The reference checkpoint for this release is [`psaegert/flash-ansr-v25.0-T7-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T7-3M) (3.5M parameters, trained with `configs/v25.0-T7`).
 By default models are cached under `./models/` relative to the package root and can be uninstalled with `flash_ansr remove <repo>`.
 Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`, and `flash_ansr.get_path('models', repo)` resolves the cached directory.
 
@@ -28,10 +29,11 @@ from flash_ansr import (
   SoftmaxSamplingConfig,
 )
 
-# Point at a checkpoint directory
-CHECKPOINT = "path/to/checkpoint"
+# The installed checkpoint directory
+from flash_ansr import get_path
+CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T7-3M")
 
-# Load the model (KV-cache, auto-batching and static decoding are on by default in v0.5)
+# Load the model (KV-cache, auto-batching and static decoding are on by default)
 model = FlashANSR.load(
   directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),
@@ -83,7 +85,7 @@ print(result.generation_time, result.refinement_time)
 df = result.to_dataframe()
 ```
 
-A `Candidate` carries `expression` (skeleton tokens), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants`, `score`, `log_prob`, `fvu`, `complexity`, `constant_count`, `pruned_variant`, and optional `y_pred` / `y_pred_val` (populated for the top `top_k` candidates). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
+A `Candidate` carries `expression` (skeleton tokens), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants` (refined), `constants_emitted` (as predicted by the model), `score`, `log_prob`, `fvu`, `n_nodes`, `mu` (simplipy complexity of the skeleton), `mdl` (description length of the refined expression, in milli-bits), `constant_count`, `pruned_variant`, `pareto_rank`, `rank`, and optional `y_pred` / `y_pred_val` (populated for the top `top_k` candidates). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
 
 `result.to_dataframe()` returns a pandas DataFrame of the refined survivors (one row per candidate in `result.candidates`, i.e. `FIT_OK` fits), not the full ledger. To control which candidates get predictions, `infer` takes `top_k` (compute `y_pred` / `y_pred_val` for the top `top_k` candidates; `None` = the best only), `predict_val` (toggle validation-set prediction), and `X_val` (out-of-sample features for `y_pred_val`).
 
@@ -91,7 +93,7 @@ Find more details in the [API Reference](api.md).
 
 
 ## Evaluation
-As of v0.6, evaluation, baseline comparisons, and benchmarking moved out of flash-ansr into the standalone `srbf` (Symbolic Regression Benchmark Framework) package.
+Evaluation, baseline comparisons, and benchmarking live in the standalone `srbf` (Symbolic Regression Benchmark Framework) package.
 
 ```bash
 pip install srbf
@@ -102,4 +104,4 @@ See the [srbf repository](https://github.com/psaegert/srbf) for usage.
 ## Next steps
 - See [Concepts & Architecture](concepts.md) for how the pieces fit together.
 - For training your own checkpoints, jump to [Training](training.md).
-- For baseline comparisons and sweeps, see the [srbf repository](https://github.com/psaegert/srbf) (evaluation moved to the standalone `srbf` package in v0.6).
+- For baseline comparisons and sweeps, see the [srbf repository](https://github.com/psaegert/srbf).

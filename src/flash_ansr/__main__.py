@@ -5,6 +5,12 @@ import sys
 from collections.abc import Sequence
 
 
+def _wandb_timestamp_to_local(timestamp: str) -> datetime.datetime:
+    """Convert a wandb API timestamp (ISO 8601, UTC, no offset) to naive local time."""
+    utc = datetime.datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=datetime.timezone.utc)
+    return utc.astimezone().replace(tzinfo=None)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description='Neural Symbolic Regression')
     subparsers = parser.add_subparsers(dest='command_name', required=True)
@@ -134,8 +140,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             runs = {run.id: {'run': run} for run in runs}
 
             for key, value in runs.items():
-                start_time = datetime.datetime.strptime(value['run'].created_at, '%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=2)  # HACK: This is a hack to convert to CET
-                end_time = datetime.datetime.strptime(value['run'].heartbeatAt, '%Y-%m-%dT%H:%M:%S') + datetime.timedelta(hours=2)
+                start_time = _wandb_timestamp_to_local(value['run'].created_at)
+                end_time = _wandb_timestamp_to_local(value['run'].heartbeatAt)
                 runs[key]['start_time'] = start_time
                 runs[key]['end_time'] = end_time
                 runs[key]['duration'] = end_time - start_time
