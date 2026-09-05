@@ -112,8 +112,8 @@ class TestResolveRanking:
     def test_default_is_the_engineered_mdl_mode(self) -> None:
         cfg = resolve_ranking()
         assert cfg.mode == 'mdl'
-        assert cfg.mdl_strength == MDL_STRENGTH_DEFAULT == 4.5e-3
-        assert cfg.effective_weights == {'mdl': 4.5e-3}
+        assert cfg.mdl_strength == MDL_STRENGTH_DEFAULT == 1e-2
+        assert cfg.effective_weights == {'mdl': 1e-2}
 
     def test_weighted_defaults_to_no_penalty_at_all(self) -> None:
         cfg = resolve_ranking('weighted')
@@ -224,7 +224,7 @@ class TestModeOneVersusModeTwo:
     without asserting the two modes coincide."""
 
     #: mu ~= 4,444 * n_nodes + 59,589 * n_constants + 8,073 mB on 8,476 T7 candidates (R^2 0.9969);
-    #: at 4.5e-3 per bit that is 0.020 per node and 0.268 per constant.
+    #: the count weights scale with the strength, so the agreement is strength-independent.
     NODE_WEIGHT = 4.444 * MDL_STRENGTH_DEFAULT
     CONSTANT_WEIGHT = 59.589 * MDL_STRENGTH_DEFAULT
 

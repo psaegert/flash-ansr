@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Candidate ranking is one of three modes, and the default is MDL.** `FlashANSR` /
   `FlashANSR.load` take `ranking_mode` (`'mdl'` | `'weighted'` | `'pareto'`) and that mode's
-  knobs -- `mdl_strength` (decades of FVU per bit; default 4.5e-3), `ranking_weights` (a dict
+  knobs -- `mdl_strength` (decades of FVU per bit; default 1e-2, one decade per 100 bits), `ranking_weights` (a dict
   over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl` (per bit),
   `neg_log_prob`), `ranking_metrics` + `ranking_tie_break` (the non-dominated front's axes and
   its within-front order; the tie-break may name a metric outside the set). A knob given with

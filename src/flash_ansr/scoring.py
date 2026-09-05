@@ -72,7 +72,7 @@ def compute_fvu(loss: float, sample_count: int, variance: float) -> float:
 
 
 #: simplipy reports complexity in MILLI-bits; `mdl_penalty` is specified per BIT so that its
-#: calibrated value (4.5e-3) is legible next to `node_penalty` (0.05) in a config file. 4.5e-6 per
+#: value (1e-2) is legible next to `node_penalty` (0.05) in a config file. 4.5e-6 per
 #: milli-bit three lines from 0.05 is a typo waiting to happen. The conversion happens once, here.
 MILLIBITS_PER_BIT = 1000.0
 
@@ -214,11 +214,15 @@ class RankingError(ValueError):
     """A ranking could not be produced: the declared criterion ordered nothing."""
 
 
-#: Mode 1's engineered strength, per BIT of realized-expression description length. Calibrated
-#: against `node_penalty = 0.05` on the reference population (RANKING_SPEC.md section 4): a
-#: typical candidate's ~140 bits then cost ~0.63 decades of FVU. Not a tuning surface: a run that
-#: wants a different weight on `mdl` says so in `weighted` mode, where the number is visible.
-MDL_STRENGTH_DEFAULT = 4.5e-3
+#: Mode 1's strength, per BIT of realized-expression description length: one decade of FVU per
+#: 100 bits. Owner ruling 2026-09-05 from the full-suite sweep (29 catalogs, 6,657 problems,
+#: ~/t3_bottleneck/arms/cv/sweep/SWEEP_T7_1M.md): 1e-2 sits at the start of the recovery knee --
+#: held-out recovery 0.2456 -> 0.2416 (48 lost / 21 gained) for a returned expression 31% shorter
+#: (14.9 -> 10.3 nodes) whose median description length is 1.11x the law's. The translation of the
+#: old `node_penalty = 0.05` into bits (4.5e-3) was the plateau's midpoint; the ruling trades 0.4
+#: points of recovery for answers close to the law's length. Not a tuning surface: a run that wants
+#: a different weight on `mdl` says so in `weighted` mode, where the number is visible.
+MDL_STRENGTH_DEFAULT = 1e-2
 
 RANKING_MODES = ('mdl', 'weighted', 'pareto')
 

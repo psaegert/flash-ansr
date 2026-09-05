@@ -48,7 +48,7 @@ CHECKPOINT = "path/to/checkpoint"
 model = FlashANSR.load(
   directory=CHECKPOINT,
   generation_config=SoftmaxSamplingConfig(choices=1024),
-  # Candidate ranking (default): log10(FVU) + 4.5e-3 per bit of the refined expression's description
+  # Candidate ranking (default): log10(FVU) + 1e-2 per bit of the refined expression's description
   # length. Alternatives: ranking_mode="weighted" with ranking_weights={"n_nodes": 0.05}, or
   # ranking_mode="pareto" with ranking_metrics=("fvu", "n_nodes").
   ranking_mode="mdl",

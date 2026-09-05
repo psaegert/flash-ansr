@@ -484,7 +484,7 @@ class FlashANSR(BaseEstimator):
         ``ranking_tie_break``. Each knob belongs to one mode; passing it with another raises.
     mdl_strength : float or None, optional
         Mode ``'mdl'`` only: decades of FVU per bit. ``None`` -> the engineered default
-        :data:`flash_ansr.scoring.MDL_STRENGTH_DEFAULT` (4.5e-3).
+        :data:`flash_ansr.scoring.MDL_STRENGTH_DEFAULT` (1e-2).
     ranking_weights : dict[str, float] or None, optional
         Mode ``'weighted'`` only: weight per metric name (``n_nodes``, ``n_constants``,
         ``n_constant_placeholders``, ``n_typed_literals``, ``mdl`` (per bit), ``neg_log_prob``).
