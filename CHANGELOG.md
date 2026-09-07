@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The prior baseline** (`generation_config: {method: prior_sampling}`, `PriorSamplingConfig`).
+  Candidates are drawn from the training prior -- the generative catalog the checkpoint trained on,
+  `catalog_train.yaml` beside it or a `catalog` spec -- instead of the decoder, and go through the
+  unchanged refinement, ranking and candidate ledger: "propose from the prior, fit to the data", the
+  control that measures what the posterior is worth. A draw takes the training stream's own path
+  (positional literal masking, the fittable-slot policy, ieee754 spelling of structural literals,
+  the tokenizer), so it is what a target for that draw would have been. `match_variables` (default)
+  conditions the draws on the problem's number of input columns, the one thing every regressor is
+  told, by relabeling onto a random injection and rejecting wider draws; `decontaminate` keeps the
+  benchmark holdout (the training distribution); a draw carries no log-probability, and a ranking
+  that weights `neg_log_prob` is refused. `FlashANSR.load` records `model_directory`;
+  `generate` takes `n_active_variables`.
 - **AdaMuon** (`optimizer: {name: AdaMuon}` in train.yaml; Si, Zhang, Shen 2025, arXiv:2507.11005).
   The hidden weight matrices take the sign-stabilized, orthogonalized, variance-normalized and
   RMS-aligned update; embeddings, the heads' final projections and every bias or norm gain stay

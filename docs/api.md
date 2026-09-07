@@ -69,6 +69,13 @@ The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refine
       heading_level: 3
       show_root_toc_entry: false
 
+### PriorSamplingConfig
+
+::: flash_ansr.PriorSamplingConfig
+
+### PriorSampler
+
+::: flash_ansr.prior.PriorSampler
 
 ## Utilities
 ::: flash_ansr.get_path

@@ -28,6 +28,7 @@ from symbolic_data import LampleChartonCatalog, NoValidSampleFoundError
 from .utils import (
     GenerationConfig,
     GenerationConfigBase,
+    PriorSamplingConfig,
     SoftmaxSamplingConfig,
     create_generation_config,
     get_path,

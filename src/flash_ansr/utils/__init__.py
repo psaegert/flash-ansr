@@ -9,6 +9,7 @@ from flash_ansr.utils.config_io import (
 from flash_ansr.utils.generation import (
     GenerationConfig,
     GenerationConfigBase,
+    PriorSamplingConfig,
     SoftmaxSamplingConfig,
     create_generation_config,
 )

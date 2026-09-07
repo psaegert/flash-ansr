@@ -144,23 +144,88 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         }
 
 
-GenerationConfig = SoftmaxSamplingConfig
+class PriorSamplingConfig(GenerationConfigBase):
+    """Candidates drawn from the training prior (the generative catalog the model trained on)
+    instead of the decoder; refinement and ranking run on them unchanged. The control for what the
+    posterior is worth. See :mod:`flash_ansr.prior`.
 
-
-def create_generation_config(*, method: Literal['softmax_sampling'] = 'softmax_sampling',
-                             **kwargs: Any) -> GenerationConfig:
-    """Factory that builds the generation configuration.
-
-    Softmax sampling is the only method. Beam search and MCTS were retired, and with them
-    in-decode span compaction: under the owner's 2026-08-27 ruling every model-PREDICTED
-    number is spelled as an ieee754 span everywhere, so there is nothing left to compact.
-    The keyword survives so a stale config fails loudly.
+    ``catalog`` is a spec path, a catalog ref or an inline mapping; ``None`` reads
+    ``catalog_train.yaml`` beside the model. ``decontaminate`` applies the catalog's benchmark
+    holdout to the draws (the training distribution). ``match_variables`` conditions the draws on
+    the problem's number of input columns (relabeled onto them; draws with more variables are
+    rejected), the one thing every regressor is told; ``False`` proposes the raw prior over the
+    catalog's whole variable set. ``seed`` fixes the draw stream.
     """
-    if method.lower() != 'softmax_sampling':
-        raise ValueError(
-            f"Invalid generation method: {method}. Beam search and MCTS were retired; "
-            f"'softmax_sampling' is the only method.")
-    return SoftmaxSamplingConfig(**kwargs)
+
+    __slots__ = ('choices', 'unique', 'valid_only', 'catalog', 'decontaminate', 'match_variables', 'seed', 'max_tries')
+
+    method: Literal['prior_sampling']
+    choices: int
+    unique: bool
+    valid_only: bool
+    catalog: Any
+    decontaminate: bool
+    match_variables: bool
+    seed: int | None
+    max_tries: int | None
+
+    def __init__(
+        self,
+        *,
+        choices: int = 1024,
+        unique: bool = True,
+        valid_only: bool = True,
+        catalog: Any = None,
+        decontaminate: bool = True,
+        match_variables: bool = True,
+        seed: int | None = None,
+        max_tries: int | None = None,
+    ) -> None:
+        if int(choices) < 1:
+            raise ValueError(f"prior_sampling needs choices >= 1, got {choices!r}")
+        self.method = 'prior_sampling'
+        self.choices = int(choices)
+        self.unique = bool(unique)
+        self.valid_only = bool(valid_only)
+        self.catalog = catalog
+        self.decontaminate = bool(decontaminate)
+        self.match_variables = bool(match_variables)
+        self.seed = None if seed is None else int(seed)
+        self.max_tries = None if max_tries is None else int(max_tries)
+
+    def to_kwargs(self) -> dict[str, Any]:
+        return {
+            'choices': self.choices,
+            'unique': self.unique,
+            'valid_only': self.valid_only,
+            'catalog': self.catalog,
+            'decontaminate': self.decontaminate,
+            'match_variables': self.match_variables,
+            'seed': self.seed,
+            'max_tries': self.max_tries,
+        }
+
+
+GenerationConfig = SoftmaxSamplingConfig | PriorSamplingConfig
+
+
+def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampling'] = 'softmax_sampling',
+                             **kwargs: Any) -> GenerationConfig:
+    """Create a generation configuration for ``method``.
+
+    ``softmax_sampling`` decodes candidates from the transformer; ``prior_sampling`` draws them from
+    the training prior instead (:class:`PriorSamplingConfig`), the baseline that measures what the
+    posterior is worth. Beam search and MCTS were retired, and with them the generic
+    ``method`` dispatch; a request for a retired method is refused here.
+    """
+    name = str(method).lower()
+    if name == 'softmax_sampling':
+        return SoftmaxSamplingConfig(**kwargs)
+    if name == 'prior_sampling':
+        return PriorSamplingConfig(**kwargs)
+    raise ValueError(
+        f"Invalid generation method: {method}. Beam search and MCTS were retired; "
+        f"'softmax_sampling' (the decoder) and 'prior_sampling' (the training prior) are the methods.")
 
 
 # Hardware gate for the c-adaptive caps in ``suggest_batch_size``: those caps are validated only on a

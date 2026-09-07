@@ -831,10 +831,14 @@ class FlashANSR(BaseEstimator):
             ranking_metrics: Sequence[str] | None = None,
             ranking_tie_break: str | None = None,
             refiner_workers: int | None = None,
-            prune_constant_budget: float | int = 0):
+            prune_constant_budget: float | int = 0,
+            model_directory: str | None = None):
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_model = flash_ansr_model.eval()
         self.tokenizer = tokenizer
+        # Where the bundle came from (``load``): the training prior ``prior_sampling`` reads by default.
+        self.model_directory = model_directory
+        self._prior_sampler_cache: Any = None
 
         if refiner_p0_noise_kwargs == 'default':
             refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
@@ -843,6 +847,10 @@ class FlashANSR(BaseEstimator):
             generation_config = SoftmaxSamplingConfig()
 
         self.generation_config = generation_config
+        if getattr(generation_config, 'method', None) == 'prior_sampling':
+            # Build the prior's catalog now (its holdout registration takes a minute): setup,
+            # not the per-problem generation time a benchmark records.
+            self._prior_sampler()
         self.n_restarts = n_restarts
         self.refiner_method = refiner_method
         self.refiner_p0_noise = refiner_p0_noise
@@ -994,6 +1002,7 @@ class FlashANSR(BaseEstimator):
             simplipy_engine=model.simplipy_engine,
             flash_ansr_model=model,
             tokenizer=tokenizer,
+            model_directory=directory,
             generation_config=generation_config,
             n_restarts=n_restarts,
             refiner_method=refiner_method,
@@ -1223,6 +1232,19 @@ class FlashANSR(BaseEstimator):
         # key and falls back to its guarded serial simplify (which drops + counts in this process).
         return {raw: value for raw, value in zip(raw_list, simplified) if value is not None}
 
+    def _prior_sampler(self) -> Any:
+        """The training-prior sampler of ``prior_sampling``, built once from the generation config
+        (its ``catalog``, else ``catalog_train.yaml`` beside the loaded model)."""
+        if self._prior_sampler_cache is None:
+            from flash_ansr.prior import PriorSampler, resolve_prior_catalog
+
+            config = self.generation_config
+            catalog = resolve_prior_catalog(getattr(config, 'catalog', None), self.model_directory)
+            self._prior_sampler_cache = PriorSampler(
+                catalog, engine=self.simplipy_engine, tokenizer=self.tokenizer,
+                decontaminate=bool(getattr(config, 'decontaminate', True)), seed=getattr(config, 'seed', None))
+        return self._prior_sampler_cache
+
     def generate(
         self,
         data: torch.Tensor,
@@ -1231,6 +1253,7 @@ class FlashANSR(BaseEstimator):
         complexity: int | float | None = None,
         verbose: bool = False,
         memory: torch.Tensor | None = None,
+        n_active_variables: int | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
         """Generate candidate expression beams from the transformer.
 
@@ -1252,6 +1275,9 @@ class FlashANSR(BaseEstimator):
             Pre-computed encoder memory for ``data``. When provided, sampling
             skips the encoder forward inside the model; required for the outer
             batching loop to reuse one encoder pass across chunks.
+        n_active_variables : int, optional
+            The problem's number of input columns before padding; ``prior_sampling`` conditions
+            its draws on it (``match_variables``). Ignored by the decoder.
 
         Returns
         -------
@@ -1280,6 +1306,22 @@ class FlashANSR(BaseEstimator):
             effective_prompt = prepare_prompt_prefix(preprocessor, complexity=complexity)
 
         match self.generation_config.method:
+            case 'prior_sampling':
+                # The training prior instead of the decoder: the data is not consulted here (it
+                # reaches the refiner and the ranking), and a draw carries no log-probability.
+                weights = self.ranking.effective_weights
+                if float(weights.get('neg_log_prob', 0.0)) != 0.0:
+                    raise RankingError(
+                        "prior_sampling candidates carry no log-probability, but the ranking weights "
+                        "'neg_log_prob'; use ranking_mode='mdl' or weights without it.")
+                match = bool(generation_kwargs.get('match_variables', True))
+                return self._prior_sampler().draw(
+                    int(generation_kwargs.get('choices', 1)),
+                    unique=bool(generation_kwargs.get('unique', True)),
+                    valid_only=bool(generation_kwargs.get('valid_only', True)),
+                    max_tries=generation_kwargs.get('max_tries'),
+                    n_variables=(int(n_active_variables) if (match and n_active_variables is not None) else None),
+                )
             case 'softmax_sampling':
                 choices_target = int(generation_kwargs.get('choices', 1))
                 generation_kwargs = dict(generation_kwargs)  # local copy; resolve sentinels into it
@@ -1802,6 +1844,7 @@ class FlashANSR(BaseEstimator):
                 # numeric.fvu, so the selection FVU equals the evaluation FVU exactly.
                 y_variance = y[y_finite_mask].var(dim=0, unbiased=False).item()
 
+            n_input_columns = int(X.shape[1])  # the problem's own input count, before padding
             X = pad_input_set(X, self.n_variables)
 
             # Concatenate x and y along the feature dimension
@@ -1839,6 +1882,7 @@ class FlashANSR(BaseEstimator):
                 complexity=complexity,
                 verbose=verbose,
                 memory=memory_for_scoring,
+                n_active_variables=n_input_columns,
             )
             generation_time = time.time() - _t_gen
 

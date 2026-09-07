@@ -105,3 +105,28 @@ See the [srbf repository](https://github.com/psaegert/srbf) for usage.
 - See [Concepts & Architecture](concepts.md) for how the pieces fit together.
 - For training your own checkpoints, jump to [Training](training.md).
 - For baseline comparisons and sweeps, see the [srbf repository](https://github.com/psaegert/srbf).
+
+## The prior baseline: candidates from the training prior
+
+How much is the trained decoder worth? Swap it for the prior it was trained on and keep everything
+else: the same constant refinement, the same MDL ranking, the same candidate ledger.
+
+```python
+from flash_ansr import FlashANSR, PriorSamplingConfig
+
+prior = FlashANSR.load(
+  directory=CHECKPOINT,                      # catalog_train.yaml beside the checkpoint is the prior
+  generation_config=PriorSamplingConfig(choices=1024),
+  ranking_mode="mdl",
+)
+result = prior.infer(X, y)                   # no GPU needed: the sampler and the refiner are CPU work
+```
+
+The draws are conditioned on one thing every regressor is told, the number of input columns
+(`match_variables=True`: a draw is relabeled onto the columns, a wider draw is rejected); pass
+`match_variables=False` for the raw prior over the catalog's whole variable set, `decontaminate=False`
+for the bare prior without the benchmark holdout, and `catalog=` for a prior other than the
+checkpoint's own. A prior candidate carries no log-probability, so the ranking must not weight it
+(the default `mdl` ranking does not). The unconditioned decode, `infer(..., conditioned=False)`, is
+the other control: the model's own learned prior through the same pipeline.
+
