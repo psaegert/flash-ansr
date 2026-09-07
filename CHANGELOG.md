@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AdaMuon** (`optimizer: {name: AdaMuon}` in train.yaml; Si, Zhang, Shen 2025, arXiv:2507.11005).
+  The hidden weight matrices take the sign-stabilized, orthogonalized, variance-normalized and
+  RMS-aligned update; embeddings, the heads' final projections and every bias or norm gain stay
+  on AdamW, all inside one optimizer so the schedule, checkpoints and resume are unchanged. The
+  model declares its parameter roles (`FlashANSRModel.parameter_roles`); an unplaceable
+  parameter is an error. The RMS alignment makes the AdamW learning-rate schedule the right
+  schedule for the Muon groups too. `kwargs`: `lr`, `weight_decay` (Muon groups, 0.1),
+  `adam_weight_decay` (embeddings and projections, 0.01), `momentum`, `nesterov`, `ns_steps`,
+  `eps`, `betas`, `adam_eps`.
+- **z-loss is back as a documented loss term** (`z_loss_weight`, PaLM's log² Z in fp32; 0.0 off).
+  The v25.0-T7-20M run showed that `head_pre_logits_norm` moves the loss-flat logit-offset drift
+  into the norm's own gain and bias instead of removing it (mean |logit| 34 → 1,881, the bf16 head
+  then costs up to 74 % extra loss); the z-loss gives that direction a restoring gradient.
+- **Logit-scale metrics** every step: `train_log_z`, `train_logit_absmean`, `head_row_norm_max`
+  and their validation twins, the early alarm for the drift above (it is visible hundreds of
+  thousands of steps before any loss moves).
+- **`configs/v25.0-T8-20M`**: the T7-20M recipe with AdaMuon, `z_loss_weight: 1e-4` and no
+  pre-logits LayerNorm.
+
 ## [0.14.0] - 2026-09-05
 
 The first release of the third model generation. Constants are binary64 values spelled as byte

@@ -93,6 +93,36 @@ Produces checkpoints under `models/ansr-models/test/` with `model.yaml`, `tokeni
 5. **Logging**: enable/disable W&B logging via `--mode` (`online` / `offline` / `disabled`).
 6. **Resume**: continue from any checkpoint directory using `--resume-from` (optionally `--resume-step` when the step cannot be inferred).
 
+### Optimizer and auxiliary losses
+
+`train.yaml` names the optimizer and its keyword arguments:
+
+```yaml
+optimizer:
+  name: AdaMuon            # or any torch.optim / torch_optimizer class, e.g. AdamW
+  kwargs:
+    lr: 1                  # multiplied by lr_schedule
+    weight_decay: 0.1      # AdaMuon: the hidden weight matrices
+    adam_weight_decay: 0.01  # AdaMuon: embeddings and the heads' final projections
+    betas: [0.9, 0.95]     # the AdamW side
+    momentum: 0.95         # AdaMuon's coefficient for both of its moments
+    nesterov: true
+    ns_steps: 5
+```
+
+`AdaMuon` (Si, Zhang, Shen 2025, arXiv:2507.11005) applies the sign-stabilized, orthogonalized,
+variance-normalized and RMS-aligned update to the hidden weight matrices and AdamW to
+everything else (embeddings, the heads' final projections, biases and norm gains), inside one
+optimizer, so checkpoints, resume and the schedule work as for AdamW. The model decides which
+parameter is which (`FlashANSRModel.parameter_roles`). Because the update is RMS-aligned to
+Adam's, an AdamW learning-rate schedule is reused unchanged.
+
+Two auxiliary terms join the cross-entropy: `outlier_loss_weight` (the per-point outlier head)
+and `z_loss_weight` (PaLM's log² Z in fp32, the restoring force on the loss-flat shared logit
+offset; 0.0 turns it off). The logit scale is logged every step as `train_log_z`,
+`train_logit_absmean` and `head_row_norm_max` (with validation twins): a drift there shows up
+long before it costs loss.
+
 ### Resuming training
 - Checkpoints are written under `<output-dir>/checkpoint_<step>/` when `-ci/--checkpoint-interval` is set. Each checkpoint contains `model.safetensors` (model, with `model.yaml` and `tokenizer.yaml`), `optimizer.pt`, `lr_scheduler.pt`, `scaler.pt`, and `training_state.pt` with the recorded `step`.
 - Resume with the same config you trained with and point `--resume-from` at the checkpoint directory:

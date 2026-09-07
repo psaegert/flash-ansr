@@ -330,6 +330,42 @@ class FlashANSRModel(nn.Module):
             return False
         return int(static_batch) < int(choices)        # multi-chunk -> static
 
+    def parameter_roles(self) -> dict[str, str]:
+        """Role of every trainable parameter, for optimizers that treat weight matrices specially
+        (``flash_ansr.train.optimizers.AdaMuon``).
+
+        ``hidden_matrix``: the 2-D weights of the Linear layers in the encoder, the decoder and
+        the heads' MLPs. ``embedding``: the input embeddings (``numeric_embedding``, the
+        encoder's input projection, the token table) and the learned constant vectors (inducing
+        points, PMA seeds, the null memory). ``output_projection``: the last Linear of
+        ``next_token_head`` and of ``outlier_head``. ``vector``: biases and norm gains, whatever
+        their broadcast shape. A parameter this method cannot place is an error, not a guess.
+        """
+        embedding_modules: list[nn.Module] = [self.numeric_embedding, self.encoder.embedding, self.decoder.tok_embeddings]
+        output_modules: list[nn.Module] = [self.next_token_head[-1]]
+        if self.outlier_head is not None:
+            output_modules.append(self.outlier_head[-1])
+        embedding_ids = {id(m.weight) for m in embedding_modules}
+        output_ids = {id(m.weight) for m in output_modules}
+        linear_weight_ids = {id(m.weight) for m in self.modules() if isinstance(m, nn.Linear)}
+        roles: dict[str, str] = {}
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if id(p) in output_ids:
+                roles[name] = "output_projection"
+            elif id(p) in embedding_ids:
+                roles[name] = "embedding"
+            elif p.ndim == 1 or p.numel() == p.shape[-1]:
+                roles[name] = "vector"
+            elif p.ndim >= 3:
+                roles[name] = "embedding"
+            elif id(p) in linear_weight_ids:
+                roles[name] = "hidden_matrix"
+            else:
+                raise ValueError(f"parameter_roles: cannot place {name} with shape {tuple(p.shape)}")
+        return roles
+
     @classmethod
     def from_config(cls, config: dict[str, Any] | str) -> "FlashANSRModel":
         """Instantiate a model from a config dict or a path to a config file.
