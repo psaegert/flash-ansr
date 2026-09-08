@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A faster training step, same arithmetic.** Profiled on an H200 (2026-09-08), the AdaMuon step
+  cost more GPU time than the model's forward and backward (85 ms of a 173 ms step at 20M, 167 of
+  291 ms at 120M) and the per-step metrics issued a couple of hundred host synchronisations. The
+  optimizer now runs its momentum, sign, second-moment and AdamW updates as foreach kernels, the
+  Newton-Schulz iteration once per distinct shape on the stacked matrices
+  (`newton_schulz_orthogonalize_batched`), and keeps the RMS-aligning scale on the device; the
+  per-matrix reference arithmetic is unchanged (tests compare the two). The trainer accumulates
+  every per-step scalar on the device and reads them all back in one transfer, the z-loss, the
+  logit-scale alarms, the per-task and split cross-entropies and the outlier loss are masked
+  reductions instead of boolean-index subsets, the finiteness check moved to the gradient norm
+  (before the optimizer applies it), and the every-parameter zero-loss is taken only when
+  `wandb.watch` logs gradients. Checkpoints, state dicts and the logged keys are unchanged.
 - **`head_fp32`** (model config, default on): the next-token head -- its MLP and the logit
   projection -- runs outside autocast in float32 under mixed-precision training, so the logits the
   cross-entropy, the z-loss and the sampler see carry float32 resolution instead of bf16's (a bf16

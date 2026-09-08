@@ -6,6 +6,7 @@ initialisation and experiment logging.
 """
 
 import copy
+import math
 import os
 from typing import Any, Literal
 
@@ -97,7 +98,7 @@ TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "pred
 
 
 def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Tensor,
-                 ignore_index: int) -> "dict[str, tuple[float, int]]":
+                 ignore_index: int) -> "dict[str, tuple[torch.Tensor, torch.Tensor]]":
     """CE sum and token count per task segment, over the SUPERVISED labels only (the
     task/prompt/float masks have already written ignore_index into the labels, so each
     segment's mean is the loss on exactly its trained tokens). Shifted-label discipline
@@ -110,20 +111,19 @@ def _per_task_ce(logits: torch.Tensor, labels: torch.Tensor, segments: torch.Ten
     flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])[:labels.numel()]
     flat_labels = labels.reshape(-1)
     flat_segments = seg.reshape(-1)
+    # Every segment, as 0-d device tensors (sum, count): no host sync here; the caller reads
+    # them back in one transfer and drops the zero-count segments, so the emitted keys are unchanged.
     valid = flat_labels != ignore_index
-    parts: dict[str, tuple[float, int]] = {}
-    if valid.any():
-        ce = nn.functional.cross_entropy(flat_logits[valid], flat_labels[valid], reduction="none")
-        valid_segments = flat_segments[valid]
-        for segment_id, name in TASK_SEGMENT_NAMES.items():
-            member = valid_segments == segment_id
-            if member.any():
-                parts[name] = (float(ce[member].sum()), int(member.sum()))
+    ce = nn.functional.cross_entropy(flat_logits, flat_labels, reduction="none", ignore_index=ignore_index)
+    parts: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    for segment_id, name in TASK_SEGMENT_NAMES.items():
+        member = (valid & (flat_segments == segment_id)).to(ce.dtype)
+        parts[name] = ((ce * member).sum(), member.sum())
     return parts
 
 
 def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
-                      ignore_index: int) -> "dict[str, tuple[float, int]]":
+                      ignore_index: int) -> "dict[str, tuple[torch.Tensor, torch.Tensor]]":
     """Fine-grained CE curves: task segments crossed with per-instance conditioning
     circumstances (owner request 2026-08-24 -- the prior mixes many tasks in many
     circumstances, and each combination gets its own wandb curve under ``ce_split/``).
@@ -266,11 +266,12 @@ def _ce_split_metrics(batch: "dict[str, Any]", logits: torch.Tensor,
         splits.append(("predict_residual/conditional", 4, conditional))
         splits.append(("predict_residual/unconditional", 4, unconditional))
 
-    out: "dict[str, tuple[float, int]]" = {}
+    # Sums as 0-d device tensors, every split: the caller reads them back in one transfer and
+    # drops the splits with no member (the keys emitted are the same as before).
+    out: "dict[str, tuple[torch.Tensor, torch.Tensor]]" = {}
     for suffix, segment_id, row_mask in splits:
-        member = valid & (seg == segment_id) & row_mask[:, None]
-        if member.any():
-            out[suffix] = (float(ce[member].sum()), int(member.sum()))
+        member = (valid & (seg == segment_id) & row_mask[:, None]).to(ce.dtype)
+        out[suffix] = ((ce * member).sum(), member.sum())
     return out
 
 
@@ -307,24 +308,25 @@ def _z_loss(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> torch.Tens
     the restoring force on exactly that direction. Computed in fp32: bf16 logsumexp is the
     wrong tool at the offsets this loss exists to shrink.
     """
-    log_z = torch.logsumexp(flat_logits[valid_labels].float(), dim=-1)
-    return (log_z * log_z).mean()
+    log_z = torch.logsumexp(flat_logits.float(), dim=-1)
+    valid = valid_labels.to(log_z.dtype)
+    return (log_z * log_z * valid).sum() / valid.sum().clamp_min(1.0)
 
 
-def _logit_scale(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> tuple[float, float, int]:
+def _logit_scale(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """(sum of log Z, sum of the per-position mean |logit|, position count) over the supervised
-    positions, in fp32 and without gradient.
+    positions, in fp32 and without gradient, as 0-d tensors on the logits' device (the caller
+    reads every scalar of a step back in one transfer).
 
     The early alarm for a logit-scale drift: in T7-20M log Z slid from +15 to -1,432 and the
     mean |logit| from 5 to 1,881, hundreds of thousands of steps before any loss moved.
     """
     with torch.no_grad():
-        selected = flat_logits.detach()[valid_labels].float()
-        if selected.shape[0] == 0:
-            return 0.0, 0.0, 0
-        log_z_sum = float(torch.logsumexp(selected, dim=-1).sum())
-        absmean_sum = float(selected.abs().mean(dim=-1).sum())
-        return log_z_sum, absmean_sum, int(selected.shape[0])
+        logits = flat_logits.detach().float()
+        valid = valid_labels.to(logits.dtype)
+        log_z_sum = (torch.logsumexp(logits, dim=-1) * valid).sum()
+        absmean_sum = (logits.abs().mean(dim=-1) * valid).sum()
+        return log_z_sum, absmean_sum, valid.sum()
 
 
 class Trainer:
@@ -406,6 +408,9 @@ class Trainer:
         # Metrics and Loss Functions
         self.metrics_ignore_index = int(self.model.tokenizer["<pad>"])
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
+        # Only wandb.watch(log='gradients'|'all') needs every parameter in the graph; the zero-loss
+        # that guarantees it costs one reduction per parameter per step, so it is opt-in (see run()).
+        self._touch_all_parameters = False
 
         # Outlier-head auxiliary loss (noise mixture). weight 0.0 <=> off. pos_weight
         # rebalances the BCE positive class; the ruling starts at 1.0 (calibrated suspicion
@@ -792,6 +797,7 @@ class Trainer:
                              "validate_num_workers": self.validate_num_workers})
 
         with wandb.init(config=wandb_config, project=project_name, entity=entity, name=name, mode=wandb_mode):  # type: ignore
+            self._touch_all_parameters = wandb_watch_log is not None
             if wandb_mode != 'disabled':
                 wandb.watch(self.model, log=wandb_watch_log, log_freq=wandb_watch_log_freq)  # type: ignore
                 if verbose and wandb_watch_log is not None:
@@ -915,8 +921,9 @@ class Trainer:
 
         mask_float_targets(labels, input_ids, float_token_id, int(self.metrics_ignore_index))
 
-    def _outlier_scores(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor] | None:
-        """Per-point outlier-head logits and contamination labels over valid support points.
+    def _outlier_scores(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        """Per-point outlier-head logits, contamination labels and the valid-point mask, as full
+        ``[batch, points]`` tensors (index with the mask only where a ranking needs the subset).
 
         ``None`` when inactive (no head, or the batch carries no mixture labels). Reads the
         per-point representations captured by the SAME model forward that produced the
@@ -929,17 +936,18 @@ class Trainer:
         if point_representations is None:
             return None
         logits = head(point_representations).squeeze(-1)
-        valid = batch['data_attn_mask'].to(logits.device)
+        valid = batch['data_attn_mask'].to(device=logits.device, dtype=torch.bool)
         labels = batch['outlier_mask'].to(logits.device)
-        return logits[valid], labels[valid]
+        return logits, labels, valid
 
-    def _outlier_loss(self, scored: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        logits, labels = scored
-        if logits.numel() == 0:
-            return torch.zeros((), device=logits.device)
+    def _outlier_loss(self, scored: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        """Mean BCE over the valid points: the masked form of the subset mean, no host sync."""
+        logits, labels, valid = scored
         pos_weight = torch.tensor(self.outlier_pos_weight, device=logits.device, dtype=logits.dtype)
-        return nn.functional.binary_cross_entropy_with_logits(
-            logits, labels.to(logits.dtype), pos_weight=pos_weight)
+        per_point = nn.functional.binary_cross_entropy_with_logits(
+            logits, labels.to(logits.dtype), pos_weight=pos_weight, reduction="none")
+        weight = valid.to(per_point.dtype)
+        return (per_point * weight).sum() / weight.sum().clamp_min(1.0)
 
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
@@ -957,22 +965,24 @@ class Trainer:
             accumulation across micro-batches).
         """
         self.model.train()
-
-        total_ce_loss = 0.0
-        total_outlier_loss = 0.0
-        total_z_loss = 0.0
-        total_loss = 0.0
+        device = self.device
+        zero = torch.zeros((), device=device)
+        # Every per-step scalar stays on the device until the single read-back below: a
+        # `.item()` per metric drains the GPU queue each time, and there were ~200 of them a step.
+        total_ce_loss = zero
+        total_outlier_loss = zero
+        total_z_loss = zero
+        total_loss = zero
         # (sum of log Z, sum of mean |logit|, supervised positions) across the micro-batches.
-        logit_scale_sums: list[float] = [0.0, 0.0, 0.0]
-        task_ce_sums: dict[str, list[float]] = {}
-        split_ce_sums: dict[str, list[float]] = {}
+        logit_scale_sums: list[torch.Tensor] = [zero, zero, zero]
+        task_ce_sums: dict[str, list[torch.Tensor]] = {}
+        split_ce_sums: dict[str, list[torch.Tensor]] = {}
         train_outlier_scores: list[torch.Tensor] = []
         train_outlier_labels: list[torch.Tensor] = []
         # Both halves of the ranking metrics share one cadence, so a step that logs them
         # always has the complete set of scores behind it.
         rank_metrics_step = (self.outlier_loss_weight > 0.0
                              and step % self.outlier_metrics_interval == 0)
-
         # Split the batch into micro-batches to support gradient accumulation
         if len(batch['x_tensors']) % self.gradient_accumulation_steps != 0:
             raise ValueError(
@@ -989,7 +999,6 @@ class Trainer:
             self._apply_prompt_mask(micro_batch)
             self._apply_task_mask(micro_batch)
             self._apply_float_target_mask(micro_batch)
-
             data_tensor = torch.cat([micro_batch['x_tensors'], micro_batch['y_tensors']], dim=-1)
 
             if self.amp_dtype == torch.float32:
@@ -1002,16 +1011,15 @@ class Trainer:
                 flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
                 flat_labels = micro_batch['labels'].reshape(-1)
                 valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
-                if not valid_labels.any():
-                    ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
-                else:
-                    ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                # The mean over the supervised positions, 0 when there are none: the sum form of
+                # nn.CrossEntropyLoss(ignore_index=...) with a clamped count, so no `.any()` sync.
+                ce_loss = nn.functional.cross_entropy(
+                    flat_logits, flat_labels, ignore_index=self.metrics_ignore_index, reduction="sum"
+                ) / valid_labels.sum().clamp_min(1)
 
-                # Force every parameter to contribute to the loss so that gradient
-                # tracking tools (e.g. wandb.watch) do not encounter ``None`` gradients
-                # for frozen or unused tensors.
-                param_sum = sum(p.sum() for p in self.model.parameters())
-                zero_loss = 0.0 * param_sum
+                # wandb.watch on gradients wants every parameter in the graph; touch them all only
+                # then (one reduction per parameter per step, wasted otherwise).
+                zero_loss = 0.0 * sum(p.sum() for p in self.model.parameters()) if getattr(self, "_touch_all_parameters", False) else 0.0
 
                 outlier_loss = torch.zeros((), device=self.device, dtype=ce_loss.dtype)
                 if self.outlier_loss_weight > 0.0:
@@ -1019,47 +1027,40 @@ class Trainer:
                     if scored is not None:
                         outlier_loss = self._outlier_loss(scored)
                         if rank_metrics_step:
-                            train_outlier_scores.append(scored[0].detach().float().cpu())
-                            train_outlier_labels.append(scored[1].detach().cpu())
+                            train_outlier_scores.append(scored[0][scored[2]].detach().float().cpu())
+                            train_outlier_labels.append(scored[1][scored[2]].detach().cpu())
 
                 z_loss = torch.zeros((), device=self.device, dtype=ce_loss.dtype)
-                if self.z_loss_weight > 0.0 and valid_labels.any():
+                if self.z_loss_weight > 0.0:
                     z_loss = _z_loss(flat_logits, valid_labels)
 
                 loss = (ce_loss
                         + self.outlier_loss_weight * outlier_loss
                         + self.z_loss_weight * z_loss) / self.gradient_accumulation_steps + zero_loss
 
-            # If the loss is nan or inf, stop the training
-            if not torch.isfinite(loss):
-                raise ValueError(f"Loss is {loss.item()}, stopping training")
-
             self.scaler.scale(loss).backward()
-            total_ce_loss += ce_loss.item()
-            total_outlier_loss += outlier_loss.item()
-            total_z_loss += z_loss.item()
+            total_ce_loss = total_ce_loss + ce_loss.detach()
+            total_outlier_loss = total_outlier_loss + outlier_loss.detach()
+            total_z_loss = total_z_loss + z_loss.detach()
             log_z_sum, absmean_sum, n_positions = _logit_scale(flat_logits, valid_labels)
-            logit_scale_sums[0] += log_z_sum
-            logit_scale_sums[1] += absmean_sum
-            logit_scale_sums[2] += n_positions
+            logit_scale_sums = [logit_scale_sums[0] + log_z_sum, logit_scale_sums[1] + absmean_sum, logit_scale_sums[2] + n_positions]
             with torch.no_grad():
                 if 'task_segments' in micro_batch:
                     for name, (ce_sum, count) in _per_task_ce(
                             logits.detach(), micro_batch['labels'],
                             micro_batch['task_segments'], self.metrics_ignore_index).items():
-                        entry = task_ce_sums.setdefault(name, [0.0, 0])
-                        entry[0] += ce_sum
-                        entry[1] += count
+                        entry = task_ce_sums.setdefault(name, [zero, zero])
+                        entry[0] = entry[0] + ce_sum
+                        entry[1] = entry[1] + count
                 # Unconditional (audit 2026-08-24): the segments-None fallback treats
                 # every position as expression so BASE arms log the anchor too --
                 # gating it on task_segments made that fallback dead code.
                 for name, (ce_sum, count) in _ce_split_metrics(
                         micro_batch, logits.detach(), self.metrics_ignore_index).items():
-                    entry = split_ce_sums.setdefault(name, [0.0, 0])
-                    entry[0] += ce_sum
-                    entry[1] += count
-            total_loss += loss.item() * self.gradient_accumulation_steps
-
+                    entry = split_ce_sums.setdefault(name, [zero, zero])
+                    entry[0] = entry[0] + ce_sum
+                    entry[1] = entry[1] + count
+            total_loss = total_loss + loss.detach() * self.gradient_accumulation_steps
         self._update_total_pflops(encoder_tokens=data_tensor.shape[1], decoder_tokens=micro_batch['input_ids'].shape[1], batch_size=len(batch['x_tensors']))
 
         # Unscale/clip/zero belong to the step, not the backward: with do_optimizer_step=False
@@ -1068,6 +1069,38 @@ class Trainer:
         if do_optimizer_step:
             self.scaler.unscale_(self.optimizer)
             total_gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 2.0)
+
+            # The step's one host transfer: every scalar at once, then the finiteness check
+            # BEFORE the optimizer applies the (possibly non-finite) gradients.
+            names: list[str] = []
+            scalars: list[torch.Tensor] = []
+
+            def put(name: str, value: torch.Tensor) -> None:
+                names.append(name)
+                scalars.append(value.detach().float().reshape(()))
+
+            put("ce", total_ce_loss)
+            put("outlier", total_outlier_loss)
+            put("z", total_z_loss)
+            put("loss", total_loss)
+            put("grad_norm", total_gradient_norm)
+            put("log_z", logit_scale_sums[0])
+            put("absmean", logit_scale_sums[1])
+            put("n_positions", logit_scale_sums[2])
+            head = getattr(self.model, "next_token_head", None)
+            if head is not None:
+                with torch.no_grad():
+                    put("head_row_norm_max", head[-1].weight.norm(dim=1).max())
+            for name, (ce_sum, count) in task_ce_sums.items():
+                put(f"task:{name}:sum", ce_sum)
+                put(f"task:{name}:count", count)
+            for name, (ce_sum, count) in split_ce_sums.items():
+                put(f"split:{name}:sum", ce_sum)
+                put(f"split:{name}:count", count)
+            values = dict(zip(names, torch.stack(scalars).tolist()))
+            if not math.isfinite(values["loss"]) or not math.isfinite(values["grad_norm"]):
+                raise ValueError(f"Loss is {values['loss']} (gradient norm {values['grad_norm']}), stopping training")
+
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.optimizer.zero_grad()
@@ -1076,34 +1109,34 @@ class Trainer:
             # Positional call when no extras: monkeypatched/legacy 4-arg loggers keep working.
             extra: dict[str, float] = {}
             if self.z_loss_weight > 0.0:
-                extra["train_z_loss"] = total_z_loss
-            if logit_scale_sums[2] > 0:
+                extra["train_z_loss"] = values["z"]
+            if values["n_positions"] > 0:
                 # The logit-scale alarms (see _logit_scale): log Z and mean |logit| every step,
                 # the logit projection's largest row norm alongside them.
-                extra["train_log_z"] = logit_scale_sums[0] / logit_scale_sums[2]
-                extra["train_logit_absmean"] = logit_scale_sums[1] / logit_scale_sums[2]
-            head = getattr(self.model, "next_token_head", None)
-            if head is not None:
-                with torch.no_grad():
-                    extra["head_row_norm_max"] = float(head[-1].weight.norm(dim=1).max())
+                extra["train_log_z"] = values["log_z"] / values["n_positions"]
+                extra["train_logit_absmean"] = values["absmean"] / values["n_positions"]
+            if "head_row_norm_max" in values:
+                extra["head_row_norm_max"] = values["head_row_norm_max"]
             if self.outlier_loss_weight > 0.0:
-                extra["train_outlier_loss"] = total_outlier_loss
+                extra["train_outlier_loss"] = values["outlier"]
                 if train_outlier_scores:
                     scores = torch.cat(train_outlier_scores)
                     outlier_labels = torch.cat(train_outlier_labels).bool()
                     if outlier_labels.any() and (~outlier_labels).any():
                         extra["train_outlier_auroc"] = _binary_auroc(scores, outlier_labels)
                         extra["train_outlier_auprc"] = _binary_auprc(scores, outlier_labels)
-            for name, sums in task_ce_sums.items():
-                extra[f"train_ce_{name}"] = sums[0] / sums[1]
-            for name, sums in split_ce_sums.items():
-                extra[f"ce_split/train/{name}"] = sums[0] / sums[1]
+            for name in task_ce_sums:
+                if values[f"task:{name}:count"] > 0:
+                    extra[f"train_ce_{name}"] = values[f"task:{name}:sum"] / values[f"task:{name}:count"]
+            for name in split_ce_sums:
+                if values[f"split:{name}:count"] > 0:
+                    extra[f"ce_split/train/{name}"] = values[f"split:{name}:sum"] / values[f"split:{name}:count"]
             for counter_key, value in getattr(self.train_dataset, "stream_counters", {}).items():
                 extra[f"data/{counter_key}"] = value
             if extra:
-                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm, extra=extra)
+                self._log_metrics(step, values["ce"], values["loss"], values["grad_norm"], extra=extra)
             else:
-                self._log_metrics(step, total_ce_loss, total_loss, total_gradient_norm)
+                self._log_metrics(step, values["ce"], values["loss"], values["grad_norm"])
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -1188,8 +1221,8 @@ class Trainer:
                     if self.outlier_loss_weight > 0.0:
                         scored = self._outlier_scores(batch)
                         if scored is not None:
-                            val_outlier_scores.append(scored[0].detach().float().cpu())
-                            val_outlier_labels.append(scored[1].detach().cpu())
+                            val_outlier_scores.append(scored[0][scored[2]].detach().float().cpu())
+                            val_outlier_labels.append(scored[1][scored[2]].detach().cpu())
                     if 'task_segments' in batch:
                         for name, (ce_sum, count) in _per_task_ce(
                                 logits.detach(), batch['labels'],
@@ -1206,6 +1239,11 @@ class Trainer:
 
                 pbar.update(1)
             pbar.close()
+
+        # The helpers accumulate on the device; one read-back each, zero-count segments dropped.
+        val_logit_scale_sums = [float(v) for v in val_logit_scale_sums]
+        val_task_ce_sums = {name: [float(c_sum), int(count)] for name, (c_sum, count) in val_task_ce_sums.items() if int(count) > 0}
+        val_split_ce_sums = {name: [float(c_sum), int(count)] for name, (c_sum, count) in val_split_ce_sums.items() if int(count) > 0}
 
         # Calculate average metrics
         avg_val_ce_loss = val_ce_loss / total_items if total_items > 0 else 0.0
@@ -1341,7 +1379,7 @@ class Trainer:
 
         return resume_step
 
-    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: torch.Tensor,
+    def _log_metrics(self, step: int, ce_loss: float, total_loss: float, total_gradient_norm: "torch.Tensor | float",
                      extra: "dict[str, float] | None" = None) -> None:
         """Submit training metrics for the current batch to Weights & Biases.
 
@@ -1358,7 +1396,7 @@ class Trainer:
         """
 
         log_data = {
-            "total_gradient_norm": total_gradient_norm.item(),
+            "total_gradient_norm": float(total_gradient_norm),
             "train_ce_loss": ce_loss,
             "train_loss": total_loss,
             "lr": self.optimizer.param_groups[0]['lr'],

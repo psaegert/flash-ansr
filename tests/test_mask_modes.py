@@ -228,7 +228,9 @@ class TestSplitsAndAnchor:
             torch.manual_seed(0)
             logits = torch.randn(batch["input_ids"].shape[0], batch["input_ids"].shape[1],
                                  len(tokenizer))
-            parts = _ce_split_metrics(batch, logits, ignore_index=tokenizer["<pad>"])
+            # every split comes back as (sum, count) tensors; the trainer emits the non-empty ones
+            parts = {name: (float(ce_sum), int(count)) for name, (ce_sum, count) in
+                     _ce_split_metrics(batch, logits, ignore_index=tokenizer["<pad>"]).items() if int(count) > 0}
             assert "expression/mask_all" in parts
             assert "constants/after_flagged" in parts
             assert "expression/anchor" not in parts, \

@@ -237,3 +237,69 @@ class TestTrainerIntegration:
         for p in muon_group["params"]:
             state = trainer.optimizer.state[p]
             assert "second_moment" in state and float(state["second_moment"].abs().sum()) > 0
+
+
+class TestBatchedStepEquivalence:
+    """The foreach/batched step is the per-matrix reference arithmetic, launched differently."""
+
+    @staticmethod
+    def _reference_muon_update(p: torch.Tensor, grad: torch.Tensor, state: dict, *, lr: float, weight_decay: float,
+                               momentum: float, nesterov: bool, ns_steps: int, eps: float) -> None:
+        # the original per-parameter loop (flash-ansr f6d918e), kept here as the oracle
+        if not state:
+            state["momentum_buffer"] = torch.zeros_like(p)
+            state["second_moment"] = torch.zeros_like(p)
+        buf, second = state["momentum_buffer"], state["second_moment"]
+        buf.mul_(momentum).add_(grad)
+        direction = grad.add(buf, alpha=momentum) if nesterov else buf
+        ortho = newton_schulz_orthogonalize(torch.sign(direction), steps=ns_steps).to(p.dtype)
+        second.mul_(momentum).addcmul_(ortho, ortho, value=1.0 - momentum)
+        update = ortho / (second.sqrt() + eps)
+        scale = 0.2 * math.sqrt(p.shape[0] * p.shape[1]) / (update.norm() + eps)
+        if weight_decay != 0.0:
+            p.mul_(1.0 - lr * weight_decay)
+        p.add_(update, alpha=-lr * float(scale))
+
+    def test_batched_newton_schulz_matches_the_single_matrix_iteration(self) -> None:
+        from flash_ansr.train.optimizers import newton_schulz_orthogonalize_batched
+        torch.manual_seed(11)
+        for shape in ((8, 40, 96), (5, 96, 40), (3, 64, 64)):
+            stack = torch.randn(*shape)
+            batched = newton_schulz_orthogonalize_batched(stack)
+            for i in range(shape[0]):
+                single = newton_schulz_orthogonalize(stack[i])
+                torch.testing.assert_close(batched[i].float(), single.float(), atol=2e-2, rtol=2e-2)
+
+    def test_step_matches_the_per_matrix_reference(self) -> None:
+        torch.manual_seed(5)
+        shapes = [(48, 80), (48, 80), (96, 32), (16, 16)]
+        ws_new = [nn.Parameter(torch.randn(*s)) for s in shapes]
+        ws_ref = [nn.Parameter(w.detach().clone()) for w in ws_new]
+        kw = dict(lr=3e-3, weight_decay=0.1, momentum=0.95, nesterov=True, ns_steps=5, eps=1e-8)
+        opt = AdaMuon(ws_new, **kw)
+        ref_state = [dict() for _ in ws_ref]
+        for _ in range(4):
+            grads = [torch.randn(*s) for s in shapes]
+            for w, g in zip(ws_new, grads):
+                w.grad = g.clone()
+            opt.step()
+            with torch.no_grad():
+                for w, g, st in zip(ws_ref, grads, ref_state):
+                    self._reference_muon_update(w, g, st, **kw)
+        for w_new, w_ref in zip(ws_new, ws_ref):
+            torch.testing.assert_close(w_new.detach(), w_ref.detach(), atol=1e-4, rtol=1e-4)
+        for w, st in zip(ws_new, ref_state):
+            torch.testing.assert_close(opt.state[w]["momentum_buffer"], st["momentum_buffer"], atol=1e-6, rtol=1e-6)
+
+    def test_adam_group_step_matches_the_per_parameter_reference(self) -> None:
+        torch.manual_seed(6)
+        ps_new = [nn.Parameter(torch.randn(30, 12)), nn.Parameter(torch.randn(12)), nn.Parameter(torch.randn(7, 5))]
+        ps_ref = [nn.Parameter(p.detach().clone()) for p in ps_new]
+        opt = AdaMuon([{"params": ps_new, "use_muon": False}], lr=2e-3, adam_weight_decay=0.01)
+        ref = torch.optim.AdamW(ps_ref, lr=2e-3, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01, foreach=False)
+        for _ in range(5):
+            for a, b in zip(ps_new, ps_ref):
+                g = torch.randn_like(a); a.grad = g.clone(); b.grad = g.clone()
+            opt.step(); ref.step()
+        for a, b in zip(ps_new, ps_ref):
+            torch.testing.assert_close(a.detach(), b.detach(), atol=1e-6, rtol=1e-6)

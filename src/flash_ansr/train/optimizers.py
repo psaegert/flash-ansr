@@ -30,6 +30,26 @@ ROLE_VECTOR = "vector"
 PARAMETER_ROLES = (ROLE_HIDDEN_MATRIX, ROLE_EMBEDDING, ROLE_OUTPUT_PROJECTION, ROLE_VECTOR)
 
 
+def newton_schulz_orthogonalize_batched(matrices: Tensor, steps: int = 5, eps: float = 1e-7) -> Tensor:
+    """Approximately orthogonalize a stack of same-shaped 2-D matrices ``[B, m, n]`` with the quintic
+    Newton-Schulz iteration, each one exactly as :func:`newton_schulz_orthogonalize` would: in
+    bfloat16, on the smaller side, normalized by its own Frobenius norm. One batched matmul per
+    iteration instead of one launch per matrix -- the optimizer step's cost is launches, not FLOPs.
+    """
+    if matrices.ndim != 3:
+        raise ValueError(f"newton_schulz_orthogonalize_batched expects [B, m, n], got shape {tuple(matrices.shape)}")
+    x = matrices.to(torch.bfloat16)
+    transposed = x.shape[-2] > x.shape[-1]
+    if transposed:
+        x = x.mT
+    x = x / (x.norm(dim=(-2, -1), keepdim=True) + eps)
+    a, b, c = _NS_COEFFICIENTS
+    for _ in range(steps):
+        gram = x @ x.mT
+        x = a * x + (b * gram + c * (gram @ gram)) @ x
+    return x.mT if transposed else x
+
+
 def newton_schulz_orthogonalize(matrix: Tensor, steps: int = 5, eps: float = 1e-7) -> Tensor:
     """Approximately orthogonalize a 2-D matrix with the quintic Newton-Schulz iteration.
 
@@ -39,16 +59,7 @@ def newton_schulz_orthogonalize(matrix: Tensor, steps: int = 5, eps: float = 1e-
     """
     if matrix.ndim != 2:
         raise ValueError(f"newton_schulz_orthogonalize expects a 2-D matrix, got shape {tuple(matrix.shape)}")
-    x = matrix.to(torch.bfloat16)
-    transposed = x.shape[0] > x.shape[1]
-    if transposed:
-        x = x.mT
-    x = x / (x.norm() + eps)
-    a, b, c = _NS_COEFFICIENTS
-    for _ in range(steps):
-        gram = x @ x.mT
-        x = a * x + (b * gram + c * (gram @ gram)) @ x
-    return x.mT if transposed else x
+    return newton_schulz_orthogonalize_batched(matrix.unsqueeze(0), steps=steps, eps=eps).squeeze(0)
 
 
 def _module_parameter_names(model: nn.Module, module: nn.Module) -> set[str]:
@@ -192,50 +203,81 @@ class AdaMuon(torch.optim.Optimizer):
         return loss
 
     def _muon_step(self, group: dict[str, Any]) -> None:
+        """The paper's update for every matrix of the group, in the same arithmetic as the
+        per-matrix reference but without its launch storm: momentum, sign and second-moment
+        updates as foreach kernels, Newton-Schulz once per distinct shape on the stacked
+        matrices, and the RMS-aligning scale kept on the device (no host sync per parameter)."""
         lr, weight_decay, momentum = group["lr"], group["weight_decay"], group["momentum"]
         nesterov, ns_steps, eps = group["nesterov"], group["ns_steps"], group["eps"]
-        for p in group["params"]:
-            if p.grad is None:
-                continue
-            grad = p.grad
+        params = [p for p in group["params"] if p.grad is not None]
+        if not params:
+            return
+        for p in params:
             state = self.state[p]
             if not state:
                 state["momentum_buffer"] = torch.zeros_like(p)
                 state["second_moment"] = torch.zeros_like(p)
-            buf, second = state["momentum_buffer"], state["second_moment"]
-            buf.mul_(momentum).add_(grad)
-            direction = grad.add(buf, alpha=momentum) if nesterov else buf
-            ortho = newton_schulz_orthogonalize(torch.sign(direction), steps=ns_steps).to(p.dtype)
-            second.mul_(momentum).addcmul_(ortho, ortho, value=1.0 - momentum)
-            update = ortho / (second.sqrt() + eps)
-            scale = _RMS_TARGET * math.sqrt(p.shape[0] * p.shape[1]) / (update.norm() + eps)
-            if weight_decay != 0.0:
-                p.mul_(1.0 - lr * weight_decay)
-            p.add_(update, alpha=-lr * float(scale))
+        grads = [p.grad for p in params]
+        bufs = [self.state[p]["momentum_buffer"] for p in params]
+        seconds = [self.state[p]["second_moment"] for p in params]
+        torch._foreach_mul_(bufs, momentum)
+        torch._foreach_add_(bufs, grads)
+        directions = torch._foreach_add(grads, bufs, alpha=momentum) if nesterov else bufs
+        signs = torch._foreach_sign(directions)
+        orthos: list[Tensor | None] = [None] * len(params)
+        by_shape: dict[tuple[int, ...], list[int]] = {}
+        for i, sign in enumerate(signs):
+            by_shape.setdefault(tuple(sign.shape), []).append(i)
+        for indices in by_shape.values():
+            stacked = torch.stack([signs[i] for i in indices])
+            ortho = newton_schulz_orthogonalize_batched(stacked, steps=ns_steps)
+            for j, i in enumerate(indices):
+                orthos[i] = ortho[j].to(params[i].dtype)
+        orthos_list = [o for o in orthos if o is not None]
+        torch._foreach_mul_(seconds, momentum)
+        torch._foreach_addcmul_(seconds, orthos_list, orthos_list, value=1.0 - momentum)
+        denoms = torch._foreach_sqrt(seconds)
+        torch._foreach_add_(denoms, eps)
+        updates = torch._foreach_div(orthos_list, denoms)
+        norms = torch._foreach_norm(updates)
+        if weight_decay != 0.0:
+            torch._foreach_mul_(params, 1.0 - lr * weight_decay)
+        for p, update, norm in zip(params, updates, norms):
+            update.mul_(_RMS_TARGET * math.sqrt(p.shape[0] * p.shape[1]) / (norm + eps))
+        torch._foreach_add_(params, updates, alpha=-lr)
 
     def _adamw_step(self, group: dict[str, Any]) -> None:
+        """AdamW for the group, torch's own arithmetic, as foreach kernels over the parameters
+        that share a step count (all of them, in the usual run)."""
         lr, weight_decay, eps = group["lr"], group["weight_decay"], group["adam_eps"]
         beta1, beta2 = group["betas"]
-        for p in group["params"]:
-            if p.grad is None:
-                continue
-            grad = p.grad
+        params = [p for p in group["params"] if p.grad is not None]
+        if not params:
+            return
+        by_step: dict[int, list[Tensor]] = {}
+        for p in params:
             state = self.state[p]
             if not state:
                 state["step"] = 0
                 state["exp_avg"] = torch.zeros_like(p)
                 state["exp_avg_sq"] = torch.zeros_like(p)
             state["step"] += 1
-            t = state["step"]
-            exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+            by_step.setdefault(state["step"], []).append(p)
+        for t, ps in by_step.items():
+            grads = [p.grad for p in ps]
+            exp_avgs = [self.state[p]["exp_avg"] for p in ps]
+            exp_avg_sqs = [self.state[p]["exp_avg_sq"] for p in ps]
             if weight_decay != 0.0:
-                p.mul_(1.0 - lr * weight_decay)
-            exp_avg.lerp_(grad, 1.0 - beta1)
-            exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+                torch._foreach_mul_(ps, 1.0 - lr * weight_decay)
+            torch._foreach_lerp_(exp_avgs, grads, 1.0 - beta1)
+            torch._foreach_mul_(exp_avg_sqs, beta2)
+            torch._foreach_addcmul_(exp_avg_sqs, grads, grads, value=1.0 - beta2)
             bias_correction1 = 1.0 - beta1 ** t
             bias_correction2 = 1.0 - beta2 ** t
-            denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-            p.addcdiv_(exp_avg, denom, value=-lr / bias_correction1)
+            denoms = torch._foreach_sqrt(exp_avg_sqs)
+            torch._foreach_div_(denoms, math.sqrt(bias_correction2))
+            torch._foreach_add_(denoms, eps)
+            torch._foreach_addcdiv_(ps, exp_avgs, denoms, value=-lr / bias_correction1)
 
 
 def build_optimizer(spec: dict[str, Any], model: nn.Module) -> torch.optim.Optimizer:

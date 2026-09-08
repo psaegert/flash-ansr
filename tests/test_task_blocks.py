@@ -183,7 +183,9 @@ def test_per_task_ce_splits_by_segment() -> None:
     #                 labels for positions 1..5 of the input; 9 = ignore_index
     labels = torch.tensor([[4, 9, 5, 6, 7]])
     segments = torch.tensor([[0, 0, 1, 1, 2, 0]])   # aligned with input positions 0..5
-    parts = _per_task_ce(logits, labels, segments, ignore_index=9)
+    # every segment comes back as (sum, count) device tensors; the trainer drops the zero counts
+    parts = {name: (float(ce_sum), int(count)) for name, (ce_sum, count) in
+             _per_task_ce(logits, labels, segments, ignore_index=9).items() if int(count) > 0}
     assert set(parts) == {"expression", "complexity", "predict_y"}
     # labels sit at input positions 1..5; position 2 is ignore_index. Valid: pos 1 (seg 0),
     # pos 3 (seg 1), pos 4 (seg 2), pos 5 (seg 0).
