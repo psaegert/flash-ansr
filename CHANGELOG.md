@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`head_fp32`** (model config, default on): the next-token head -- its MLP and the logit
+  projection -- runs outside autocast in float32 under mixed-precision training, so the logits the
+  cross-entropy, the z-loss and the sampler see carry float32 resolution instead of bf16's (a bf16
+  logit near 24 is rounded to 0.125). Compute-only: no parameters change and every checkpoint loads
+  under either setting; `head_fp32: false` restores the ambient autocast dtype. Every model from
+  v25.0-T8-120M on trains with it.
+- `configs/v25.0-T8-120M`: the T8 recipe at the 120M point of the v23 size ladder (encoder 640-d,
+  10 heads, 5 ISAB + 5 SAB; decoder 640-d, 10 heads, 10 layers; FFN 1920), `head_fp32: true`.
 - **The prior baseline** (`generation_config: {method: prior_sampling}`, `PriorSamplingConfig`).
   Candidates are drawn from the training prior -- the generative catalog the checkpoint trained on,
   `catalog_train.yaml` beside it or a `catalog` spec -- instead of the decoder, and go through the

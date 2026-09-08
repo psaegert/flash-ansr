@@ -114,6 +114,7 @@ class FlashANSRModel(nn.Module):
         null_memory_init_seed: int = 0,
         outlier_head: bool = False,
         head_pre_logits_norm: bool = False,
+        head_fp32: bool = True,
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
@@ -205,6 +206,10 @@ class FlashANSRModel(nn.Module):
             head_layers.append(nn.LayerNorm(decoder_model_dim))
         head_layers.append(nn.Linear(decoder_model_dim, len(self.tokenizer)))
         self.next_token_head = nn.Sequential(*head_layers)
+        # The head runs in float32 under mixed precision (see _logits): a bf16 logit at
+        # |logit| ~ 24 has a resolution of 0.125, which the cross-entropy, the z-loss and the
+        # sampling temperature all see. Compute-only, so every checkpoint loads unchanged.
+        self.head_fp32 = bool(head_fp32)
 
         # Per-point outlier head (noise mixture): a small MLP over the encoder's post-ISAB
         # per-point representations (pre-pooling), trained with BCE against the source's
@@ -466,10 +471,25 @@ class FlashANSRModel(nn.Module):
             null_memory_init_seed=config_.get("null_memory_init_seed", 0),
             outlier_head=config_.get("outlier_head", False),
             head_pre_logits_norm=config_.get("head_pre_logits_norm", False),
+            head_fp32=config_.get("head_fp32", True),
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),
         )
+
+    def _logits(self, decoder_output: torch.Tensor) -> torch.Tensor:
+        """The next-token logits from the decoder's output.
+
+        With ``head_fp32`` the head (its MLP and the logit projection) runs outside autocast in the
+        dtype of its own weights -- float32 under mixed-precision training, where the trunk runs in
+        bf16 -- so the logits the loss, the z-loss and the sampler see carry float32 resolution.
+        Without it the head follows the ambient autocast dtype like every other layer.
+        """
+        if not self.head_fp32:
+            return self.next_token_head(decoder_output)
+        weight_dtype = self.next_token_head[-1].weight.dtype
+        with torch.autocast(device_type=decoder_output.device.type, enabled=False):
+            return self.next_token_head(decoder_output.to(weight_dtype))
 
     def _create_memory(self, data: torch.Tensor, data_attn_mask: torch.Tensor | None = None) -> torch.Tensor:
         if data.ndim != 3:
@@ -602,10 +622,10 @@ class FlashANSRModel(nn.Module):
 
         if use_cache:
             decoder_output, new_past_key_values = decoder_output
-            logits = self.next_token_head(decoder_output)
+            logits = self._logits(decoder_output)
             return logits, new_past_key_values
 
-        logits = self.next_token_head(decoder_output)
+        logits = self._logits(decoder_output)
 
         # Removed numeric head as it is not present in the new Decoder structure
         return logits
@@ -639,7 +659,7 @@ class FlashANSRModel(nn.Module):
             numeric_embeddings = None
 
         decoder_output = self.decoder.forward_static(input_tokens, self.memory, numeric_embeddings, static_cache, position)
-        return self.next_token_head(decoder_output)
+        return self._logits(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
                           hypothesize: bool = False,
