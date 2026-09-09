@@ -76,6 +76,20 @@ class BatchFormatter:
         return torch.nn.functional.pad(seq_tensor, (0, max_length - len(seq_tensor)), value=pad_value)
 
     @staticmethod
+    def _pad_batch(sequences: "list[list[int] | torch.Tensor]", target_length: int, pad_value: Any,
+                   dtype: torch.dtype) -> torch.Tensor:
+        """Pad (or truncate) a list of sequences into one ``[batch, target_length]`` CPU tensor.
+        The whole field then crosses to the device in ONE copy; padding sequence by sequence on
+        the device cost a host-device copy and a sync per sequence (~1,000 per step)."""
+        out = torch.full((len(sequences), target_length), pad_value, dtype=dtype)
+        for i, seq in enumerate(sequences):
+            t = seq if isinstance(seq, torch.Tensor) else torch.as_tensor(seq, dtype=dtype)
+            n = min(int(t.numel()), target_length)
+            if n:
+                out[i, :n] = t.reshape(-1)[:n].to(dtype)
+        return out
+
+    @staticmethod
     def _next_power_of_two(value: int) -> int:
         if value <= 1:
             return 1
@@ -151,11 +165,7 @@ class BatchFormatter:
         token_bucket_length = self._next_power_of_two(max_sequence_length)
 
         if isinstance(batch["input_ids"][0], list):
-            padded_input_ids = [
-                self._pad_sequence(seq, token_bucket_length, pad_token_id, device=device, dtype=torch.long)
-                for seq in batch["input_ids"]
-            ]
-            batch["input_ids"] = torch.stack(padded_input_ids)
+            batch["input_ids"] = self._pad_batch(batch["input_ids"], token_bucket_length, pad_token_id, torch.long).to(device=device, non_blocking=True)
         else:
             current_tensor = batch["input_ids"].to(device=device, dtype=torch.long)
             token_bucket_length = min(token_bucket_length, current_tensor.size(1))
@@ -167,17 +177,26 @@ class BatchFormatter:
             batch[key] = batch[key].to(device=device, dtype=dtype)
 
         if "data_attn_mask" in batch:
-            batch["data_attn_mask"] = batch["data_attn_mask"].to(device=device, dtype=torch.bool)
+            attn_cpu = batch["data_attn_mask"]
+            attn_cpu = attn_cpu if isinstance(attn_cpu, torch.Tensor) else torch.as_tensor(attn_cpu)
+            if attn_cpu.device.type == "cpu":
+                lengths_cpu = attn_cpu.to(torch.bool).sum(dim=1)
+                max_support_length = int(lengths_cpu.max()) if lengths_cpu.numel() > 0 else 1
+            else:
+                max_support_length = None
+            batch["data_attn_mask"] = attn_cpu.to(device=device, dtype=torch.bool)
         else:
             attn_shape = batch["x_tensors"].shape[:2]
             batch["data_attn_mask"] = torch.ones(attn_shape, device=device, dtype=torch.bool)
+            max_support_length = int(attn_shape[1])
         if "outlier_mask" in batch:
             batch["outlier_mask"] = batch["outlier_mask"].to(device=device, dtype=torch.bool)
         if "residual" in batch:
             batch["residual"] = batch["residual"].to(device=device, dtype=NUMERIC_DTYPE)
 
-        support_lengths = batch["data_attn_mask"].sum(dim=1)
-        max_support_length = int(support_lengths.max().item()) if support_lengths.numel() > 0 else 1
+        if max_support_length is None:  # the mask arrived on the device: one sync, as before
+            support_lengths = batch["data_attn_mask"].sum(dim=1)
+            max_support_length = int(support_lengths.max().item()) if support_lengths.numel() > 0 else 1
         support_bucket_length = self._next_power_of_two(max_support_length)
         support_bucket_length = min(support_bucket_length, batch["x_tensors"].shape[1])
         if support_bucket_length < batch["x_tensors"].shape[1]:
@@ -189,21 +208,15 @@ class BatchFormatter:
             if "residual" in batch:
                 batch["residual"] = batch["residual"][:, :support_bucket_length]
 
-        constants_list = []
-        for const_item in batch["constants"]:
-            if not isinstance(const_item, torch.Tensor):
-                const_item = torch.tensor(const_item, dtype=NUMERIC_DTYPE)
-            constants_list.append(const_item.to(device))
-        batch["constants"] = constants_list
+        # Per-item constants stay on the host: nothing in the training step reads them on the device,
+        # and 128 separate copies a step were a third of the collate's transfers.
+        batch["constants"] = [c if isinstance(c, torch.Tensor) else torch.tensor(c, dtype=NUMERIC_DTYPE)
+                              for c in batch["constants"]]
 
         if "input_num" in batch:
             target_length = token_bucket_length
             if isinstance(batch["input_num"][0], list):
-                padded_input_num = [
-                    self._pad_sequence(seq, target_length, torch.nan, device=device, dtype=NUMERIC_DTYPE)
-                    for seq in batch["input_num"]
-                ]
-                batch["input_num"] = torch.stack(padded_input_num).unsqueeze(-1)
+                batch["input_num"] = self._pad_batch(batch["input_num"], target_length, torch.nan, NUMERIC_DTYPE).unsqueeze(-1).to(device=device, non_blocking=True)
             else:
                 input_num_tensor = batch["input_num"]
                 if input_num_tensor.dim() == 2:
@@ -214,11 +227,7 @@ class BatchFormatter:
         if "prompt_mask" in batch:
             target_length = token_bucket_length
             if isinstance(batch["prompt_mask"][0], list):
-                padded_prompt_masks = [
-                    self._pad_sequence(seq, target_length, False, device=device, dtype=torch.bool)
-                    for seq in batch["prompt_mask"]
-                ]
-                batch["prompt_mask"] = torch.stack(padded_prompt_masks)
+                batch["prompt_mask"] = self._pad_batch(batch["prompt_mask"], target_length, False, torch.bool).to(device=device, non_blocking=True)
             else:
                 prompt_mask_tensor = batch["prompt_mask"].to(device=device, dtype=torch.bool)
                 batch["prompt_mask"] = _adjust_length(prompt_mask_tensor, target_length, False)
@@ -229,11 +238,7 @@ class BatchFormatter:
         if "task_mask" in batch:
             target_length = token_bucket_length
             if isinstance(batch["task_mask"][0], list):
-                padded_task_masks = [
-                    self._pad_sequence(seq, target_length, False, device=device, dtype=torch.bool)
-                    for seq in batch["task_mask"]
-                ]
-                batch["task_mask"] = torch.stack(padded_task_masks)
+                batch["task_mask"] = self._pad_batch(batch["task_mask"], target_length, False, torch.bool).to(device=device, non_blocking=True)
             else:
                 task_mask_tensor = batch["task_mask"].to(device=device, dtype=torch.bool)
                 batch["task_mask"] = _adjust_length(task_mask_tensor, target_length, False)
@@ -242,20 +247,17 @@ class BatchFormatter:
         if "task_segments" in batch:
             target_length = token_bucket_length
             if isinstance(batch["task_segments"][0], list):
-                padded_segments = [
-                    self._pad_sequence(seq, target_length, 0, device=device, dtype=torch.long)
-                    for seq in batch["task_segments"]
-                ]
-                batch["task_segments"] = torch.stack(padded_segments)
+                batch["task_segments"] = self._pad_batch(batch["task_segments"], target_length, 0, torch.long).to(device=device, non_blocking=True)
             else:
                 segments_tensor = batch["task_segments"].to(device=device, dtype=torch.long)
                 batch["task_segments"] = _adjust_length(segments_tensor, target_length, 0)
 
         if "complexity" in batch:
-            batch["complexity"] = [
-                torch.tensor(c, device=device, dtype=NUMERIC_DTYPE) if c is not None else None
-                for c in batch["complexity"]
-            ]
+            # one transfer for the optional per-item scalars; each item is a view into it (or None)
+            values = batch["complexity"]
+            packed = torch.tensor([float(c) if c is not None else float("nan") for c in values],
+                                  dtype=NUMERIC_DTYPE).to(device=device, non_blocking=True)
+            batch["complexity"] = [packed[i] if c is not None else None for i, c in enumerate(values)]
 
         for key in ("fisher_metric", "curvature_metric"):
             if key not in batch:

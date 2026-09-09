@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logit-scale alarms, the per-task and split cross-entropies and the outlier loss are masked
   reductions instead of boolean-index subsets, the finiteness check moved to the gradient norm
   (before the optimizer applies it), and the every-parameter zero-loss is taken only when
-  `wandb.watch` logs gradients. Checkpoints, state dicts and the logged keys are unchanged.
+  `wandb.watch` logs gradients. The collate pads every field on the host and moves it to the device
+  in one copy (it moved each sequence separately: about a thousand small copies and as many syncs
+  per step), and the per-item constants stay on the host. Checkpoints, state dicts and the logged
+  keys are unchanged.
 - **`head_fp32`** (model config, default on): the next-token head -- its MLP and the logit
   projection -- runs outside autocast in float32 under mixed-precision training, so the logits the
   cross-entropy, the z-loss and the sampler see carry float32 resolution instead of bf16's (a bf16
