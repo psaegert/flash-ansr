@@ -48,6 +48,7 @@ class Candidate:
     rank: int                           # position in the score-sorted candidate list (0 = the returned answer)
     y_pred: np.ndarray | None = None        # on support X -- populated only for the top_k (opt-in; OOM otherwise)
     y_pred_val: np.ndarray | None = None    # on validation X -- top_k only
+    spelling: str | None = None         # constant-ladder variant: which fitted constants were re-spelled how (``c0=/ 3 2;c2=0``); None for a fitted draw
 
 
 @dataclass
@@ -74,6 +75,8 @@ class CandidateLedger:
     pareto_rank: list[int] = field(default_factory=list)      # -1 unless ranked by 'pareto'
     rank: list[int] = field(default_factory=list)             # -1 for non-fitted rows
     result_index: list[int] = field(default_factory=list)     # index into InferenceResult.candidates; -1 if none
+    spelling: list[str] = field(default_factory=list)        # constant-ladder record; '' for a fitted draw / non-fitted row
+    parent: list[int] = field(default_factory=list)          # ledger row of the beam a ladder variant was re-spelled from; -1 otherwise
 
     def __len__(self) -> int:
         return len(self.token_lists)
@@ -111,6 +114,7 @@ class InferenceResult:
                 "pruned_variant": c.pruned_variant,
                 "pareto_rank": c.pareto_rank,
                 "rank": c.rank,
+                "spelling": c.spelling,
             }
             for c in self.candidates
         ]
@@ -148,8 +152,17 @@ def build_candidate_ledger(
     (present in ``results``, synthesized in refinement, absent from the gen pool) ride along FIT_OK.
     The token column is the raw beam ids (decode offline if needed).
     """
+    def _key(raw_beam: Sequence[Any], spelling: Any) -> tuple:
+        return (tuple(int(t) for t in raw_beam), str(spelling or ""))
+
+    # keyed on the beam AND the constant-ladder record: a re-spelled variant shares its parent's
+    # beam and is a row of its own
     fitted: dict[tuple, tuple[int, dict]] = {
-        tuple(int(t) for t in r["raw_beam"]): (i, r) for i, r in enumerate(results)}
+        _key(r["raw_beam"], r.get("spelling")): (i, r) for i, r in enumerate(results)}
+    # a variant that REPLACED its parent (a tie in score) is the fitted result of that beam
+    for i, r in enumerate(results):
+        if r.get("spelling") and r.get("replaces_parent"):
+            fitted.setdefault(_key(r["raw_beam"], ""), (i, r))
 
     token_lists: list[list[int]] = []
     fvu: list[float] = []
@@ -164,6 +177,8 @@ def build_candidate_ledger(
     pareto_rank: list[int] = []
     rank: list[int] = []
     result_index: list[int] = []
+    spelling: list[str] = []
+    parent: list[int] = []
     seen: set[tuple] = set()
 
     def _fitted_row(i: int, r: dict) -> None:
@@ -181,6 +196,8 @@ def build_candidate_ledger(
         pareto_rank.append(int(r.get("pareto_rank", PARETO_RANK_NOT_COMPUTED)))
         rank.append(i)              # `results` arrive score-sorted: the list position IS the rank
         result_index.append(i)
+        spelling.append(str(r.get("spelling") or ""))
+        parent.append(-1)
 
     def _unfitted_row(v: bool) -> None:
         fvu.append(float("nan"))
@@ -194,10 +211,12 @@ def build_candidate_ledger(
         pareto_rank.append(PARETO_RANK_NOT_COMPUTED)
         rank.append(-1)
         result_index.append(-1)
+        spelling.append("")
+        parent.append(-1)
 
     for rb, lp in zip(raw_beams, log_probs):
         rb_list = [int(t) for t in rb]
-        key = tuple(rb_list)
+        key = _key(rb_list, "")
         seen.add(key)
         token_lists.append(rb_list)
         hit = fitted.get(key)
@@ -217,17 +236,26 @@ def build_candidate_ledger(
         _unfitted_row(v)
 
     for i, pruned in enumerate(results):
-        key = tuple(int(t) for t in pruned["raw_beam"])
-        if key in seen:
+        key = _key(pruned["raw_beam"], pruned.get("spelling"))
+        if key in seen or (pruned.get("spelling") and pruned.get("replaces_parent") and _key(pruned["raw_beam"], "") in seen):
             continue
         seen.add(key)
-        token_lists.append(list(key))
+        token_lists.append(list(key[0]))
         log_prob.append(float(pruned.get("log_prob", float("nan"))))
         _fitted_row(i, pruned)
 
+    # a ladder variant points at the row of the beam it was re-spelled from
+    row_of: dict[tuple, int] = {}
+    for row, (rb, sp) in enumerate(zip(token_lists, spelling)):
+        if not sp:
+            row_of.setdefault(tuple(rb), row)
+    for row, (rb, sp) in enumerate(zip(token_lists, spelling)):
+        if sp:
+            parent[row] = row_of.get(tuple(rb), -1)
     return CandidateLedger(
         token_lists=token_lists, fvu=fvu, log_prob=log_prob,
         valid=valid, fit_status=fit_status, constants=constants,
         n_nodes=n_nodes, n_constants=n_constants, mdl=mdl, score=score,
         pareto_rank=pareto_rank, rank=rank, result_index=result_index,
+        spelling=spelling, parent=parent,
     )

@@ -17,7 +17,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Literal, Any, Iterable, Iterator, TypedDict, Callable, Sequence, TypeVar, cast
+from typing import Literal, Any, Iterable, Iterator, Mapping, TypedDict, Callable, Sequence, TypeVar, cast
 import warnings
 
 import numpy as np
@@ -43,6 +43,7 @@ from flash_ansr.refine import (Refiner, ConvergenceError, fit_sort_key, RefineSc
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
     predict_constants, predict_y, score_outliers)
+from flash_ansr.spelling import ConstantLadderConfig, ladder_floor, respell_fitted_candidate
 from flash_ansr.scoring import (
     PARETO_RANK_NOT_COMPUTED,
     RANKING_METRICS,
@@ -102,6 +103,8 @@ class Result(TypedDict):
     #: Front index under a `pareto` ranking (0 = non-dominated); PARETO_RANK_NOT_COMPUTED (-1) when
     #: the row was ordered by a scalar score instead.
     pareto_rank: int
+    spelling: str | None      # constant re-spelling record of a ladder variant; None for a fitted draw
+    replaces_parent: bool     # the variant stands in for its parent (a tie), rather than beside it
 
 
 _GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
@@ -180,6 +183,157 @@ def _candidate_refine_seed(refine_seed: int | None, tokens: Sequence[Any]) -> in
 #: multi-restart refinement is skipped. float32 eps is the same bar srbf's `is_perfect_fit` uses,
 #: so a skipped fallback can never cost a recovery the benchmark would have counted.
 _T11_ACCEPT_FVU: float = float(np.finfo(np.float32).eps)
+
+
+def _score_or_inf(result: Mapping[str, Any]) -> float:
+    score = result.get('score')
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return float('inf')
+    return value if np.isfinite(value) else float('inf')
+
+
+def _price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: Sequence[str]) -> float | None:
+    """The MDL price (milli-bits) of the REALIZED expression: the fitted constants substituted into
+    the skeleton, priced certified / f64 / canon default -- the ranking currency (see
+    RANKING_SPEC.md section 2: mode= and canon= written out, never inherited). ``None`` for an
+    unpriceable candidate: it keeps its fvu and its place in the scalar ranking, the scorer decides
+    what a missing price means. A partially substituted expression (a leftover ``<constant>``,
+    which `transform` leaves in place when there are fewer fitted values than sites) is refused
+    rather than priced at the flat skeleton rate -- a wrong price is the invisible failure."""
+    try:
+        realized_tokens = list(refiner.transform(
+            expression=list(expression_tokens), return_prefix=True, variable_mapping=None))
+        if any(tok == '<constant>' for tok in realized_tokens):
+            raise ValueError("realized expression still carries a <constant> placeholder")
+        return float(simplipy_engine.complexity(
+            realized_tokens, certified=True, mode=Mode.f64, canon='default'))
+    except Exception:
+        return None
+
+
+def _serialize_fits(refiner: Refiner) -> list[tuple[np.ndarray, np.ndarray | None, float]]:
+    serialized: list[tuple[np.ndarray, np.ndarray | None, float]] = []
+    for constants, constants_cov, fit_loss in refiner._all_constants_values:
+        cov_payload: np.ndarray | None
+        if constants_cov is None or getattr(constants_cov, 'size', 0) == 0:
+            cov_payload = None
+        else:
+            cov_payload = np.asarray(constants_cov)
+        serialized.append((np.asarray(constants), cov_payload, float(fit_loss)))
+    return serialized
+
+
+def _respell_result(payload: dict[str, Any], simplipy_engine: Any, refiner: Refiner, X: np.ndarray, y: np.ndarray,
+                    result: dict[str, Any]) -> dict[str, Any] | None:
+    """The constant ladder on one fitted result: the re-spelled variant as a second result dict
+    (fitted under ``refine_scope='placeholders'`` so its spelled literals stay frozen), or ``None``
+    when no spelling beats the parent's score. The variant keeps the parent's beam and
+    provenance; ``spelling`` records what changed. ``constant_ladder`` None/False -> no ladder."""
+    ladder = payload.get('constant_ladder')
+    if ladder is None or result.get('mdl') is None:
+        return None
+    config = ladder if isinstance(ladder, ConstantLadderConfig) else ConstantLadderConfig.from_mapping(ladder)
+    if config is None:
+        return None
+    weights = payload['ranking_weights']
+    expression_tokens = list(payload['expression'])
+    log_prob = payload.get('log_prob')
+
+    def score_fn(fvu: float, mdl: float, constant_count: int) -> float:
+        return score_row({'fvu': fvu, 'expression': expression_tokens, 'constant_count': constant_count,
+                          'log_prob': log_prob, 'mdl': mdl}, weights)
+
+    # Rounds: a re-spelled variant is itself a fitted candidate (a redundant pair of constants
+    # collapses into one float in the first round, which then deserves its own spelling). Each
+    # round must beat the previous one; at most one round per constant.
+    current_refiner, current_expression = refiner, expression_tokens
+    current = {'fvu': float(result['fvu']), 'mdl': result['mdl'], 'score': float(result['score'])}
+    variant: dict[str, Any] | None = None
+    records: list[str] = []
+    replaces_parent = True
+    n_rounds = max(1, len(getattr(refiner, 'slot_indices', []) or []))
+    for _ in range(n_rounds):
+        try:
+            step = respell_fitted_candidate(
+                refiner=current_refiner, expression=current_expression, X=X, y=y,
+                y_variance=float(payload['y_variance']),
+                parent_fvu=current['fvu'], parent_mdl=current['mdl'], parent_score=current['score'],
+                score_fn=score_fn, compute_fvu=FlashANSR._compute_fvu,
+                price_realized=lambda r, toks: _price_realized(simplipy_engine, r, toks),
+                simplipy_engine=simplipy_engine, n_variables=int(payload['n_variables']), method=payload['method'],
+                full_fit={'n_restarts': payload['n_restarts'], 'p0_noise': payload['p0_noise'],
+                          'p0_noise_kwargs': payload['p0_noise_kwargs']},
+                config=config)
+        except Exception:
+            step = None
+        if step is None:
+            break
+        variant = step
+        records.append(step['spelling'])
+        replaces_parent = replaces_parent and bool(step.get('replaces_parent', False))
+        current_refiner, current_expression = step['refiner'], step['expression']
+        current = {'fvu': step['fvu'], 'mdl': step['mdl'], 'score': step['score']}
+        if not step['constant_count']:
+            break
+    if variant is None:
+        return None
+    child = dict(result)
+    child.update({
+        'expression': variant['expression'],
+        'constant_count': variant['constant_count'],
+        'complexity': variant['complexity'],
+        'mdl': variant['mdl'],
+        'fvu': variant['fvu'],
+        'score': variant['score'],
+        'fits': _serialize_fits(variant['refiner']),
+        'valid_fit': True,
+        'refine_scope': 'placeholders',
+        'spelling': ' | '.join(records),
+        'respelled': None,
+        # every round only tied its parent: the same candidate, spelled canonically -> it takes the
+        # parent's place in the pool; a strict improvement stands beside the parent
+        'replaces_parent': replaces_parent,
+    })
+    return child
+
+
+_RESPELL_PARENT_KEYS = ('log_prob', 'fvu', 'score', 'expression', 'constant_count', 'mdl', 'complexity',
+                        'requested_complexity', 'raw_beam', 'beam', 'raw_beam_decoded', 'constants_emitted',
+                        'pruned_variant')
+
+
+def _respell_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """The constant ladder on one ALREADY FITTED candidate (the pool-bound path): rebuild its refiner
+    from the serialized fits and run the same ``_respell_result`` the fit worker runs inline."""
+    simplipy_engine = payload.get('simplipy_engine') or _GLOBAL_SIMPLIPY_ENGINE
+    if simplipy_engine is None:
+        raise RuntimeError("Re-spelling worker does not have access to a SimpliPyEngine instance.")
+    numpy_errors = payload.get('numpy_errors')
+    numpy_state = np.geterr()
+    if numpy_errors is not None:
+        np.seterr(all=numpy_errors)
+    X, y = _resolve_refinement_arrays(payload)
+    seed = payload.get('seed')
+    numpy_rng_state = None
+    if seed is not None:
+        numpy_rng_state = np.random.get_state()
+        np.random.seed(seed)
+    try:
+        refiner = Refiner.from_serialized(
+            simplipy_engine=simplipy_engine, n_variables=payload['n_variables'], expression=payload['expression'],
+            n_inputs=int(X.shape[1]), fits=payload['fits'], refine_scope=payload.get('refine_scope', DEFAULT_REFINE_SCOPE))
+        if not refiner.valid_fit or len(refiner._all_constants_values) == 0:
+            return None, None
+        result = {key: payload.get(key) for key in _RESPELL_PARENT_KEYS}
+        result.update({'fits': payload['fits'], 'valid_fit': True, 'spelling': None, 'respelled': None})
+        child = _respell_result(payload, simplipy_engine, refiner, X, y, result)
+    finally:
+        np.seterr(**numpy_state)
+        if numpy_rng_state is not None:
+            np.random.set_state(numpy_rng_state)
+    return child, None
 
 
 def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -300,44 +454,14 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     # mode= and canon= are written out, never inherited: mode routes the parse and moves mu
     # (permissive differs on 1.0-1.7% of holdout laws, up to +62%), and training data is generated
     # at simplify_mode: permissive.
-    mdl: float | None
-    try:
-        realized_tokens = list(refiner.transform(
-            expression=expression_tokens, return_prefix=True, variable_mapping=None))
-        # A PARTIALLY substituted expression must not be priced. `transform` breaks out of its
-        # substitution loop on StopIteration when there are fewer fitted values than constant sites
-        # (refine.py:686), leaving '<constant>' in place -- and simplipy prices a leftover
-        # placeholder happily, at the flat 67,000 mB skeleton rate, without raising. That would make
-        # mdl silently WRONG (a skeleton price masquerading as a realized one) rather than absent,
-        # which is the worse failure and the invisible one. Measured: never happens on the 8,476
-        # real candidates, but it costs one check to make it impossible.
-        if any(tok == '<constant>' for tok in realized_tokens):
-            raise ValueError("realized expression still carries a <constant> placeholder")
-        mdl = float(simplipy_engine.complexity(
-            realized_tokens, certified=True, mode=Mode.f64, canon='default'))
-    except Exception:
-        # An unpriceable candidate is not a failed one: it keeps its fvu and its place in the
-        # scalar ranking. mdl=None is the explicit "no price" marker; the scorer decides what a
-        # missing price means, not this worker.
-        mdl = None
-
-    # The provisional score under the run's ranking weights (compile_results re-scores the whole
-    # pool under the same weights before the sort; in pareto mode there are none and this is the
-    # bare log10 fvu).
+    mdl: float | None = _price_realized(simplipy_engine, refiner, expression_tokens)
     score = score_row(
         {'fvu': fvu, 'expression': expression_tokens, 'constant_count': constant_count,
          'log_prob': payload.get('log_prob'), 'mdl': mdl},
         payload['ranking_weights'],
     )
 
-    serialized_fits: list[tuple[np.ndarray, np.ndarray | None, float]] = []
-    for constants, constants_cov, fit_loss in refiner._all_constants_values:
-        cov_payload: np.ndarray | None
-        if constants_cov is None or getattr(constants_cov, 'size', 0) == 0:
-            cov_payload = None
-        else:
-            cov_payload = np.asarray(constants_cov)
-        serialized_fits.append((np.asarray(constants), cov_payload, float(fit_loss)))
+    serialized_fits = _serialize_fits(refiner)
 
     result = {
         'log_prob': payload['log_prob'],
@@ -359,8 +483,11 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         # the model predicted against what the refiner made of it. Measured on FastSRB, refinement
         # improves FVU on only 55% of comparable rows, so the emitted values are not a curiosity.
         'constants_emitted': list(p0_values) if p0_values is not None else None,
+        'spelling': None,
+        'respelled': None,
     }
 
+    result['respelled'] = _respell_result(payload, simplipy_engine, refiner, X, y, result)
     return result, None
 
 
@@ -494,6 +621,20 @@ class FlashANSR(BaseEstimator):
     ranking_tie_break : str or None, optional
         Mode ``'pareto'`` only: the metric ordering candidates within a front (may lie outside
         ``ranking_metrics``). ``None`` -> ``'fvu'``.
+    constant_ladder : mapping or bool or None, optional
+        Constant re-spelling after the fit (``flash_ansr.spelling``). For every fitted candidate each
+        constant is offered its cheaper spellings (integer, small fraction, rounding, pi or e
+        multiple, zero); the fit's curvature predicts their score, the best are frozen as literals
+        and the rest re-fitted once, and the re-spelled candidate joins the pool beside its parent
+        only if its score beats the parent's (a tie replaces the parent). ``True`` (default) = the
+        defaults: fractions only when the continued-fraction surprise test passes
+        (``fraction_surprise='denominator'``) and roundings to 1..8 digits, on EVERY fitted
+        candidate so the fit-quality / MDL Pareto front stays intact (``pool_bound=True`` restricts
+        the pass to the candidates that could still reach rank 0, for time-budgeted runs where only
+        the returned answer matters). ``None``/``False`` = off. A mapping overrides ``fraction_surprise``,
+        ``pool_bound``, ``max_denominator`` (1000), ``digits``, ``special_constants``
+        (('np.pi', 'np.e')), ``max_relative_step`` (0.5), ``max_decades`` (1.0),
+        ``confirm_decades`` (0.1), ``n_restarts`` (1).
     refiner_workers : int or None, optional
         Number of worker processes to run during constant refinement. ``None``
         (the default) uses all available CPU cores, while explicit integers
@@ -824,6 +965,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
+            constant_ladder: Mapping[str, Any] | bool | None = True,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             ranking_mode: str = 'mdl',
             mdl_strength: float | None = None,
@@ -860,6 +1002,8 @@ class FlashANSR(BaseEstimator):
         # Which literals of a candidate the refiner may move (owner ruling 2026-09-02): the model
         # predicts the typed literals (exponents, root indices), the refiner fits the rest.
         self.refiner_scope: RefineScope = refiner_scope
+        # Constant re-spelling after the fit (flash_ansr.spelling): opt-in, None = off.
+        self.constant_ladder: ConstantLadderConfig | None = ConstantLadderConfig.from_mapping(constant_ladder)
         self.numpy_errors = numpy_errors
         # Validated in every mode at construction, so a metric typo cannot lie dormant until
         # someone flips the mode. Read-only from here on: compile_results() takes call-scoped
@@ -925,6 +1069,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
+            constant_ladder: Mapping[str, Any] | bool | None = True,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             ranking_mode: str = 'mdl',
             mdl_strength: float | None = None,
@@ -959,7 +1104,21 @@ class FlashANSR(BaseEstimator):
             The candidate ranking; see :class:`FlashANSR`.
         device : str, optional
             Torch device where the model weights will be loaded.
-        refiner_workers : int or None, optional
+        constant_ladder : mapping or bool or None, optional
+        Constant re-spelling after the fit (``flash_ansr.spelling``). For every fitted candidate each
+        constant is offered its cheaper spellings (integer, small fraction, rounding, pi or e
+        multiple, zero); the fit's curvature predicts their score, the best are frozen as literals
+        and the rest re-fitted once, and the re-spelled candidate joins the pool beside its parent
+        only if its score beats the parent's (a tie replaces the parent). ``True`` (default) = the
+        defaults: fractions only when the continued-fraction surprise test passes
+        (``fraction_surprise='denominator'``) and roundings to 1..8 digits, on EVERY fitted
+        candidate so the fit-quality / MDL Pareto front stays intact (``pool_bound=True`` restricts
+        the pass to the candidates that could still reach rank 0, for time-budgeted runs where only
+        the returned answer matters). ``None``/``False`` = off. A mapping overrides ``fraction_surprise``,
+        ``pool_bound``, ``max_denominator`` (1000), ``digits``, ``special_constants``
+        (('np.pi', 'np.e')), ``max_relative_step`` (0.5), ``max_decades`` (1.0),
+        ``confirm_decades`` (0.1), ``n_restarts`` (1).
+    refiner_workers : int or None, optional
             Desired worker-pool size for constant refinement. ``None`` uses the
             number of available CPU cores, integers select an explicit pool size,
             and ``0`` disables multiprocessing. Mirrors the constructor parameter.
@@ -1009,6 +1168,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             refiner_scope=refiner_scope,
+            constant_ladder=constant_ladder,
             numpy_errors=numpy_errors,
             ranking_mode=ranking_mode,
             mdl_strength=mdl_strength,
@@ -1633,9 +1793,44 @@ class FlashANSR(BaseEstimator):
             'pruned_variant': bool(payload.get('pruned_variant', False)),
             'constants_emitted': payload.get('constants_emitted'),
             'pareto_rank': PARETO_RANK_NOT_COMPUTED,
+            'spelling': payload.get('spelling'),
+            'replaces_parent': bool(payload.get('replaces_parent', False)),
         }
 
         return entry
+
+    @staticmethod
+    def _dedup_respelled(results: list) -> list:
+        """Ladder variants that canonicalize to an expression already in the pool (another variant,
+        or a fitted draw) are duplicates: keep the best-scoring row per expression, fitted draws
+        always kept. The order of the survivors is preserved."""
+        if not any(r.get('spelling') for r in results):
+            return results
+        best_variant: dict[tuple, int] = {}
+        drawn: set[tuple] = set()
+        for i, r in enumerate(results):
+            key = tuple(map(str, r.get('expression', [])))
+            if not r.get('spelling'):
+                drawn.add(key)
+                continue
+            j = best_variant.get(key)
+            if j is None or _score_or_inf(r) < _score_or_inf(results[j]):
+                best_variant[key] = i
+        keep = set(best_variant.values())
+        return [r for i, r in enumerate(results)
+                if not r.get('spelling') or (i in keep and tuple(map(str, r.get('expression', []))) not in drawn)]
+
+    def _append_result_entries(self, results: list, result: dict[str, Any], input_dim: int) -> None:
+        """A worker result and, when the constant ladder produced one, its re-spelled variant: two
+        rows in the pool, the parent first."""
+        child = result.get('respelled')
+        rows = [child] if (child is not None and child.get('replaces_parent')) else [result, child]
+        for payload in rows:
+            if payload is None:
+                continue
+            entry = self._create_result_entry(payload=payload, input_dim=input_dim)
+            if entry is not None:
+                results.append(entry)
 
     def fit(
             self,
@@ -1903,6 +2098,102 @@ class FlashANSR(BaseEstimator):
             generation_time=generation_time,
         )
 
+    @property
+    def _ladder_bounded(self) -> bool:
+        """The constant ladder runs as a post-fit pass under the pool bound (see ConstantLadderConfig)."""
+        ladder = getattr(self, 'constant_ladder', None)
+        return ladder is not None and bool(getattr(ladder, 'pool_bound', False))
+
+    def _run_ordered_jobs(self, jobs: list[dict[str, Any]], worker: Any, gs: "GenState", *, desc: str,
+                          verbose: bool) -> list[Any]:
+        """Run ``worker`` over ``jobs`` and return the outcomes IN ORDER, on the same executor the
+        fit phase uses: the persistent pool (per-job X/y), a per-call fork pool, or serially."""
+        if not jobs:
+            return []
+        available_methods = mp.get_all_start_methods()
+        max_workers = min(self.refiner_workers, len(jobs))
+        use_parallel = max_workers > 1 and 'fork' in available_methods
+        if self._refine_pool is not None and (use_parallel or self._overlap_mode):
+            for job in jobs:
+                job['X'] = gs.X_np
+                job['y'] = gs.y_np
+            chunksize = max(1, len(jobs) // (max(1, max_workers) * 8))
+            try:
+                return list(self._refine_pool.map_ordered(
+                    worker, jobs, chunksize=chunksize, recover=False,
+                    wrap=(lambda it: _iterate_with_progress(it, total=len(jobs), verbose=verbose, desc=desc))))
+            except BrokenProcessPool:
+                if self._overlap_mode:
+                    raise
+                warnings.warn("Persistent refine pool broke (worker death); disabling it and "
+                              "falling back to a per-call fork pool for the rest of this run.")
+                self.close()
+        if use_parallel:
+            ctx = mp.get_context('fork')
+            with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+                return list(_iterate_with_progress(executor.map(worker, jobs), total=len(jobs), verbose=verbose, desc=desc))
+        outcomes = []
+        for job in _iterate_with_progress(jobs, total=len(jobs), verbose=verbose, desc=desc):
+            serial_payload = job.copy()
+            serial_payload.update({'X': gs.X_np, 'y': gs.y_np, 'simplipy_engine': self.simplipy_engine})
+            outcomes.append(worker(serial_payload))
+        return outcomes
+
+    def _run_bounded_ladder(self, results: list, gs: "GenState", *, input_dim: int, converge_error: str,
+                            refine_seed: int | None, verbose: bool, chunk: int = 64) -> None:
+        """The constant ladder as a post-fit pass under the POOL BOUND: candidates in score order, in
+        chunks; a candidate is re-spelled only while its ``ladder_floor`` (MDL cut to nothing, fit
+        improved by ``max_decades``) reaches the running best, which tightens as variants land. A
+        variant that ties its parent replaces it in ``results``; a strict improvement stands beside."""
+        ladder = self.constant_ladder
+        if ladder is None:
+            return
+        weights = self.ranking.effective_weights
+        entries = sorted((r for r in results if np.isfinite(float(r.get('score', np.nan)))), key=lambda r: float(r['score']))
+        if not entries:
+            return
+        running_best = float(entries[0]['score'])
+        replaced: list[Any] = []
+        for start in range(0, len(entries), max(1, int(chunk))):
+            batch = [e for e in entries[start:start + chunk] if ladder_floor(e, weights, ladder, score_row) <= running_best]
+            if not batch:
+                continue
+            jobs = []
+            for entry in batch:
+                job = {key: entry.get(key) for key in _RESPELL_PARENT_KEYS}
+                job.update({
+                    'fits': [(np.asarray(c, dtype=float), (np.asarray(cov) if cov is not None and getattr(cov, 'size', 0) else None), float(loss))
+                             for c, cov, loss in entry['fits']],
+                    'refine_scope': self.refiner_scope,
+                    'n_variables': self.n_variables,
+                    'n_restarts': self.n_restarts,
+                    'method': self.refiner_method,
+                    'p0_noise': self.refiner_p0_noise,
+                    'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
+                    'constant_ladder': ladder,
+                    'converge_error': converge_error,
+                    'numpy_errors': self.numpy_errors,
+                    'y_variance': gs.y_variance,
+                    'ranking_weights': weights,
+                    'seed': _candidate_refine_seed(refine_seed, entry.get('raw_beam') or entry.get('expression', [])),
+                })
+                jobs.append(job)
+            outcomes = self._run_ordered_jobs(jobs, _respell_candidate_worker, gs, desc="Re-spelling Constants", verbose=verbose)
+            for entry, outcome in zip(batch, outcomes):
+                child = outcome[0] if outcome else None
+                if child is None:
+                    continue
+                child_entry = self._create_result_entry(payload=child, input_dim=input_dim)
+                if child_entry is None:
+                    continue
+                if child.get('replaces_parent'):
+                    replaced.append(entry)
+                results.append(child_entry)
+                running_best = min(running_best, float(child_entry['score']))
+        if replaced:
+            gone = {id(e) for e in replaced}
+            results[:] = [r for r in results if id(r) not in gone]
+
     def _fit_refine(
             self,
             gen_state: "GenState",
@@ -1987,6 +2278,8 @@ class FlashANSR(BaseEstimator):
                 'p0_noise': self.refiner_p0_noise,
                 'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
                 'refine_scope': self.refiner_scope,
+                # under the pool bound the ladder runs AFTER the fits, on the candidates that can still win
+                'constant_ladder': None if self._ladder_bounded else self.constant_ladder,
                 'converge_error': converge_error,
                 'numpy_errors': self.numpy_errors,
                 'y_variance': gs.y_variance,
@@ -2052,9 +2345,7 @@ class FlashANSR(BaseEstimator):
                             if warning_msg and converge_error == 'print':
                                 print(warning_msg)
                             if result is not None:
-                                entry = self._create_result_entry(payload=result, input_dim=input_dim)
-                                if entry is not None:
-                                    results.append(entry)
+                                self._append_result_entries(results, result, input_dim)
                         ran_on_pool = True
 
                 if ran_on_pool:
@@ -2073,9 +2364,7 @@ class FlashANSR(BaseEstimator):
                             if warning_msg and converge_error == 'print':
                                 print(warning_msg)
                             if result is not None:
-                                entry = self._create_result_entry(payload=result, input_dim=input_dim)
-                                if entry is not None:
-                                    results.append(entry)
+                                self._append_result_entries(results, result, input_dim)
                 else:
                     for job in _iterate_with_progress(
                         jobs,
@@ -2089,13 +2378,14 @@ class FlashANSR(BaseEstimator):
                         if warning_msg and converge_error == 'print':
                             print(warning_msg)
                         if result is not None:
-                            entry = self._create_result_entry(payload=result, input_dim=input_dim)
-                            if entry is not None:
-                                results.append(entry)
+                            self._append_result_entries(results, result, input_dim)
 
             with _RefinementContext(self.simplipy_engine, gs.X_np, gs.y_np):
                 _t_ref = time.time()
                 _run_refinement_jobs(refinement_jobs)
+                if self._ladder_bounded:
+                    self._run_bounded_ladder(results, gs, input_dim=input_dim, converge_error=converge_error,
+                                             refine_seed=refine_seed, verbose=verbose)
                 refinement_time += time.time() - _t_ref
 
                 prune_count_candidates = [r for r in results if np.isfinite(r.get('fvu', np.nan))]
@@ -2164,6 +2454,7 @@ class FlashANSR(BaseEstimator):
                                 'p0_noise': self.refiner_p0_noise,
                                 'p0_noise_kwargs': copy.deepcopy(self.refiner_p0_noise_kwargs) if self.refiner_p0_noise_kwargs is not None else None,
                                 'refine_scope': self.refiner_scope,
+                                'constant_ladder': self.constant_ladder,
                                 'converge_error': converge_error,
                                 'numpy_errors': self.numpy_errors,
                                 'y_variance': gs.y_variance,
@@ -2176,6 +2467,7 @@ class FlashANSR(BaseEstimator):
                     _run_refinement_jobs(pruning_jobs)
                     refinement_time += time.time() - _t_prune_ref
 
+        results = self._dedup_respelled(results)
         sorted_results, results_df = self._compile_results_pure(
             results, ranking=self.ranking, allow_empty=allow_empty)
 
@@ -2731,6 +3023,7 @@ class FlashANSR(BaseEstimator):
                 pruned_variant=bool(r.get('pruned_variant', False)),
                 pareto_rank=int(r.get('pareto_rank', PARETO_RANK_NOT_COMPUTED)),
                 rank=rank,
+                spelling=r.get('spelling'),
                 y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
                 y_pred_val=(refiner.predict(X_val_p) if want_pred and X_val_p is not None else None),
             ))

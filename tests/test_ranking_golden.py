@@ -246,7 +246,9 @@ class TestMdlEndToEnd:
 
         from flash_ansr import flash_ansr as module
 
-        source = inspect.getsource(module._refine_candidate_worker)
+        worker = inspect.getsource(module._refine_candidate_worker)
+        assert "_price_realized(" in worker, "the worker must price through _price_realized"
+        source = inspect.getsource(module._price_realized)
         assert "refiner.transform(" in source, "mdl must be priced on the realized expression"
         assert "return_prefix=True" in source
         # the pricer call must sit AFTER the transform, on its output
@@ -409,7 +411,7 @@ class TestUnpriceable:
 
         from flash_ansr import flash_ansr as module
 
-        source = inspect.getsource(module._refine_candidate_worker)
+        source = inspect.getsource(module._price_realized)
         assert "still carries a <constant> placeholder" in source, (
             "a partially substituted expression must be refused, not priced as a skeleton"
         )

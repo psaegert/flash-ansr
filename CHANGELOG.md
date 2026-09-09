@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Constant re-spelling after the fit (`constant_ladder`, ON by default; `False` turns it off).** The MDL ranking prices constant
+  precision (a 17-digit float ~62 bits, an integer ~6), but the pool only ever carried the refiner's
+  floats, so the ranking could never choose the cheaper spelling. On the whole srbf suite at 16,384
+  candidates, 19% of the numerically recovered answers were the law hidden behind a `1.0 *`, an
+  `x^1.0`, an `x^0.5` for `rootn x 2`, or a `-1.0 *`. With `constant_ladder` set (`True` or a
+  mapping; `None`/`False` keeps the pre-ladder behaviour byte for byte), the refinement offers every fitted
+  constant a closed-form menu of spellings -- the nearest integer, the continued-fraction convergents
+  up to a denominator of 1000, but only the SURPRISING ones (`fraction_surprise`, default
+  'denominator': a convergent p/q is offered when it is closer to the value than 1/q^2 by a factor of
+  at least q, i.e. |x - p/q| <= 1/q^3, the next partial quotient of the continued fraction; a number
+  sets a fixed factor, None offers every convergent; the same test gates the pi/e families; without
+  it an arbitrary constant inside a loose fit is spelled as a fraction like 248/167 most of the
+  time), roundings to a configurable list of significant digits (default 1 to 8),
+  small rational multiples of pi and e and their reciprocals, and zero -- within a radius the fit's own
+  curvature derives. Every fitted candidate is re-spelled, so the fit-quality / MDL Pareto front of the
+  pool stays intact; the optional POOL BOUND (`pool_bound: true`) runs the ladder after the fits over
+  the candidates in score order and skips every candidate whose score with its MDL cut to nothing and
+  its fit improved by `max_decades` still trails the running best (on the stored 3M pools 23% of the
+  candidates are tried, the returned answer differs on 1.6% of problems, numeric recovery moves by
+  0.04 pp) for time-budgeted runs where only the returned answer matters. Live cost on FastSRB at 1,024
+  candidates with 6 refine workers: +14% of the fit time for the exhaustive pass (+9% bounded); exact
+  symbolic recovery 5.8% -> 12.5% at unchanged numeric recovery. The curvature derives the radius
+  (`flash_ansr.spelling.FitCurvature`: the Schur complement of the Gauss-Newton normal matrix, so a
+  redundant constant is free and a precisely determined one is offered only spellings the data cannot
+  distinguish from it). The best predicted spellings are frozen as literals, the remaining constants
+  re-fitted warm under `refine_scope='placeholders'`, and the re-spelled candidate enters the pool
+  beside its parent only if its real score beats the parent's (a tie is the canonical spelling of an
+  exactly fitted value and replaces the parent). Variants are canonicalized by simplipy, deduplicated
+  on their expression, carry `Candidate.spelling` / `Result['spelling']` (`c0=/ 3 2;c2=0`, rounds
+  joined by ` | `), and get their own ledger rows with `CandidateLedger.parent` pointing at the beam
+  they came from. A variant of a parent that reads the data never collapses into a bare number.
+  Measured on the fastsrb substrate pools (T7 @ 1M, ~500 fitted candidates per problem): about
+  1.6 verifying re-fits per candidate.
+
 - **A faster training step, same arithmetic.** Profiled on an H200 (2026-09-08), the AdaMuon step
   cost more GPU time than the model's forward and backward (85 ms of a 173 ms step at 20M, 167 of
   291 ms at 120M) and the per-step metrics issued a couple of hundred host synchronisations. The
