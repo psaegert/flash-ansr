@@ -655,6 +655,41 @@ class FlashANSRModel(nn.Module):
         # Removed numeric head as it is not present in the new Decoder structure
         return logits
 
+    def _shared_prefill(
+        self,
+        prefix_ids: torch.Tensor,
+        input_num: torch.Tensor | None,
+        memory: torch.Tensor,
+    ) -> tuple[torch.Tensor, list] | None:
+        """Prefill ONCE for a batch of identical rows, or ``None`` when the rows differ.
+
+        The sampler decodes ``choices`` rows of one problem: every row starts from the same token prefix
+        (``<bos>`` and the task tags), the same numeric channel and the same encoder memory, so the prefill
+        hidden states and K/V are identical across rows. Computing them for one row and broadcasting is
+        what makes the prefix decoder's data positions cost what cross-attention's cached memory K/V cost:
+        once per problem, not once per candidate. The caller expands the returned logits and cache to its
+        batch with ``_expand_prefill``. Batched and single-row matmuls may pick different kernels, so the
+        result agrees with the per-row prefill to float tolerance, not bit for bit."""
+        if memory.shape[0] != 1 or prefix_ids.shape[0] == 1:
+            return None
+        if not torch.equal(prefix_ids, prefix_ids[:1].expand_as(prefix_ids)):
+            return None
+        if input_num is not None and not torch.equal(input_num, input_num[:1].expand_as(input_num)):
+            return None
+        out = self.forward(prefix_ids[:1], None, input_num=None if input_num is None else input_num[:1], memory=memory, use_cache=True)
+        assert isinstance(out, tuple)
+        return out
+
+    @staticmethod
+    def _expand_prefill(logits: torch.Tensor, cache: list, batch: int) -> tuple[torch.Tensor, list]:
+        """Stride-0 views of a single-row prefill for ``batch`` rows (no copy; every consumer -- the
+        active-row gather, the cat-grow step, the static cache seeding -- materializes what it needs)."""
+        return (
+            logits.expand(batch, -1, -1),
+            [((k.expand(batch, -1, -1, -1), v.expand(batch, -1, -1, -1)),
+              (ck.expand(batch, -1, -1, -1), cv.expand(batch, -1, -1, -1))) for (k, v), (ck, cv) in cache],
+        )
+
     def forward_static(
         self,
         input_tokens: torch.Tensor,
@@ -1024,6 +1059,13 @@ class FlashANSRModel(nn.Module):
                     break
 
                 step_kv_parts: list[tuple[torch.Tensor, list]] = []
+                # The cached path's first step is the prefill of the shared token prefix: one row's worth
+                # of work, broadcast over every mini-batch (see _shared_prefill).
+                shared: tuple[torch.Tensor, list] | None = None
+                if use_cache and kv_cache is None and memory.shape[0] == 1 and not guided:
+                    shared = self._shared_prefill(
+                        sequences[:2, :current_length] if choices > 1 else sequences[:1, :current_length],
+                        build_input_num_tensor(current_length, min(2, choices)), memory)
 
                 for start_idx in range(0, len(active_indices), batch_size):
                     batch_indices = active_indices[start_idx: start_idx + batch_size]
@@ -1048,7 +1090,10 @@ class FlashANSRModel(nn.Module):
                         input_num_tensor = build_input_num_tensor(current_length, len(batch_indices))
                         batch_past = None
 
-                    result = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory, past_key_values=batch_past, use_cache=use_cache)
+                    if shared is not None and batch_past is None:
+                        result = self._expand_prefill(shared[0], shared[1], len(batch_indices))
+                    else:
+                        result = self.forward(input_ids_tensor, None, input_num=input_num_tensor, memory=memory, past_key_values=batch_past, use_cache=use_cache)
 
                     if use_cache:
                         logits, new_past = result
@@ -1290,6 +1335,14 @@ class FlashANSRModel(nn.Module):
         # --- 2. chunk-major static generation loop ---
         with torch.no_grad():
             pbar = tqdm(total=choices, disable=not verbose, desc="Generating tokens (static)", smoothing=0.0)
+            # Every chunk shares the memory and the token prefix: prefill once per problem, seed each
+            # chunk's static cache from the broadcast (see _shared_prefill).
+            shared: tuple[torch.Tensor, list] | None = None
+            if memory.shape[0] == 1 and choices > 1:
+                shared = self._shared_prefill(
+                    sequences[:2, :prefix_length],
+                    None if numeric_template is None else numeric_template[:prefix_length].unsqueeze(0).expand(2, -1).unsqueeze(-1),
+                    memory)
             for chunk_start in range(0, choices, batch_size):
                 chunk_stop = min(chunk_start + batch_size, choices)
                 rows = slice(chunk_start, chunk_stop)
@@ -1297,13 +1350,16 @@ class FlashANSRModel(nn.Module):
                 mem_chunk = memory if memory.shape[0] == 1 else memory[rows]
 
                 # dynamic prefill for this chunk seeds the static cache
-                prefix_ids = sequences[rows, :prefix_length]
-                if numeric_template is not None:
-                    prefill_num = numeric_template[:prefix_length].unsqueeze(0).expand(bsz, -1).unsqueeze(-1)
+                if shared is not None:
+                    logits_pre, prefill_cache = self._expand_prefill(shared[0], shared[1], bsz)
                 else:
-                    prefill_num = None
-                logits_pre, prefill_cache = self.forward(
-                    prefix_ids, None, input_num=prefill_num, memory=mem_chunk, use_cache=True)
+                    prefix_ids = sequences[rows, :prefix_length]
+                    if numeric_template is not None:
+                        prefill_num = numeric_template[:prefix_length].unsqueeze(0).expand(bsz, -1).unsqueeze(-1)
+                    else:
+                        prefill_num = None
+                    logits_pre, prefill_cache = self.forward(
+                        prefix_ids, None, input_num=prefill_num, memory=mem_chunk, use_cache=True)
 
                 static_cache = StaticKVCache(
                     n_layers=n_layers, batch=bsz, n_heads=n_heads, head_dim=head_dim,

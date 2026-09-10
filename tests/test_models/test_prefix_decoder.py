@@ -232,3 +232,46 @@ class TestSurface:
         cfg["decoder_data_mode"] = "concat"
         with pytest.raises(ValueError):
             FlashANSRModel.from_config(cfg)
+
+
+class TestSharedPrefill:
+    """The sampler prefills the shared token prefix once per problem and broadcasts it over the
+    candidate rows (`_shared_prefill` / `_expand_prefill`); both decode paths must produce the same
+    greedy sequences and near-identical logits as the per-row prefill they replace."""
+
+    @pytest.mark.parametrize("mode", ["prefix", "cross_attention"])
+    def test_shared_prefill_matches_per_row(self, tokenizer, engine, mode) -> None:  # type: ignore[no-untyped-def]
+        cfg = load_config(get_path("configs", "test", "model.yaml"))
+        if mode == "prefix":
+            cfg = _prefix_config()
+        kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
+        torch.manual_seed(3)
+        model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs).eval()
+        torch.manual_seed(0)
+        data = torch.randn(1, 12, kwargs["encoder_max_n_variables"], dtype=NUMERIC_DTYPE)
+        prefix = torch.tensor([[tokenizer["<bos>"], tokenizer["<expression>"]]] * 6)
+        with torch.no_grad():
+            memory = model._create_memory(data)
+            shared = model._shared_prefill(prefix, None, memory)
+            assert shared is not None
+            logits_s, cache_s = model._expand_prefill(shared[0], shared[1], 6)
+            logits_r, cache_r = model(prefix, None, memory=memory, use_cache=True)
+        assert torch.allclose(logits_s, logits_r, atol=1e-5)
+        for (ks, vs), _ in cache_s:
+            assert ks.shape[0] == 6
+        assert torch.allclose(cache_s[0][0][0], cache_r[0][0][0], atol=1e-5)
+        # rows that differ, or a per-row memory, fall back to the per-row prefill
+        other = prefix.clone(); other[3, 1] = tokenizer["<eos>"]
+        assert model._shared_prefill(other, None, memory) is None
+        assert model._shared_prefill(prefix, None, memory.expand(6, -1, -1)) is None
+
+    def test_greedy_decode_unchanged_by_sharing(self, tokenizer, engine, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        model, kwargs = _model(tokenizer, engine)
+        _, data = _batch(tokenizer, kwargs, B=1)
+        run = lambda static: model.sample_top_kp(data, choices=6, top_k=1, max_len=14, valid_only=False, simplify=False, unique=False, static_decode=static, batch_size=4, return_raw=True)[0]
+        torch.manual_seed(0); shared_static = run(True)
+        torch.manual_seed(0); shared_dynamic = run(False)
+        monkeypatch.setattr(FlashANSRModel, "_shared_prefill", lambda self, *a, **k: None)
+        torch.manual_seed(0); per_row_static = run(True)
+        torch.manual_seed(0); per_row_dynamic = run(False)
+        assert shared_static == per_row_static == shared_dynamic == per_row_dynamic

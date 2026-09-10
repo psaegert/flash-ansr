@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the T8 recipe (AdaMuon, z-loss 1e-4, float32 head, no pre-logits LayerNorm, 1.5M steps), and
   `configs/v25.0-T8-3M/`, its cross-attention control: the same files with the data path switched,
   so the two runs compare the decoders and nothing else.
+- **One prefill per problem in the sampler.** Every candidate row of a problem starts from the same
+  token prefix, numeric channel and encoder memory, so both decode paths now prefill a single row and
+  broadcast its logits and K/V over the rows (`FlashANSRModel._shared_prefill` / `_expand_prefill`;
+  rows that differ or a per-row memory fall back to the per-row prefill; the guided path is unchanged).
+  This is what lets the prefix decoder's 130 data positions cost once per problem instead of once per
+  candidate: generation at 1,024 candidates on an RTX 2070 drops from 4.03 s to 3.79 s per problem for
+  the prefix decoder (the cross-attention decoder: 3.60 s to 3.49 s), greedy sequences unchanged.
 - **Constant re-spelling after the fit (`constant_ladder`, ON by default; `False` turns it off).** The MDL ranking prices constant
   precision (a 17-digit float ~62 bits, an integer ~6), but the pool only ever carried the refiner's
   floats, so the ranking could never choose the cheaper spelling. On the whole srbf suite at 16,384
