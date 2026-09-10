@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-10
+
 ### Added
 - **The prefix decoder (`decoder_data_mode: prefix`, the v26 architecture).** The set transformer's
   memory becomes a prefix of the decoder's own sequence instead of the target of cross-attention:
