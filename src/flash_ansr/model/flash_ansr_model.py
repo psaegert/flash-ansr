@@ -65,7 +65,10 @@ class FlashANSRModel(nn.Module):
     Couples a :class:`~flash_ansr.model.encoders.SetTransformer` set encoder (fed by an IEEE-754
     bit pre-encoder) with an autoregressive :class:`~flash_ansr.model.decoders.TransformerDecoder`,
     and exposes the top-k-p sampling routine used to generate candidate
-    expression skeletons.
+    expression skeletons. ``decoder_data_mode`` selects how the encoder memory reaches the
+    decoder: cross-attention in every block (v25 and earlier) or, since v26, as a prefix of the
+    decoder's own sequence (``tokens[0] <data> memory </data> tokens[1:]``, bidirectional over the
+    data block, causal over the expression, no cross-attention).
     """
 
     def __init__(
@@ -118,8 +121,19 @@ class FlashANSRModel(nn.Module):
 
         encoder_mask_query_norms: bool = False,
         sanitize_input_num: bool = False,
+
+        decoder_data_mode: str = "cross_attention",
+        decoder_data_norm: str = "rms",
     ) -> None:
         super().__init__()
+
+        # How the data reaches the expression tokens (see decoders/transformer.py): the v25
+        # cross-attention decoder, or the v26 prefix decoder that carries the encoder memory in
+        # its own sequence, bidirectional over the data block, no cross-attention. The default
+        # keeps every existing checkpoint loading unchanged.
+        if decoder_data_mode not in ("cross_attention", "prefix"):
+            raise ValueError(f"decoder_data_mode must be 'cross_attention' or 'prefix', got {decoder_data_mode!r}")
+        self.decoder_data_mode = decoder_data_mode
 
         self.simplipy_engine = simplipy_engine
         self.tokenizer = tokenizer
@@ -188,6 +202,9 @@ class FlashANSRModel(nn.Module):
             use_xsa_self_attn=decoder_use_xsa_self_attn,
             block_norm_position=decoder_block_norm_position,
             use_checkpointing=use_checkpointing,
+            data_mode=decoder_data_mode,
+            memory_len=encoder_n_seeds,
+            data_norm_type=decoder_data_norm,
         )
 
         # Optional LayerNorm between the head MLP and the logit projection. The T4
@@ -295,11 +312,13 @@ class FlashANSRModel(nn.Module):
                 return False, f"layer {i} is post-norm (static decode assumes pre-norm)"
             sa = getattr(layer, 'self_attention', None)
             ca = getattr(layer, 'cross_attention', None)
-            if sa is None or ca is None:
-                return False, f"layer {i} missing self/cross attention"
+            if sa is None:
+                return False, f"layer {i} missing self attention"
+            if ca is None and getattr(layer, 'use_cross_attention', True):
+                return False, f"layer {i} missing cross attention"
             if not getattr(sa, 'use_rope', False):
                 return False, f"layer {i} self-attention has no RoPE (static applies it unconditionally)"
-            if getattr(ca, 'use_rope', False):
+            if ca is not None and getattr(ca, 'use_rope', False):
                 return False, f"layer {i} cross-attention uses RoPE (static drops it)"
         return True, ""
 
@@ -407,10 +426,13 @@ class FlashANSRModel(nn.Module):
             "encoder_dropout", "encoder_attn_norm", "encoder_ffn_norm", "encoder_output_norm",
             "decoder_input_dim", "decoder_model_dim", "decoder_n_layers", "decoder_n_heads",
             "decoder_max_seq_len", "decoder_ffn_hidden_dim", "decoder_dropout",
-            "decoder_block_self_attn_norm", "decoder_block_cross_attn_norm", "decoder_block_ffn_norm",
-            "decoder_cross_attn_kv_norm", "decoder_output_norm", "decoder_use_rope_self_attn",
-            "decoder_use_rope_cross_attn", "use_checkpointing",
+            "decoder_block_self_attn_norm", "decoder_block_ffn_norm",
+            "decoder_output_norm", "decoder_use_rope_self_attn", "use_checkpointing",
         )
+        # The cross-attention keys describe sublayers the prefix decoder does not have.
+        data_mode = config_.get("decoder_data_mode", "cross_attention")
+        if data_mode == "cross_attention":
+            required_keys += ("decoder_block_cross_attn_norm", "decoder_cross_attn_kv_norm", "decoder_use_rope_cross_attn")
         missing_keys = [key for key in required_keys if key not in config_]
         if missing_keys:
             raise KeyError(
@@ -453,12 +475,12 @@ class FlashANSRModel(nn.Module):
             decoder_ffn_hidden_dim=config_["decoder_ffn_hidden_dim"],
             decoder_dropout=config_["decoder_dropout"],
             decoder_block_self_attn_norm=config_["decoder_block_self_attn_norm"],
-            decoder_block_cross_attn_norm=config_["decoder_block_cross_attn_norm"],
+            decoder_block_cross_attn_norm=config_.get("decoder_block_cross_attn_norm", "rms"),
             decoder_block_ffn_norm=config_["decoder_block_ffn_norm"],
-            decoder_cross_attn_kv_norm=config_["decoder_cross_attn_kv_norm"],
+            decoder_cross_attn_kv_norm=config_.get("decoder_cross_attn_kv_norm", "rms"),
             decoder_output_norm=config_["decoder_output_norm"],
             decoder_use_rope_self_attn=config_["decoder_use_rope_self_attn"],
-            decoder_use_rope_cross_attn=config_["decoder_use_rope_cross_attn"],
+            decoder_use_rope_cross_attn=config_.get("decoder_use_rope_cross_attn", False),
             decoder_use_xsa_self_attn=config_.get("decoder_use_xsa_self_attn", False),
 
             decoder_block_norm_position=config_.get("decoder_block_norm_position", "pre"),
@@ -475,6 +497,9 @@ class FlashANSRModel(nn.Module):
 
             encoder_mask_query_norms=config_.get("encoder_mask_query_norms", False),
             sanitize_input_num=config_.get("sanitize_input_num", False),
+
+            decoder_data_mode=data_mode,
+            decoder_data_norm=config_.get("decoder_data_norm", "rms"),
         )
 
     def _logits(self, decoder_output: torch.Tensor) -> torch.Tensor:
@@ -641,7 +666,9 @@ class FlashANSRModel(nn.Module):
         """Static-shape (graph-capturable) single-token decode step. Mirrors ``forward`` (numeric
         embedding routing identical) but the decoder writes K/V into ``static_cache`` at ``position``
         and reads the full buffer under a causal mask, instead of the dynamic cat-grow path. Returns
-        logits only (the cache is mutated in place). Deployed decoder configuration only (see static_kv.py)."""
+        logits only (the cache is mutated in place). Deployed decoder configuration only (see static_kv.py).
+        ``position`` is the token's index; the prefix decoder's cache holds the data prefix in front
+        of the tokens, so the slot written is ``position + decoder.prefix_len``."""
         self.memory = memory
         if input_num is not None:
             input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
@@ -658,7 +685,7 @@ class FlashANSRModel(nn.Module):
         else:
             numeric_embeddings = None
 
-        decoder_output = self.decoder.forward_static(input_tokens, self.memory, numeric_embeddings, static_cache, position)
+        decoder_output = self.decoder.forward_static(input_tokens, self.memory, numeric_embeddings, static_cache, position + self.decoder.prefix_len)
         return self._logits(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
@@ -1177,7 +1204,7 @@ class FlashANSRModel(nn.Module):
         # a device-side assert, which POISONS the CUDA context for the whole process rather
         # than raising something a caller can act on. Checked once here, not per step: reading
         # a position tensor's max() inside the loop would sync the device every token.
-        rope_limit = int(self.decoder_max_seq_len)
+        rope_limit = int(self.decoder_max_seq_len)   # counts tokens; the decoder's RoPE table adds the prefix itself
         if max_len > rope_limit:
             raise ValueError(
                 f"max_len {max_len} exceeds the decoder's max_seq_len {rope_limit}; the static "
@@ -1247,7 +1274,7 @@ class FlashANSRModel(nn.Module):
                 # an independent backstop). decoder_max_seq_len + fp32 (4 B): the deployed path is fp32; under
                 # half/autocast this over-projects (safe). The auto cap (0.7 of avail) stays well under this.
                 _chunk0 = min(int(batch_size), int(choices))
-                _per_row = 2 * n_layers * n_heads * head_dim * self.decoder_max_seq_len * 4 * _GUARD_OVERHEAD
+                _per_row = 2 * n_layers * n_heads * head_dim * (self.decoder_max_seq_len + self.decoder.prefix_len) * 4 * _GUARD_OVERHEAD
                 if _chunk0 * _per_row > _VRAM_GUARD_FRACTION * _avail:
                     raise RuntimeError(
                         f"static decode batch={_chunk0} projected {_chunk0 * _per_row / 1024**3:.1f} GB > "
@@ -1280,7 +1307,7 @@ class FlashANSRModel(nn.Module):
 
                 static_cache = StaticKVCache(
                     n_layers=n_layers, batch=bsz, n_heads=n_heads, head_dim=head_dim,
-                    max_len=max_len, device=device, dtype=logits_pre.dtype)
+                    max_len=max_len + self.decoder.prefix_len, device=device, dtype=logits_pre.dtype)
                 static_cache.seed_from_dynamic(prefill_cache)
                 del prefill_cache
 

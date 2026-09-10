@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The prefix decoder (`decoder_data_mode: prefix`, the v26 architecture).** The set transformer's
+  memory becomes a prefix of the decoder's own sequence instead of the target of cross-attention:
+  the internal layout is `<bos> <data> m_1 .. m_S </data> <expression> ... </expression> <eos>`, the
+  block `<bos> <data> m_1 .. m_S </data>` attends bidirectionally within itself (the data is a set,
+  every slot may read every other), the expression tokens attend causally to everything before them,
+  and the decoder blocks carry no cross-attention sublayer. The two tags are learned vectors inside
+  the decoder (`TransformerDecoder.data_tags`), not vocabulary entries, so the sampler cannot emit
+  them and the head carries no dead rows; the memory passes through `data_proj` (identity when the
+  widths agree) and `data_norm` (`decoder_data_norm`, default `rms`) before it enters the sequence.
+  The caller's contract is unchanged: one logit row per input token, the state at `</data>`
+  standing in for `<bos>`'s, so the trainer, the tasks and both sampling paths run as before. The
+  dynamic KV cache holds the prefix from the prefill on (a block without cross-attention returns a
+  zero-length cross K/V pair so every cache consumer keeps its shape), the static cache is sized
+  for the tokens plus the prefix and `forward_static` writes at `position + prefix_len`, the rotary
+  table covers `decoder_max_seq_len + S + 2` positions, and the null memory of an optional-condition
+  model takes the data slots for unconditioned rows. `decoder_data_mode` defaults to
+  `cross_attention`, so every v25 checkpoint loads unchanged; the cross-attention config keys are
+  required only in that mode. `configs/v26.0-3M/`: the 3M shape of v25.0-T7 on the prefix decoder
+  with the T8 recipe (AdaMuon, z-loss 1e-4, float32 head, no pre-logits LayerNorm, 1.5M steps), and
+  `configs/v25.0-T8-3M/`, its cross-attention control: the same files with the data path switched,
+  so the two runs compare the decoders and nothing else.
 - **Constant re-spelling after the fit (`constant_ladder`, ON by default; `False` turns it off).** The MDL ranking prices constant
   precision (a 17-digit float ~62 bits, an integer ~6), but the pool only ever carried the refiner's
   floats, so the ranking could never choose the cheaper spelling. On the whole srbf suite at 16,384

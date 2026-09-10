@@ -123,7 +123,11 @@ class Attention(nn.Module):
         is_causal: bool = False,
         past_key_value: Tuple[torch.Tensor, torch.Tensor] | None = None,
         use_cache: bool = False,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """``attn_mask`` (boolean, True = attend, broadcastable to ``(B, H, L, S)``) replaces the
+        ``is_causal`` flag when given: the prefix decoder's data block attends bidirectionally while
+        the expression tokens stay causal, a pattern the flag cannot express."""
         batch_size_q, seq_len_q, _ = query.shape
 
         q = self.w_q(query)
@@ -179,7 +183,8 @@ class Attention(nn.Module):
             q,
             k,
             v,
-            is_causal=is_causal if past_key_value is None else False,
+            attn_mask=attn_mask,
+            is_causal=(is_causal and attn_mask is None) if past_key_value is None else False,
             dropout_p=self.dropout if self.training else 0.0,
         )
 
@@ -288,9 +293,13 @@ class TransformerDecoderBlock(nn.Module):
         cross_attn_norm_type: str = "rms",
         ffn_norm_type: str = "rms",
         norm_position: str = "pre",
+        use_cross_attention: bool = True,
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
+        # The prefix decoder (v26) reads the data from its own sequence: no cross-attention
+        # sublayer at all, the block is self-attention + FFN.
+        self.use_cross_attention = bool(use_cross_attention)
 
         norm_position_l = norm_position.lower()
         if norm_position_l not in ("pre", "post"):
@@ -302,8 +311,11 @@ class TransformerDecoderBlock(nn.Module):
         # no "own value" (values come from the encoder memory) so it is left untouched.
         self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn, use_xsa=use_xsa_self_attn)
 
-        self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
-        self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn)
+        self.cross_attn_norm: nn.Module | None = None
+        self.cross_attention: Attention | None = None
+        if self.use_cross_attention:
+            self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
+            self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn)
 
         self.ffn_norm = get_norm_layer(ffn_norm_type, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
@@ -315,43 +327,60 @@ class TransformerDecoderBlock(nn.Module):
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
         use_cache: bool = False,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
         sa_past = past_key_value[0] if past_key_value is not None else None
         ca_past = past_key_value[1] if past_key_value is not None else None
 
         if self.norm_position == "pre":
             normed_x = self.self_attn_norm(x)
-            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
             if use_cache:
                 sa_out, sa_cache = sa_out
             x = x + sa_out
 
-            # When cross-attention cache is available, pass key_value=None to reuse cached K/V
-            ca_key_value = None if ca_past is not None else encoder_memory
-            ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
-            if use_cache:
-                ca_out, ca_cache = ca_out
-            x = x + ca_out
+            if self.use_cross_attention:
+                assert self.cross_attention is not None and self.cross_attn_norm is not None
+                # When cross-attention cache is available, pass key_value=None to reuse cached K/V
+                ca_key_value = None if ca_past is not None else encoder_memory
+                ca_out = self.cross_attention(self.cross_attn_norm(x), ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+                if use_cache:
+                    ca_out, ca_cache = ca_out
+                x = x + ca_out
+            elif use_cache:
+                ca_cache = self._empty_cross_cache(x)
 
             x = x + self.ffn(self.ffn_norm(x))
         else:
             # Post-norm: x = norm(x + sublayer(x))
-            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache)
+            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
             if use_cache:
                 sa_out, sa_cache = sa_out
             x = self.self_attn_norm(x + sa_out)
 
-            ca_key_value = None if ca_past is not None else encoder_memory
-            ca_out = self.cross_attention(x, ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
-            if use_cache:
-                ca_out, ca_cache = ca_out
-            x = self.cross_attn_norm(x + ca_out)
+            if self.use_cross_attention:
+                assert self.cross_attention is not None and self.cross_attn_norm is not None
+                ca_key_value = None if ca_past is not None else encoder_memory
+                ca_out = self.cross_attention(x, ca_key_value, rope_emb=rope_emb, past_key_value=ca_past, use_cache=use_cache)
+                if use_cache:
+                    ca_out, ca_cache = ca_out
+                x = self.cross_attn_norm(x + ca_out)
+            elif use_cache:
+                ca_cache = self._empty_cross_cache(x)
 
             x = self.ffn_norm(x + self.ffn(x))
 
         if use_cache:
             return x, (sa_cache, ca_cache)
         return x
+
+    def _empty_cross_cache(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """A zero-length cross-attention K/V pair. A block without cross-attention still returns the
+        per-layer cache in the ``((sa_k, sa_v), (ca_k, ca_v))`` shape every decode loop indexes, so
+        the loops gather, concatenate and seed the static cache without a special case; a
+        zero-length pair costs nothing and is never read."""
+        empty = x.new_zeros(x.shape[0], self.self_attention.n_heads, 0, self.self_attention.head_dim)
+        return empty, empty
 
     def forward(
         self,
@@ -360,6 +389,7 @@ class TransformerDecoderBlock(nn.Module):
         rope_emb: Tuple[torch.Tensor, torch.Tensor],
         past_key_value: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]] | None = None,
         use_cache: bool = False,
+        attn_mask: torch.Tensor | None = None,
     ) -> torch.Tensor | Tuple[torch.Tensor, Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]]:
         if self.training and self.use_checkpointing:
             cos, sin = rope_emb
@@ -371,11 +401,11 @@ class TransformerDecoderBlock(nn.Module):
                 sin: torch.Tensor,
             ) -> torch.Tensor:
                 # _forward returns a bare Tensor when use_cache is unset (the ckpt path never caches).
-                return cast(torch.Tensor, self._forward(x, encoder_memory, (cos, sin)))
+                return cast(torch.Tensor, self._forward(x, encoder_memory, (cos, sin), attn_mask=attn_mask))
 
             return checkpoint(ckpt_fn, x, encoder_memory, cos, sin, use_reentrant=False)
 
-        return self._forward(x, encoder_memory, rope_emb, past_key_value=past_key_value, use_cache=use_cache)
+        return self._forward(x, encoder_memory, rope_emb, past_key_value=past_key_value, use_cache=use_cache, attn_mask=attn_mask)
 
     def forward_static(
         self,
@@ -395,8 +425,10 @@ class TransformerDecoderBlock(nn.Module):
         normed_x = self.self_attn_norm(x)
         sa_out = self.self_attention.forward_static_self(normed_x, rope_emb, sa_buf[0], sa_buf[1], position, attn_mask)
         x = x + sa_out
-        ca_out = self.cross_attention.forward_static_cross(self.cross_attn_norm(x), encoder_memory, ca_holder)
-        x = x + ca_out
+        if self.use_cross_attention:
+            assert self.cross_attention is not None and self.cross_attn_norm is not None
+            ca_out = self.cross_attention.forward_static_cross(self.cross_attn_norm(x), encoder_memory, ca_holder)
+            x = x + ca_out
         x = x + self.ffn(self.ffn_norm(x))
         return x
 

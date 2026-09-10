@@ -1,0 +1,73 @@
+# v26.0-3M: the PREFIX decoder at the 3M point of the size ladder (encoder 192-d, 3 heads, 1 ISAB +
+# 1 SAB, FFN 576; decoder 192-d, 3 heads, 3 layers, FFN 576), the shape of v25.0-T7 (3M). The data
+# no longer reaches the expression through cross-attention: the set transformer's 128 memory slots
+# are part of the decoder's own sequence,
+#     <bos> <data> m_1 .. m_128 </data> <expression> ... </expression> <eos>
+# with bidirectional attention over the data block and causal attention over the expression
+# (decoder_data_mode below; the two tags are learned vectors inside the decoder). Every other pin
+# follows the T8 recipe (owner ruling 2026-09-10: every model from v26 on carries the 20M/120M
+# improvements): head in float32 under mixed precision, no pre-logits LayerNorm (the z-loss in
+# train.yaml is the restoring force), binary64 numeric channel, seq len 256, optional condition,
+# outlier head.
+simplipy_engine: 'acj-5-4-llm'
+tokenizer: './tokenizer.yaml'
+
+pre_encoder_noise_scale: 0.1
+
+# The numeric format, pinned explicitly rather than left to the code default: everything
+# reaching the encoder or the numeric channel is binary64. See flash_ansr.utils.numeric.
+pre_encoder_bits: 64
+
+encoder_max_n_variables: 18
+encoder_dim: 192
+encoder_n_heads: 3
+encoder_n_isab: 1
+encoder_n_sab: 1
+encoder_n_inducing_points: 128
+encoder_n_seeds: 128
+encoder_ffn_hidden_dim: 576
+encoder_dropout: 0.1
+encoder_attn_norm: 'rms_set'
+encoder_ffn_norm: 'rms_set'
+encoder_output_norm: 'rms_set'
+
+# The data enters the decoder as a prefix of its sequence (v26); no cross-attention sublayers.
+decoder_data_mode: 'prefix'
+decoder_data_norm: 'rms'
+
+decoder_input_dim: 192
+decoder_model_dim: 192
+decoder_n_heads: 3
+decoder_n_layers: 3
+# 256 holds the task set with room to spare: measured over 25,600 instances of this prior, the
+# longest runs 193 tokens, the 99th percentile 151 and the median 78. Counts the TOKENS only: the
+# decoder sizes its rotary table for the tokens plus the 130 prefix positions itself.
+decoder_max_seq_len: 256
+decoder_ffn_hidden_dim: 576
+decoder_dropout: 0.1
+decoder_block_self_attn_norm: 'rms'
+# No LayerNorm before the final logit projection (owner ruling 2026-09-07): T7-20M showed the norm
+# moves the loss-flat logit-offset drift into its own gain and bias instead of removing it; the
+# restoring force is the z-loss in train.yaml, and the head activations stay bounded by
+# decoder_output_norm.
+head_pre_logits_norm: false
+# The head runs in float32 under mixed precision (the rule for every model from 2026-09-08 on).
+head_fp32: true
+decoder_block_ffn_norm: 'rms'
+decoder_output_norm: 'rms'
+decoder_use_rope_self_attn: true
+
+use_checkpointing: false
+
+# First-class optional condition (classifier-free guidance). When true, the model carries a learned
+# `null_memory` and routes UNCONDITIONED examples (per-example condition_mask=False, set by the data
+# layer via `condition_dropout` in dataset_train.yaml) to it -- a data-driven, train/inference-symmetric
+# mode. Required whenever the dataset emits a condition_mask, which the 10% dropout does. In the prefix
+# decoder the null memory takes the data slots of the prefix.
+optional_condition: true
+null_memory_init_seed: 0
+
+# Per-point outlier head over the encoder's pre-pooling representations, trained against
+# the noise mixture's generative contamination labels (see train.yaml: outlier_loss_weight).
+# The decoder-side tasks need no head: they are ordinary next-token prediction.
+outlier_head: true
