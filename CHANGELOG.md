@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.15.0] - 2026-09-10
 
 ### Added
-- **The prefix decoder (`decoder_data_mode: prefix`, the v26 architecture).** The set transformer's
+- **The prefix decoder (`decoder_data_mode: prefix`), an evaluated, default-off option.** The set transformer's
   memory becomes a prefix of the decoder's own sequence instead of the target of cross-attention:
   the internal layout is `<bos> <data> m_1 .. m_S </data> <expression> ... </expression> <eos>`, the
   block `<bos> <data> m_1 .. m_S </data>` attends bidirectionally within itself (the data is a set,
@@ -29,7 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   required only in that mode. `configs/v26.0-3M/`: the 3M shape of v25.0-T7 on the prefix decoder
   with the T8 recipe (AdaMuon, z-loss 1e-4, float32 head, no pre-logits LayerNorm, 1.5M steps), and
   `configs/v25.0-T8-3M/`, its cross-attention control: the same files with the data path switched,
-  so the two runs compare the decoders and nothing else.
+  so the two runs compare the decoders and nothing else. The pair was trained and read at 100k
+  matched steps: cross-attention leads on loss per step, on FastSRB recovery (37.5 % vs 31.7 % numeric,
+  10.0 % vs 7.5 % exact; per FLOP a tie) and on inference memory (the prefix costs 1.8x the KV cache per
+  candidate row), so cross-attention stays the architecture of every model; the prefix mode remains
+  in the code, tested, as an option only.
 - **One prefill per problem in the sampler.** Every candidate row of a problem starts from the same
   token prefix, numeric channel and encoder memory, so both decode paths now prefill a single row and
   broadcast its logits and K/V over the rows (`FlashANSRModel._shared_prefill` / `_expand_prefill`;
