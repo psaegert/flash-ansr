@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-11
+
+### Changed
+- `price_realized` and `respell_result` (the MDL price of a realized expression and the constant-ladder
+  pass on one fitted result) are public names in `flash_ansr.flash_ansr`: a candidate fitted outside the
+  generation loop -- another method's expression joining the pool -- goes through the same pass. The
+  private spellings remain as aliases.
+
 ## [0.15.0] - 2026-09-10
 
 ### Added

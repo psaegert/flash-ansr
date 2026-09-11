@@ -194,7 +194,7 @@ def _score_or_inf(result: Mapping[str, Any]) -> float:
     return value if np.isfinite(value) else float('inf')
 
 
-def _price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: Sequence[str]) -> float | None:
+def price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: Sequence[str]) -> float | None:
     """The MDL price (milli-bits) of the REALIZED expression: the fitted constants substituted into
     the skeleton, priced certified / f64 / canon default -- the ranking currency (see
     RANKING_SPEC.md section 2: mode= and canon= written out, never inherited). ``None`` for an
@@ -213,6 +213,9 @@ def _price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: S
         return None
 
 
+_price_realized = price_realized   # the private spelling, kept for the refine worker's call sites
+
+
 def _serialize_fits(refiner: Refiner) -> list[tuple[np.ndarray, np.ndarray | None, float]]:
     serialized: list[tuple[np.ndarray, np.ndarray | None, float]] = []
     for constants, constants_cov, fit_loss in refiner._all_constants_values:
@@ -225,12 +228,18 @@ def _serialize_fits(refiner: Refiner) -> list[tuple[np.ndarray, np.ndarray | Non
     return serialized
 
 
-def _respell_result(payload: dict[str, Any], simplipy_engine: Any, refiner: Refiner, X: np.ndarray, y: np.ndarray,
-                    result: dict[str, Any]) -> dict[str, Any] | None:
+def respell_result(payload: dict[str, Any], simplipy_engine: Any, refiner: Refiner, X: np.ndarray, y: np.ndarray,
+                   result: dict[str, Any]) -> dict[str, Any] | None:
     """The constant ladder on one fitted result: the re-spelled variant as a second result dict
     (fitted under ``refine_scope='placeholders'`` so its spelled literals stay frozen), or ``None``
     when no spelling beats the parent's score. The variant keeps the parent's beam and
-    provenance; ``spelling`` records what changed. ``constant_ladder`` None/False -> no ladder."""
+    provenance; ``spelling`` records what changed. ``constant_ladder`` None/False -> no ladder.
+
+    Public because a candidate fitted OUTSIDE the generation loop (another method's expression
+    joining the pool) goes through the same pass: ``payload`` carries ``constant_ladder``,
+    ``ranking_weights``, ``expression`` (the abstracted tokens), ``log_prob``, ``y_variance``,
+    ``n_variables``, ``method``, ``n_restarts``, ``p0_noise``, ``p0_noise_kwargs``; ``result``
+    carries the parent's ``fvu``, ``mdl``, ``score``."""
     ladder = payload.get('constant_ladder')
     if ladder is None or result.get('mdl') is None:
         return None
@@ -297,6 +306,9 @@ def _respell_result(payload: dict[str, Any], simplipy_engine: Any, refiner: Refi
         'replaces_parent': replaces_parent,
     })
     return child
+
+
+_respell_result = respell_result   # the private spelling, kept for the refine worker's call sites
 
 
 _RESPELL_PARENT_KEYS = ('log_prob', 'fvu', 'score', 'expression', 'constant_count', 'mdl', 'complexity',
