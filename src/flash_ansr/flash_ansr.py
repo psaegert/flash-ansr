@@ -218,6 +218,66 @@ def price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: Se
 _price_realized = price_realized   # the private spelling, kept for the refine worker's call sites
 
 
+def canonicalize_fitted(simplipy_engine: Any, refiner: Refiner, expression: Sequence[str], X: np.ndarray, *,
+                        n_variables: int, refine_scope: RefineScope = DEFAULT_REFINE_SCOPE
+                        ) -> tuple[Refiner, list[str], bool, bool]:
+    """The fitted candidate in simplipy's canonical form: the expression the certified price describes.
+
+    Generation simplifies the SKELETON, where ``tanh(x)^c1 / tanh(x)^c2`` cannot cancel; the refiner then
+    fits both constants to 2 and the realized expression collapses to ``exp(-x^2)`` -- which is what
+    :func:`price_realized` prices (the certified price canonicalizes), while the emitted expression stayed
+    the skeleton with the numbers filled in (measured 2026-09-11 on the T8-20M r-sweep readings: 15 % of
+    the emitted answers longer than their canonical form, 2.5 % of the rows an exact recovery hidden by
+    it; ``y = 1.2`` came out as a nine-constant expression whose ``x / (... / log(1.0))`` term is zero).
+
+    Realizes the fit, simplifies the realized tokens, re-abstracts the canonical form's fittable literals
+    into ``<constant>`` slots under ``refine_scope`` (typed literals stay verbatim, so a fitted exponent
+    that folded to ``2`` becomes the literal ``2``), carries the values over as the one fit (the loss is
+    the fitted one; no covariance) and verifies the prediction on ``X`` is unchanged. Returns
+    ``(refiner, expression, changed, same_slot_count)``: the input pair unchanged when the canonical form
+    is not strictly shorter than the realized one (a re-spelling, not a collapse), when a slot value is
+    not a plain number, when the carried refiner is not valid or when the prediction differs on a
+    support point (a removable singularity the data hits).
+    """
+    tokens = list(expression)
+    try:
+        realized = list(refiner.transform(expression=tokens, return_prefix=True, variable_mapping=None))
+        if any(tok == '<constant>' for tok in realized):
+            return refiner, tokens, False, True
+        simplified = list(simplipy_engine.simplify(realized))
+    except Exception:  # noqa: BLE001 - an expression the engine cannot read or simplify stays as fitted
+        return refiner, tokens, False, True
+    # Only a STRICTLY SHORTER canonical form is taken: the canon also re-spells exact rationals
+    # (``* 1.5 sin x1`` -> ``/ * 3 sin x1 2``), which is not a collapse, changes the slot structure
+    # and is the ladder's business (its surprise test decides whether a fraction is worth it).
+    if len(simplified) >= len(realized) or not simplipy_engine.is_valid(simplified):
+        return refiner, tokens, False, True
+    slots = refinement_slots(simplified, simplipy_engine, refine_scope)
+    slot_set = set(slots)
+    canonical = ['<constant>' if i in slot_set else tok for i, tok in enumerate(simplified)]
+    try:
+        values = np.asarray([float(simplified[i]) for i in slots], dtype=float)
+    except (TypeError, ValueError):   # a slot spelled by a symbol (np.pi): keep the fitted spelling
+        return refiner, tokens, False, True
+    best = refiner._all_constants_values[0]
+    old_values = np.asarray(best[0], dtype=float).ravel()
+    loss = float(best[2])
+    try:
+        carried = Refiner.from_serialized(simplipy_engine=simplipy_engine, n_variables=int(n_variables), expression=canonical,
+                                          n_inputs=int(X.shape[1]), fits=[(values, None, loss)], refine_scope='placeholders')
+        if not carried.valid_fit:
+            return refiner, tokens, False, True
+        with np.errstate(all='ignore'):
+            y_old = np.asarray(refiner.predict(X), dtype=float).reshape(-1)
+            y_new = np.asarray(carried.predict(X), dtype=float).reshape(-1)
+    except Exception:  # noqa: BLE001
+        return refiner, tokens, False, True
+    if y_old.shape != y_new.shape or not np.allclose(y_old, y_new, rtol=1e-9, atol=1e-12, equal_nan=True):
+        return refiner, tokens, False, True
+    return carried, canonical, True, values.size == old_values.size
+
+
+
 def _serialize_fits(refiner: Refiner) -> list[tuple[np.ndarray, np.ndarray | None, float]]:
     serialized: list[tuple[np.ndarray, np.ndarray | None, float]] = []
     for constants, constants_cov, fit_loss in refiner._all_constants_values:
@@ -451,6 +511,19 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
     sample_count = int(y.shape[0])
     fvu = FlashANSR._compute_fvu(loss, sample_count, payload['y_variance'])
 
+    # The fitted candidate in canonical form (owner 2026-09-11): the constants the refiner chose can make
+    # a spelling collapsible that the skeleton was not, and the certified price already prices that
+    # collapsed form -- so it is the collapsed form that gets emitted (and that the ladder starts from).
+    expression_as_fitted = list(payload['expression'])
+    refiner, canonical_expression, canonicalized, same_slots = canonicalize_fitted(
+        simplipy_engine, refiner, expression_as_fitted, X,
+        n_variables=int(payload['n_variables']), refine_scope=payload.get('refine_scope', DEFAULT_REFINE_SCOPE))
+    if canonicalized:
+        payload['expression'] = canonical_expression
+        payload['constant_count'] = 0
+        if not same_slots:
+            p0_values = None   # the model's emitted constants no longer align with the slots
+
     expression_tokens = payload['expression']
     constant_count = int(payload.get('constant_count', 0))
     if constant_count <= 0:
@@ -499,6 +572,8 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'constants_emitted': list(p0_values) if p0_values is not None else None,
         'spelling': None,
         'respelled': None,
+        # the spelling the refiner fitted, when the canonical form emitted above differs from it
+        'expression_as_fitted': expression_as_fitted if canonicalized else None,
     }
 
     result['respelled'] = _respell_result(payload, simplipy_engine, refiner, X, y, result)

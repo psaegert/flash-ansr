@@ -176,11 +176,13 @@ class TestWorker:
         assert child["raw_beam"] == result["raw_beam"]   # the parent's beam, provenance
 
     def test_a_unit_scale_disappears(self, engine):
+        # an exact unit scale folds in the post-fit canonicalization already (`* 1.0 x1` -> `x1`,
+        # strictly shorter); the ladder then has nothing left to re-spell
         X = _data()
         y = X[:, 0].copy()
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[1.0]))
-        child = result["respelled"]
-        assert child is not None and child["expression"] == ["x1"] and child["constant_count"] == 0
+        assert result["expression"] == ["x1"] and result["expression_as_fitted"] == ["*", "<constant>", "x1"]
+        assert result["respelled"] is None
 
     def test_a_strict_improvement_stands_beside_its_parent(self, engine):
         # a whisper of noise: the fit lands near 2, the data cannot tell 2.00000003 from 2, and the

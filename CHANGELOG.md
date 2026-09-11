@@ -6,6 +6,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-09-11
+
+### Fixed
+- **A fitted candidate is emitted in canonical form.** Generation simplifies the skeleton, where
+  `tanh(x)^c1 / tanh(x)^c2` cannot cancel; the refiner then fits both constants to 2, the certified
+  price canonicalizes the realized expression to `exp(-x^2)` and prices it so, but the emitted
+  expression stayed the skeleton with the numbers filled in -- the same score, the longer spelling,
+  and among equal scores the token tie-break could put the longer one first (`y = 1.2` came out as a
+  nine-constant expression whose `x / (... / log(1.0))` term is zero). Measured on the T8-20M r-sweep
+  readings: 15 % of the emitted answers longer than their canonical form, 2.5 % of the rows an exact
+  recovery hidden by it. The refine worker now runs `canonicalize_fitted` on every fitted candidate:
+  the realized expression is simplified and, when the canonical form is strictly shorter, its fittable
+  literals are re-abstracted into slots under the fit's scope (a fitted exponent that folded to `2`
+  becomes the typed literal), the values carried as the one fit and the prediction verified unchanged.
+  A canon that only re-spells a constant (`* 1.5 sin x1` -> `/ * 3 sin x1 2`) is not taken -- that is
+  the ladder's business. The result carries `expression_as_fitted` when it was canonicalized; the ladder
+  starts from the canonical form. Scores and prices are unchanged (the price was the class price
+  already); the spelling of the answer is.
+
+
 ## [0.15.1] - 2026-09-11
 
 ### Changed
