@@ -261,17 +261,24 @@ class TestSharedPrefill:
             assert ks.shape[0] == 6
         assert torch.allclose(cache_s[0][0][0], cache_r[0][0][0], atol=1e-5)
         # rows that differ, or a per-row memory, fall back to the per-row prefill
-        other = prefix.clone(); other[3, 1] = tokenizer["<eos>"]
+        other = prefix.clone()
+        other[3, 1] = tokenizer["<eos>"]
         assert model._shared_prefill(other, None, memory) is None
         assert model._shared_prefill(prefix, None, memory.expand(6, -1, -1)) is None
 
     def test_greedy_decode_unchanged_by_sharing(self, tokenizer, engine, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         model, kwargs = _model(tokenizer, engine)
         _, data = _batch(tokenizer, kwargs, B=1)
-        run = lambda static: model.sample_top_kp(data, choices=6, top_k=1, max_len=14, valid_only=False, simplify=False, unique=False, static_decode=static, batch_size=4, return_raw=True)[0]
-        torch.manual_seed(0); shared_static = run(True)
-        torch.manual_seed(0); shared_dynamic = run(False)
+
+        def run(static):
+            return model.sample_top_kp(data, choices=6, top_k=1, max_len=14, valid_only=False, simplify=False, unique=False, static_decode=static, batch_size=4, return_raw=True)[0]
+        torch.manual_seed(0)
+        shared_static = run(True)
+        torch.manual_seed(0)
+        shared_dynamic = run(False)
         monkeypatch.setattr(FlashANSRModel, "_shared_prefill", lambda self, *a, **k: None)
-        torch.manual_seed(0); per_row_static = run(True)
-        torch.manual_seed(0); per_row_dynamic = run(False)
+        torch.manual_seed(0)
+        per_row_static = run(True)
+        torch.manual_seed(0)
+        per_row_dynamic = run(False)
         assert shared_static == per_row_static == shared_dynamic == per_row_dynamic

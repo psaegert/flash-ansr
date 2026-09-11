@@ -299,7 +299,10 @@ class TestBatchedStepEquivalence:
         ref = torch.optim.AdamW(ps_ref, lr=2e-3, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.01, foreach=False)
         for _ in range(5):
             for a, b in zip(ps_new, ps_ref):
-                g = torch.randn_like(a); a.grad = g.clone(); b.grad = g.clone()
-            opt.step(); ref.step()
+                g = torch.randn_like(a)
+                a.grad = g.clone()
+                b.grad = g.clone()
+            opt.step()
+            ref.step()
         for a, b in zip(ps_new, ps_ref):
             torch.testing.assert_close(a.detach(), b.detach(), atol=1e-6, rtol=1e-6)

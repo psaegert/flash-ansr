@@ -113,7 +113,9 @@ class TestCurvature:
     def test_linear_model_stiffness_is_the_schur_complement(self):
         rng = np.random.default_rng(0)
         x = rng.uniform(-2, 2, 64)
-        predict = lambda c: c[0] * x + c[1]
+
+        def predict(c):
+            return c[0] * x + c[1]
         curv = FitCurvature.build(predict, np.array([1.3, -0.2]))
         A = np.array([[np.sum(x * x), np.sum(x)], [np.sum(x), 64.0]])
         assert np.allclose(curv.A, A, rtol=1e-6)
@@ -124,7 +126,9 @@ class TestCurvature:
     def test_redundant_pair_is_free(self):
         rng = np.random.default_rng(1)
         x = rng.uniform(-2, 2, 64)
-        predict = lambda c: c[0] * c[1] * x
+
+        def predict(c):
+            return c[0] * c[1] * x
         curv = FitCurvature.build(predict, np.array([2.0, 3.0]))
         assert curv.stiffness([0])[0, 0] == 0.0 and curv.stiffness([1])[0, 0] == 0.0
         assert curv.stiffness([0, 1])[0, 0] > 0
@@ -150,13 +154,15 @@ def _data(seed=0, n=128):
 
 class TestWorker:
     def test_off_by_default(self, engine):
-        X = _data(); y = 2.0 * X[:, 0]
+        X = _data()
+        y = 2.0 * X[:, 0]
         result, warning = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=None, p0=[2.0]))
         assert warning is None and result is not None
         assert result["spelling"] is None and result["respelled"] is None
 
     def test_an_exact_scale_becomes_a_literal(self, engine):
-        X = _data(); y = 2.0 * X[:, 0]
+        X = _data()
+        y = 2.0 * X[:, 0]
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[2.0]))
         child = result["respelled"]
         assert child is not None
@@ -170,7 +176,8 @@ class TestWorker:
         assert child["raw_beam"] == result["raw_beam"]   # the parent's beam, provenance
 
     def test_a_unit_scale_disappears(self, engine):
-        X = _data(); y = X[:, 0].copy()
+        X = _data()
+        y = X[:, 0].copy()
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[1.0]))
         child = result["respelled"]
         assert child is not None and child["expression"] == ["x1"] and child["constant_count"] == 0
@@ -178,7 +185,8 @@ class TestWorker:
     def test_a_strict_improvement_stands_beside_its_parent(self, engine):
         # a whisper of noise: the fit lands near 2, the data cannot tell 2.00000003 from 2, and the
         # integer is cheaper -- a strict improvement, so the variant stands beside its parent
-        X = _data(); rng = np.random.default_rng(3)
+        X = _data()
+        rng = np.random.default_rng(3)
         y = 2.0 * X[:, 0] * (1.0 + 1e-7 * rng.standard_normal(X.shape[0]))
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[2.0]))
         child = result["respelled"]
@@ -186,25 +194,29 @@ class TestWorker:
         assert child["score"] < result["score"] and child["replaces_parent"] is False
 
     def test_a_constant_only_variant_of_an_informative_parent_is_not_offered(self, engine):
-        X = _data(); y = 0.3 * X[:, 0] + 5.0 + 0.05 * np.sin(7 * X[:, 0])
+        X = _data()
+        y = 0.3 * X[:, 0] + 5.0 + 0.05 * np.sin(7 * X[:, 0])
         result, _ = harness._refine_candidate_worker(_payload(engine, ["+", "*", "<constant>", "x1", "<constant>"], X, y, ladder=True, p0=[0.3, 5.0]))
         child = result["respelled"]
         assert child is None or any(t.startswith("x") for t in child["expression"])
 
     def test_a_half_exponent_becomes_a_root(self, engine):
-        X = _data(); y = np.sqrt(X[:, 0])
+        X = _data()
+        y = np.sqrt(X[:, 0])
         result, _ = harness._refine_candidate_worker(_payload(engine, ["pow", "x1", "<constant>"], X, y, ladder=True, p0=[0.5]))
         child = result["respelled"]
         assert child is not None
         assert "rootn" in child["expression"] or child["expression"] == ["pow", "x1", "/", "1", "2"]
 
     def test_a_precise_constant_stays_a_float(self, engine):
-        X = _data(); y = 9.80665 * X[:, 0]
+        X = _data()
+        y = 9.80665 * X[:, 0]
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[9.80665]))
         assert result["respelled"] is None
 
     def test_a_tiny_coefficient_kills_its_term(self, engine):
-        X = _data(); y = 3.0 * X[:, 0]
+        X = _data()
+        y = 3.0 * X[:, 0]
         expression = ["+", "*", "<constant>", "x1", "*", "<constant>", "pow", "x1", "2"]
         result, _ = harness._refine_candidate_worker(_payload(engine, expression, X, y, ladder=True, p0=[3.0, 0.0]))
         child = result["respelled"]
@@ -212,7 +224,8 @@ class TestWorker:
         assert child["expression"] == ["*", "3", "x1"], child["expression"]
 
     def test_pi_is_recognised(self, engine):
-        X = _data(); y = math.pi * X[:, 0]
+        X = _data()
+        y = math.pi * X[:, 0]
         result, _ = harness._refine_candidate_worker(_payload(engine, ["*", "<constant>", "x1"], X, y, ladder=True, p0=[math.pi]))
         child = result["respelled"]
         assert child is not None and "np.pi" in child["expression"]
@@ -253,7 +266,8 @@ class TestPositions:
     def test_zero_is_not_offered_as_a_pow_base(self, engine):
         # y = 3 x1: the pow base is a dead subtree with a free exponent; zeroing it would make the
         # fit's arithmetic and the pricer's folding disagree, so zero is never offered there
-        X = _data(); y = 3.0 * X[:, 0]
+        X = _data()
+        y = 3.0 * X[:, 0]
         expression = ["+", "*", "<constant>", "x1", "*", "<constant>", "pow", "<constant>", "<constant>"]
         result, _ = harness._refine_candidate_worker(_payload(engine, expression, X, y, ladder=True, p0=[3.0, 1e-9, 0.2, 6.0]))
         child = result["respelled"]
