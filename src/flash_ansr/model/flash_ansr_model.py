@@ -419,7 +419,7 @@ class FlashANSRModel(nn.Module):
         # error instead of an opaque bare KeyError from deep inside the constructor call below. Keys
         # read via .get(...) with a default (optional_condition, pre_encoder_bits, the *_norm_position
         # and xsa/rope-optional flags, ...) are intentionally NOT required here.
-        required_keys = (
+        required_keys: tuple[str, ...] = (
             "simplipy_engine", "tokenizer", "pre_encoder_noise_scale",
             "encoder_max_n_variables", "encoder_dim", "encoder_n_heads", "encoder_n_isab",
             "encoder_n_sab", "encoder_n_inducing_points", "encoder_n_seeds", "encoder_ffn_hidden_dim",

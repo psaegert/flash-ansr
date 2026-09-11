@@ -187,6 +187,8 @@ _T11_ACCEPT_FVU: float = float(np.finfo(np.float32).eps)
 
 def _score_or_inf(result: Mapping[str, Any]) -> float:
     score = result.get('score')
+    if score is None:
+        return float('inf')
     try:
         value = float(score)
     except (TypeError, ValueError):
@@ -2174,7 +2176,7 @@ class FlashANSR(BaseEstimator):
             for entry in batch:
                 job = {key: entry.get(key) for key in _RESPELL_PARENT_KEYS}
                 job.update({
-                    'fits': [(np.asarray(c, dtype=float), (np.asarray(cov) if cov is not None and getattr(cov, 'size', 0) else None), float(loss))
+                    'fits': [(np.asarray(c, dtype=float), (np.asarray(cov) if cov is not None and getattr(cov, 'size', None) else None), float(loss))
                              for c, cov, loss in entry['fits']],
                     'refine_scope': self.refiner_scope,
                     'n_variables': self.n_variables,

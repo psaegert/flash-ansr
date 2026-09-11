@@ -599,7 +599,8 @@ def respell_fitted_candidate(
             break
     if best is None:
         return None
-    tokens, fitted, fvu, mdl, score, p0, subset = (best[k] for k in ('tokens', 'refiner', 'fvu', 'mdl', 'score', 'p0', 'subset'))
+    tokens, fitted, fvu, score, p0, subset = (best[k] for k in ('tokens', 'refiner', 'fvu', 'score', 'p0', 'subset'))
+    mdl = float(best['mdl'])   # stored only when priced (the unpriceable rungs `continue` above)
     # canonicalize for the record (the ranking saw the canonical price already)
     final_tokens, final_refiner, final_loss = _canonical_form(
         Refiner, simplipy_engine, n_variables, tokens, fitted, X, y, p0, method, config, full_fit)
