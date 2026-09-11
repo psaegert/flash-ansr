@@ -23,7 +23,8 @@ def _fit(engine, expression, X, y, p0):
 
 def test_a_factor_that_cancels_once_fitted_is_dropped(engine):
     rng = np.random.default_rng(0)
-    X = rng.uniform(-3, 3, (64, 1)); y = np.exp(-X[:, 0] ** 2)
+    X = rng.uniform(-3, 3, (64, 1))
+    y = np.exp(-X[:, 0] ** 2)
     expression = "/ * exp neg pow x1 <constant> pow tanh x1 <constant> pow tanh x1 <constant>".split()
     fitted = _fit(engine, expression, X, y, [2.0, 2.0, 2.0])
     carried, canonical, changed, same_slots = canonicalize_fitted(engine, fitted, expression, X, n_variables=1)
@@ -36,7 +37,8 @@ def test_a_factor_that_cancels_once_fitted_is_dropped(engine):
 
 def test_constants_fold_into_one_slot(engine):
     rng = np.random.default_rng(1)
-    X = rng.uniform(-3, 3, (64, 1)); y = 6.0 * X[:, 0]
+    X = rng.uniform(-3, 3, (64, 1))
+    y = 6.0 * X[:, 0]
     expression = ["*", "<constant>", "*", "<constant>", "x1"]
     fitted = _fit(engine, expression, X, y, [2.0, 3.0])
     carried, canonical, changed, same_slots = canonicalize_fitted(engine, fitted, expression, X, n_variables=1)
@@ -50,7 +52,8 @@ def test_a_respelling_is_not_a_collapse(engine):
     """The canon writes an exact 1.5 as 3/2 (`/ * 3 sin x1 2`): longer, a different slot structure, the
     ladder's business -- the fitted spelling stays."""
     rng = np.random.default_rng(2)
-    X = rng.uniform(-3, 3, (64, 1)); y = 1.5 * np.sin(X[:, 0])
+    X = rng.uniform(-3, 3, (64, 1))
+    y = 1.5 * np.sin(X[:, 0])
     expression = ["*", "<constant>", "sin", "x1"]
     fitted = _fit(engine, expression, X, y, [1.5])
     assert list(engine.simplify(["*", "1.5", "sin", "x1"])) == ["/", "*", "3", "sin", "x1", "2"]
@@ -60,7 +63,8 @@ def test_a_respelling_is_not_a_collapse(engine):
 
 def test_an_equal_length_respelling_is_left_to_the_ladder(engine):
     rng = np.random.default_rng(4)
-    X = rng.uniform(0.5, 3, (64, 1)); y = np.sqrt(X[:, 0])
+    X = rng.uniform(0.5, 3, (64, 1))
+    y = np.sqrt(X[:, 0])
     expression = ["pow", "x1", "<constant>"]
     fitted = _fit(engine, expression, X, y, [0.5])
     _, canonical, changed, _ = canonicalize_fitted(engine, fitted, expression, X, n_variables=1)
@@ -69,7 +73,8 @@ def test_an_equal_length_respelling_is_left_to_the_ladder(engine):
 
 def test_the_worker_emits_the_canonical_member(engine):
     rng = np.random.default_rng(3)
-    X = rng.uniform(-3, 3, (64, 1)); y = np.exp(-X[:, 0] ** 2)
+    X = rng.uniform(-3, 3, (64, 1))
+    y = np.exp(-X[:, 0] ** 2)
     payload = {
         "simplipy_engine": engine,
         "expression": "/ * exp neg pow x1 <constant> pow tanh x1 <constant> pow tanh x1 <constant>".split(),

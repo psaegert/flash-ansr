@@ -277,7 +277,6 @@ def canonicalize_fitted(simplipy_engine: Any, refiner: Refiner, expression: Sequ
     return carried, canonical, True, values.size == old_values.size
 
 
-
 def _serialize_fits(refiner: Refiner) -> list[tuple[np.ndarray, np.ndarray | None, float]]:
     serialized: list[tuple[np.ndarray, np.ndarray | None, float]] = []
     for constants, constants_cov, fit_loss in refiner._all_constants_values:
