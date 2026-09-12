@@ -213,6 +213,87 @@ def truncation_cuts_ieee754_span(
     return False
 
 
+def map_ieee754_spans(
+    token_ids: Sequence[int],
+    *,
+    start_id: int,
+    end_id: int,
+    byte_ids: Sequence[int],
+    constant_id: int,
+) -> "tuple[list[int], list[float | None]] | None":
+    """Map every ``<ieee754>`` span to one ``constant_id``, reporting the value PER RESULTING SLOT.
+
+    ``values[i]`` is the float64 the i-th ``constant_id`` of ``mapped`` spells, or ``None`` where the
+    model emitted a BARE placeholder. Returns ``None`` for a malformed carrier (a truncated span, a
+    stray close tag or content byte outside a span) -- the beam is not a v24 carrier and downstream
+    validity disposes of it.
+
+    Supersedes :func:`replace_ieee754_spans_with_constants`, whose all-or-nothing ``values`` cannot
+    describe a MIXED emission -- a bare ``<constant>`` beside a spelled span. That is precisely the
+    shape ``<mask_fittable>`` trains the model to produce (fittable constants masked, typed literals
+    spelled), so the old contract silently classified the correct emission as unsound.
+    """
+    if len(byte_ids) != len(BYTE_TOKENS):
+        raise ValueError(
+            f"Expected {len(BYTE_TOKENS)} byte ids in byte-value order, got {len(byte_ids)}."
+        )
+    id_to_byte = {token_id: BYTE_TOKENS[value] for value, token_id in enumerate(byte_ids)}
+
+    ids = list(token_ids)
+    mapped: list[int] = []
+    values: list[float | None] = []
+    index = 0
+    while index < len(ids):
+        token = ids[index]
+        if token == start_id:
+            inner = ids[index + 1:index + 1 + IEEE754_N_BYTES]
+            closed = (
+                index + IEEE754_SPAN_LENGTH <= len(ids)
+                and ids[index + IEEE754_SPAN_LENGTH - 1] == end_id
+                and all(byte in id_to_byte for byte in inner)
+            )
+            if not closed:
+                return None
+            value = byte_tokens_to_float64([id_to_byte[byte] for byte in inner])
+            if not math.isfinite(value):
+                return None      # a non-finite prediction has no literal spelling
+            values.append(float(value))
+            mapped.append(constant_id)
+            index += IEEE754_SPAN_LENGTH
+            continue
+        if token == end_id or token in id_to_byte:
+            return None          # a stray close/content byte outside a span
+        if token == constant_id:
+            values.append(None)  # the model MASKED this slot: a real statement, not a defect
+        mapped.append(token)
+        index += 1
+    return mapped, values
+
+
+def realize_slot_values(tokens: Sequence[str], values: "Sequence[float | None]") -> list[str]:
+    """Spell each value back into its ``<constant>`` slot; ``None`` leaves the placeholder standing.
+
+    The inverse of the masking the emission performs, and the form everything downstream should see:
+    a LITERAL wherever the model predicted a number and a ``<constant>`` wherever it declined to. The
+    expression then states, by itself, which sites are the model's and which are the refiner's --
+    `refinement_slots` under `refine_scope='fittable'` keeps a spelled exponent verbatim and frees a
+    spelled coefficient, with no side-channel of values to keep aligned.
+
+    Raises ``ValueError`` when the slot count does not match ``values`` -- a silent misalignment here
+    would attach one site's prediction to another.
+    """
+    from flash_ansr.refine import literal_token
+
+    out = list(tokens)
+    slots = [index for index, token in enumerate(out) if _is_constant_placeholder(token)]
+    if len(slots) != len(values):
+        raise ValueError(f"{len(slots)} placeholder slots but {len(values)} values")
+    for index, value in zip(slots, values):
+        if value is not None:
+            out[index] = literal_token(float(value))
+    return out
+
+
 def replace_ieee754_spans_with_constants(
     token_ids: Sequence[int],
     *,

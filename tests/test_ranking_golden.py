@@ -12,10 +12,10 @@ moved and why.
 """
 from __future__ import annotations
 
+import numpy as np
 import json
 import os
 
-import numpy as np
 import pytest
 
 from flash_ansr.flash_ansr import FlashANSR
@@ -81,6 +81,50 @@ def test_golden_file_is_present_and_shaped(golden: dict) -> None:
         assert len(cell["order"]) == golden["n_cases"]
 
 
+def _assert_order_up_to_ties(sorted_results: list, expected: list, where: str) -> None:
+    """The golden order, tolerating reordering WITHIN exact score ties and nothing else.
+
+    The frozen golden pinned the full order, including the alphabetical arrangement of tied rows.
+    Since 2026-09-12 the scalar tie-break prefers the shorter emitted expression (see
+    ``test_ties_break_on_length_then_tokens_not_insertion_order``), so that arrangement deliberately
+    changed. Comparing up to ties keeps everything the golden was protecting -- a row crossing a
+    score boundary, a score drifting by a ULP, a dropped or duplicated row -- and gives up only the
+    part that was deliberately replaced. Verified across all 12 penalty cells: the new key moves no
+    row past a better-scoring one.
+    """
+    got_scores = [None if r.get("score") is None or np.isnan(float(r["score"])) else float(r["score"])
+                  for r in sorted_results]
+    want_scores = [None if _unjson(e["score"]) is None or np.isnan(float(_unjson(e["score"])))
+                   else float(_unjson(e["score"])) for e in expected]
+    assert got_scores == want_scores or all(
+        _same(a, b) if a is not None and b is not None else a == b
+        for a, b in zip(got_scores, want_scores)), f"score SEQUENCE drifted at {where}"
+
+    def groups(order: list, scores: list) -> list:
+        out, i = [], 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and scores[j + 1] == scores[i]:
+                j += 1
+            out.append(sorted(tuple(e) for e in order[i:j + 1]))
+            i = j + 1
+        return out
+
+    got = groups([r["expression"] for r in sorted_results], got_scores)
+    want = groups([e["expression"] for e in expected], want_scores)
+    assert got == want, f"ranking ORDER drifted beyond a tie at {where}"
+    # and the new rule: inside a tie group, shortest first
+    i = 0
+    exprs = [r["expression"] for r in sorted_results]
+    while i < len(exprs):
+        j = i
+        while j + 1 < len(exprs) and got_scores[j + 1] == got_scores[i]:
+            j += 1
+        lengths = [len(e) for e in exprs[i:j + 1]]
+        assert lengths == sorted(lengths), f"a tie is not shortest-first at {where}: {exprs[i:j + 1]}"
+        i = j + 1
+
+
 def test_scalar_ranking_is_unchanged(golden: dict) -> None:
     """Every cell of the penalty grid reproduces the frozen ORDER and the frozen SCORES.
 
@@ -97,12 +141,9 @@ def test_scalar_ranking_is_unchanged(golden: dict) -> None:
         sorted_results, _ = FlashANSR._compile_results_pure(
             _Shim(), rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
         )
-        got_expr = [r["expression"] for r in sorted_results]
-        want_expr = [e["expression"] for e in cell["order"]]
-        assert got_expr == want_expr, (
-            f"ranking ORDER drifted at node_penalty={cell['node_penalty']} "
-            f"constants_penalty={cell['constants_penalty']}"
-        )
+        _assert_order_up_to_ties(
+            sorted_results, cell["order"],
+            f"node_penalty={cell['node_penalty']} constants_penalty={cell['constants_penalty']}")
         for got, want in zip(sorted_results, cell["order"]):
             assert _same(float(got["score"]), _unjson(want["score"])), (
                 f"score drifted for {' '.join(want['expression'])} at "
@@ -138,8 +179,17 @@ def test_negative_finite_fvu_reaches_the_scorer_and_is_worst_finite() -> None:
     assert sorted_results[-1]["score"] == float("inf")
 
 
-def test_ties_break_on_expression_tokens_not_insertion_order() -> None:
-    """Equal scores are ordered by the token tuple, so parallel completion order cannot leak in."""
+def test_ties_break_on_length_then_tokens_not_insertion_order() -> None:
+    """Equal scores are ordered by EMITTED LENGTH first, then the token tuple.
+
+    Two properties, and the first is the one that matters: the order must not depend on insertion
+    order, so parallel completion cannot leak into the ranking (the `forward == reverse` assertion).
+    The second pins WHICH member of a tie is surfaced. Until 2026-09-12 that was the token tuple
+    alone, i.e. ASCII: on `(x - 0.3)**2` it put `pow - x1 / 1.97e16 6.57e16 2` (7 tokens, fvu 2e-33)
+    above `pow - x1 0.3 2` (5 tokens, fvu 0) because '/' is chr(47) and '0' is chr(48). Score cannot
+    separate those -- fvu is floored at 2.22e-16 and mdl is priced on the canonical form -- so the
+    tie-break is the only thing that can, and it now prefers the shorter spelling.
+    """
     rows = [
         {"expression": ["sin", "x1"], "fvu": 0.5, "log_prob": None, "constant_count": 0, "score": 0.0},
         {"expression": ["x1"], "fvu": 0.5, "log_prob": None, "constant_count": 0, "score": 0.0},
@@ -148,7 +198,8 @@ def test_ties_break_on_expression_tokens_not_insertion_order() -> None:
     forward, _ = FlashANSR._compile_results_pure(_Shim(), list(rows), ranking=_weighted())
     reverse, _ = FlashANSR._compile_results_pure(_Shim(), list(rows[::-1]), ranking=_weighted())
     assert [r["expression"] for r in forward] == [r["expression"] for r in reverse]
-    assert [r["expression"] for r in forward] == [["+", "x1", "x2"], ["sin", "x1"], ["x1"]]
+    # shortest first; the token tuple still resolves equal-length ties
+    assert [r["expression"] for r in forward] == [["x1"], ["sin", "x1"], ["+", "x1", "x2"]]
 
 
 def test_score_less_row_raises_keyerror_documented_inconsistency() -> None:
@@ -246,8 +297,14 @@ class TestMdlEndToEnd:
 
         from flash_ansr import flash_ansr as module
 
+        # The fit path is split in two: `_refine_candidate_worker` sets up the engine/arrays and
+        # delegates to `_fit_one_candidate`, which is where a candidate is fitted, canonicalized,
+        # PRICED, scored and laddered -- and which the typed-span duplicate re-enters, so both the
+        # draw and its duplicate are priced by the same call. Assert the delegation and the price.
         worker = inspect.getsource(module._refine_candidate_worker)
-        assert "_price_realized(" in worker, "the worker must price through _price_realized"
+        assert "_fit_one_candidate(" in worker, "the worker must fit through _fit_one_candidate"
+        fit = inspect.getsource(module._fit_one_candidate)
+        assert "_price_realized(" in fit, "the fit path must price through _price_realized"
         source = inspect.getsource(module._price_realized)
         assert "refiner.transform(" in source, "mdl must be priced on the realized expression"
         assert "return_prefix=True" in source
@@ -279,7 +336,8 @@ class TestMdlPenaltyAddend:
             sorted_results, _ = FlashANSR._compile_results_pure(
                 _Shim(), rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
             )
-            assert [r["expression"] for r in sorted_results] == [e["expression"] for e in cell["order"]]
+            _assert_order_up_to_ties(sorted_results, cell["order"],
+                                     f"mdl_penalty=0 node_penalty={cell['node_penalty']}")
             for got, want in zip(sorted_results, cell["order"]):
                 assert _same(float(got["score"]), _unjson(want["score"])), (
                     "a populated mdl changed the score at mdl_penalty=0 -- the addend is not inert"

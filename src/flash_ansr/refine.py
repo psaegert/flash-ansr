@@ -5,7 +5,8 @@ constants against ``(X, y)`` data using SciPy least-squares / minimize backends,
 :class:`ConvergenceError` when no restart converges.
 """
 import importlib
-from collections.abc import Iterable
+import math
+from collections.abc import Iterable, Sequence
 from typing import Literal, Callable, Any
 import warnings
 
@@ -90,6 +91,125 @@ def literal_value(token: str) -> float:
     except ValueError:
         numerator, _, denominator = token.partition('/')
         return float(numerator) / float(denominator)
+
+
+#: What happens to a literal the model PREDICTED in a TYPED position -- a ``pow`` exponent or a
+#: ``rootn`` index, the literals whose value fixes the DOMAIN rather than the magnitude.
+#:
+#: Post-processing hands the refiner the candidate as the model stated it (a literal where it
+#: spelled a number, a ``<constant>`` where it masked one), so ``refine_scope='fittable'`` already
+#: keeps a spelled exponent verbatim. ``'freeze'`` is therefore the name of that behaviour rather
+#: than an extra step; the policy only has to ACT for the arms that depart from it.
+#:
+#: * ``'freeze'``           -- the predicted typed literal stays VERBATIM; the fittable constants
+#:                            are refined, seeded at their predictions where the model gave them.
+#: * ``'freeze_then_free'`` -- ``'freeze'``, and additionally a DUPLICATE of the candidate refit
+#:                            with the typed literals thawed, seeded at the predicted exponent and
+#:                            at the frozen round's fitted optimum for the rest. Both stand in the
+#:                            pool; the ranking decides. THE DEFAULT: freezing is right wherever the
+#:                            prediction is an exact integer (99.6 % of 24,238 spelled typed
+#:                            literals measured on the T8-20M pools) and the duplicate is the
+#:                            insurance for the rest, where a power law's exponent is a genuine
+#:                            float.
+#: * ``'refine'``           -- thaw every typed literal before the first fit: the pre-2026-09-12
+#:                            behaviour, kept as the control arm. On ``y = (x - 0.7)**2`` sampled
+#:                            across the shift this loses the candidate outright -- the first
+#:                            finite-difference step off the even integer makes
+#:                            ``negative ** non-integer`` nan on half the points and every restart
+#:                            fails.
+#: * ``'combinations'``     -- one duplicate per SUBSET of the typed literals (deferred: the
+#:                            enumeration is implemented and unit-tested, no run has used it).
+TypedSpanPolicy = Literal['refine', 'freeze', 'freeze_then_free', 'combinations']
+TYPED_SPAN_POLICIES: tuple[str, ...] = ('refine', 'freeze', 'freeze_then_free', 'combinations')
+DEFAULT_TYPED_SPAN_POLICY: TypedSpanPolicy = 'freeze_then_free'
+
+#: The roles simplipy's ``mask_fittable`` KEEPS. Named once so the freeze/thaw pair and the
+#: masking policy cannot drift apart: a role added to one is added to the other.
+TYPED_ROLES = (masking.Role.EXPONENT, masking.Role.ROOT_INDEX)
+
+#: Symbolic in the tagged canonical dialect (contract A3) -- not predicted numbers, so the
+#: freeze/thaw pair leaves them alone in EITHER direction.
+SPECIAL_CONSTANT_TOKENS = ('np.pi', 'np.e')
+
+
+def literal_token(value: float) -> str:
+    """Spell a float64 as the simplipy literal token that reads back to it EXACTLY.
+
+    The inverse of :func:`literal_value` for the spellings the freeze path produces: an integral
+    value takes the integer spelling the canon uses (``2``, not ``2.0``) and everything else takes
+    ``repr``, which round-trips float64 by construction. A non-finite value has no literal spelling
+    -- ``inf``/``nan`` are reserved numeric spellings simplipy's role walk refuses (H-007) -- and
+    raises rather than producing a token the engine would reject later.
+    """
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{value!r} has no simplipy literal spelling")
+    if number.is_integer() and abs(number) < 1e16:
+        return str(int(number))
+    return repr(number)
+
+
+def typed_literal_sites(expression: Sequence[str], simplipy_engine: SimpliPyEngine) -> list[tuple[int, float]]:
+    """``(index, value)`` of every SPELLED literal of ``expression`` in a typed position.
+
+    The literals ``refine_scope='fittable'`` keeps verbatim, read from the ONE authority on roles
+    (``masking.literal_sites``); ``np.pi``/``np.e`` are excluded -- they are symbolic, not
+    predicted numbers. Raises whatever the role walk raises on a malformed expression.
+    """
+    return [(index, literal_value(value))
+            for index, value, role in masking.literal_sites(list(expression), simplipy_engine)
+            if role in TYPED_ROLES and value not in SPECIAL_CONSTANT_TOKENS]
+
+
+def thaw_typed_literals(expression: Sequence[str], simplipy_engine: SimpliPyEngine,
+                        subset: Sequence[int] | None = None) -> tuple[list[str], dict[int, float]]:
+    """Every typed literal of ``expression`` back to a ``<constant>`` slot, with its value.
+
+    The second round of ``'freeze_then_free'``: the exponent becomes fittable again, seeded at the
+    value it was frozen at. ``subset`` selects WHICH typed sites to thaw by token index (the
+    ``'combinations'`` policy enumerates these); ``None`` thaws all of them. Returns
+    ``(expression, {slot index: the value it carried})``, and ``(expression, {})`` when there is
+    nothing to thaw or the role walk cannot read the expression.
+    """
+    try:
+        sites = typed_literal_sites(expression, simplipy_engine)
+    except Exception:  # noqa: BLE001
+        return list(expression), {}
+    if subset is not None:
+        allowed = set(int(i) for i in subset)
+        sites = [(index, value) for index, value in sites if index in allowed]
+    if not sites:
+        return list(expression), {}
+    thawed = list(expression)
+    for index, _ in sites:
+        thawed[index] = '<constant>'
+    if not simplipy_engine.is_valid(thawed):
+        return list(expression), {}
+    return thawed, dict(sites)
+
+
+def typed_thaw_subsets(expression: Sequence[str], simplipy_engine: SimpliPyEngine,
+                       policy: TypedSpanPolicy) -> list[tuple[int, ...]]:
+    """The typed-site subsets a policy asks to refit, frozen round EXCLUDED (it is the parent).
+
+    ``'freeze_then_free'`` asks for one duplicate with everything thawed; ``'combinations'`` asks
+    for every non-empty subset -- ``2**k - 1`` duplicates for ``k`` typed literals, which is why
+    it is deferred. ``'refine'`` and ``'freeze'`` ask for none.
+    """
+    if policy not in ('freeze_then_free', 'combinations'):
+        return []
+    try:
+        indices = [index for index, _ in typed_literal_sites(expression, simplipy_engine)]
+    except Exception:  # noqa: BLE001
+        return []
+    if not indices:
+        return []
+    if policy == 'freeze_then_free':
+        return [tuple(indices)]
+    subsets: list[tuple[int, ...]] = []
+    for mask in range(1, 1 << len(indices)):
+        subsets.append(tuple(index for position, index in enumerate(indices) if mask >> position & 1))
+    return subsets
 
 
 class Refiner:

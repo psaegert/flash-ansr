@@ -1,7 +1,7 @@
 """The :class:`FlashANSRModel` transformer backbone and its decoding routines."""
 import os
 import warnings
-from typing import Any, Callable, Literal, Tuple, TypeAlias
+from typing import Any, Callable, Literal, Tuple, TypeAlias, cast
 
 import torch
 
@@ -15,7 +15,7 @@ from simplipy import SimpliPyEngine
 from flash_ansr.utils.config_io import load_config, save_config
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import (
-    NonFiniteExpressionError, record_non_finite_drop, record_unencodable_drop, simplify_and_mask)
+    NonFiniteExpressionError, record_non_finite_drop, simplify_realized)
 from flash_ansr.model.tokenizer import Tokenizer
 from flash_ansr.model.pre_encoder import IEEE754PreEncoder
 from flash_ansr.preprocessing import FlashANSRPreprocessor, PromptPrefix
@@ -1467,6 +1467,19 @@ class FlashANSRModel(nn.Module):
         :func:`flash_ansr.data.serialization.replace_ieee754_spans_with_constants`).
         A vocabulary without span tokens takes the identity path.
         """
+        span_ids = self._span_ids()
+        if span_ids is None or span_ids[0] not in encoded_expression:
+            return list(encoded_expression), None
+        from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+        start_id, end_id, byte_ids, constant_id = span_ids
+        return replace_ieee754_spans_with_constants(
+            list(encoded_expression), start_id=start_id, end_id=end_id,
+            byte_ids=list(byte_ids), constant_id=constant_id)
+
+    def _span_ids(self) -> "tuple[int, int, tuple[int, ...], int] | None":
+        """``(<ieee754>, </ieee754>, the 256 byte ids in byte-value order, <constant>)`` for this
+        vocabulary, or ``None`` for a vocabulary without span tokens. Built once, read by both the
+        mapping and the realizing span readers."""
         if not hasattr(self, '_ieee754_span_ids'):
             from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, IEEE754_START_TOKEN, BYTE_TOKENS
             if IEEE754_START_TOKEN in self.tokenizer:
@@ -1478,14 +1491,34 @@ class FlashANSRModel(nn.Module):
                 )
             else:
                 self._ieee754_span_ids = None
-        span_ids = self._ieee754_span_ids
+        return self._ieee754_span_ids
+
+    def _realize_ieee754_spans(self, encoded_expression: list[int]) -> list[str] | None:
+        """The emitted expression as the model STATED it: a literal wherever it spelled a number,
+        a ``<constant>`` wherever it masked one. ``None`` for a malformed carrier.
+
+        This is the one representation post-processing and refinement should both read. simplipy
+        cannot parse raw byte tokens, which is why spans have to be rewritten at all -- but it reads
+        ``2.0`` perfectly well, so rewriting them to ``<constant>`` (and thereby deleting the model's
+        prediction) was never necessary. A vocabulary without span tokens takes the identity path.
+        """
+        from flash_ansr.data.serialization import map_ieee754_spans, realize_slot_values
+
+        span_ids = self._span_ids()
         if span_ids is None or span_ids[0] not in encoded_expression:
-            return list(encoded_expression), None
-        from flash_ansr.data.serialization import replace_ieee754_spans_with_constants
+            return self.tokenizer.decode_expression(list(encoded_expression))
         start_id, end_id, byte_ids, constant_id = span_ids
-        return replace_ieee754_spans_with_constants(
-            list(encoded_expression), start_id=start_id, end_id=end_id,
-            byte_ids=list(byte_ids), constant_id=constant_id)
+        mapping = map_ieee754_spans(list(encoded_expression), start_id=start_id, end_id=end_id,
+                                    byte_ids=list(byte_ids), constant_id=constant_id)
+        if mapping is None:
+            return None
+        mapped, values = mapping
+        try:
+            return realize_slot_values(self.tokenizer.decode_expression(mapped), values)
+        except ValueError:
+            # decode dropped or added a token, so the slots no longer line up: refuse rather than
+            # attach one site's prediction to another.
+            return None
 
     def _postprocess_sampled(
         self,
@@ -1515,7 +1548,7 @@ class FlashANSRModel(nn.Module):
         filtered_sequences: list[list[int]] = []
         filtered_scores: list[float] = []
         filtered_is_valid: list[bool] = []
-        seen_expressions: set[tuple[tuple[str, ...], tuple[float, ...] | None]] = set()
+        seen_expressions: set[tuple[str, ...]] = set()
 
         pbar_post = tqdm(zip(completed_sequences, completed_scores), total=len(completed_sequences), disable=not verbose, desc="Post-processing", smoothing=0.0)
         for seq, score in pbar_post:
@@ -1528,10 +1561,17 @@ class FlashANSRModel(nn.Module):
             # as raw tokens: judge validity/simplify/dedup on the span-MAPPED skeleton,
             # and emit the ORIGINAL sequence for sound carriers so the constants survive
             # to the refiner's verbatim init (contract T11).
+            # THE KEY MAY BE LOSSY, THE PAYLOAD MAY NOT (owner ruling 2026-09-12). The canonical
+            # form below is a DEDUP KEY and nothing else; the sequence handed on is always the one
+            # the model emitted. Conflating the two is what silently rewrote a `<mask_fittable>`
+            # emission -- a bare `<constant>` beside a spelled span -- into an all-masked skeleton,
+            # deleting the predicted exponent on 72 % of valid candidates.
             raw_expression = list(encoded_expression)
-            mapped_expression, span_values = self._map_ieee754_spans(encoded_expression)
-            encoded_expression = self.tokenizer.constantify_expression(mapped_expression)
-            expression = self.tokenizer.decode_expression(encoded_expression)
+            realized = self._realize_ieee754_spans(encoded_expression)
+            if realized is None:
+                continue                       # malformed span carrier: not a candidate
+            # Integer-factor sugar states a KNOWN number: `mult4` is `* 4`, never `* <constant>`.
+            expression = cast(list[str], self.tokenizer.constantify_expression(realized, exact=True))
 
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 if simplify is True:
@@ -1540,7 +1580,7 @@ class FlashANSRModel(nn.Module):
                         expression = simplify_map[raw_key]            # precomputed (parallel) -> same value
                     else:
                         try:
-                            expression = simplify_and_mask(self.simplipy_engine, expression)
+                            expression = simplify_realized(self.simplipy_engine, expression)
                         except NonFiniteExpressionError:
                             # Dropped, NOT recorded as an invalid candidate: the raw sequence IS a
                             # valid expression (it is the simplification that is unusable), so
@@ -1550,34 +1590,17 @@ class FlashANSRModel(nn.Module):
                             record_non_finite_drop()
                             continue
 
-                # The dedup key carries the EMITTED VALUES, not just the value-erased skeleton.
-                # Keyed on the skeleton alone, three beams emitting 2.0 / 3.7 / -11.25 for the same
-                # `* <constant> x1` collapse to ONE survivor -- and to the first-SAMPLED one, since
-                # the score sort runs afterwards, so the model's most likely constant hypothesis was
-                # routinely discarded in favour of an unlikelier one. `span_values is None`
-                # (a span-free beam) reproduces the value-erased key exactly.
-                expression_tuple = (tuple(expression), tuple(span_values) if span_values is not None else None)
+                # The key IS the canonical emitted expression -- numbers included, since they are
+                # part of what was proposed. Three beams emitting 2.0 / 3.7 / -11.25 for the same
+                # `* <constant> x1` stay three candidates, and so do x**2 and x**3 of one shape.
+                expression_tuple = tuple(expression)
                 if unique and expression_tuple in seen_expressions:
                     continue
 
-                if span_values is not None:
-                    # Sound v24 constant carrier: the simplified form served as the dedup
-                    # key only; re-encoding it would destroy the emitted values.
-                    reconstructed_sequence = before + raw_expression + after
-                else:
-                    try:
-                        expression_tokens = self.tokenizer.encode(expression)
-                    except KeyError:
-                        # simplipy's collect pass re-runs simplify AFTER positional masking, so it
-                        # can mint a bare numeral (`pow x1 2`) that a v24 vocabulary -- which has no
-                        # numeral tokens -- cannot encode. The candidate is real and its expression
-                        # is valid; only its SIMPLIFIED spelling is unencodable. Counted rather than
-                        # dropped in silence, so the loss is a number someone can look at.
-                        record_unencodable_drop()
-                        continue
-
-                    reconstructed_sequence = before + expression_tokens + after
-                filtered_sequences.append(reconstructed_sequence)
+                # The candidate is the sequence the model emitted, always. Nothing is re-encoded, so
+                # a canonical form carrying a bare numeral (`pow x1 2`) can no longer be lost to a
+                # vocabulary that has no numeral tokens -- that drop path is gone with the round-trip.
+                filtered_sequences.append(before + raw_expression + after)
                 filtered_scores.append(score)
                 filtered_is_valid.append(True)
 
@@ -1611,9 +1634,10 @@ class FlashANSRModel(nn.Module):
                 enc, _before, _after = self.tokenizer.extract_expression_from_beam(seq)
             except (ValueError, IndexError):
                 continue
-            enc, _span_values = self._map_ieee754_spans(enc)
-            enc = self.tokenizer.constantify_expression(enc)
-            expression = self.tokenizer.decode_expression(enc)
+            realized = self._realize_ieee754_spans(enc)
+            if realized is None:
+                continue
+            expression = cast(list[str], self.tokenizer.constantify_expression(realized, exact=True))
             if self.simplipy_engine.is_valid(expression) and len(expression) > 1:
                 out.append(expression)
         return out
