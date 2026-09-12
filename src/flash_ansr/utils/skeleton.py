@@ -160,6 +160,25 @@ def simplify_and_mask(engine: "SimpliPyEngine", expression: list[str]) -> list[s
     return masked
 
 
+def simplify_realized(engine: "SimpliPyEngine", expression: list[str]) -> list[str]:
+    """Simplify ``expression`` and keep its literals: the canonical form of what was PROPOSED.
+
+    The dedup half of post-processing (owner ruling 2026-09-12). :func:`simplify_and_mask` exists
+    because the old pipeline used one representation for two jobs -- a lossy dedup key and the
+    candidate itself -- and a token round-trip through a vocabulary with no numeral tokens forced the
+    key's masking onto the candidate. With the two separated, the key is simply the canonical form of
+    the expression as emitted, numbers and all, so two beams proposing x**2 and x**3 of the same
+    shape stay distinct instead of collapsing.
+
+    Raises :class:`NonFiniteExpressionError` on a non-finite result, exactly as its masking sibling:
+    simplify is where those are minted.
+    """
+    simplified = cast(list[str], engine.simplify(list(expression)))
+    if find_non_finite(simplified):
+        raise NonFiniteExpressionError(simplified)
+    return simplified
+
+
 def _literal_value(token: str) -> float:
     """Numeric value of a literal token as classified by ``simplipy.masking.literal_sites``:
     a plain int/float spelling, a one-token exact rational (``1/3``), or ``np.pi``/``np.e``."""

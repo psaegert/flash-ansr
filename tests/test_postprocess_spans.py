@@ -32,7 +32,9 @@ def engine():  # type: ignore[no-untyped-def]
 class _Host:
     """The two attributes `_postprocess_sampled` actually reads, plus the helper."""
 
+    _span_ids = FlashANSRModel._span_ids
     _map_ieee754_spans = FlashANSRModel._map_ieee754_spans
+    _realize_ieee754_spans = FlashANSRModel._realize_ieee754_spans
     _postprocess_sampled = FlashANSRModel._postprocess_sampled
     extract_valid_raw_expressions = FlashANSRModel.extract_valid_raw_expressions
 
@@ -117,9 +119,14 @@ def test_identical_constant_hypotheses_still_collapse(tokenizer, engine):  # typ
     assert _recover_values(tokenizer, seqs[0]) == [2.0]
 
 
-def test_chunked_key_collector_maps_spans(tokenizer, engine):  # type: ignore[no-untyped-def]
+def test_chunked_key_collector_realizes_spans(tokenizer, engine):  # type: ignore[no-untyped-def]
+    """The collector produces the simplify_map KEYS `_postprocess_sampled` looks up, so the two must
+    agree on the representation. Since 2026-09-12 a span is realized as the LITERAL it spells, not as
+    a `<constant>`: simplipy reads `2.0` fine, and erasing the value is what deleted the model's
+    prediction on every mixed emission."""
     host = _Host(tokenizer, engine)
     exprs = host.extract_valid_raw_expressions([_carrier(tokenizer, 2.0)])
     assert len(exprs) == 1
-    assert "<constant>" in exprs[0]
-    assert not any(t.startswith("<h") for t in exprs[0])
+    assert exprs[0] == ["*", "x1", "2"]
+    assert "<constant>" not in exprs[0]
+    assert not any(t.startswith("<h") for t in exprs[0])   # no raw span/byte tokens leak into the key

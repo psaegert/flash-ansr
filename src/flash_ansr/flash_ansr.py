@@ -39,7 +39,9 @@ from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.preprocessing import (
     CapabilityUnavailable, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
 from flash_ansr.refine import (Refiner, ConvergenceError, fit_sort_key, RefineScope,
-                               DEFAULT_REFINE_SCOPE, refinement_slots, literal_value)
+                               DEFAULT_REFINE_SCOPE, refinement_slots, literal_value,
+                               TypedSpanPolicy, TYPED_SPAN_POLICIES, DEFAULT_TYPED_SPAN_POLICY,
+                               typed_literal_sites, thaw_typed_literals, typed_thaw_subsets)
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
     predict_constants, predict_y, score_outliers)
@@ -63,8 +65,8 @@ from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
 from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
-from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS, replace_ieee754_spans_with_constants
-from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN, IEEE754_END_TOKEN, BYTE_TOKENS
+from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS
+from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
 from simplipy.engine import Mode
@@ -105,6 +107,12 @@ class Result(TypedDict):
     pareto_rank: int
     spelling: str | None      # constant re-spelling record of a ladder variant; None for a fitted draw
     replaces_parent: bool     # the variant stands in for its parent (a tie), rather than beside it
+    #: How many model-predicted literals were kept VERBATIM in a typed position instead of being
+    #: refined (`refiner_typed_spans`); 0 on the shipped path.
+    typed_frozen: int
+    #: The typed token indices this row re-fitted after the frozen round (the `freeze_then_free`
+    #: duplicate), space separated; None for a row that is not such a duplicate.
+    typed_thaw: str | None
 
 
 _GLOBAL_SIMPLIPY_ENGINE: SimpliPyEngine | None = None
@@ -349,19 +357,47 @@ def respell_result(payload: dict[str, Any], simplipy_engine: Any, refiner: Refin
             break
     if variant is None:
         return None
+
+    # The ladder MINTS collapses (#163): re-spelling two near-equal constants to exactly equal makes
+    # `c * x / c` cancel, and a near-zero to exactly 0 makes `0 * x` vanish -- but the ladder runs
+    # AFTER `canonicalize_fitted`, so nothing re-simplifies what it created. The certified price is
+    # unaffected (the pricer canonicalizes internally), so the row scores correctly while the EMITTED
+    # answer carries junk: `(x - 0.3)**2` came out as `pow(x + atan(1/(-(0 * x) - 3.2327)), 2)`,
+    # priced at the law's own 19,585 mB. Canonicalize the winning variant, which is the one thing the
+    # ladder leaves behind.
+    variant_refiner, variant_expression = variant['refiner'], list(variant['expression'])
+    variant_constant_count, variant_complexity = variant['constant_count'], variant['complexity']
+    variant_score = variant['score']
+    try:
+        carried, canonical, canonicalized, _same = canonicalize_fitted(
+            simplipy_engine, variant_refiner, variant_expression, X,
+            n_variables=int(payload['n_variables']), refine_scope='placeholders')
+    except Exception:  # noqa: BLE001 -- an un-canonicalizable variant is emitted as the ladder left it
+        canonicalized = False
+    if canonicalized:
+        variant_refiner, variant_expression = carried, list(canonical)
+        variant_constant_count = sum(1 for tok in variant_expression if FlashANSR._is_constant_token(tok))
+        variant_complexity = len(variant_expression)
+        # fvu and mdl are unchanged -- canonicalize_fitted verifies the prediction and the price is
+        # taken on the realized form -- but the LENGTH metrics moved, so the score is re-taken.
+        variant_score = score_fn(float(variant['fvu']), variant['mdl'], variant_constant_count)
+
     child = dict(result)
     child.update({
-        'expression': variant['expression'],
-        'constant_count': variant['constant_count'],
-        'complexity': variant['complexity'],
+        'expression': variant_expression,
+        'constant_count': variant_constant_count,
+        'complexity': variant_complexity,
         'mdl': variant['mdl'],
         'fvu': variant['fvu'],
-        'score': variant['score'],
-        'fits': _serialize_fits(variant['refiner']),
+        'score': variant_score,
+        'fits': _serialize_fits(variant_refiner),
         'valid_fit': True,
         'refine_scope': 'placeholders',
         'spelling': ' | '.join(records),
         'respelled': None,
+        # A re-spelling of a frozen row is still that row: it inherits the freeze provenance from
+        # `dict(result)` above, but the parent's typed-span DUPLICATES are not its own.
+        'thawed': None,
         # every round only tied its parent: the same candidate, spelled canonically -> it takes the
         # parent's place in the pool; a strict improvement stands beside the parent
         'replaces_parent': replaces_parent,
@@ -374,7 +410,7 @@ _respell_result = respell_result   # the private spelling, kept for the refine w
 
 _RESPELL_PARENT_KEYS = ('log_prob', 'fvu', 'score', 'expression', 'constant_count', 'mdl', 'complexity',
                         'requested_complexity', 'raw_beam', 'beam', 'raw_beam_decoded', 'constants_emitted',
-                        'pruned_variant')
+                        'pruned_variant', 'typed_frozen', 'typed_thaw')
 
 
 def _respell_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
@@ -409,18 +445,108 @@ def _respell_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] |
     return child, None
 
 
+def _thawed_variants(payload: dict[str, Any], simplipy_engine: Any, X: np.ndarray, y: np.ndarray,
+                     parent: dict[str, Any]) -> list[dict[str, Any]]:
+    """The typed-span THAW: the frozen candidate refitted with its typed literals free again.
+
+    Round one froze the model's predicted exponent and fitted only the constants an optimizer can
+    actually move (`freeze_typed_slots`). This is round two of ``refiner_typed_spans =
+    'freeze_then_free'``: the SAME candidate with the exponent turned back into a slot, seeded at
+    the value it was frozen at, and every other slot seeded at round one's optimum. It is a
+    DUPLICATE -- its own result dict, its own price, its own ladder pass -- so both spellings stand
+    in the pool and the ranking decides; nothing is replaced. ``'combinations'`` asks for one
+    duplicate per non-empty subset of the typed sites instead of the single all-thawed one.
+
+    Returns ``[]`` whenever the handshake does not line up: no typed literal was frozen, the
+    parent's fits do not match its slots, or a seed is missing for some slot. A duplicate is an
+    extra candidate, never a reason to lose the parent.
+    """
+    policy = payload.get('typed_spans', DEFAULT_TYPED_SPAN_POLICY)
+    if policy not in ('freeze_then_free', 'combinations'):
+        return []
+    fits = parent.get('fits') or []
+    if not fits:
+        return []
+    expression = list(parent['expression'])
+    scope: RefineScope = payload.get('refine_scope', DEFAULT_REFINE_SCOPE)
+    parent_values = np.asarray(fits[0][0], dtype=float).ravel()
+    try:
+        parent_slots = refinement_slots(expression, simplipy_engine, scope)
+    except Exception:  # noqa: BLE001
+        return []
+    if len(parent_slots) != parent_values.size:
+        return []
+    seed_by_index = {index: float(value) for index, value in zip(parent_slots, parent_values)}
+
+    variants: list[dict[str, Any]] = []
+    for subset in typed_thaw_subsets(expression, simplipy_engine, policy):
+        thawed, thawed_values = thaw_typed_literals(expression, simplipy_engine, subset)
+        if not thawed_values:
+            continue
+        try:
+            slots = refinement_slots(thawed, simplipy_engine, scope)
+        except Exception:  # noqa: BLE001
+            continue
+        # p0 per slot IN SLOT ORDER: the predicted value for a thawed exponent, round one's fitted
+        # value for everything else. A slot with neither has no defensible seed, so the whole
+        # variant is dropped rather than fitted from a silently wrong init.
+        p0: list[float] = []
+        for index in slots:
+            if index in thawed_values:
+                p0.append(float(thawed_values[index]))
+            elif index in seed_by_index:
+                p0.append(seed_by_index[index])
+            else:
+                break
+        if not p0 or len(p0) != len(slots):
+            continue
+        child_payload = dict(payload)
+        child_payload.update({
+            'expression': thawed,
+            'constant_count': sum(1 for tok in thawed if FlashANSR._is_constant_token(tok)),
+            'p0': p0,
+            # The duplicate is fitted on the shipped path: it must not freeze again (its typed
+            # literals are the very slots it exists to fit) nor spawn duplicates of its own.
+            'typed_spans': 'refine',
+            'typed_frozen': 0,
+            'seed': _candidate_refine_seed(payload.get('seed'), ('thaw', *map(str, subset))),
+        })
+        child, _warning = _fit_one_candidate(child_payload, simplipy_engine, X, y)
+        if child is None:
+            continue
+        child['typed_thaw'] = ' '.join(str(index) for index in subset)
+        variants.append(child)
+    return variants
+
+
 def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     simplipy_engine = payload.get('simplipy_engine') or _GLOBAL_SIMPLIPY_ENGINE
     if simplipy_engine is None:
         raise RuntimeError("Refinement worker does not have access to a SimpliPyEngine instance.")
 
+    X, y = _resolve_refinement_arrays(payload)
+    result, warning = _fit_one_candidate(payload, simplipy_engine, X, y)
+    if result is not None and payload.get('typed_frozen'):
+        # Only a candidate that actually FROZE something has a thaw to run; the rest are already
+        # fitted with every constant free.
+        variants = _thawed_variants(payload, simplipy_engine, X, y, result)
+        if variants:
+            result['thawed'] = variants
+    return result, warning
+
+
+def _fit_one_candidate(payload: dict[str, Any], simplipy_engine: Any,
+                       X: np.ndarray, y: np.ndarray) -> tuple[dict[str, Any] | None, str | None]:
+    """One candidate all the way through: verbatim init, restart search, canonicalization, price,
+    score and the constant ladder. Split out of :func:`_refine_candidate_worker` so a duplicate of
+    the same candidate (the typed-span thaw) travels the identical path -- same handshake, same
+    canonicalization, same pricer, same ladder -- rather than a parallel copy of it."""
     numpy_errors = payload.get('numpy_errors')
     numpy_state = np.geterr()
     if numpy_errors is not None:
         np.seterr(all=numpy_errors)
 
-    X, y = _resolve_refinement_arrays(payload)
-
+    warning = None
     seed = payload.get('seed')
     numpy_rng_state = None
     if seed is not None:
@@ -571,11 +697,30 @@ def _refine_candidate_worker(payload: dict[str, Any]) -> tuple[dict[str, Any] | 
         'constants_emitted': list(p0_values) if p0_values is not None else None,
         'spelling': None,
         'respelled': None,
+        # How many PREDICTED literals were kept verbatim in a typed position, and (on a thawed
+        # duplicate) which typed sites it re-fitted. Without these the pool cannot tell the frozen
+        # row from its duplicate.
+        'typed_frozen': int(payload.get('typed_frozen', 0) or 0),
+        'typed_thaw': payload.get('typed_thaw'),
+        'thawed': None,
         # the spelling the refiner fitted, when the canonical form emitted above differs from it
         'expression_as_fitted': expression_as_fitted if canonicalized else None,
     }
 
-    result['respelled'] = _respell_result(payload, simplipy_engine, refiner, X, y, result)
+    # The ladder refits variants, so it consumes the RNG -- and on this inline path it used to run
+    # AFTER the seeded block was restored, which made it the one irreproducible stage: two identical
+    # runs over one candidate pool agreed on every FIT row and differed on 4,729 ladder rows. The
+    # pool-bound path (`_respell_candidate_worker`) has always seeded it; this makes the two agree.
+    ladder_seed = _candidate_refine_seed(seed, ('ladder', *(str(t) for t in payload.get('raw_beam') or ())))
+    ladder_rng_state = None
+    if seed is not None:
+        ladder_rng_state = np.random.get_state()
+        np.random.seed(ladder_seed)
+    try:
+        result['respelled'] = _respell_result(payload, simplipy_engine, refiner, X, y, result)
+    finally:
+        if ladder_rng_state is not None:
+            np.random.set_state(ladder_rng_state)
     return result, None
 
 
@@ -1053,6 +1198,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
+            refiner_typed_spans: TypedSpanPolicy = DEFAULT_TYPED_SPAN_POLICY,
             constant_ladder: Mapping[str, Any] | bool | None = True,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             ranking_mode: str = 'mdl',
@@ -1090,6 +1236,18 @@ class FlashANSR(BaseEstimator):
         # Which literals of a candidate the refiner may move (owner ruling 2026-09-02): the model
         # predicts the typed literals (exponents, root indices), the refiner fits the rest.
         self.refiner_scope: RefineScope = refiner_scope
+        if refiner_typed_spans not in TYPED_SPAN_POLICIES:
+            raise ValueError(f"refiner_typed_spans must be one of {TYPED_SPAN_POLICIES}; got {refiner_typed_spans!r}")
+        if refiner_scope == 'all':
+            # `refine_scope='all'` frees EVERY literal, typed ones included, so it already does what
+            # 'refine' asks and leaves nothing for a freeze to keep or a duplicate to thaw. Coerced
+            # rather than refused: asking for the widest scope should not also require restating the
+            # policy that scope implies.
+            refiner_typed_spans = 'refine'
+        # What happens to a PREDICTED literal in a typed position (see `TypedSpanPolicy`): the span
+        # mapper turns every predicted number into a '<constant>', so without this the exponent
+        # `refine_scope='fittable'` exists to protect arrives as a slot and is refined anyway.
+        self.refiner_typed_spans: TypedSpanPolicy = refiner_typed_spans
         # Constant re-spelling after the fit (flash_ansr.spelling): opt-in, None = off.
         self.constant_ladder: ConstantLadderConfig | None = ConstantLadderConfig.from_mapping(constant_ladder)
         self.numpy_errors = numpy_errors
@@ -1157,6 +1315,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
             refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
             refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
+            refiner_typed_spans: TypedSpanPolicy = DEFAULT_TYPED_SPAN_POLICY,
             constant_ladder: Mapping[str, Any] | bool | None = True,
             numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
             ranking_mode: str = 'mdl',
@@ -1256,6 +1415,7 @@ class FlashANSR(BaseEstimator):
             refiner_p0_noise=refiner_p0_noise,
             refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
             refiner_scope=refiner_scope,
+            refiner_typed_spans=refiner_typed_spans,
             constant_ladder=constant_ladder,
             numpy_errors=numpy_errors,
             ranking_mode=ranking_mode,
@@ -1883,6 +2043,8 @@ class FlashANSR(BaseEstimator):
             'pareto_rank': PARETO_RANK_NOT_COMPUTED,
             'spelling': payload.get('spelling'),
             'replaces_parent': bool(payload.get('replaces_parent', False)),
+            'typed_frozen': int(payload.get('typed_frozen', 0) or 0),
+            'typed_thaw': payload.get('typed_thaw'),
         }
 
         return entry
@@ -1909,10 +2071,18 @@ class FlashANSR(BaseEstimator):
                 if not r.get('spelling') or (i in keep and tuple(map(str, r.get('expression', []))) not in drawn)]
 
     def _append_result_entries(self, results: list, result: dict[str, Any], input_dim: int) -> None:
-        """A worker result and, when the constant ladder produced one, its re-spelled variant: two
-        rows in the pool, the parent first."""
-        child = result.get('respelled')
-        rows = [child] if (child is not None and child.get('replaces_parent')) else [result, child]
+        """A worker result, its typed-span duplicates, and each row's re-spelled ladder variant.
+
+        The parent comes first. A ladder variant that only TIED its parent replaces it (the same
+        candidate, spelled canonically); a typed-span duplicate never replaces anything -- it is a
+        different fit of the same skeleton and has to be ranked against the parent on its own."""
+        rows: list[dict[str, Any] | None] = []
+        for parent in [result, *(result.get('thawed') or [])]:
+            child = parent.get('respelled')
+            if child is not None and child.get('replaces_parent'):
+                rows.append(child)
+            else:
+                rows.extend([parent, child])
         for payload in rows:
             if payload is None:
                 continue
@@ -2304,52 +2474,50 @@ class FlashANSR(BaseEstimator):
 
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
-        # Refiner handshake (contract T11): expanded <ieee754> spans become '<constant>' skeleton
-        # slots and their decoded float32 values the verbatim init. The span tokens are guaranteed
-        # present -- _validate_checkpoint refuses a vocabulary without them at load.
-        mapped_beams = [
-            replace_ieee754_spans_with_constants(
-                beam,
-                start_id=int(self.tokenizer[IEEE754_START_TOKEN]),
-                end_id=int(self.tokenizer[IEEE754_END_TOKEN]),
-                byte_ids=[int(self.tokenizer[token]) for token in BYTE_TOKENS],
-                constant_id=int(self.tokenizer['<constant>']),
-            )
-            for beam in beams
-        ]
-        beams = [mapped_beam for mapped_beam, _ in mapped_beams]
-        beam_span_values: list[list[float] | None] = [values for _, values in mapped_beams]
-
+        # The candidate as the model STATED it (owner ruling 2026-09-12): an <ieee754> span becomes
+        # the LITERAL it spells, a bare '<constant>' stays a placeholder. So the expression itself
+        # says which sites are the model's prediction and which are the refiner's, and there is no
+        # side-channel of values to keep aligned -- `refinement_slots` under refine_scope='fittable'
+        # keeps a spelled exponent verbatim and frees a spelled coefficient, by construction.
+        realized_beams = [self.flash_ansr_model._realize_ieee754_spans(beam) for beam in beams]
         raw_beams_decoded = [self.tokenizer.decode_expression(raw_beam) for raw_beam in gs.raw_beams]
-        beams_decoded = [self.tokenizer.decode_expression(beam) for beam in beams]
-        beams_decoded = [self._ensure_explicit_dialect(b) or [] for b in beams_decoded]
+        beams_decoded = [(self._ensure_explicit_dialect(realized) or []) if realized is not None else []
+                         for realized in realized_beams]
 
         refinement_jobs: list[dict[str, Any]] = []
         beam_iterator = zip(gs.raw_beams, raw_beams_decoded, beams, beams_decoded, gs.log_probs)
         for beam_position, (raw_beam, raw_beam_decoded, beam, beam_decoded, log_prob) in enumerate(beam_iterator):
-            span_values = beam_span_values[beam_position]
-            if not self.simplipy_engine.is_valid(beam_decoded):
+            if not beam_decoded or not self.simplipy_engine.is_valid(beam_decoded):
                 continue
+
+            # `refiner_typed_spans` decides what happens to a literal the model predicted in a TYPED
+            # position (a pow exponent, a rootn index -- the ones whose value fixes the DOMAIN).
+            # 'freeze' is what refine_scope='fittable' already does to a spelled literal, so the
+            # policy only has to ACT for the control arm: 'refine' thaws them back into slots, which
+            # is what the pipeline did implicitly while post-processing was erasing the spelling.
+            try:
+                typed_sites = typed_literal_sites(beam_decoded, self.simplipy_engine)
+            except Exception:  # noqa: BLE001 -- an untypeable candidate keeps every literal as written
+                typed_sites = []
+            typed_frozen = len(typed_sites)
+            if self.refiner_typed_spans == 'refine' and typed_sites:
+                beam_decoded, _thawed = thaw_typed_literals(beam_decoded, self.simplipy_engine)
+                typed_frozen = 0
 
             constant_count = self._count_constants(beam_decoded)
 
-            # Verbatim init (T11), one slot per REFINEMENT SLOT in order of appearance -- the
-            # same slot list the refiner symbolizes (`refinement_slots`, under this model's
-            # refiner_scope), so the seeds stay aligned by construction: a '<constant>' slot
-            # seeds at its predicted span value (the mapper guarantees every placeholder is a
-            # span slot), a spelled literal the scope frees seeds at its spelled value. Typed
-            # literals outside the scope are not slots and stay verbatim in the compiled
-            # expression. No spans (skeleton / fittable emission) -> no p0 -> random inits.
+            # Verbatim init: one seed per REFINEMENT SLOT in order of appearance, read off the
+            # expression itself. A slot is either a literal the model spelled (seed = that value) or
+            # a '<constant>' it masked (no seed -- the model declined to predict it). The two cannot
+            # be mixed in one p0 vector, so a candidate carrying ANY masked slot takes the ordinary
+            # multi-restart search, which is exactly what such a slot asks for. Under
+            # `<mask_fittable>` this is the common case and the split is clean: the typed literals
+            # are spelled (and not slots), the fittable ones are masked (and are).
+            slot_tokens = [beam_decoded[index] for index
+                           in refinement_slots(beam_decoded, self.simplipy_engine, self.refiner_scope)]
             p0: list[float] | None = None
-            if span_values:
-                p0 = []
-                span_value_iter = iter(span_values)
-                for index in refinement_slots(beam_decoded, self.simplipy_engine, self.refiner_scope):
-                    token = beam_decoded[index]
-                    if token == '<constant>':
-                        p0.append(next(span_value_iter))
-                    else:
-                        p0.append(literal_value(token))
+            if slot_tokens and not any(token == '<constant>' for token in slot_tokens):
+                p0 = [literal_value(token) for token in slot_tokens]
 
             job: dict[str, Any] = {
                 'raw_beam': raw_beam,
@@ -2360,6 +2528,8 @@ class FlashANSR(BaseEstimator):
                 'constant_count': constant_count,
                 'p0': p0,
                 'pruned_variant': False,
+                'typed_spans': self.refiner_typed_spans,
+                'typed_frozen': typed_frozen,
                 'n_variables': self.n_variables,
                 'n_restarts': self.n_restarts,
                 'method': self.refiner_method,
@@ -2711,13 +2881,28 @@ class FlashANSR(BaseEstimator):
                 tuple(map(str, x.get('expression', [])))
             )))
         else:
-            # SCALAR ('mdl' and 'weighted'). Character for character what 0.13.0 sorted by; the
-            # golden in tests/data/golden_scalar_ranking_0130.json holds these three keys to it.
+            # SCALAR ('mdl' and 'weighted').
+            #
+            # The LENGTH key is not cosmetic. `score` floors fvu at 2.22e-16, so every
+            # machine-precision fit of one function scores byte-identically, and `mdl` is priced on
+            # the CANONICAL form, so it cannot separate two spellings of the same law either. Exact
+            # ties among correct answers are therefore the normal case, not the exception -- and the
+            # remaining lexicographic key resolves them by ASCII, which is arbitrary with respect to
+            # quality: on `(x - 0.3)**2` it ranked `pow - x1 / 1.97e16 6.57e16 2` (7 tokens,
+            # fvu 2e-33) above `pow - x1 0.3 2` (5 tokens, fvu 0) because '/' is chr(47) and '0'
+            # is chr(48). Preferring the shorter EMITTED expression among equal scores is the
+            # project's own thesis applied to its output, and it is structural and parameter-free
+            # (owner ruling 2026-09-09: no arbitrary tie-break constants).
+            #
+            # It can only reorder EXACT score ties, so no candidate ever overtakes a better-scoring
+            # one and no fit/recovery/exactness metric can move -- only which spelling is printed.
+            # The lexicographic key stays last, so the order remains total and deterministic.
             for result in results:
                 result['pareto_rank'] = PARETO_RANK_NOT_COMPUTED
             sorted_results = list(sorted(results, key=lambda x: (
                 x['score'] if not np.isnan(x['score']) else float('inf'),
                 np.isnan(x['score']),
+                len(x.get('expression', [])),
                 tuple(map(str, x.get('expression', [])))
             )))
 
@@ -3112,6 +3297,8 @@ class FlashANSR(BaseEstimator):
                 pareto_rank=int(r.get('pareto_rank', PARETO_RANK_NOT_COMPUTED)),
                 rank=rank,
                 spelling=r.get('spelling'),
+                typed_frozen=int(r.get('typed_frozen', 0) or 0),
+                typed_thaw=r.get('typed_thaw'),
                 y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
                 y_pred_val=(refiner.predict(X_val_p) if want_pred and X_val_p is not None else None),
             ))

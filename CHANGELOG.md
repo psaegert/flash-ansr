@@ -6,6 +6,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Post-processing no longer rewrites the candidate the model emitted.** `_postprocess_sampled`
+  used ONE representation for two incompatible jobs: a lossy dedup key and the candidate payload.
+  Because the payload had to round-trip through token ids, and a v24 vocabulary has no numeral
+  tokens, the key's `mask_all` was forced onto the candidate. The branch read:
+
+      if span_values is not None:  keep the emitted sequence
+      else:                        re-encode from simplify_and_mask(...)
+
+  and `span_values` was withheld whenever the beam already contained a bare `<constant>` -- which is
+  true of every MIXED emission, a masked fittable constant beside a spelled `<ieee754>` span. That is
+  exactly the shape `<mask_fittable>` trains the model to produce, so the correct emission was
+  classified as unsound and flattened.
+
+  Measured on v25.0-T8-20M under `fittable` emission, 1,024 raw draws on `y = (x - 0.3)**2`: **624 of
+  1,024 raw samples were mixed** (71.7 % of the valid candidates across four problems) and **none
+  survived** -- they arrived in the pool as all-masked rows, so every predicted `pow` exponent was
+  discarded and refit. The rewrite also merged distinct hypotheses: once flattened, a beam predicting
+  `x**2` and one predicting `x**3` of the same shape share a dedup key. After the fix, 610 of the 624
+  survive (the rest to ordinary dedup) and the all-masked count stops inflating from 193 to 784.
+  The training data was never at fault: the streaming worker's `mask_fittable` targets are genuinely
+  mixed (`masked masked SPELLED`), and the model reproduces them.
+
+  The separation now: **the key may be lossy, the payload may not.**
+  - An `<ieee754>` span is realized as the LITERAL it spells (`map_ieee754_spans` +
+    `realize_slot_values`), not as a `<constant>`. simplipy cannot parse raw byte tokens, which is why
+    spans must be rewritten at all -- but it reads `2.0` perfectly well, so deleting the value was
+    never necessary. The expression then states by itself which sites are the model's and which are
+    the refiner's, and `refinement_slots` under `refine_scope='fittable'` keeps a spelled exponent
+    verbatim and frees a spelled coefficient. No side-channel of values to keep aligned.
+  - The dedup key is the canonical form of that expression (`simplify_realized`), numbers included.
+  - The forwarded sequence is always the one the model emitted, so `raw_beam` is honest provenance
+    rather than sometimes a re-encoding. Nothing is re-encoded, so the unencodable-drop path -- a
+    canonical form carrying a bare numeral that the vocabulary cannot spell -- is gone with it.
+  - Integer-factor sugar states a KNOWN number: `mult4` expands to `* 4`, not `* <constant>`.
+
+  This changes the candidate pool of every run under `fittable` emission. Numbers measured before it
+  are not comparable.
+
+- **The constant ladder's winning variant is canonicalized (#163).** The ladder MINTS collapses: it
+  re-spells two near-equal fitted constants to exactly equal, so `c * x / c` cancels, or a near-zero to
+  exactly `0`, so `0 * x` vanishes. It runs AFTER `canonicalize_fitted`, so nothing re-simplified what
+  it created. The certified price was never wrong -- the pricer canonicalizes internally -- so the row
+  scored correctly while the EMITTED answer carried junk: `(x - 0.3)**2` was returned as
+  `pow(x + atan(1/(-(0 * x) - 3.2327)), 2)` and `exp(-(x - 3.4)**2)` as
+  `exp(0 * x - pow(x + asinh(0 * x - 14.965), 2))`, both priced at their law's own MDL. Measured on
+  Appendix A: 2 of 25 emitted answers were not in canonical form before this change, 3 of 25 after the
+  post-processing fix -- a low rate that happened to land on the flagship recoveries.
+  `respell_result` now canonicalizes the variant it is about to return and re-takes the score (fvu and
+  MDL are unchanged by construction; the length metrics are not).
+
+- **The scalar tie-break prefers the shorter EMITTED expression.** `score` floors FVU at 2.22e-16, so
+  every machine-precision fit of one function scores byte-identically, and `mdl` is priced on the
+  CANONICAL form, so it cannot separate two spellings of one law either. Exact ties among correct
+  answers are therefore the normal case, and the remaining key resolved them by ASCII on the token
+  tuple -- arbitrary with respect to quality. On `(x - 0.3)**2` the pool held `pow - x1 0.3 2`
+  (5 tokens, FVU 0) and `pow - x1 / 1.9715e16 6.5718e16 2` (7 tokens, FVU 2e-33) at the identical
+  score -15.457710, and the ratio was printed because `'/'` is chr(47) against `'0'` at chr(48).
+  Length now comes before the token tuple: structural and parameter-free (owner ruling 2026-09-09
+  against arbitrary tie-break constants), and it is this project's own thesis applied to its output.
+  It can only reorder EXACT ties -- verified across all 12 cells of the frozen penalty grid that no
+  row moves past a better-scoring one -- so no fit, recovery or exactness metric can move; only which
+  spelling is surfaced. The frozen 0.13.0 golden now compares order UP TO ties (everything it
+  protected is still checked: a row crossing a score boundary, a ULP of score drift, a dropped row)
+  and additionally asserts shortest-first within a tie.
+
+- **The constant ladder is seeded on the inline path.** It refits variants, so it consumes the RNG,
+  and it ran after the refine worker had already restored the seeded block -- making it the one
+  irreproducible stage of a fit. Measured: two identical runs over one candidate pool agreed on every
+  FIT row and differed on **4,729 ladder rows**. The pool-bound path (`_respell_candidate_worker`) has
+  always seeded it; the two now agree.
+
+### Added
+- **`refiner_typed_spans`: what happens to a literal the model predicted in a TYPED position** (a
+  `pow` exponent, a `rootn` index -- the ones whose value fixes the DOMAIN rather than the magnitude).
+  With the emission preserved, `refine_scope='fittable'` already keeps such a literal verbatim, so the
+  setting names that behaviour and adds the arms around it:
+  `'freeze'` (the predicted typed literal stays verbatim) -- **`'freeze_then_free'` (the default)**,
+  which additionally refits a DUPLICATE of the candidate with the typed literals thawed, seeded at the
+  predicted exponent and at the frozen round's optimum, so both stand in the pool and the ranking
+  decides -- `'refine'`, which thaws them before the first fit (the pre-fix behaviour, kept as a
+  control arm) -- `'combinations'`, one duplicate per subset (implemented and unit-tested, deferred:
+  no run has used it).
+
+  Why freezing is not a ranking nicety: on `y = (x - 0.7)**2` sampled across the shift, the exponent
+  held at 2 reproduces the data (FVU 4.6e-33) from eight random restarts, while a free exponent
+  **loses the candidate entirely** -- the first finite-difference step off the even integer makes
+  `negative ** non-integer` nan on every point below the shift, and every restart fails, from random
+  seeds and from a nearly-correct `(0.5, 2.0)` alike. Freezing is right where the prediction is an
+  exact integer, which is 99.6 % of the 24,238 spelled typed literals measured on the T8-20M pools
+  (`2.0` alone is 61.6 %); the duplicate is the insurance for the rest, where a power law's exponent
+  is a genuine float. The duplicate travels the identical path as the draw (same handshake, same
+  canonicalization, same pricer, same constant ladder) and never replaces its parent. Rows carry
+  `typed_frozen` and `typed_thaw`. `refiner_scope='all'` frees every literal anyway, so it coerces the
+  policy to `'refine'` rather than refusing one. The candidate ledger keys a typed-span duplicate as a
+  row of its own (it shares its parent's beam, like a constant-ladder variant), so the ledger still
+  covers every candidate.
+
 ## [0.15.2] - 2026-09-11
 
 ### Fixed

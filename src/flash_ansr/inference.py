@@ -49,6 +49,8 @@ class Candidate:
     y_pred: np.ndarray | None = None        # on support X -- populated only for the top_k (opt-in; OOM otherwise)
     y_pred_val: np.ndarray | None = None    # on validation X -- top_k only
     spelling: str | None = None         # constant-ladder variant: which fitted constants were re-spelled how (``c0=/ 3 2;c2=0``); None for a fitted draw
+    typed_frozen: int = 0               # PREDICTED literals kept verbatim in a typed position (pow exponent / rootn index); 0 on the shipped path
+    typed_thaw: str | None = None       # a `freeze_then_free` duplicate: the typed token indices it re-fitted; None otherwise
 
 
 @dataclass
@@ -152,17 +154,20 @@ def build_candidate_ledger(
     (present in ``results``, synthesized in refinement, absent from the gen pool) ride along FIT_OK.
     The token column is the raw beam ids (decode offline if needed).
     """
-    def _key(raw_beam: Sequence[Any], spelling: Any) -> tuple:
-        return (tuple(int(t) for t in raw_beam), str(spelling or ""))
+    def _key(raw_beam: Sequence[Any], spelling: Any, typed_thaw: Any = None) -> tuple:
+        return (tuple(int(t) for t in raw_beam), str(spelling or ""), str(typed_thaw or ""))
 
-    # keyed on the beam AND the constant-ladder record: a re-spelled variant shares its parent's
-    # beam and is a row of its own
+    # Keyed on the beam AND what was done to it: a re-spelled variant (constant ladder) and a
+    # typed-span duplicate (`refiner_typed_spans='freeze_then_free'`, which refits the candidate with
+    # its predicted exponent thawed) both share their parent's beam and are rows of their own. Keying
+    # on the beam alone made a duplicate collide with its parent, so the ledger came back SHORTER
+    # than the candidate list it is supposed to cover.
     fitted: dict[tuple, tuple[int, dict]] = {
-        _key(r["raw_beam"], r.get("spelling")): (i, r) for i, r in enumerate(results)}
+        _key(r["raw_beam"], r.get("spelling"), r.get("typed_thaw")): (i, r) for i, r in enumerate(results)}
     # a variant that REPLACED its parent (a tie in score) is the fitted result of that beam
     for i, r in enumerate(results):
         if r.get("spelling") and r.get("replaces_parent"):
-            fitted.setdefault(_key(r["raw_beam"], ""), (i, r))
+            fitted.setdefault(_key(r["raw_beam"], "", r.get("typed_thaw")), (i, r))
 
     token_lists: list[list[int]] = []
     fvu: list[float] = []
@@ -236,8 +241,9 @@ def build_candidate_ledger(
         _unfitted_row(v)
 
     for i, pruned in enumerate(results):
-        key = _key(pruned["raw_beam"], pruned.get("spelling"))
-        if key in seen or (pruned.get("spelling") and pruned.get("replaces_parent") and _key(pruned["raw_beam"], "") in seen):
+        key = _key(pruned["raw_beam"], pruned.get("spelling"), pruned.get("typed_thaw"))
+        if key in seen or (pruned.get("spelling") and pruned.get("replaces_parent")
+                           and _key(pruned["raw_beam"], "", pruned.get("typed_thaw")) in seen):
             continue
         seen.add(key)
         token_lists.append(list(key[0]))
