@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-12
+
 ### Fixed
 - **Post-processing no longer rewrites the candidate the model emitted.** `_postprocess_sampled`
   used ONE representation for two incompatible jobs: a lossy dedup key and the candidate payload.
