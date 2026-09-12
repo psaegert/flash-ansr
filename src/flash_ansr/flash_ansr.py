@@ -509,12 +509,16 @@ def _thawed_variants(payload: dict[str, Any], simplipy_engine: Any, X: np.ndarra
             # literals are the very slots it exists to fit) nor spawn duplicates of its own.
             'typed_spans': 'refine',
             'typed_frozen': 0,
+            # The mark goes into the PAYLOAD, not onto the result afterwards: `_fit_one_candidate` reads it
+            # into the result and the constant ladder clones the result for its child, so a ladder child of
+            # a thawed duplicate carries the mark too. Set on the result after the fact, the child was
+            # already cloned without it and read as a plain candidate's child (2026-09-12 attribution).
+            'typed_thaw': ' '.join(str(index) for index in subset),
             'seed': _candidate_refine_seed(payload.get('seed'), ('thaw', *map(str, subset))),
         })
         child, _warning = _fit_one_candidate(child_payload, simplipy_engine, X, y)
         if child is None:
             continue
-        child['typed_thaw'] = ' '.join(str(index) for index in subset)
         variants.append(child)
     return variants
 
