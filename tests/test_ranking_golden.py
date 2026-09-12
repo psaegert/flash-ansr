@@ -16,7 +16,6 @@ import numpy as np
 import json
 import os
 
-import numpy as np
 import pytest
 
 from flash_ansr.flash_ansr import FlashANSR
