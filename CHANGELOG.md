@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-09-12
+
+### Fixed
+- **The ladder child of a thawed duplicate keeps its `typed_thaw` mark.** `_thawed_variants` set the
+  mark on the duplicate's result after `_fit_one_candidate` returned, but the constant ladder clones
+  the result inside that call, so the ladder's re-spelling of a thawed duplicate came out with
+  `typed_thaw=None` and `typed_frozen=0` -- indistinguishable from a plain candidate's child. No fit,
+  score or emitted answer changes; only the provenance column did, and every attribution read from it
+  was wrong: "the thawed duplicate wins rank 0 on 1 of 60" was 26 of 60 with lineage read from the raw
+  beams. The mark now travels in the duplicate's payload.
+
 ## [0.16.0] - 2026-09-12
 
 ### Fixed

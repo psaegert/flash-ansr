@@ -195,6 +195,26 @@ class TestWorker:
         assert child["fvu"] < result["fvu"]                  # thawed, it can reach the real exponent
         assert child["fvu"] < 1e-6
 
+    def test_the_ladder_child_of_a_thawed_duplicate_keeps_the_mark(self, engine: SimpliPyEngine) -> None:
+        """`typed_thaw` travels in the PAYLOAD, so the constant ladder's clone of the duplicate carries it.
+        Set on the result after the fit, the ladder child was already cloned without it and read as a
+        plain candidate's child -- which mis-attributed 26 of 60 rank-0 answers on 2026-09-12."""
+        from flash_ansr.utils import pad_input_set
+        from flash_ansr.spelling import ConstantLadderConfig
+        rng = np.random.default_rng(0)
+        X = pad_input_set(rng.uniform(0.5, 5.0, size=(96, 1)), N_VARIABLES)
+        y = 2.0 * X[:, 0] ** 1.5
+        payload = self._payload(engine, ["*", "<constant>", "pow", "x1", "2"], X, y,
+                                typed_spans="freeze_then_free", typed_frozen=1)
+        payload["constant_ladder"] = ConstantLadderConfig.from_mapping(True)
+        result, _warning = harness._refine_candidate_worker(payload)
+        assert result is not None
+        child = (result["thawed"] or [None])[0]
+        assert child is not None and child["typed_thaw"] == "4"
+        grandchild = child["respelled"]                      # the ladder respells 1.5000... -> 3/2, 2.000... -> 2
+        assert grandchild is not None, "the ladder produced no variant for the thawed duplicate"
+        assert grandchild["typed_thaw"] == "4" and grandchild["spelling"]
+
     def test_a_candidate_with_no_typed_literal_spawns_no_duplicate(self, engine: SimpliPyEngine) -> None:
         from flash_ansr.utils import pad_input_set
         rng = np.random.default_rng(0)
