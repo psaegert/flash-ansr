@@ -448,6 +448,7 @@ def non_dominated_ranks(V: np.ndarray) -> np.ndarray:
     # separately. Never return 0 fronts.
     return ranks
 
+
 def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dict[str, Any]]:
     """Score and ORDER candidate rows under ``ranking`` -- the one ordering rule of the library.
 
@@ -502,7 +503,7 @@ def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dic
                     f"{blind} of {len(rows)} candidates could not be priced; they lose the "
                     f"'mdl' axis rather than being dropped.", RuntimeWarning, stacklevel=2)
         ranks = non_dominated_ranks(V)
-        read_tie = RANKING_METRICS[tie_break]
+        read_tie = RANKING_METRICS[tie_break] if tie_break is not None else None
         for r, rank in zip(rows, ranks):
             r['pareto_rank'] = int(rank)
             r['score'] = np.nan
@@ -523,4 +524,3 @@ def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dic
         len(x.get('expression', [])),
         tuple(map(str, x.get('expression', []))),
     )))
-

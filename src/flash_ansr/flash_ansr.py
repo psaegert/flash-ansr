@@ -18,7 +18,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Literal, Any, Iterable, Iterator, Mapping, TypedDict, Callable, Sequence, TypeVar, cast
+from typing import Literal, Any, Iterable, Iterator, Mapping, TypedDict, Callable, Sequence, TypeVar
 import warnings
 
 import numpy as np
@@ -39,9 +39,9 @@ from flash_ansr.generation import run_softmax_sampling
 from flash_ansr.model import FlashANSRModel, Tokenizer
 from flash_ansr.preprocessing import (
     CapabilityUnavailable, PromptPrefix, apply_emission_flag, prepare_prompt_prefix)
-from flash_ansr.refine import (Refiner, ConvergenceError, fit_sort_key, RefineScope,
+from flash_ansr.refine import (Refiner, ConvergenceError, RefineScope,
                                DEFAULT_REFINE_SCOPE, refinement_slots, literal_value,
-                               TypedSpanPolicy, TYPED_SPAN_POLICIES, DEFAULT_TYPED_SPAN_POLICY,
+                               TypedSpanPolicy, DEFAULT_TYPED_SPAN_POLICY,
                                typed_literal_sites, thaw_typed_literals, typed_thaw_subsets)
 from flash_ansr.tasks import (
     DEFAULT_SAMPLES, ComplexityDistribution, ValueDistribution, predict_complexity,
@@ -49,17 +49,13 @@ from flash_ansr.tasks import (
 from flash_ansr.spelling import ConstantLadderConfig, ladder_floor, respell_fitted_candidate
 from flash_ansr.scoring import (
     PARETO_RANK_NOT_COMPUTED,
-    RANKING_METRICS,
     RankingConfig,
     RankingError,
     compute_fvu,
     count_constants,
     is_constant_token,
-    non_dominated_ranks,
     normalize_variance,
-    objective_vector,
     order_rows,
-    resolve_ranking,
     score_from_fvu,
     score_row,
 )
@@ -73,7 +69,6 @@ from flash_ansr.utils.tensor_ops import pad_input_set
 from flash_ansr.inference import Candidate, FitResult, build_candidate_ledger, _best_constants
 from flash_ansr.estimator_config import RefineConfig, ComputeConfig, ranking_from
 from simplipy.engine import Mode
-
 
 
 class Result(TypedDict):
@@ -2820,9 +2815,9 @@ class FlashANSR(BaseEstimator):
         return score_outliers(self, X, y)
 
     def _predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
-                          conditioned: bool = True, n_samples: int = DEFAULT_SAMPLES,
-                          temperature: float = 1.0,
-                          seed: int | None = None) -> list[ValueDistribution]:
+                           conditioned: bool = True, n_samples: int = DEFAULT_SAMPLES,
+                           temperature: float = 1.0,
+                           seed: int | None = None) -> list[ValueDistribution]:
         """Fill the ``'<constant>'`` slots of ``expression`` with the model's own predictions.
 
         The trained ``<predict_constants>`` block: the harness force-feeds the block openers and the
@@ -2870,9 +2865,9 @@ class FlashANSR(BaseEstimator):
                                  n_samples=n_samples, temperature=temperature, seed=seed)
 
     def _predict_y(self, X: Any, y: Any, x_query: Any, *,
-                  expression: Sequence[str] | str | None = None, conditioned: bool = True,
-                  n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
-                  seed: int | None = None) -> list[ValueDistribution]:
+                   expression: Sequence[str] | str | None = None, conditioned: bool = True,
+                   n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                   seed: int | None = None) -> list[ValueDistribution]:
         """Predict the target at held-out points using the trained ``<predict_y>`` block.
 
         Training writes the block in two placements and both are reachable. Without ``expression``
@@ -2914,8 +2909,8 @@ class FlashANSR(BaseEstimator):
                          n_samples=n_samples, temperature=temperature, seed=seed)
 
     def _predict_complexity(self, X: Any, y: Any, *, conditioned: bool = True,
-                           n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
-                           seed: int | None = None) -> ComplexityDistribution:
+                            n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
+                            seed: int | None = None) -> ComplexityDistribution:
         """Ask the model how complex it thinks the generating expression is.
 
         Uses the trained hypothesis circumstance: the harness utters ``<hypothesize>`` and

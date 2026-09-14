@@ -18,7 +18,6 @@ import os
 
 import pytest
 
-from flash_ansr.flash_ansr import FlashANSR
 from flash_ansr.scoring import count_constants, score_from_fvu, RankingConfig, resolve_ranking, order_rows
 
 GOLDEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "golden_scalar_ranking_0130.json")
@@ -138,8 +137,7 @@ def test_scalar_ranking_is_unchanged(golden: dict) -> None:
         rows = _rebuild_inputs(cell)
         # shuffle deterministically so a no-op sort cannot pass
         rows = rows[::-1]
-        sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
-        )
+        sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]))
         _assert_order_up_to_ties(
             sorted_results, cell["order"],
             f"node_penalty={cell['node_penalty']} constants_penalty={cell['constants_penalty']}")
@@ -300,8 +298,7 @@ class TestMdlPenaltyAddend:
             # every row carries an mdl, but mdl_penalty is left at its default
             for r in rows:
                 r["mdl"] = 123456.0
-            sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
-            )
+            sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]))
             _assert_order_up_to_ties(sorted_results, cell["order"],
                                      f"mdl_penalty=0 node_penalty={cell['node_penalty']}")
             for got, want in zip(sorted_results, cell["order"]):

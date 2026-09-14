@@ -89,7 +89,7 @@ class RefineConfig:
     def from_mapping(cls, payload: "RefineConfig | Mapping[str, Any] | None") -> "RefineConfig":
         if payload is None:
             return cls()
-        if isinstance(payload, cls):
+        if isinstance(payload, RefineConfig):
             return payload
         payload = dict(payload)
         unknown = sorted(set(payload) - {f.name for f in fields(cls)})
@@ -117,10 +117,11 @@ class ComputeConfig:
     persistent_pool: bool = False
 
     def __post_init__(self) -> None:
-        if self.workers is not None and (not isinstance(self.workers, numbers.Integral) or int(self.workers) < 0):
-            raise TypeError(f"ComputeConfig.workers must be a non-negative integer or None; got {self.workers!r}")
+        workers: Any = self.workers   # typed Any: mypy does not know int is a numbers.Integral
+        if workers is not None and (not isinstance(workers, numbers.Integral) or int(workers) < 0):
+            raise TypeError(f"ComputeConfig.workers must be a non-negative integer or None; got {workers!r}")
         object.__setattr__(self, 'device', str(self.device))
-        object.__setattr__(self, 'workers', None if self.workers is None else int(self.workers))
+        object.__setattr__(self, 'workers', None if workers is None else int(workers))
         object.__setattr__(self, 'persistent_pool', bool(self.persistent_pool))
 
     @property
@@ -131,7 +132,7 @@ class ComputeConfig:
     def from_mapping(cls, payload: "ComputeConfig | Mapping[str, Any] | None") -> "ComputeConfig":
         if payload is None:
             return cls()
-        if isinstance(payload, cls):
+        if isinstance(payload, ComputeConfig):
             return payload
         payload = dict(payload)
         unknown = sorted(set(payload) - {f.name for f in fields(cls)})
