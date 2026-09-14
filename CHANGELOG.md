@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`fit` / `infer(conditioned=False)` runs again.** The unconditioned decode (the prior-decode control
+  documented in Getting Started) expanded the learned `null_memory` over the SUPPORT POINTS -- the fit
+  path's data tensor is `(points, features)`, so its leading dimension is the support size, not a
+  batch -- and the decoder's cross-attention refused every call with more than one data point
+  (`memory batch dim 100 must be 1 (broadcast) or choices`). The null memory now reaches the sampler as
+  a batch of one, which the sampler broadcasts over its candidates, exactly as the model's own
+  `guidance_weight=0` path does. Regression test `tests/test_unconditioned_infer.py`.
+
+### Changed
+- **The v25.0-T8 series is the reference.** README, `docs/index.md`, `docs/getting_started.md` and
+  `demo.ipynb` install and load `psaegert/flash-ansr-v25.0-T8-20M`; the Models table lists the three
+  public checkpoints of the series (`-3M`, `-20M`, `-120M`: one recipe and one data prior, AdaMuon,
+  1.5M steps at batch 128, `configs/v25.0-T8-<size>`). Every documented example was run against all
+  three checkpoints.
+
 ## [0.16.1] - 2026-09-12
 
 ### Fixed

@@ -2323,9 +2323,11 @@ class FlashANSR(BaseEstimator):
                 # Pin to null_memory's OWN dtype (the model's parameter dtype), not to the
                 # data's: memory feeds the decoder's cross-attention projections, which are
                 # parameters. data_tensor is binary64 encoder INPUT and stops at the pre-encoder.
-                memory_for_scoring = (
-                    model.null_memory.to(device=data_tensor.device)
-                    .expand(data_tensor.shape[0], -1, -1).contiguous())
+                # One problem, so batch 1: the sampler broadcasts a batch-1 memory over its
+                # candidates. (data_tensor is (points, features) here -- its leading dimension is
+                # the support size, not a batch -- so expanding over it fed the decoder one memory
+                # row per data point and the cross-attention refused the batch.)
+                memory_for_scoring = model.null_memory.detach().to(device=data_tensor.device)
 
             prompt_prefix = self._prepare_prompt_prefix(
                 emission=emission,
