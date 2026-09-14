@@ -232,10 +232,10 @@ class TestGenerativeCatalog:
         assert issubclass(NoValidSampleFoundError, Exception)
 
 
-class TestFlashANSR:
-    """The product class. srbf constructs it via the ``load`` classmethod (``eval/run_config.py``)
-    and reads predictions via ``predict`` (``eval/model_adapters.py``). ``fit`` / ``compile_results``
-    / ``results`` are public-contract surface used by the product + research tiers."""
+class TestFlashANSREstimator:
+    """The product class (0.17 surface). srbf constructs it via ``load`` and drives it through
+    ``fit`` -> ``FitResult``; the README and the SRBench wrapper use the stateful sugar
+    (``predict`` / ``get_expression`` / ``results``) on top of ``result_``."""
 
     def test_importable(self):
         from flash_ansr.flash_ansr import FlashANSR
@@ -243,56 +243,48 @@ class TestFlashANSR:
         assert inspect.isclass(FlashANSR)
 
     def test_load_is_the_construction_entrypoint(self):
-        # srbf builds every FlashANSR model via FlashANSR.load(...) (run_config.py); the plan's §5
-        # method list omits .load -- it is the actual entrypoint and belongs in the freeze.
         from flash_ansr.flash_ansr import FlashANSR
 
         assert isinstance(inspect.getattr_static(FlashANSR, "load"), classmethod)
-        _assert_has_params(
-            FlashANSR.load,
-            {"directory", "generation_config", "n_restarts", "refiner_method", "device"},
-        )
-
-    def test_predict_signature(self):
-        from flash_ansr.flash_ansr import FlashANSR
-
-        _assert_has_params(FlashANSR.predict, {"X", "nth_best_beam", "nth_best_constants"})
+        _assert_has_params(FlashANSR.load, {"directory", "generation_config", "refine", "ranking", "compute"})
 
     def test_fit_signature(self):
         from flash_ansr.flash_ansr import FlashANSR
 
-        _assert_has_params(FlashANSR.fit, {"X", "y", "variable_names"})
+        _assert_has_params(FlashANSR.fit, {"X", "y", "variable_names", "draws", "complexity", "seed", "on_empty", "verbose"})
+        # the retired per-call knobs must not creep back
+        assert not ({"emission", "conditioned", "converge_error", "refine_seed", "X_val", "top_k"} & _params(FlashANSR.fit))
 
-    def test_compile_results_signature(self):
+    def test_generate_signature(self):
         from flash_ansr.flash_ansr import FlashANSR
 
-        _assert_has_params(
-            FlashANSR.compile_results,
-            {"ranking_mode", "mdl_strength", "ranking_weights", "ranking_metrics", "ranking_tie_break"},
-        )
+        _assert_has_params(FlashANSR.generate, {"X", "y", "variable_names", "draws", "complexity", "seed", "verbose"})
 
-    def test_results_attribute_present(self):
-        # Plan §5 names FlashANSR.results; it is an instance attribute set in __init__ (the live
-        # srbf coupling is the FitResult.results dataclass field, reached via the private _fit_*
-        # seam above). Guard the attribute assignment without instantiating the heavy model.
+    def test_predict_and_get_expression_signatures(self):
         from flash_ansr.flash_ansr import FlashANSR
 
-        assert "results" in FlashANSR.__init__.__code__.co_names
+        _assert_has_params(FlashANSR.predict, {"X", "rank"})
+        _assert_has_params(FlashANSR.get_expression, {"rank", "return_prefix", "precision", "map_variables"})
 
-    def test_private_fit_coupling_is_present(self):
-        """KNOWN §5 GAP -- not a public contract, recorded here so a silent rename is caught.
-
-        srbf's FlashANSRAdapter drives the model through these PRIVATE methods rather than the public
-        ``.fit`` (``eval/model_adapters.py``: ``_fit_generate`` -> ``_fit_refine`` ->
-        ``_apply_fit_result``). Until §5 decides whether to promote this seam to public or test it
-        directly across the carve, this asserts the methods exist so an accidental rename breaks here.
-        """
+    def test_retired_verbs_are_gone(self):
         from flash_ansr.flash_ansr import FlashANSR
 
-        for private in ("_fit_generate", "_fit_refine", "_apply_fit_result"):
-            assert callable(getattr(FlashANSR, private, None)), (
-                f"FlashANSR.{private} is the private seam srbf's adapter relies on (known §5 gap)"
-            )
+        for name in ("infer", "compile_results", "save_results", "load_results", "ranking_config",
+                     "predict_y", "predict_constants", "predict_complexity", "score_outliers"):
+            assert not hasattr(FlashANSR, name), f"FlashANSR.{name} was retired in 0.17"
+
+    def test_result_surface(self):
+        from flash_ansr.inference import FitResult, Candidate, CandidateLedger
+
+        _assert_has_params(FitResult.predict, {"X", "rank"})
+        _assert_has_params(FitResult.rerank, {"ranking"})
+        _assert_has_params(FitResult.get_expression, {"rank", "return_prefix", "precision", "map_variables"})
+        for name in ("candidates", "ledger", "generation_time", "refinement_time", "ranking", "n_variables", "variable_mapping"):
+            assert name in FitResult.__dataclass_fields__
+        for name in ("expression", "slots", "expression_prefix", "expression_infix", "constants", "score", "fvu", "mdl", "rank"):
+            assert name in Candidate.__dataclass_fields__
+        assert "y_pred" not in Candidate.__dataclass_fields__
+        assert "result_index" in CandidateLedger.__dataclass_fields__
 
 
 class TestPackageRootReExports:
@@ -311,6 +303,12 @@ class TestPackageRootReExports:
             "GenerationConfig",
             "GenerationConfigBase",
             "SoftmaxSamplingConfig",
+            "PriorSamplingConfig",
+            "FitResult",
+            "Candidate",
+            "RefineConfig",
+            "ComputeConfig",
+            "RankingConfig",
             "create_generation_config",
             "get_path",
             "get_root",

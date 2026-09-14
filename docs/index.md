@@ -18,43 +18,31 @@ flash_ansr install psaegert/flash-ansr-v25.0-T8-20M
 ```
 ```python
 import torch
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig, get_path
 
-# Import flash_ansr
-from flash_ansr import (
-  FlashANSR,
-  SoftmaxSamplingConfig,
-)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# The installed checkpoint directory
-from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
-
-# Load the model (KV-cache, auto-batching and static decoding are on by default)
+# The estimator's policy: the sampler (with its draw budget), the ranking, the compute
 model = FlashANSR.load(
-  directory=CHECKPOINT,
-  generation_config=SoftmaxSamplingConfig(choices=1024),
-  # Candidate ranking (default): log10(FVU) + 1e-2 per bit of the refined expression's description
-  # length. Alternatives: ranking_mode="weighted" with ranking_weights={"n_nodes": 0.05}, or
-  # ranking_mode="pareto" with ranking_metrics=("fvu", "n_nodes").
-  ranking_mode="mdl",
-).to(device)
+  directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),
+  generation_config=SoftmaxSamplingConfig(draws=1024),
+  ranking="mdl",
+  compute={"device": device},
+)
 
 # Define data
 X = ...
 y = ...
 
-# Fit the model to the data
-model.fit(X, y, verbose=True)
+# One call: draw candidates, fit their constants, rank them
+result = model.fit(X, y, verbose=True)
 
-# Show the best expression
-print(model.get_expression())
-
-# Predict with the best expression
+# The answer, and its evaluation on new data
+print(result.best.expression_infix)
 y_pred = model.predict(X)
 ```
 
-To get every candidate in one call instead of reading back from the model, use `model.infer(X, y)`, which returns an `InferenceResult` (best `Candidate`, the score-sorted `candidates`, and the full `CandidateLedger`). See [Getting Started](getting_started.md).
+`fit` returns a `FitResult` (the score-sorted refined `candidates`, the full classified `ledger`, the ranking, the timings) and keeps it as `model.result_`; `predict`, `get_expression` and `results` read it. See [Getting Started](getting_started.md).
 
 ## Serving these docs locally
 ```bash

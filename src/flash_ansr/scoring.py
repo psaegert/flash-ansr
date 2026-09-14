@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
+import warnings
 
 from flash_ansr.utils.ieee754 import IEEE754_END_TOKEN, BYTE_TOKENS
 
@@ -419,7 +420,7 @@ def non_dominated_ranks(V: np.ndarray) -> np.ndarray:
     if n > ND_MAX_CANDIDATES:
         raise RankingError(
             f"non-dominated ranking refused for {n} candidates (limit {ND_MAX_CANDIDATES}): the "
-            f"pairwise front is quadratic. Use ranking_mode='mdl' or 'weighted', or reduce `choices`.")
+            f"pairwise front is quadratic. Use ranking_mode='mdl' or 'weighted', or reduce `draws`.")
     if n == 0:
         return np.zeros(0, dtype=int)
 
@@ -446,3 +447,80 @@ def non_dominated_ranks(V: np.ndarray) -> np.ndarray:
     # An all-unrankable pool peels as one front; callers that need "nothing ordered" raise on that
     # separately. Never return 0 fronts.
     return ranks
+
+
+def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dict[str, Any]]:
+    """Score and ORDER candidate rows under ``ranking`` -- the one ordering rule of the library.
+
+    Every row is a mapping with the ranking metrics' inputs (``fvu``, ``mdl`` in milli-bits,
+    ``expression`` tokens, ``constant_count``, ``log_prob``). Rows that carry a ``score`` key are
+    re-scored in place (``nan`` when ``fvu`` is not finite); ``pareto_rank`` is written on every
+    row (``PARETO_RANK_NOT_COMPUTED`` under a scalar mode). The returned list is a new, sorted list
+    of the same row objects: score ascending, nan last, then the SHORTER emitted expression, then the
+    token tuple -- a total, completion-order-independent order (the length key is the project's own
+    thesis applied to exact score ties; the lexicographic key only keeps the order total).
+
+    The estimator orders its refined result rows with this, and :meth:`FitResult.rerank` orders
+    candidate views with it, so a re-rank offline reproduces the live run bit for bit.
+
+    Raises
+    ------
+    RankingError
+        If the declared criterion weighs ``mdl`` but NO row could be priced (the ranking would then
+        be decided by the token tie-break alone). A single unpriceable row does not raise.
+    """
+    if not rows:
+        return []
+    weights = ranking.effective_weights
+    mdl_weight = float(weights.get('mdl', 0.0))
+    if mdl_weight != 0.0 and ranking.mode != 'pareto':
+        priceable = sum(1 for r in rows if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
+        if priceable == 0:
+            raise RankingError(
+                f"ranking_mode={ranking.mode!r} weighs mdl at {mdl_weight} per bit but none of the "
+                f"{len(rows)} candidates could be priced, so the ranking would be decided by the "
+                f"expression-token tie-break alone. Check the simplipy engine and the refine "
+                f"worker's pricer, or rank without mdl.")
+    # `mdl` is read through, never recomputed: the pricer ran on the REALIZED expression in the
+    # refine worker, and recomputing here would price the EMITTED spelling and score a different
+    # quantity from the one the ledger records.
+    for r in rows:
+        if 'score' in r:
+            if r.get('constant_count') is None:
+                r['constant_count'] = int(count_constants(r.get('expression', [])))
+            r['score'] = score_row(r, weights) if np.isfinite(r.get('fvu', np.nan)) else np.nan
+    if ranking.mode == 'pareto':
+        metrics, tie_break = ranking.metrics, ranking.tie_break
+        V = objective_vector(rows, metrics)
+        if 'mdl' in metrics:
+            blind = int(np.isinf(V[:, metrics.index('mdl')]).sum())
+            if blind == len(rows):
+                raise RankingError(
+                    f"'mdl' is a declared front metric but none of the {len(rows)} candidates "
+                    f"could be priced, so that axis ordered nothing.")
+            if blind:
+                warnings.warn(
+                    f"{blind} of {len(rows)} candidates could not be priced; they lose the "
+                    f"'mdl' axis rather than being dropped.", RuntimeWarning, stacklevel=2)
+        ranks = non_dominated_ranks(V)
+        read_tie = RANKING_METRICS[tie_break] if tie_break is not None else None
+        for r, rank in zip(rows, ranks):
+            r['pareto_rank'] = int(rank)
+            r['score'] = np.nan
+
+        def _tie_value(r: dict[str, Any]) -> float:
+            v = read_tie(r)
+            if v is None:
+                return float('inf')
+            v = float(v)
+            return v if np.isfinite(v) else float('inf')
+
+        return list(sorted(rows, key=lambda x: (x['pareto_rank'], _tie_value(x), tuple(map(str, x.get('expression', []))))))
+    for r in rows:
+        r['pareto_rank'] = PARETO_RANK_NOT_COMPUTED
+    return list(sorted(rows, key=lambda x: (
+        x['score'] if not np.isnan(x['score']) else float('inf'),
+        np.isnan(x['score']),
+        len(x.get('expression', [])),
+        tuple(map(str, x.get('expression', []))),
+    )))

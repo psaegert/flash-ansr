@@ -32,53 +32,44 @@ flash_ansr install psaegert/flash-ansr-v25.0-T8-20M   # the reference checkpoint
 ```
 
 ```python
-import torch
 import numpy as np
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import torch
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig, get_path
 
-# Import flash_ansr
-from flash_ansr import (
-  FlashANSR,
-  SoftmaxSamplingConfig,
-)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# The installed checkpoint directory
-from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
-
-# Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
+# The estimator's policy is fixed at construction: the sampler, the refiner, the ranking, the compute.
 model = FlashANSR.load(
-  directory=CHECKPOINT,
-  generation_config=SoftmaxSamplingConfig(choices=1024),
-  # Candidate ranking (default): log10(FVU) + 1e-2 per bit of the refined expression's description
-  # length. Alternatives: ranking_mode="weighted" with ranking_weights={"n_nodes": 0.05}, or
-  # ranking_mode="pareto" with ranking_metrics=("fvu", "n_nodes").
-  ranking_mode="mdl",
-).to(device)
+  directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),
+  generation_config=SoftmaxSamplingConfig(draws=1024),  # the search budget: expressions drawn per problem
+  ranking="mdl",                                        # log10(FVU) + 1e-2 per bit of description length (default)
+  compute={"device": device},
+)
 
 # Define data: a small synthetic example, y = 2 * x + sin(3 * x)
 X = np.linspace(-5, 5, 100).reshape(-1, 1)
 y = 2 * X[:, 0] + np.sin(3 * X[:, 0])
 
-# Fit the model to the data
-model.fit(X, y, verbose=True)
+# One call: draw candidates, fit their constants, rank them
+result = model.fit(X, y)
 
-# Show the best expression
-print(model.get_expression())
-
-# Predict with the best expression
-y_pred = model.predict(X)
+print(result.best.expression_infix)   # the answer
+print(model.get_expression())         # the same, read back from the estimator
+y_pred = model.predict(X)             # evaluate the answer on new data
 ```
 
-**Get all candidates at once (`infer`):** instead of `fit` + read-back, call `model.infer(X, y)`, which returns an `InferenceResult` carrying the best `Candidate`, the score-sorted refined `candidates`, and the full `CandidateLedger` (the generation pool joined with the refined survivors, each classified `FIT_OK` / `FIT_FAILED` / `INVALID`).
+**The result.** `fit` returns a `FitResult` and keeps it as `model.result_`: the score-sorted refined `candidates` (each a `Candidate` with its expression, constants, `fvu`, `score`, `mdl`, `log_prob`, ...), the full `ledger` (every draw, classified `FIT_OK` / `FIT_FAILED` / `INVALID`), the ranking that ordered them and the generation / refinement times. Everything else is a view of it:
 
 ```python
-result = model.infer(X, y)
-print(result.best.expression_infix, result.best.fvu)  # best refined candidate
-for c in result.candidates:                            # score-sorted survivors
-    print(c.score, c.expression_infix)
-print(len(result.ledger))                              # all candidates considered
+result.predict(X, rank=3)                                   # evaluate the candidate at rank 3
+result.get_expression(rank=3, precision=3)                  # render it, constants rounded for display
+result.to_dataframe()                                       # one row per refined candidate
+result.rerank("weighted", weights={"n_nodes": 0.05})        # a NEW result under another ranking, no refit
+result.save("result.pkl")                                   # plain data: no model objects inside
+FitResult.load("result.pkl", engine=model.simplipy_engine)  # ... and back, evaluable again
 ```
+
+**The call.** Everything that changes with the problem is an argument of `fit`: `draws=` overrides the budget for this call, `seed=` makes the draw and the refinement reproducible, `complexity=` hints the target complexity, `on_empty="raise"` raises `ConvergenceError` instead of returning an empty result when nothing fitted, `variable_names=` names the columns. Everything else is policy and lives on the estimator.
 
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/demo.ipynb).
 
@@ -102,34 +93,34 @@ Every catalog that [srbf](https://github.com/psaegert/srbf) evaluates on is held
 
 # Inference speed
 
-Several inference-speed features are **enabled by default** and designed to be quality-neutral, so the quickstart above already runs in the fast regime. The speed-relevant settings live on the generation config:
+Several inference-speed features are **enabled by default** and designed to be quality-neutral, so the quickstart above already runs in the fast regime. The speed-relevant settings are the compute group of the generation config:
 
 | Setting | Default | What it does |
 |---|---|---|
 | `use_cache` | `True` | KV-cache decoding |
-| `batch_size` | `'auto'` | candidate-budget-adaptive batching (pass an `int` to override) |
+| `batch_size` | `'auto'` | budget-adaptive batching (pass an `int` to override) |
 | `static_decode` | `None` | static decoding, auto-enabled for capable models (set `True`/`False` to force) |
 
 ```python
 from flash_ansr import SoftmaxSamplingConfig
 
 config = SoftmaxSamplingConfig(
-  choices=1024,        # number of candidate expressions to sample
+  draws=1024,          # number of candidate expressions to draw per problem (fit(draws=) overrides it)
   use_cache=True,      # KV cache (default)
-  batch_size='auto',   # candidate-budget-adaptive chunking (default)
+  batch_size='auto',   # budget-adaptive chunking (default)
   static_decode=None,  # auto for capable models (default)
 )
 ```
 
-Constant refinement runs in parallel; control it via `FlashANSR.load(..., refiner_workers=N, persistent_refine_pool=True)`. By default (`refiner_workers=None`) the pool uses every available CPU core, which oversubscribes shared machines; pass an explicit integer to cap it (`0` disables multiprocessing).
+Constant refinement runs in parallel; control it via `compute={"workers": N, "persistent_pool": True}` on `FlashANSR.load`. By default (`workers=None`) the pool uses every available CPU core, which oversubscribes shared machines; pass an explicit integer to cap it (`0` disables multiprocessing).
 
 To opt out of these defaults:
 
 ```python
-SoftmaxSamplingConfig(choices=1024, use_cache=False, batch_size=128, static_decode=False)
+SoftmaxSamplingConfig(draws=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-> **Candidate ranking.** Three modes, one sort: `ranking_mode="mdl"` (default; `log10(FVU)` plus `mdl_strength` decades per bit of the refined expression's description length), `"weighted"` (`ranking_weights` over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl`, `neg_log_prob`) and `"pareto"` (the non-dominated front over `ranking_metrics`, ordered by `ranking_tie_break`). Each knob belongs to one mode and raises under another. The pre-0.14 ranking is `ranking_mode="weighted", ranking_weights={"n_nodes": 0.05}`.
+> **Candidate ranking.** Three modes, one sort: `ranking="mdl"` (default; `log10(FVU)` plus `mdl_strength` decades per bit of the refined expression's description length), `{"mode": "weighted", "weights": {...}}` (weights over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl`, `neg_log_prob`) and `{"mode": "pareto", "metrics": [...], "tie_break": ...}` (the non-dominated front over the metrics). Each knob belongs to one mode and raises under another. A fitted result can be re-ordered under any ranking without refitting: `result.rerank(...)`.
 
 # Overview
 

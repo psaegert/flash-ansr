@@ -49,16 +49,16 @@ def tokenizer() -> Tokenizer:
 
 class TestConfig:
     def test_factory_dispatches_and_refuses_retired_methods(self):
-        config = create_generation_config(method="prior_sampling", choices=8, seed=3)
+        config = create_generation_config(method="prior_sampling", draws=8)
         assert isinstance(config, PriorSamplingConfig)
         assert config.method == "prior_sampling"
-        assert config.to_kwargs() == {"choices": 8, "unique": True, "valid_only": True, "catalog": None,
-                                      "decontaminate": True, "match_variables": True, "seed": 3, "max_tries": None}
-        assert isinstance(create_generation_config(method="softmax_sampling", choices=2), SoftmaxSamplingConfig)
+        assert config.to_kwargs() == {"draws": 8, "unique": True, "valid_only": True, "catalog": None,
+                                      "decontaminate": True, "match_variables": True, "max_tries": None}
+        assert isinstance(create_generation_config(method="softmax_sampling", draws=2), SoftmaxSamplingConfig)
         with pytest.raises(ValueError, match="retired"):
             create_generation_config(method="beam_search")
         with pytest.raises(ValueError):
-            create_generation_config(method="prior_sampling", choices=0)
+            create_generation_config(method="prior_sampling", draws=0)
 
     def test_catalog_resolution(self, tmp_path):
         assert resolve_prior_catalog({"type": "lample_charton"}, None) == {"type": "lample_charton"}
@@ -126,25 +126,37 @@ class TestInfer:
         return FlashANSR(
             simplipy_engine=engine, flash_ansr_model=model, tokenizer=tokenizer,
             generation_config=create_generation_config(method="prior_sampling", catalog=_catalog_config(), **generation),
-            n_restarts=2, refiner_workers=0, model_directory=None)
+            refine={"n_restarts": 2}, compute={"workers": 0}, model_directory=None)
 
     def test_infer_fits_prior_candidates_to_the_data(self, engine, tokenizer):
-        nsr = self._model(engine, tokenizer, choices=48, seed=0)
+        nsr = self._model(engine, tokenizer, draws=48)
         rng = np.random.default_rng(0)
         X = rng.uniform(-3, 3, size=(64, 2))
         y = (2.0 * X[:, 0] - 0.5 * X[:, 1] + 1.0).reshape(-1, 1)
-        result = nsr.infer(X, y, emission="constants", top_k="all")  # the test vocabulary has no emission flags
+        result = nsr.fit(X, y, seed=0)
         assert len(result.ledger) >= len(result.candidates) > 0
         assert all(np.isnan(c.log_prob) for c in result.candidates)  # the prior carries no log-probability
         assert result.candidates[0].score <= result.candidates[-1].score  # the ranking's order (MDL: fvu plus a length price)
         assert np.isfinite(result.candidates[0].fvu)
         assert result.generation_time >= 0.0
 
+    def test_fit_seed_fixes_the_prior_draw_stream(self, engine, tokenizer):
+        nsr = self._model(engine, tokenizer, draws=12)
+        rng = np.random.default_rng(1)
+        X = rng.uniform(-3, 3, size=(32, 2))
+        y = (X[:, 0] * X[:, 1]).reshape(-1, 1)
+        a = nsr.fit(X, y, seed=5)
+        b = nsr.fit(X, y, seed=5)
+        c = nsr.fit(X, y, seed=6)
+        assert a.ledger.token_lists == b.ledger.token_lists
+        assert a.ledger.token_lists != c.ledger.token_lists
+        assert nsr.result_ is c and nsr.results.shape[0] == len(c.candidates)
+
     def test_prior_mode_refuses_a_log_prob_ranking(self, engine, tokenizer):
         model = FlashANSRModel.from_config(get_path("configs", "test", "model.yaml"))
         nsr = FlashANSR(
             simplipy_engine=engine, flash_ansr_model=model, tokenizer=tokenizer,
-            generation_config=create_generation_config(method="prior_sampling", catalog=_catalog_config(), choices=4),
-            ranking_mode="weighted", ranking_weights={"n_nodes": 0.05, "neg_log_prob": 0.1}, refiner_workers=0)
+            generation_config=create_generation_config(method="prior_sampling", catalog=_catalog_config(), draws=4),
+            ranking={"mode": "weighted", "weights": {"n_nodes": 0.05, "neg_log_prob": 0.1}}, compute={"workers": 0})
         with pytest.raises(RankingError, match="log-probability"):
-            nsr.infer(np.ones((8, 2)), np.ones((8, 1)), emission="constants")
+            nsr.fit(np.ones((8, 2)), np.ones((8, 1)))

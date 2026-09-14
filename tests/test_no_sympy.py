@@ -109,7 +109,7 @@ class TestOwnSimplifySelectorRefusesSympy(unittest.TestCase):
 
         model = FlashANSRModel.from_config(get_path('configs', 'test', 'model.yaml'))
         with self.assertRaises(ValueError) as ctx:
-            model.sample_top_kp(torch.rand(13, 11), choices=1, max_len=4, simplify='sympy', return_raw=True)
+            model.sample_top_kp(torch.rand(13, 11), draws=1, max_len=4, simplify='sympy', return_raw=True)
         self._assert_names_the_removal(str(ctx.exception))
 
 

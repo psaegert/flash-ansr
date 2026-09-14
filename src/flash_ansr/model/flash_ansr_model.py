@@ -36,10 +36,10 @@ STATIC_DECODE_CALL_COUNT = 0
 
 # Global kill-switch for the deployed static-decode default (default ON, 2026-06-24). When True,
 # `static_decode=None` (the config/library default) resolves to static iff the model is capable AND the
-# decode is MULTI-chunk (the resolved static batch < choices) -- see `_resolve_static_decode`. Set False to
+# decode is MULTI-chunk (the resolved static batch < draws) -- see `_resolve_static_decode`. Set False to
 # force the dynamic path everywhere. RATIONALE: the cross-GPU SPEED grid (consumer Turing/Ampere + datacenter
 # A100/H100/H200) showed static wins in the multi-chunk regime on EVERY measured card; the only losses are
-# single-chunk small-model cells, which the `batch < choices` predicate excludes by construction. So this one
+# single-chunk small-model cells, which the `batch < draws` predicate excludes by construction. So this one
 # runtime predicate replaces the old per-(scale,c) enable table + scale-class/c-band + hardware gate -- the
 # regime is computed from each card's own free VRAM, so it is hardware-general with no table to maintain.
 # (Was _DEPLOYED_STATIC_DEFAULT.) See PREREG_overlap_default_and_static_global.md + INFERENCE_SPEED_FINDINGS.md.
@@ -322,7 +322,7 @@ class FlashANSRModel(nn.Module):
                 return False, f"layer {i} cross-attention uses RoPE (static drops it)"
         return True, ""
 
-    def _resolve_static_decode(self, static_decode: bool | None, choices: int | None = None,
+    def _resolve_static_decode(self, static_decode: bool | None, draws: int | None = None,
                                static_batch: int | None = None) -> bool:
         """Resolve the tri-state `static_decode` to a concrete bool.
 
@@ -331,7 +331,7 @@ class FlashANSRModel(nn.Module):
         backstop). Explicit ``False`` -> dynamic (direct callers needing the dynamic path's activation hooks
         -- recorder / interventions -- pass ``False``). ``None`` (the config/library default) resolves via
         the MULTI-CHUNK regime predicate: static iff the model is capable AND the global kill-switch
-        (`_DEPLOYED_STATIC_ENABLED`) is on AND the decode spans multiple chunks (``static_batch < choices``).
+        (`_DEPLOYED_STATIC_ENABLED`) is on AND the decode spans multiple chunks (``static_batch < draws``).
         The cross-GPU SPEED grid (2026-06-24) showed static wins in the multi-chunk regime on every measured
         GPU class (consumer + datacenter); the only losses are single-chunk small-model cells, which this
         predicate excludes by construction -- so one runtime test replaces the old per-(scale,c) table +
@@ -346,13 +346,13 @@ class FlashANSRModel(nn.Module):
                     return False
                 return True
             return False
-        # None (deployed default): capability AND kill-switch AND the multi-chunk regime (batch < choices).
+        # None (deployed default): capability AND kill-switch AND the multi-chunk regime (batch < draws).
         ok, _ = self.supports_static_decode()
         if not (ok and _DEPLOYED_STATIC_ENABLED):
             return False
-        if choices is None or static_batch is None:   # regime undeterminable -> dynamic (validated path)
+        if draws is None or static_batch is None:   # regime undeterminable -> dynamic (validated path)
             return False
-        return int(static_batch) < int(choices)        # multi-chunk -> static
+        return int(static_batch) < int(draws)        # multi-chunk -> static
 
     def parameter_roles(self) -> dict[str, str]:
         """Role of every trainable parameter, for optimizers that treat weight matrices specially
@@ -663,7 +663,7 @@ class FlashANSRModel(nn.Module):
     ) -> tuple[torch.Tensor, list] | None:
         """Prefill ONCE for a batch of identical rows, or ``None`` when the rows differ.
 
-        The sampler decodes ``choices`` rows of one problem: every row starts from the same token prefix
+        The sampler decodes ``draws`` rows of one problem: every row starts from the same token prefix
         (``<bos>`` and the task tags), the same numeric channel and the same encoder memory, so the prefill
         hidden states and K/V are identical across rows. Computing them for one row and broadcasting is
         what makes the prefix decoder's data positions cost what cross-attention's cached memory K/V cost:
@@ -859,7 +859,7 @@ class FlashANSRModel(nn.Module):
     def sample_top_kp(
         self,
         data: torch.Tensor,
-        choices: int = 10,
+        draws: int = 10,
         top_k: int = 0,
         top_p: float = 1,
         max_len: int = 100,
@@ -882,7 +882,7 @@ class FlashANSRModel(nn.Module):
     ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
         """Decode candidate expressions from ``data`` by top-k / top-p (nucleus) sampling.
 
-        Draws ``choices`` samples per problem, optionally routing through the static-shape decode
+        Draws ``draws`` samples per problem, optionally routing through the static-shape decode
         path and classifier-free guidance. Post-processing extracts, simplifies, deduplicates and
         sorts the sampled sequences unless ``return_raw`` short-circuits it.
 
@@ -890,7 +890,7 @@ class FlashANSRModel(nn.Module):
         ----------
         data : torch.Tensor
             The encoded ``(X, y)`` support set conditioning the decoder.
-        choices : int, optional
+        draws : int, optional
             Number of independent samples to draw per problem. Defaults to 10.
         top_k : int, optional
             Restrict sampling to the ``top_k`` most likely tokens (0 disables). Defaults to 0.
@@ -989,7 +989,7 @@ class FlashANSRModel(nn.Module):
 
         if static_decode:
             return self._sample_top_kp_static(
-                data, choices=choices, top_k=top_k, top_p=top_p, max_len=max_len,
+                data, draws=draws, top_k=top_k, top_p=top_p, max_len=max_len,
                 batch_size=batch_size, temperature=temperature, valid_only=valid_only,
                 simplify=simplify, unique=unique, verbose=verbose, return_raw=return_raw,
                 prompt_prefix=prompt_prefix, initial_tokens=initial_tokens,
@@ -1016,13 +1016,13 @@ class FlashANSRModel(nn.Module):
             raise ValueError(f"Initial token prefix length ({prefix_length}) exceeds max_len ({max_len}).")
 
         # Pre-allocate tensors on the target device
-        sequences = torch.full((choices, max_len), self.tokenizer['<pad>'], device=device, dtype=torch.long)
+        sequences = torch.full((draws, max_len), self.tokenizer['<pad>'], device=device, dtype=torch.long)
         if prefix_length > 0:
             prefix_tensor = torch.tensor(base_tokens, device=device, dtype=torch.long)
             sequences[:, :prefix_length] = prefix_tensor
 
-        scores = torch.zeros(choices, device=device, dtype=torch.float)
-        is_finished = torch.zeros(choices, device=device, dtype=torch.bool)
+        scores = torch.zeros(draws, device=device, dtype=torch.float)
+        is_finished = torch.zeros(draws, device=device, dtype=torch.bool)
 
         eos_token = self.tokenizer['<eos>']
         if prefix_length > 0 and base_tokens[-1] == eos_token:
@@ -1044,7 +1044,7 @@ class FlashANSRModel(nn.Module):
 
         # --- 2. Vectorized Generation Loop with Mini-batching ---
         # KV-cache state: list of per-layer caches, each holding tensors of shape
-        # (choices, n_heads, cached_len, head_dim).  Indexed by batch_indices per mini-batch.
+        # (draws, n_heads, cached_len, head_dim).  Indexed by batch_indices per mini-batch.
         kv_cache: list | None = None
 
         with torch.no_grad():
@@ -1064,8 +1064,8 @@ class FlashANSRModel(nn.Module):
                 shared: tuple[torch.Tensor, list] | None = None
                 if use_cache and kv_cache is None and memory.shape[0] == 1 and not guided:
                     shared = self._shared_prefill(
-                        sequences[:2, :current_length] if choices > 1 else sequences[:1, :current_length],
-                        build_input_num_tensor(current_length, min(2, choices)), memory)
+                        sequences[:2, :current_length] if draws > 1 else sequences[:1, :current_length],
+                        build_input_num_tensor(current_length, min(2, draws)), memory)
 
                 for start_idx in range(0, len(active_indices), batch_size):
                     batch_indices = active_indices[start_idx: start_idx + batch_size]
@@ -1202,7 +1202,7 @@ class FlashANSRModel(nn.Module):
     def _sample_top_kp_static(
         self,
         data: torch.Tensor,
-        choices: int = 10,
+        draws: int = 10,
         top_k: int = 0,
         top_p: float = 1,
         max_len: int = 100,
@@ -1273,10 +1273,10 @@ class FlashANSRModel(nn.Module):
         if prefix_length == 0:
             raise ValueError("static decode requires a non-empty prefix (dynamic prefill seeds the cache).")
 
-        sequences = torch.full((choices, max_len), self.tokenizer['<pad>'], device=device, dtype=torch.long)
+        sequences = torch.full((draws, max_len), self.tokenizer['<pad>'], device=device, dtype=torch.long)
         sequences[:, :prefix_length] = torch.tensor(base_tokens, device=device, dtype=torch.long)
-        scores = torch.zeros(choices, device=device, dtype=torch.float)
-        is_finished = torch.zeros(choices, device=device, dtype=torch.bool)
+        scores = torch.zeros(draws, device=device, dtype=torch.float)
+        is_finished = torch.zeros(draws, device=device, dtype=torch.bool)
 
         eos_token = self.tokenizer['<eos>']
         if base_tokens[-1] == eos_token:
@@ -1284,8 +1284,8 @@ class FlashANSRModel(nn.Module):
 
         if memory is None:
             memory = self._create_memory(data)
-        if memory.shape[0] not in (1, choices):
-            raise ValueError(f"memory batch dim {memory.shape[0]} must be 1 (broadcast) or choices ({choices}).")
+        if memory.shape[0] not in (1, draws):
+            raise ValueError(f"memory batch dim {memory.shape[0]} must be 1 (broadcast) or draws ({draws}).")
 
         numeric_template: torch.Tensor | None = None
         if base_input_num is not None:
@@ -1314,11 +1314,11 @@ class FlashANSRModel(nn.Module):
                 _alloc0 = torch.cuda.memory_allocated(device)
                 _avail = _free0 + (torch.cuda.memory_reserved(device) - _alloc0)
                 # Pre-flight: reject a grossly oversized FIRST chunk BEFORE running it. Use the ACTUAL first
-                # chunk width min(batch_size, choices) (the single-shot arm passes batch_size>=choices but
-                # runs only `choices` rows). Pad per-row with _GUARD_OVERHEAD (LARGER than the cap's 1.6 ->
+                # chunk width min(batch_size, draws) (the single-shot arm passes batch_size>=draws but
+                # runs only `draws` rows). Pad per-row with _GUARD_OVERHEAD (LARGER than the cap's 1.6 ->
                 # an independent backstop). decoder_max_seq_len + fp32 (4 B): the deployed path is fp32; under
                 # half/autocast this over-projects (safe). The auto cap (0.7 of avail) stays well under this.
-                _chunk0 = min(int(batch_size), int(choices))
+                _chunk0 = min(int(batch_size), int(draws))
                 _per_row = 2 * n_layers * n_heads * head_dim * (self.decoder_max_seq_len + self.decoder.prefix_len) * 4 * _GUARD_OVERHEAD
                 if _chunk0 * _per_row > _VRAM_GUARD_FRACTION * _avail:
                     raise RuntimeError(
@@ -1334,17 +1334,17 @@ class FlashANSRModel(nn.Module):
 
         # --- 2. chunk-major static generation loop ---
         with torch.no_grad():
-            pbar = tqdm(total=choices, disable=not verbose, desc="Generating tokens (static)", smoothing=0.0)
+            pbar = tqdm(total=draws, disable=not verbose, desc="Generating tokens (static)", smoothing=0.0)
             # Every chunk shares the memory and the token prefix: prefill once per problem, seed each
             # chunk's static cache from the broadcast (see _shared_prefill).
             shared: tuple[torch.Tensor, list] | None = None
-            if memory.shape[0] == 1 and choices > 1:
+            if memory.shape[0] == 1 and draws > 1:
                 shared = self._shared_prefill(
                     sequences[:2, :prefix_length],
                     None if numeric_template is None else numeric_template[:prefix_length].unsqueeze(0).expand(2, -1).unsqueeze(-1),
                     memory)
-            for chunk_start in range(0, choices, batch_size):
-                chunk_stop = min(chunk_start + batch_size, choices)
+            for chunk_start in range(0, draws, batch_size):
+                chunk_stop = min(chunk_start + batch_size, draws)
                 rows = slice(chunk_start, chunk_stop)
                 bsz = chunk_stop - chunk_start
                 mem_chunk = memory if memory.shape[0] == 1 else memory[rows]

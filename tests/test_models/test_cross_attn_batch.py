@@ -1,6 +1,6 @@
 """Cross-attention must not rely on the K/V batch dim broadcasting against Q.
 
-Decoding runs `choices` rows against ONE encoder memory, so cross-attention K/V arrive with
+Decoding runs `draws` rows against ONE encoder memory, so cross-attention K/V arrive with
 batch 1. Letting that broadcast inside ``scaled_dot_product_attention`` is outside the
 documented contract -- the signature pairs (N, ..., H, L, E) with (N, ..., H, S, E), the same
 N -- and backends disagree on it. These tests assert the shapes reaching the op, which is

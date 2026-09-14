@@ -37,5 +37,5 @@ def test_static_decode_refuses_a_max_len_past_the_rope_table(model, tokenizer):
     limit = int(model.decoder_max_seq_len)
     with pytest.raises(ValueError, match="max_seq_len"):
         model.sample_top_kp(
-            torch.rand(13, 11, dtype=NUMERIC_DTYPE), choices=2, max_len=limit + 1,
+            torch.rand(13, 11, dtype=NUMERIC_DTYPE), draws=2, max_len=limit + 1,
             return_raw=True, initial_tokens=[tokenizer["<bos>"]], static_decode=True)

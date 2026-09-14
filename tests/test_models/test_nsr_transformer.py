@@ -42,7 +42,7 @@ class TestFlashANSRTransformer(unittest.TestCase):
         x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
         try:
-            beams, scores, _ = nsr.sample_top_kp(x, choices=4, max_len=10)
+            beams, scores, _ = nsr.sample_top_kp(x, draws=4, max_len=10)
         except ValueError:
             beams, scores = [], []
 

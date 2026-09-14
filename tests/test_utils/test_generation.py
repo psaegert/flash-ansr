@@ -27,7 +27,7 @@ _SMALL_CARD_VRAMS = [21.5, 17.18, 11.0]
 
 class TestSuggestBatchSize(unittest.TestCase):
     def test_big_card_uses_measured_caps(self) -> None:
-        # >= 24 GiB: with a large `choices`, the chunk equals the measured per-model cap.
+        # >= 24 GiB: with a large `draws`, the chunk equals the measured per-model cap.
         for n_params, cap in _MODEL_CAPS:
             got = suggest_batch_size(32768, n_params, _BIG_CARD_VRAM)
             self.assertEqual(got, cap, msg=f"n_params={n_params:g} on a 24+ GiB card")
@@ -47,7 +47,7 @@ class TestSuggestBatchSize(unittest.TestCase):
         self.assertEqual(suggest_batch_size(32768, 1e9, _FULL_CAP_MIN_VRAM_GB - 0.01), _SMALL_CARD_BATCH_CAP)
 
     def test_choices_clamps_below_cap(self) -> None:
-        # `choices` smaller than the cap -> the largest power-of-2 <= choices, on any card.
+        # `draws` smaller than the cap -> the largest power-of-2 <= draws, on any card.
         self.assertEqual(suggest_batch_size(100, 3e6, _BIG_CARD_VRAM), 64)   # min(2048, 100) -> pow2 64
         self.assertEqual(suggest_batch_size(100, 1e9, 17.18), 64)            # min(64(default), 100) -> 64
         self.assertEqual(suggest_batch_size(40, 1e9, 17.18), 32)             # min(64, 40) -> pow2 32

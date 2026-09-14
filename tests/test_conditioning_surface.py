@@ -68,17 +68,22 @@ class TestSurfaceIsThreaded:
         assert parameter is not None, f"{verb.__name__} cannot reach the unconditioned mode"
         assert parameter.default is True, "conditioned must default to the ordinary path"
 
-    @pytest.mark.parametrize("method", ["predict_y", "predict_constants", "predict_complexity",
-                                        "fit", "infer"])
+    @pytest.mark.parametrize("method", ["_predict_y", "_predict_constants", "_predict_complexity"])
     def test_the_estimator_exposes_it_too(self, method) -> None:
         assert "conditioned" in inspect.signature(getattr(FlashANSR, method)).parameters
+
+    def test_fit_reaches_the_unconditioned_mode_through_the_sampling_config(self) -> None:
+        # 0.17: the prior-decode control is a sampling POLICY (guidance_weight=0.0), not a per-call knob.
+        from flash_ansr import SoftmaxSamplingConfig
+        assert "conditioned" not in inspect.signature(FlashANSR.fit).parameters
+        assert SoftmaxSamplingConfig(guidance_weight=0.0).guidance_weight == 0.0
 
     def test_predict_y_takes_an_expression(self) -> None:
         # The trained SUFFIX placement: the block sits after </expression>.
         assert "expression" in inspect.signature(predict_y).parameters
-        assert "expression" in inspect.signature(FlashANSR.predict_y).parameters
+        assert "expression" in inspect.signature(FlashANSR._predict_y).parameters
 
     def test_estimator_forwards_conditioned_rather_than_dropping_it(self) -> None:
-        source = inspect.getsource(FlashANSR.predict_y)
+        source = inspect.getsource(FlashANSR._predict_y)
         assert "conditioned=conditioned" in source
         assert "expression=expression" in source

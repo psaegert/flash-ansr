@@ -187,9 +187,9 @@ class TestCaches:
         model, kwargs = _model(tokenizer, engine)
         _, data = _batch(tokenizer, kwargs, B=1)
         torch.manual_seed(0)
-        dyn = model.sample_top_kp(data, choices=4, top_k=1, max_len=12, valid_only=False, simplify=False, unique=False, use_cache=True, return_raw=True)
+        dyn = model.sample_top_kp(data, draws=4, top_k=1, max_len=12, valid_only=False, simplify=False, unique=False, use_cache=True, return_raw=True)
         torch.manual_seed(0)
-        stat = model.sample_top_kp(data, choices=4, top_k=1, max_len=12, valid_only=False, simplify=False, unique=False, static_decode=True, return_raw=True)
+        stat = model.sample_top_kp(data, draws=4, top_k=1, max_len=12, valid_only=False, simplify=False, unique=False, static_decode=True, return_raw=True)
         assert dyn[0] == stat[0]      # greedy is path-independent
 
 
@@ -271,7 +271,7 @@ class TestSharedPrefill:
         _, data = _batch(tokenizer, kwargs, B=1)
 
         def run(static):
-            return model.sample_top_kp(data, choices=6, top_k=1, max_len=14, valid_only=False, simplify=False, unique=False, static_decode=static, batch_size=4, return_raw=True)[0]
+            return model.sample_top_kp(data, draws=6, top_k=1, max_len=14, valid_only=False, simplify=False, unique=False, static_decode=static, batch_size=4, return_raw=True)[0]
         torch.manual_seed(0)
         shared_static = run(True)
         torch.manual_seed(0)
