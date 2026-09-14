@@ -19,7 +19,7 @@ import os
 import pytest
 
 from flash_ansr.flash_ansr import FlashANSR
-from flash_ansr.scoring import count_constants, score_from_fvu, RankingConfig, resolve_ranking
+from flash_ansr.scoring import count_constants, score_from_fvu, RankingConfig, resolve_ranking, order_rows
 
 GOLDEN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "golden_scalar_ranking_0130.json")
 
@@ -138,8 +138,7 @@ def test_scalar_ranking_is_unchanged(golden: dict) -> None:
         rows = _rebuild_inputs(cell)
         # shuffle deterministically so a no-op sort cannot pass
         rows = rows[::-1]
-        sorted_results, _ = FlashANSR._compile_results_pure(
-            _Shim(), rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
+        sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
         )
         _assert_order_up_to_ties(
             sorted_results, cell["order"],
@@ -161,7 +160,7 @@ def test_non_finite_fvu_is_nan_not_scored(golden: dict) -> None:
         {"expression": ["exp", "x1"], "fvu": float("inf"), "log_prob": -1.0, "constant_count": 0, "score": 0.0},
         {"expression": ["x1"], "fvu": 0.25, "log_prob": -1.0, "constant_count": 0, "score": 0.0},
     ]
-    sorted_results, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted(0.05))
+    sorted_results = order_rows(rows, ranking=_weighted(0.05))
     assert sorted_results[0]["expression"] == ["x1"]
     assert np.isnan(sorted_results[-1]["score"]), "a non-finite FVU must sort last with a nan score"
     # the scorer itself would have returned +inf, NOT nan -- that is the difference being pinned
@@ -174,7 +173,7 @@ def test_negative_finite_fvu_reaches_the_scorer_and_is_worst_finite() -> None:
         {"expression": ["cos", "x1"], "fvu": -1.0, "log_prob": -1.0, "constant_count": 0, "score": 0.0},
         {"expression": ["x1"], "fvu": 0.25, "log_prob": -1.0, "constant_count": 0, "score": 0.0},
     ]
-    sorted_results, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted())
+    sorted_results = order_rows(rows, ranking=_weighted())
     assert sorted_results[0]["expression"] == ["x1"]
     assert sorted_results[-1]["score"] == float("inf")
 
@@ -195,8 +194,8 @@ def test_ties_break_on_length_then_tokens_not_insertion_order() -> None:
         {"expression": ["x1"], "fvu": 0.5, "log_prob": None, "constant_count": 0, "score": 0.0},
         {"expression": ["+", "x1", "x2"], "fvu": 0.5, "log_prob": None, "constant_count": 0, "score": 0.0},
     ]
-    forward, _ = FlashANSR._compile_results_pure(_Shim(), list(rows), ranking=_weighted())
-    reverse, _ = FlashANSR._compile_results_pure(_Shim(), list(rows[::-1]), ranking=_weighted())
+    forward = order_rows(list(rows), ranking=_weighted())
+    reverse = order_rows(list(rows[::-1]), ranking=_weighted())
     assert [r["expression"] for r in forward] == [r["expression"] for r in reverse]
     # shortest first; the token tuple still resolves equal-length ties
     assert [r["expression"] for r in forward] == [["x1"], ["sin", "x1"], ["+", "x1", "x2"]]
@@ -213,39 +212,7 @@ def test_score_less_row_raises_keyerror_documented_inconsistency() -> None:
     """
     rows = [{"expression": ["x1"], "fvu": 0.25, "log_prob": None, "constant_count": 0}]
     with pytest.raises(KeyError):
-        FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted())
-
-
-def test_pre_rename_results_payload_is_refused(tmp_path) -> None:
-    """A v1 payload spelled the penalty `length_penalty`; loading it must raise, not default.
-
-    Without this, ``metadata.get("node_penalty", <estimator default>)`` would silently rescore the
-    restored table at this estimator's penalty instead of the file's.
-    """
-    import pickle
-
-    from flash_ansr.results import RESULTS_FORMAT_VERSION
-
-    assert RESULTS_FORMAT_VERSION >= 2, "the rename bumped the format version"
-
-    # save_results_payload writes a pickle, so the stale fixture must be one too
-    stale = tmp_path / "v1_results.pkl"
-    with stale.open("wb") as handle:
-        pickle.dump({
-            "version": 1,
-            "metadata": {"length_penalty": 0.2, "constants_penalty": 0.0, "likelihood_penalty": 0.0},
-            "results": [],
-        }, handle)
-
-    from flash_ansr.flash_ansr import FlashANSR
-
-    class _Stub:
-        node_penalty = 0.05
-        constants_penalty = 0.0
-        likelihood_penalty = 0.0
-
-    with pytest.raises(ValueError, match="predates the ranking record"):
-        FlashANSR.load_results(_Stub(), str(stale))
+        order_rows(rows, ranking=_weighted())
 
 
 class TestMdlEndToEnd:
@@ -333,8 +300,7 @@ class TestMdlPenaltyAddend:
             # every row carries an mdl, but mdl_penalty is left at its default
             for r in rows:
                 r["mdl"] = 123456.0
-            sorted_results, _ = FlashANSR._compile_results_pure(
-                _Shim(), rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
+            sorted_results = order_rows(rows, ranking=_weighted(cell["node_penalty"], cell["constants_penalty"], cell["likelihood_penalty"]),
             )
             _assert_order_up_to_ties(sorted_results, cell["order"],
                                      f"mdl_penalty=0 node_penalty={cell['node_penalty']}")
@@ -352,11 +318,11 @@ class TestMdlPenaltyAddend:
                 {"expression": ["c", "d"], "fvu": 0.25, "log_prob": None, "constant_count": 1,
                  "mdl": 100000.0, "score": float("nan")},
             ]
-        inert, _ = FlashANSR._compile_results_pure(_Shim(), rows(), ranking=_weighted())
+        inert = order_rows(rows(), ranking=_weighted())
         # tie on score -> the token tie-break decides, so 'a b' comes first
         assert [r["expression"] for r in inert] == [["a", "b"], ["c", "d"]]
 
-        live, _ = FlashANSR._compile_results_pure(_Shim(), rows(), ranking=_weighted(mdl=4.5e-3))
+        live = order_rows(rows(), ranking=_weighted(mdl=4.5e-3))
         assert [r["expression"] for r in live] == [["c", "d"], ["a", "b"]], (
             "the cheaper mdl must win once mdl_penalty is live"
         )
@@ -371,7 +337,7 @@ class TestMdlPenaltyAddend:
             {"expression": ["b"], "fvu": 0.9, "log_prob": None, "constant_count": 0,
              "mdl": 1000.0, "score": float("nan")},
         ]
-        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted())
+        out = order_rows(rows, ranking=_weighted())
         assert out[0]["expression"] == ["a"], "the better fvu wins; the missing price is irrelevant"
         assert np.isfinite(out[0]["score"])
 
@@ -388,7 +354,7 @@ class TestMdlPenaltyAddend:
             {"expression": ["b"], "fvu": 0.11, "log_prob": None, "constant_count": 0,
              "mdl": 140000.0, "score": float("nan")},      # slightly worse fvu, priced
         ]
-        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted(mdl=4.5e-3))
+        out = order_rows(rows, ranking=_weighted(mdl=4.5e-3))
         assert out[0]["expression"] == ["b"], (
             "an unpriceable candidate must not out-rank a priced one on a free pass"
         )
@@ -402,7 +368,7 @@ class TestMdlPenaltyAddend:
             {"expression": ["b"], "fvu": float("inf"), "log_prob": None, "constant_count": 0,
              "mdl": 1000.0, "score": float("nan")},
         ]
-        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted(mdl=4.5e-3))
+        out = order_rows(rows, ranking=_weighted(mdl=4.5e-3))
         assert out[0]["expression"] == ["a"]
         assert np.isnan(out[-1]["score"])
 
@@ -420,9 +386,9 @@ class TestMdlPenaltyAddend:
              "mdl": None, "score": float("nan")},
         ]
         with pytest.raises(ValueError, match="none of the 2 candidates could be priced"):
-            FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted(mdl=4.5e-3))
+            order_rows(rows, ranking=_weighted(mdl=4.5e-3))
         # same rows, penalty off -> perfectly fine
-        out, _ = FlashANSR._compile_results_pure(_Shim(), rows, ranking=_weighted())
+        out = order_rows(rows, ranking=_weighted())
         assert len(out) == 2
 
     def test_milli_bit_to_bit_conversion_is_explicit(self) -> None:

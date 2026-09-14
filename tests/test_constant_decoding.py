@@ -266,14 +266,14 @@ def test_t6_decode_time_mask_dynamic_sampling(tokenizer: Tokenizer, engine) -> N
     x = torch.rand(13, 11, dtype=NUMERIC_DTYPE)
 
     torch.manual_seed(7)
-    raw_off, _ = model.sample_top_kp(x, choices=16, max_len=24, return_raw=True,
+    raw_off, _ = model.sample_top_kp(x, draws=16, max_len=24, return_raw=True,
                                      initial_tokens=[bos], use_cache=False)
     # Non-vacuity: the biased model DOES emit <float> without the mask.
     assert any(float_id in seq for seq in raw_off)
 
     for use_cache in (False, True):
         torch.manual_seed(7)
-        raw_on, _ = model.sample_top_kp(x, choices=16, max_len=24, return_raw=True,
+        raw_on, _ = model.sample_top_kp(x, draws=16, max_len=24, return_raw=True,
                                         initial_tokens=[bos], use_cache=use_cache,
                                         constrain_ieee754=True)
         assert all(float_id not in seq for seq in raw_on), f"use_cache={use_cache}"
@@ -290,13 +290,13 @@ def test_t6_decode_time_mask_static_sampling(tokenizer: Tokenizer, engine) -> No
 
     count_before = fam.STATIC_DECODE_CALL_COUNT
     torch.manual_seed(7)
-    raw_off, _ = model.sample_top_kp(x, choices=8, max_len=20, return_raw=True,
+    raw_off, _ = model.sample_top_kp(x, draws=8, max_len=20, return_raw=True,
                                      initial_tokens=[bos], static_decode=True)
     assert fam.STATIC_DECODE_CALL_COUNT == count_before + 1, "static path did not engage"
     assert any(float_id in seq for seq in raw_off)
 
     torch.manual_seed(7)
-    raw_on, _ = model.sample_top_kp(x, choices=8, max_len=20, return_raw=True,
+    raw_on, _ = model.sample_top_kp(x, draws=8, max_len=20, return_raw=True,
                                     initial_tokens=[bos], static_decode=True,
                                     constrain_ieee754=True)
     assert fam.STATIC_DECODE_CALL_COUNT == count_before + 2, "static path did not engage"
@@ -370,7 +370,7 @@ def test_t7_constrained_sampling_emissions_parse(tokenizer: Tokenizer, engine) -
 
     for use_cache in (False, True):
         torch.manual_seed(11)
-        raw, _ = model.sample_top_kp(x, choices=24, max_len=48, return_raw=True,
+        raw, _ = model.sample_top_kp(x, draws=24, max_len=48, return_raw=True,
                                      initial_tokens=[bos], use_cache=use_cache,
                                      constrain_ieee754=True)
         n_spans = 0

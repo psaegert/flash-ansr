@@ -21,47 +21,39 @@ Models can also be managed with the Python API via `flash_ansr.model.manage.inst
 ## Minimal inference Example
 ```python
 import torch
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from flash_ansr import FlashANSR, SoftmaxSamplingConfig, get_path
 
-# Import flash_ansr
-from flash_ansr import (
-  FlashANSR,
-  SoftmaxSamplingConfig,
-)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# The installed checkpoint directory
-from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
-
-# Load the model (KV-cache, auto-batching and static decoding are on by default)
+# The estimator's POLICY, fixed at construction: the sampler, the refiner, the ranking, the compute.
 model = FlashANSR.load(
-  directory=CHECKPOINT,
-  generation_config=SoftmaxSamplingConfig(choices=1024),
-  # Candidate ranking (default): log10(FVU) + 1e-2 per bit of the refined expression's description
-  # length. Alternatives: ranking_mode="weighted" with ranking_weights={"n_nodes": 0.05}, or
-  # ranking_mode="pareto" with ranking_metrics=("fvu", "n_nodes").
-  ranking_mode="mdl",
-).to(device)
+  directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),
+  generation_config=SoftmaxSamplingConfig(draws=1024),   # the search budget: expressions drawn per problem
+  refine={"n_restarts": 8},                              # RefineConfig: the constant optimizer (defaults shown)
+  ranking="mdl",                                         # log10(FVU) + 1e-2 per bit of description length (default)
+  compute={"device": device, "workers": None},           # ComputeConfig: device and refiner workers (None = every core)
+)
 
 # Define data
 X = ...
 y = ...
 
-# Fit the model to the data
-model.fit(X, y, verbose=True)
+# One call: draw candidates, fit their constants, rank them. Everything that changes with the
+# PROBLEM is an argument here: the budget for this call, a seed, a complexity hint, the names.
+result = model.fit(X, y, draws=None, seed=None, complexity=None, on_empty="return", verbose=True)
 
-# Show the best expression
-print(model.get_expression())
-
-# Predict with the best expression
-y_pred = model.predict(X)
+print(result.best.expression_infix)   # the answer
+print(model.get_expression())         # the same, read back from the estimator
+y_pred = model.predict(X)             # evaluate the answer on new data
 ```
 
-## Getting all candidates with `infer`
-`fit` / `get_expression` / `predict` keep the fitted state on the model for read-back. To get every candidate in one call instead, use `infer`, which returns an `InferenceResult` and writes nothing to the model:
+`on_empty="return"` (the default) hands back an empty result with its ledger when no candidate fitted, so a caller can see why; `on_empty="raise"` raises `ConvergenceError` instead. A single candidate whose refinement fails is never an error: it is a `FIT_FAILED` row of the ledger.
+
+## The result
+`fit` returns a `FitResult` and keeps it as `model.result_`; `predict`, `get_expression` and `results` are views of it. The result is plain data (no model objects inside), so it pickles and travels:
 
 ```python
-result = model.infer(X, y)
+result = model.fit(X, y)
 
 # Best refined candidate (or None if nothing fitted)
 best = result.best
@@ -72,8 +64,12 @@ print(best.fvu, best.score, best.log_prob, best.constants)
 for candidate in result.candidates:
     print(candidate.score, candidate.expression_infix)
 
-# The full candidate ledger: the generation pool joined with the refined
-# survivors, each classified FIT_OK / FIT_FAILED / INVALID
+# Evaluate and render any candidate by rank
+y3 = result.predict(X, rank=3)
+print(result.get_expression(rank=3, precision=3))
+
+# The full candidate ledger: the generation pool joined with the refined survivors,
+# each classified FIT_OK / FIT_FAILED / INVALID
 ledger = result.ledger
 print(len(ledger))                       # total candidates considered
 print(ledger.fit_status, ledger.fvu)     # per-candidate columns
@@ -83,11 +79,20 @@ print(result.generation_time, result.refinement_time)
 
 # A tabular view of the refined survivors (one row per candidate in result.candidates)
 df = result.to_dataframe()
+
+# Another ranking, no refit: a NEW result, this one untouched
+weighted = result.rerank("weighted", weights={"n_nodes": 0.05})
+
+# Persist and restore (the engine makes a loaded result evaluable again)
+result.save("result.pkl")
+from flash_ansr import FitResult
+again = FitResult.load("result.pkl", engine=model.simplipy_engine)
 ```
 
-A `Candidate` carries `expression` (skeleton tokens), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants` (refined), `constants_emitted` (as predicted by the model), `score`, `log_prob`, `fvu`, `n_nodes`, `mu` (simplipy complexity of the skeleton), `mdl` (description length of the refined expression, in milli-bits), `constant_count`, `pruned_variant`, `pareto_rank`, `rank`, and optional `y_pred` / `y_pred_val` (populated for the top `top_k` candidates). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
+A `Candidate` carries `expression` (the candidate as the model stated it, refined sites as `<constant>`), `slots` (the positions the refiner fitted), `expression_prefix`, `expression_infix`, `skeleton_prefix`, `constants` (refined), `constants_emitted` (as predicted by the model), `score`, `log_prob`, `fvu`, `n_nodes`, `mu` (simplipy complexity of the skeleton), `mdl` (description length of the refined expression, in milli-bits), `constant_count`, `pruned_variant`, `pareto_rank`, `rank`, and the provenance of a constant-ladder or typed-span variant (`spelling`, `typed_frozen`, `typed_thaw`). The `FIT_OK` / `FIT_FAILED` / `INVALID` codes live in `flash_ansr.inference`.
 
-`result.to_dataframe()` returns a pandas DataFrame of the refined survivors (one row per candidate in `result.candidates`, i.e. `FIT_OK` fits), not the full ledger. To control which candidates get predictions, `infer` takes `top_k` (compute `y_pred` / `y_pred_val` for the top `top_k` candidates; `None` = the best only), `predict_val` (toggle validation-set prediction), and `X_val` (out-of-sample features for `y_pred_val`).
+## The generation alone
+`model.generate(X, y, draws=..., seed=...)` runs only the first phase and returns a `Generation`: the raw draws as token ids with their log-likelihoods, the encoder memory and the prompt they continued. It writes nothing to the estimator.
 
 Find more details in the [API Reference](api.md).
 
@@ -115,11 +120,11 @@ else: the same constant refinement, the same MDL ranking, the same candidate led
 from flash_ansr import FlashANSR, PriorSamplingConfig
 
 prior = FlashANSR.load(
-  directory=CHECKPOINT,                      # catalog_train.yaml beside the checkpoint is the prior
-  generation_config=PriorSamplingConfig(choices=1024),
-  ranking_mode="mdl",
+  directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),   # catalog_train.yaml beside the checkpoint is the prior
+  generation_config=PriorSamplingConfig(draws=1024),
+  ranking="mdl",
 )
-result = prior.infer(X, y)                   # no GPU needed: the sampler and the refiner are CPU work
+result = prior.fit(X, y, seed=0)             # no GPU needed: the sampler and the refiner are CPU work
 ```
 
 The draws are conditioned on one thing every regressor is told, the number of input columns
@@ -127,6 +132,6 @@ The draws are conditioned on one thing every regressor is told, the number of in
 `match_variables=False` for the raw prior over the catalog's whole variable set, `decontaminate=False`
 for the bare prior without the benchmark holdout, and `catalog=` for a prior other than the
 checkpoint's own. A prior candidate carries no log-probability, so the ranking must not weight it
-(the default `mdl` ranking does not). The unconditioned decode, `infer(..., conditioned=False)`, is
-the other control: the model's own learned prior through the same pipeline.
-
+(the default `mdl` ranking does not). The other control is the model's own unconditioned decode,
+`SoftmaxSamplingConfig(draws=1024, guidance_weight=0.0)`: the learned null memory replaces the
+encoder's, so the decoder proposes from its learned prior and the refiner still fits the data.

@@ -6,21 +6,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **`fit` / `infer(conditioned=False)` runs again.** The unconditioned decode (the prior-decode control
-  documented in Getting Started) expanded the learned `null_memory` over the SUPPORT POINTS -- the fit
-  path's data tensor is `(points, features)`, so its leading dimension is the support size, not a
-  batch -- and the decoder's cross-attention refused every call with more than one data point
-  (`memory batch dim 100 must be 1 (broadcast) or choices`). The null memory now reaches the sampler as
-  a batch of one, which the sampler broadcasts over its candidates, exactly as the model's own
-  `guidance_weight=0` path does. Regression test `tests/test_unconditioned_infer.py`.
+## [0.17.0] - 2026-09-14
+
+One verb, one result, one place for every knob (owner design 2026-09-14). The estimator's
+policy -- the sampler, the refiner, the ranking, the compute -- is fixed at construction in four
+config objects; a call to `fit` carries only the problem and the question; `fit` returns the
+result and keeps it. Every heavy consumer already spoke the functional API, so the stateful
+surface became sugar over the result object and the second result representation went away.
 
 ### Changed
-- **The v25.0-T8 series is the reference.** README, `docs/index.md`, `docs/getting_started.md` and
-  `demo.ipynb` install and load `psaegert/flash-ansr-v25.0-T8-20M`; the Models table lists the three
-  public checkpoints of the series (`-3M`, `-20M`, `-120M`: one recipe and one data prior, AdaMuon,
-  1.5M steps at batch 128, `configs/v25.0-T8-<size>`). Every documented example was run against all
-  three checkpoints.
+- **`fit(X, y, variable_names='auto', *, draws=None, complexity=None, seed=None, on_empty='return',
+  verbose=False) -> FitResult`.** One verb: draw, refine, rank. It returns the result and keeps it
+  as `model.result_`; `predict(X, rank=0)`, `get_expression(rank=0, ...)` and the `results`
+  DataFrame are views of it. `draws=` overrides the search budget for this call (the one policy
+  knob a caller changes per problem: ladders, clocks, a user trading time for quality); `seed=`
+  seeds the draw (the prior sampler's stream; torch's generators for softmax sampling, saved and
+  restored, best-effort on a GPU) AND the constant refinement; `on_empty` says whether an empty
+  result is returned with its ledger (default) or raises `ConvergenceError`. A candidate whose
+  refinement fails is never an error: it is a `FIT_FAILED` row of the ledger.
+- **`FitResult` is the only state** (was `InferenceResult`): score-sorted `candidates`, the full
+  classified `ledger`, `generation_time` / `refinement_time`, the `ranking` that ordered it,
+  `n_variables`, `variable_mapping`, `draws`. Plain data (no refiner, no lambda): `save(path)` /
+  `FitResult.load(path, engine=)`, `predict(X, rank)`, `get_expression(rank, ...)`,
+  `to_dataframe()`, and `rerank(ranking, **knobs)` -> a NEW result under another ranking without a
+  refit, through the same ordering function the live run used (`flash_ansr.scoring.order_rows`),
+  so an offline re-rank reproduces the live order bit for bit. `Candidate` gains `slots` (the
+  refined token positions) and `evaluate(X, engine)`, and loses `y_pred` / `y_pred_val`: a caller
+  evaluates what it needs, when it needs it, and the memory cap `top_k` enforced is gone with it.
+- **The estimator's policy in config objects.** `FlashANSR.load(directory, *, generation_config,
+  refine, ranking, compute)` and the constructor take `RefineConfig` (method, `n_restarts`,
+  `p0_noise`, `p0_noise_kwargs`, `scope`, `typed_spans`, `constant_ladder`,
+  `prune_constant_budget`, `numpy_errors`), a ranking (`'mdl'`, or `{'mode': ..., <its knobs>}`, or
+  a `RankingConfig`) and `ComputeConfig` (`device`, `workers`, `persistent_pool`), each also as a
+  plain mapping. The twenty flat keywords `load` and `__init__` spelled twice are gone.
+- **`choices` is `draws`** everywhere: `SoftmaxSamplingConfig(draws=1024)`,
+  `PriorSamplingConfig(draws=1024)`, `fit(draws=)`, `FlashANSRModel.sample_top_kp(draws=)`,
+  `PriorSampler.draw(draws)`. The number of expressions drawn from the model's distribution for a
+  problem -- the search budget -- said what it was in every conversation and nowhere in the code.
+- **`emission` is a sampling policy**: `SoftmaxSamplingConfig(emission='fittable' | 'skeleton' |
+  'constants')`, no longer a per-call argument. The prior sampler needs none.
+- **The unconditioned decode is `SoftmaxSamplingConfig(guidance_weight=0.0)`**; the per-call
+  `conditioned=` spelled the same axis a second time. Refused at load on a checkpoint without a
+  null memory.
+- **`generate(X, y, variable_names='auto', *, draws=None, complexity=None, seed=None, verbose=False)
+  -> Generation`** is the public generation phase (was the private `_fit_generate`): the raw draws
+  as token ids with their log-likelihoods, the support set as read, the encoder memory and the
+  prompt. The tensor-level sampler dispatch is `_sample`.
+- **The auxiliary heads are private**: `_predict_y`, `_predict_constants`, `_predict_complexity`,
+  `_score_outliers` -- secondary, experimental surfaces for now.
+
+### Removed
+- `infer` (it is `fit`), `compile_results` (`result.rerank`), `save_results` / `load_results`
+  (`result.save` / `FitResult.load`), `ranking_config()` (`model.ranking.as_dict()`), the
+  `nth_best_beam` / `nth_best_constants` axes (`rank`), `converge_error` (`on_empty`, and the
+  ledger), `refine_seed` (`seed`), `X_val` / `predict_val` / `top_k` (`Candidate.evaluate`),
+  `PriorSamplingConfig.seed` (`fit(seed=)`), the flat `refiner_*` / `ranking_*` / `n_restarts` /
+  `refiner_workers` / `device` / `persistent_refine_pool` keywords of `load` and `__init__`.
+
+### Fixed
+- **The unconditioned decode runs again.** It expanded the learned `null_memory` over the SUPPORT
+  POINTS -- the fit path's data tensor is `(points, features)`, so its leading dimension is the
+  support size, not a batch -- and the decoder's cross-attention refused every call with more than
+  one data point in 0.16.1. The null memory now reaches the sampler as a batch of one. Regression
+  test `tests/test_unconditioned_fit.py`.
+
+### Docs
+- README, `docs/index.md`, `docs/getting_started.md`, `docs/faq.md`, `docs/api.md` and
+  `demo.ipynb` on the 0.17 surface; the v25.0-T8 series (`-3M`, `-20M`, `-120M`, public on the
+  Hub) is the reference, with the 20M in the quick start.
 
 ## [0.16.1] - 2026-09-12
 

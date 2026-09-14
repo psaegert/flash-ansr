@@ -82,7 +82,7 @@ class TestInference(unittest.TestCase):
         nsr = FlashANSR.load(
             directory=self.model_dir,
             generation_config=create_generation_config(
-                method="softmax_sampling", choices=4, max_len=32, batch_size=4,
+                method="softmax_sampling", draws=4, max_len=32, batch_size=4,
                 unique=True, limit_expansions=True, use_cache=True),
             n_restarts=2,
         ).to(self.device)
@@ -234,7 +234,7 @@ class TestInference(unittest.TestCase):
 
     def test_softmax_sampling_inference(self) -> None:
         generation_config = SoftmaxSamplingConfig(
-            choices=16,
+            draws=16,
             top_k=8,
             top_p=0.95,
             max_len=24,
@@ -250,15 +250,15 @@ class TestInference(unittest.TestCase):
         self._assert_valid_results(nsr)
 
     def test_softmax_sampling_batched_path(self) -> None:
-        # batch_size < choices routes to the batched (chunked, KV-cache-freeing) path,
+        # batch_size < draws routes to the batched (chunked, KV-cache-freeing) path,
         # which is what the deployed c=1024 / batch_size=128 config uses. Asserts the
-        # path produces valid results and never returns more than `choices` unique beams.
+        # path produces valid results and never returns more than `draws` unique beams.
         generation_config = SoftmaxSamplingConfig(
-            choices=16,
+            draws=16,
             top_k=8,
             top_p=0.95,
             max_len=24,
-            batch_size=4,  # < choices -> batched path (4 chunks, cross-chunk dedup)
+            batch_size=4,  # < draws -> batched path (4 chunks, cross-chunk dedup)
             temperature=0.8,
             simplify=True,
             unique=True,
@@ -270,16 +270,16 @@ class TestInference(unittest.TestCase):
         self._assert_valid_results(nsr)
 
     def test_softmax_sampling_auto_batch_single_shot(self) -> None:
-        # Regression: batch_size='auto' (the library default) at a small `choices` resolves to a
-        # batch >= choices, taking the single-shot path. Previously that path forwarded the
+        # Regression: batch_size='auto' (the library default) at a small `draws` resolves to a
+        # batch >= draws, taking the single-shot path. Previously that path forwarded the
         # unresolved 'auto' string to sample_top_kp -> `range(0, n, 'auto')` -> TypeError. The
         # resolved int must reach sample_top_kp regardless of which path is taken.
         generation_config = SoftmaxSamplingConfig(
-            choices=16,
+            draws=16,
             top_k=8,
             top_p=0.95,
             max_len=24,
-            batch_size='auto',  # resolves to >= choices -> single-shot path
+            batch_size='auto',  # resolves to >= draws -> single-shot path
             temperature=0.8,
             simplify=True,
             unique=True,

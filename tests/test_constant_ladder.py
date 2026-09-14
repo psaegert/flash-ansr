@@ -311,7 +311,7 @@ class TestPoolBound:
         counter: list[int] = []
         stub = self._stub(engine, bounded_cfg, counter)
         results = [stub._create_result_entry(payload=r, input_dim=N_VARIABLES) for r in fitted]
-        gs = SimpleNamespace(X_np=X, y_np=y.reshape(-1, 1), y_variance=float(np.var(y)))
+        gs = SimpleNamespace(X=X, y=y.reshape(-1, 1), y_variance=float(np.var(y)))
         harness.FlashANSR._run_bounded_ladder(stub, results, gs, input_dim=N_VARIABLES, converge_error="ignore", refine_seed=0, verbose=False)
         # the exact and the constant-free candidates are tried, the hopeless quadratic is not
         assert sum(counter) == 2

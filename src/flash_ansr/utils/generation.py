@@ -26,6 +26,9 @@ def validate_simplify(value: Any) -> bool:
     )
 
 
+EMISSION_MODES = ('fittable', 'skeleton', 'constants')
+
+
 class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
@@ -60,10 +63,24 @@ class GenerationConfigBase(Mapping[str, Any]):
 
 
 class SoftmaxSamplingConfig(GenerationConfigBase):
-    """Configuration for softmax sampling generation."""
+    """The decoder's sampling policy.
+
+    ``draws`` is the number of expressions drawn from the model's distribution for a problem -- the
+    search budget (``fit(draws=)`` overrides it per call); ``emission`` the format the model is
+    directed to use: ``'fittable'`` (the application mode: typed literals spelled, every fittable
+    constant left as a placeholder for the refiner), ``'skeleton'`` (placeholders only) or
+    ``'constants'`` (the unflagged training format, constants spelled as ieee754 spans);
+    ``temperature`` / ``top_k`` / ``top_p`` / ``max_len`` / ``unique`` / ``valid_only`` /
+    ``simplify`` shape the draw; ``guidance_weight`` (optional-condition models) combines the
+    conditioned and the unconditioned next-token logits, ``0.0`` being the pure unconditioned decode
+    from the learned null memory (the prior-decode control) and ``None`` / ``1.0`` the plain
+    conditioned decode; ``batch_size`` / ``use_cache`` / ``static_decode`` are the compute group,
+    quality-neutral.
+    """
 
     __slots__ = (
-        'choices',
+        'draws',
+        'emission',
         'top_k',
         'top_p',
         'max_len',
@@ -79,7 +96,8 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     )
 
     method: Literal['softmax_sampling']
-    choices: int
+    draws: int
+    emission: str
     top_k: int
     top_p: float
     max_len: int
@@ -96,7 +114,8 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     def __init__(
         self,
         *,
-        choices: int = 1024,
+        draws: int = 1024,
+        emission: str = 'fittable',
         top_k: int = 0,
         top_p: float = 1.0,
         max_len: int = 64,
@@ -110,8 +129,13 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         guidance_weight: float | None = None,   # classifier-free guidance (optcond models only); None=plain conditioned decode
         constrain_ieee754: bool = False,   # v24 grammar mask over <ieee754> spans (T6/T7)
     ) -> None:
+        if int(draws) < 1:
+            raise ValueError(f"softmax_sampling needs draws >= 1, got {draws!r}")
+        if emission not in EMISSION_MODES:
+            raise ValueError(f"emission must be one of {EMISSION_MODES}; got {emission!r}")
         self.method = 'softmax_sampling'
-        self.choices = choices
+        self.draws = int(draws)
+        self.emission = str(emission)
         self.top_k = top_k
         self.top_p = top_p
         self.max_len = max_len
@@ -126,9 +150,10 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         self.constrain_ieee754 = constrain_ieee754
 
     def to_kwargs(self) -> dict[str, Any]:
-        """Return the softmax-sampling keyword arguments (``choices``, ``top_k``, ``top_p``, ...)."""
+        """Return the softmax-sampling keyword arguments (``draws``, ``emission``, ``top_k``, ...)."""
         return {
-            'choices': self.choices,
+            'draws': self.draws,
+            'emission': self.emission,
             'top_k': self.top_k,
             'top_p': self.top_p,
             'max_len': self.max_len,
@@ -154,54 +179,50 @@ class PriorSamplingConfig(GenerationConfigBase):
     holdout to the draws (the training distribution). ``match_variables`` conditions the draws on
     the problem's number of input columns (relabeled onto them; draws with more variables are
     rejected), the one thing every regressor is told; ``False`` proposes the raw prior over the
-    catalog's whole variable set. ``seed`` fixes the draw stream.
+    catalog's whole variable set. ``fit(seed=)`` fixes the draw stream per call.
     """
 
-    __slots__ = ('choices', 'unique', 'valid_only', 'catalog', 'decontaminate', 'match_variables', 'seed', 'max_tries')
+    __slots__ = ('draws', 'unique', 'valid_only', 'catalog', 'decontaminate', 'match_variables', 'max_tries')
 
     method: Literal['prior_sampling']
-    choices: int
+    draws: int
     unique: bool
     valid_only: bool
     catalog: Any
     decontaminate: bool
     match_variables: bool
-    seed: int | None
     max_tries: int | None
 
     def __init__(
         self,
         *,
-        choices: int = 1024,
+        draws: int = 1024,
         unique: bool = True,
         valid_only: bool = True,
         catalog: Any = None,
         decontaminate: bool = True,
         match_variables: bool = True,
-        seed: int | None = None,
         max_tries: int | None = None,
     ) -> None:
-        if int(choices) < 1:
-            raise ValueError(f"prior_sampling needs choices >= 1, got {choices!r}")
+        if int(draws) < 1:
+            raise ValueError(f"prior_sampling needs draws >= 1, got {draws!r}")
         self.method = 'prior_sampling'
-        self.choices = int(choices)
+        self.draws = int(draws)
         self.unique = bool(unique)
         self.valid_only = bool(valid_only)
         self.catalog = catalog
         self.decontaminate = bool(decontaminate)
         self.match_variables = bool(match_variables)
-        self.seed = None if seed is None else int(seed)
         self.max_tries = None if max_tries is None else int(max_tries)
 
     def to_kwargs(self) -> dict[str, Any]:
         return {
-            'choices': self.choices,
+            'draws': self.draws,
             'unique': self.unique,
             'valid_only': self.valid_only,
             'catalog': self.catalog,
             'decontaminate': self.decontaminate,
             'match_variables': self.match_variables,
-            'seed': self.seed,
             'max_tries': self.max_tries,
         }
 
@@ -237,8 +258,8 @@ _FULL_CAP_MIN_VRAM_GB = 24.0
 _SMALL_CARD_BATCH_CAP = 64
 
 
-def suggest_batch_size(choices: int, n_params: int, vram_gb: float = 24.0) -> int:
-    """Conservative c-adaptive chunk size for softmax sampling: the largest power-of-2 <= ``choices``,
+def suggest_batch_size(draws: int, n_params: int, vram_gb: float = 24.0) -> int:
+    """Conservative c-adaptive chunk size for softmax sampling: the largest power-of-2 <= ``draws``,
     capped at a MEASURED-safe value per model size, applied only on cards >= 24 GiB.
 
     This is a *lookup*, NOT an analytic KV estimator: peak generation memory is dominated by
@@ -265,15 +286,15 @@ def suggest_batch_size(choices: int, n_params: int, vram_gb: float = 24.0) -> in
     # runtime dynamic spill-guard is the backstop). An explicit int batch_size bypasses this entirely.
     if vram_gb < _FULL_CAP_MIN_VRAM_GB:
         cap = min(cap, _SMALL_CARD_BATCH_CAP)
-    target = min(int(choices), cap)
+    target = min(int(draws), cap)
     b = 1
     while b * 2 <= target:
         b *= 2
-    return max(1, min(int(choices), b))
+    return max(1, min(int(draws), b))
 
 
 def suggest_batch_size_dims(
-    choices: int,
+    draws: int,
     *,
     n_layers: int,
     n_heads: int,
@@ -285,7 +306,7 @@ def suggest_batch_size_dims(
     safety_fraction: float = 0.7,
 ) -> int:
     """VRAM-GENERAL, architecture-driven chunk size for the STATIC-decode path -- the largest power-of-2
-    <= ``choices`` whose conservative per-row memory footprint fits in ``safety_fraction`` of FREE VRAM.
+    <= ``draws`` whose conservative per-row memory footprint fits in ``safety_fraction`` of FREE VRAM.
 
     Replaces the hardcoded 24GB lookup of :func:`suggest_batch_size` for the static path (the dynamic path
     keeps that measured lookup -- it is already validated and a conservative dims estimate would REGRESS its
@@ -312,16 +333,16 @@ def suggest_batch_size_dims(
 
     if free_bytes is None or per_row <= 0:
         # CPU / unknown card: keep a conservative power-of-2 floor, never extrapolate.
-        target = min(int(choices), 128)
+        target = min(int(draws), 128)
     else:
         budget = safety_fraction * float(free_bytes)
         cap = int(budget // per_row)
-        target = min(int(choices), cap)
+        target = min(int(draws), cap)
 
     b = 1
     while b * 2 <= target:
         b *= 2
-    return max(1, min(int(choices), b))
+    return max(1, min(int(draws), b))
 
 
 def _spill_over_budget(added_bytes: float, avail_bytes: float, fraction: float) -> bool:

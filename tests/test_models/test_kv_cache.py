@@ -152,12 +152,12 @@ class TestKVCacheSampling(unittest.TestCase):
         """Sampling with use_cache=True produces the same sequences."""
         torch.manual_seed(0)
         beams_no, scores_no, _ = self.nsr.sample_top_kp(
-            self.x, choices=8, max_len=10, use_cache=False,
+            self.x, draws=8, max_len=10, use_cache=False,
             unique=False, valid_only=False, simplify=False,
         )
         torch.manual_seed(0)
         beams_c, scores_c, _ = self.nsr.sample_top_kp(
-            self.x, choices=8, max_len=10, use_cache=True,
+            self.x, draws=8, max_len=10, use_cache=True,
             unique=False, valid_only=False, simplify=False,
         )
 
@@ -167,12 +167,12 @@ class TestKVCacheSampling(unittest.TestCase):
         """Sampling with use_cache=True produces the same log-prob scores."""
         torch.manual_seed(0)
         _, scores_no, _ = self.nsr.sample_top_kp(
-            self.x, choices=8, max_len=10, use_cache=False,
+            self.x, draws=8, max_len=10, use_cache=False,
             unique=False, valid_only=False, simplify=False,
         )
         torch.manual_seed(0)
         _, scores_c, _ = self.nsr.sample_top_kp(
-            self.x, choices=8, max_len=10, use_cache=True,
+            self.x, draws=8, max_len=10, use_cache=True,
             unique=False, valid_only=False, simplify=False,
         )
 
@@ -183,12 +183,12 @@ class TestKVCacheSampling(unittest.TestCase):
         """Equivalence holds with temperature scaling."""
         torch.manual_seed(99)
         beams_no, _, _ = self.nsr.sample_top_kp(
-            self.x, choices=6, max_len=10, temperature=0.5, use_cache=False,
+            self.x, draws=6, max_len=10, temperature=0.5, use_cache=False,
             unique=False, valid_only=False, simplify=False,
         )
         torch.manual_seed(99)
         beams_c, _, _ = self.nsr.sample_top_kp(
-            self.x, choices=6, max_len=10, temperature=0.5, use_cache=True,
+            self.x, draws=6, max_len=10, temperature=0.5, use_cache=True,
             unique=False, valid_only=False, simplify=False,
         )
 
@@ -198,27 +198,27 @@ class TestKVCacheSampling(unittest.TestCase):
         """Equivalence holds with top-k filtering."""
         torch.manual_seed(11)
         beams_no, _, _ = self.nsr.sample_top_kp(
-            self.x, choices=6, max_len=10, top_k=5, use_cache=False,
+            self.x, draws=6, max_len=10, top_k=5, use_cache=False,
             unique=False, valid_only=False, simplify=False,
         )
         torch.manual_seed(11)
         beams_c, _, _ = self.nsr.sample_top_kp(
-            self.x, choices=6, max_len=10, top_k=5, use_cache=True,
+            self.x, draws=6, max_len=10, top_k=5, use_cache=True,
             unique=False, valid_only=False, simplify=False,
         )
 
         self.assertEqual(beams_no, beams_c)
 
     def test_sampling_mini_batch(self):
-        """Equivalence holds when choices exceed batch_size (forces mini-batching)."""
+        """Equivalence holds when draws exceed batch_size (forces mini-batching)."""
         torch.manual_seed(3)
         beams_no, scores_no, _ = self.nsr.sample_top_kp(
-            self.x, choices=10, max_len=8, batch_size=4, use_cache=False,
+            self.x, draws=10, max_len=8, batch_size=4, use_cache=False,
             unique=False, valid_only=False, simplify=False,
         )
         torch.manual_seed(3)
         beams_c, scores_c, _ = self.nsr.sample_top_kp(
-            self.x, choices=10, max_len=8, batch_size=4, use_cache=True,
+            self.x, draws=10, max_len=8, batch_size=4, use_cache=True,
             unique=False, valid_only=False, simplify=False,
         )
 

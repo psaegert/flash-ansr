@@ -15,6 +15,7 @@ import numbers
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Literal, Any, Iterable, Iterator, Mapping, TypedDict, Callable, Sequence, TypeVar, cast
@@ -57,6 +58,7 @@ from flash_ansr.scoring import (
     non_dominated_ranks,
     normalize_variance,
     objective_vector,
+    order_rows,
     resolve_ranking,
     score_from_fvu,
     score_row,
@@ -68,16 +70,10 @@ from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finit
 from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS
 from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import pad_input_set
-from flash_ansr.inference import Candidate, InferenceResult, build_candidate_ledger, _best_constants
+from flash_ansr.inference import Candidate, FitResult, build_candidate_ledger, _best_constants
+from flash_ansr.estimator_config import RefineConfig, ComputeConfig, ranking_from
 from simplipy.engine import Mode
 
-from flash_ansr.results import (
-    RESULTS_FORMAT_VERSION,
-    deserialize_results_payload,
-    load_results_payload,
-    save_results_payload,
-    serialize_results_payload,
-)
 
 
 class Result(TypedDict):
@@ -168,6 +164,27 @@ def _resolve_refinement_arrays(payload: dict[str, Any]) -> tuple[np.ndarray, np.
     if X is None or y is None:
         raise RuntimeError("Refinement worker is missing shared input data.")
     return X, y
+
+
+@contextmanager
+def _seeded_generation(seed: int | None, *, prior_sampler: Any = None) -> Iterator[None]:
+    """Seed one draw: the prior sampler's stream, and torch's generators for softmax sampling
+    (saved and restored around the call, so a seeded fit leaves the global RNG state as it found
+    it). ``seed=None`` touches nothing."""
+    if seed is None:
+        yield
+        return
+    if prior_sampler is not None:
+        prior_sampler.reseed(int(seed))
+    cpu_state = torch.random.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    torch.manual_seed(int(seed))
+    try:
+        yield
+    finally:
+        torch.random.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
 
 
 def _candidate_refine_seed(refine_seed: int | None, tokens: Sequence[Any]) -> int:
@@ -729,7 +746,7 @@ def _fit_one_candidate(payload: dict[str, Any], simplipy_engine: Any,
 
 
 # --- parallel post-generation simplify (the c=32k generation lever; ~11x on the simplify portion) ---
-_SIMPLIFY_PARALLEL_THRESHOLD = 4096   # only fork for the simplify when choices >= this (else serial)
+_SIMPLIFY_PARALLEL_THRESHOLD = 4096   # only fork for the simplify when draws >= this (else serial)
 _SIMPLIFY_ENGINE: Any = None          # per-worker engine, set by the pool initializer (inherited via fork)
 _WORKER_THREAD_LIMITER: Any = None    # persistent-pool worker: kept-alive threadpoolctl limiter (single-thread BLAS)
 
@@ -780,34 +797,36 @@ def _simplify_pool_worker(raw_expr: tuple) -> tuple | None:
 
 
 @dataclass
-class GenState:
-    """Self-contained output of the GPU generation phase of ``fit`` (``_fit_generate``).
+class Generation:
+    """The output of :meth:`FlashANSR.generate`: the raw draws of one problem plus everything the
+    refinement phase needs, so the two phases share NO instance state (which is what lets an
+    overlapped engine generate problem N+1 while problem N refines).
 
-    Carries everything the CPU refinement phase needs, so the two phases share NO instance state.
-    This is what lets the overlapped engine run generation for problem N+1 while problem N refines.
+    ``raw_beams`` are the deduplicated draws as token ids (prompt prefix included), ``log_probs``
+    their summed token log-likelihoods; ``X`` / ``y`` the support set the model read (numpy, padded
+    to the model's width); ``memory`` the encoder memory the decoder attended to (the learned null
+    memory under ``guidance_weight=0``); ``prompt_prefix`` the prompt the draws continued.
     """
     raw_beams: list
     log_probs: list
-    X_np: np.ndarray
-    y_np: np.ndarray
+    X: np.ndarray
+    y: np.ndarray
     y_variance: float
     prompt_prefix: Any
-    memory_for_scoring: Any
+    memory: Any
     device: Any
     variable_mapping: dict
     complexity: Any
     generation_time: float
+    draws: int
+    seed: int | None = None
 
 
 @dataclass
-class FitResult:
-    """Self-contained output of the CPU refinement phase (``_fit_refine``).
-
-    Everything ``fit`` commits to instance state via ``_apply_fit_result``; nothing is written to
-    ``self`` during refinement, so a re-scheduled (overlapped) refinement cannot clobber ``self``.
-    """
+class _RefineOutcome:
+    """Output of the CPU refinement phase (``_fit_refine``): the ordered result rows (with their
+    refiners) and the phase time. Nothing is written to ``self`` during refinement."""
     results: list
-    results_df: "pd.DataFrame"
     refinement_time: float
     generation_time: float
     variable_mapping: dict
@@ -1188,31 +1207,17 @@ class FlashANSR(BaseEstimator):
             simplipy_engine: SimpliPyEngine,
             flash_ansr_model: FlashANSRModel,
             tokenizer: Tokenizer,
+            *,
             generation_config: GenerationConfig | None = None,
-            n_restarts: int = 8,
-            refiner_method: Literal[
-                'curve_fit_lm',
-                'minimize_bfgs',
-                'minimize_lbfgsb',
-                'minimize_neldermead',
-                'minimize_powell',
-                'least_squares_trf',
-                'least_squares_dogbox',
-            ] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
-            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
-            refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
-            refiner_typed_spans: TypedSpanPolicy = DEFAULT_TYPED_SPAN_POLICY,
-            constant_ladder: Mapping[str, Any] | bool | None = True,
-            numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            ranking_mode: str = 'mdl',
-            mdl_strength: float | None = None,
-            ranking_weights: dict[str, float] | None = None,
-            ranking_metrics: Sequence[str] | None = None,
-            ranking_tie_break: str | None = None,
-            refiner_workers: int | None = None,
-            prune_constant_budget: float | int = 0,
+            refine: RefineConfig | Mapping[str, Any] | None = None,
+            ranking: RankingConfig | Mapping[str, Any] | str | None = None,
+            compute: ComputeConfig | Mapping[str, Any] | None = None,
             model_directory: str | None = None):
+        """The estimator's POLICY, in four config objects (owner design 2026-09-14): the sampler
+        (``generation_config``), the refiner (``refine``), the candidate ranking (``ranking``) and
+        where it runs (``compute``). A call to :meth:`fit` describes the problem and the question;
+        nothing here changes per problem except the search budget, which ``fit(draws=)`` overrides.
+        Each config accepts its object or a plain mapping (a YAML config can spell it)."""
         self.simplipy_engine = simplipy_engine
         self.flash_ansr_model = flash_ansr_model.eval()
         self.tokenizer = tokenizer
@@ -1220,69 +1225,27 @@ class FlashANSR(BaseEstimator):
         self.model_directory = model_directory
         self._prior_sampler_cache: Any = None
 
-        if refiner_p0_noise_kwargs == 'default':
-            refiner_p0_noise_kwargs = {'loc': 0.0, 'scale': 5.0}
-
         if generation_config is None:
             generation_config = SoftmaxSamplingConfig()
 
         self.generation_config = generation_config
+        self.refine: RefineConfig = RefineConfig.from_mapping(refine)
+        # Validated in every mode at construction, so a metric typo cannot lie dormant until
+        # someone flips the mode. Read-only from here on; `FitResult.rerank` is call-scoped.
+        self.ranking: RankingConfig = ranking_from(ranking)
+        self.compute: ComputeConfig = ComputeConfig.from_mapping(compute)
         if getattr(generation_config, 'method', None) == 'prior_sampling':
             # Build the prior's catalog now (its holdout registration takes a minute): setup,
             # not the per-problem generation time a benchmark records.
             self._prior_sampler()
-        self.n_restarts = n_restarts
-        self.refiner_method = refiner_method
-        self.refiner_p0_noise = refiner_p0_noise
-        self.refiner_p0_noise_kwargs = copy.deepcopy(refiner_p0_noise_kwargs) if refiner_p0_noise_kwargs is not None else None
-        if refiner_scope not in ('placeholders', 'fittable', 'all'):
-            raise ValueError(f"refiner_scope must be 'placeholders', 'fittable' or 'all'; got {refiner_scope!r}")
-        # Which literals of a candidate the refiner may move (owner ruling 2026-09-02): the model
-        # predicts the typed literals (exponents, root indices), the refiner fits the rest.
-        self.refiner_scope: RefineScope = refiner_scope
-        if refiner_typed_spans not in TYPED_SPAN_POLICIES:
-            raise ValueError(f"refiner_typed_spans must be one of {TYPED_SPAN_POLICIES}; got {refiner_typed_spans!r}")
-        if refiner_scope == 'all':
-            # `refine_scope='all'` frees EVERY literal, typed ones included, so it already does what
-            # 'refine' asks and leaves nothing for a freeze to keep or a duplicate to thaw. Coerced
-            # rather than refused: asking for the widest scope should not also require restating the
-            # policy that scope implies.
-            refiner_typed_spans = 'refine'
-        # What happens to a PREDICTED literal in a typed position (see `TypedSpanPolicy`): the span
-        # mapper turns every predicted number into a '<constant>', so without this the exponent
-        # `refine_scope='fittable'` exists to protect arrives as a slot and is refined anyway.
-        self.refiner_typed_spans: TypedSpanPolicy = refiner_typed_spans
-        # Constant re-spelling after the fit (flash_ansr.spelling): opt-in, None = off.
-        self.constant_ladder: ConstantLadderConfig | None = ConstantLadderConfig.from_mapping(constant_ladder)
-        self.numpy_errors = numpy_errors
-        # Validated in every mode at construction, so a metric typo cannot lie dormant until
-        # someone flips the mode. Read-only from here on: compile_results() takes call-scoped
-        # overrides and never writes them back.
-        self.ranking: RankingConfig = resolve_ranking(
-            ranking_mode, mdl_strength=mdl_strength, weights=ranking_weights,
-            metrics=ranking_metrics, tie_break=ranking_tie_break)
-        self.prune_constant_budget = max(0.0, float(prune_constant_budget))
 
-        cpu_count = os.cpu_count() or 1
-
-        if refiner_workers is None:
-            resolved_workers = max(1, cpu_count)
-        elif isinstance(refiner_workers, numbers.Integral):
-            resolved_workers = max(0, int(refiner_workers))
-        else:
-            raise TypeError("refiner_workers must be an integer or None.")
-
-        self.refiner_workers = resolved_workers
-        # Parallelize the post-generation simplify across `refiner_workers` (gated to choices >=
+        # Parallelize the post-generation simplify across `refiner_workers` (gated to draws >=
         # _SIMPLIFY_PARALLEL_THRESHOLD; byte-identical to serial). Set False to force serial.
         self.parallel_simplify = True
 
-        self._results: list[Result] = []
-        self.results: pd.DataFrame = pd.DataFrame()
-
-        self._input_dim: int | None = None
-
-        self.variable_mapping: dict[str, str] = {}
+        #: The result of the last :meth:`fit` (``None`` before the first); `predict`,
+        #: `get_expression` and `results` read it.
+        self.result_: FitResult | None = None
         self._prompt_prefix: PromptPrefix | None = None
 
         # Optional persistent pre-CUDA fork pool (inference-speed Step 3). When set (via
@@ -1305,101 +1268,49 @@ class FlashANSR(BaseEstimator):
     def load(
             cls,
             directory: str,
+            *,
             generation_config: GenerationConfig | None = None,
-            n_restarts: int = 8,
-            refiner_method: Literal[
-                'curve_fit_lm',
-                'minimize_bfgs',
-                'minimize_lbfgsb',
-                'minimize_neldermead',
-                'minimize_powell',
-                'least_squares_trf',
-                'least_squares_dogbox',
-            ] = 'curve_fit_lm',
-            refiner_p0_noise: Literal['uniform', 'normal', 'cauchy', 'magspan'] | None = 'normal',
-            refiner_p0_noise_kwargs: dict | None | Literal['default'] = 'default',
-            refiner_scope: RefineScope = DEFAULT_REFINE_SCOPE,
-            refiner_typed_spans: TypedSpanPolicy = DEFAULT_TYPED_SPAN_POLICY,
-            constant_ladder: Mapping[str, Any] | bool | None = True,
-            numpy_errors: Literal['ignore', 'warn', 'raise', 'call', 'print', 'log'] | None = 'ignore',
-            ranking_mode: str = 'mdl',
-            mdl_strength: float | None = None,
-            ranking_weights: dict[str, float] | None = None,
-            ranking_metrics: Sequence[str] | None = None,
-            ranking_tie_break: str | None = None,
-            device: str = 'cpu',
-            refiner_workers: int | None = None,
-            prune_constant_budget: float | int = 0,
-            persistent_refine_pool: bool = False) -> "FlashANSR":
-        """Instantiate a `FlashANSR` model from a configuration directory.
+            refine: RefineConfig | Mapping[str, Any] | None = None,
+            ranking: RankingConfig | Mapping[str, Any] | str | None = None,
+            compute: ComputeConfig | Mapping[str, Any] | None = None) -> "FlashANSR":
+        """Instantiate a `FlashANSR` estimator from a checkpoint directory.
 
         Parameters
         ----------
         directory : str
-            Directory that contains ``model.yaml``, ``tokenizer.yaml`` and
-            ``model.safetensors`` artifacts.
-        generation_config : GenerationConfig, optional
-            Generation parameters to override defaults during candidate search.
-        n_restarts : int, optional
-            Number of restarts passed to the refiner.
-        refiner_method : {'curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead', 'minimize_powell', 'least_squares_trf', 'least_squares_dogbox'}
-            Optimization routine for constant fitting.
-        refiner_p0_noise : {'uniform', 'normal', 'cauchy', 'magspan'}, optional
-            Distribution used to perturb initial constant guesses.
-        refiner_p0_noise_kwargs : dict or {'default'} or None, optional
-            Additional keyword arguments for the noise sampler. ``'default'``
-            resolves to ``{'loc': 0.0, 'scale': 5.0}``.
-        numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
-            NumPy floating-point error policy applied during refinement.
-        ranking_mode, mdl_strength, ranking_weights, ranking_metrics, ranking_tie_break : optional
-            The candidate ranking; see :class:`FlashANSR`.
-        device : str, optional
-            Torch device where the model weights will be loaded.
-        constant_ladder : mapping or bool or None, optional
-        Constant re-spelling after the fit (``flash_ansr.spelling``). For every fitted candidate each
-        constant is offered its cheaper spellings (integer, small fraction, rounding, pi or e
-        multiple, zero); the fit's curvature predicts their score, the best are frozen as literals
-        and the rest re-fitted once, and the re-spelled candidate joins the pool beside its parent
-        only if its score beats the parent's (a tie replaces the parent). ``True`` (default) = the
-        defaults: fractions only when the continued-fraction surprise test passes
-        (``fraction_surprise='denominator'``) and roundings to 1..8 digits, on EVERY fitted
-        candidate so the fit-quality / MDL Pareto front stays intact (``pool_bound=True`` restricts
-        the pass to the candidates that could still reach rank 0, for time-budgeted runs where only
-        the returned answer matters). ``None``/``False`` = off. A mapping overrides ``fraction_surprise``,
-        ``pool_bound``, ``max_denominator`` (1000), ``digits``, ``special_constants``
-        (('np.pi', 'np.e')), ``max_relative_step`` (0.5), ``max_decades`` (1.0),
-        ``confirm_decades`` (0.1), ``n_restarts`` (1).
-    refiner_workers : int or None, optional
-            Desired worker-pool size for constant refinement. ``None`` uses the
-            number of available CPU cores, integers select an explicit pool size,
-            and ``0`` disables multiprocessing. Mirrors the constructor parameter.
-        prune_constant_budget : int, optional
-            Number of top beams (by FVU) or fraction of beams (if 0<value<=1)
-            to prune after initial refinement when pruning is enabled.
-        persistent_refine_pool : bool, optional
-            When ``True`` a single persistent ``fork`` worker pool is forked BEFORE any CUDA init and
-            reused across ``fit()`` calls for both refinement and the parallel post-generation
-            simplify (instead of forking a fresh pool per call). For a CUDA ``device`` the weights are
-            loaded on CPU first, the engine is warmed, the pool is forked, and only then is the model
-            moved to the device -- the structural mitigation for the fork-after-CUDA deadlock family.
-            Requires the ``fork`` start method and ``refiner_workers > 1``; otherwise it is a no-op and
-            the legacy per-call-fork path is used. Opt-in; the default preserves today's behaviour
-            byte-for-byte.
+            Directory that contains ``model.yaml``, ``tokenizer.yaml`` and ``model.safetensors``.
+        generation_config : SoftmaxSamplingConfig or PriorSamplingConfig, optional
+            The sampler's policy (the draw budget, the emission format, temperature, ...). Default:
+            ``SoftmaxSamplingConfig()``.
+        refine : RefineConfig or mapping, optional
+            The refiner's policy (optimizer, restarts, scope, typed spans, the constant ladder,
+            constant pruning, the numpy error policy). Default: ``RefineConfig()``.
+        ranking : RankingConfig or mapping or str, optional
+            The candidate ranking: ``'mdl'`` (default: ``log10(FVU)`` plus ``1e-2`` decades per bit
+            of the refined expression's description length), ``'weighted'`` or ``'pareto'``, with
+            that mode's knobs as a mapping (``{'mode': 'mdl', 'mdl_strength': 1e-2}``).
+        compute : ComputeConfig or mapping, optional
+            The torch ``device``, the refiner ``workers`` (``None`` = every core, ``0`` = serial) and
+            ``persistent_pool`` (one worker pool forked BEFORE any CUDA initialization and reused
+            across calls: the structural mitigation for the fork-after-CUDA deadlock family; requires
+            the ``fork`` start method and more than one worker, otherwise a no-op).
 
         Returns
         -------
         model : FlashANSR
-            Fully initialized regressor ready for inference.
+            Fully initialized estimator, on ``compute.device``.
         """
         directory = substitute_root_path(directory)
+        compute_cfg = ComputeConfig.from_mapping(compute)
+        device = compute_cfg.device
 
         flash_ansr_model_path = os.path.join(directory, 'model.yaml')
         tokenizer_path = os.path.join(directory, 'tokenizer.yaml')
 
         # When a persistent pre-CUDA pool is requested for a non-CPU device, defer the device move:
         # load weights on CPU (incl. map_location, which also touches CUDA otherwise) so the pool can
-        # be forked while CUDA is still uninitialized. The flag-off path is unchanged.
-        defer_cuda = persistent_refine_pool and str(device) != 'cpu'
+        # be forked while CUDA is still uninitialized.
+        defer_cuda = compute_cfg.persistent_pool and str(device) != 'cpu'
         load_device = 'cpu' if defer_cuda else device
 
         model = FlashANSRModel.from_config(flash_ansr_model_path)
@@ -1414,25 +1325,15 @@ class FlashANSR(BaseEstimator):
             tokenizer=tokenizer,
             model_directory=directory,
             generation_config=generation_config,
-            n_restarts=n_restarts,
-            refiner_method=refiner_method,
-            refiner_p0_noise=refiner_p0_noise,
-            refiner_p0_noise_kwargs=refiner_p0_noise_kwargs,
-            refiner_scope=refiner_scope,
-            refiner_typed_spans=refiner_typed_spans,
-            constant_ladder=constant_ladder,
-            numpy_errors=numpy_errors,
-            ranking_mode=ranking_mode,
-            mdl_strength=mdl_strength,
-            ranking_weights=ranking_weights,
-            ranking_metrics=ranking_metrics,
-            ranking_tie_break=ranking_tie_break,
-            refiner_workers=refiner_workers,
-            prune_constant_budget=prune_constant_budget)
+            refine=refine,
+            ranking=ranking,
+            compute=compute_cfg)
 
-        if persistent_refine_pool:
+        if compute_cfg.persistent_pool:
             # Warm the engine + fork the pool (pre-CUDA), then move the model to the target device.
             nsr._enable_persistent_refine_pool(target_device=device)
+        elif defer_cuda:
+            nsr.to(device)
 
         return nsr
 
@@ -1553,6 +1454,62 @@ class FlashANSR(BaseEstimator):
         """Number of variables the model was trained on."""
         return self.flash_ansr_model.encoder_max_n_variables - 1
 
+    # Read-only views of the config objects (the names the pipeline reads).
+    @property
+    def n_restarts(self) -> int:
+        return self.refine.n_restarts
+
+    @property
+    def refiner_method(self) -> str:
+        return self.refine.method
+
+    @property
+    def refiner_p0_noise(self) -> str | None:
+        return self.refine.p0_noise
+
+    @property
+    def refiner_p0_noise_kwargs(self) -> dict[str, Any] | None:
+        return None if self.refine.p0_noise_kwargs is None else dict(self.refine.p0_noise_kwargs)
+
+    @property
+    def refiner_scope(self) -> RefineScope:
+        return self.refine.scope
+
+    @property
+    def refiner_typed_spans(self) -> TypedSpanPolicy:
+        return self.refine.typed_spans
+
+    @property
+    def constant_ladder(self) -> ConstantLadderConfig | None:
+        return self.refine.ladder
+
+    @property
+    def numpy_errors(self) -> str | None:
+        return self.refine.numpy_errors
+
+    @property
+    def prune_constant_budget(self) -> float:
+        return self.refine.prune_constant_budget
+
+    @property
+    def refiner_workers(self) -> int:
+        return self.compute.resolved_workers
+
+    @property
+    def results(self) -> pd.DataFrame:
+        """The last fit's refined candidates as a DataFrame (``result_.to_dataframe()``)."""
+        return self._require_result().to_dataframe()
+
+    @property
+    def variable_mapping(self) -> dict[str, str]:
+        """The last fit's variable mapping (``x1..xN`` -> the caller's names)."""
+        return dict(self.result_.variable_mapping) if self.result_ is not None else {}
+
+    def _require_result(self) -> FitResult:
+        if self.result_ is None:
+            raise ValueError("The model has not been fitted yet. Please call the fit method first.")
+        return self.result_
+
     def _validate_checkpoint(self) -> None:
         """Refuse a checkpoint this harness does not serve, at LOAD time.
 
@@ -1570,6 +1527,11 @@ class FlashANSR(BaseEstimator):
                 f"This checkpoint's vocabulary has no {IEEE754_START_TOKEN} token, so it is not a "
                 f"v24 (mixed-representation) model. flash-ansr serves v24+ only; use a 0.14.x "
                 f"release to run an earlier checkpoint.")
+        guidance_weight = getattr(self.generation_config, 'guidance_weight', None)
+        if guidance_weight is not None and not getattr(self.flash_ansr_model, 'optional_condition', False):
+            raise CapabilityUnavailable(
+                "guidance_weight needs a model trained with optional_condition=True (the learned "
+                "null_memory); this checkpoint has no unconditioned mode.")
 
     def _truncate_input(self, X: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor | pd.DataFrame:
         """Limit input features to the number of variables seen during training.
@@ -1657,7 +1619,7 @@ class FlashANSR(BaseEstimator):
                 decontaminate=bool(getattr(config, 'decontaminate', True)), seed=getattr(config, 'seed', None))
         return self._prior_sampler_cache
 
-    def generate(
+    def _sample(
         self,
         data: torch.Tensor,
         *,
@@ -1666,8 +1628,13 @@ class FlashANSR(BaseEstimator):
         verbose: bool = False,
         memory: torch.Tensor | None = None,
         n_active_variables: int | None = None,
+        draws: int | None = None,
     ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
-        """Generate candidate expression beams from the transformer.
+        """Draw candidate expression beams from the sampler for one prepared data tensor.
+
+        The public entry point is :meth:`generate`, which prepares the data; this is the sampler
+        dispatch (the decoder's softmax sampling or the training prior). ``draws`` overrides the
+        generation config's budget for this call.
 
         Parameters
         ----------
@@ -1711,6 +1678,9 @@ class FlashANSR(BaseEstimator):
         """
 
         generation_kwargs = self.generation_config.to_kwargs()
+        if draws is not None:
+            generation_kwargs['draws'] = int(draws)
+        generation_kwargs.pop('emission', None)   # a prompt-prefix matter, resolved by `generate`
 
         effective_prompt = prompt_prefix
         if effective_prompt is None and complexity is not None:
@@ -1728,18 +1698,18 @@ class FlashANSR(BaseEstimator):
                         "'neg_log_prob'; use ranking_mode='mdl' or weights without it.")
                 match = bool(generation_kwargs.get('match_variables', True))
                 return self._prior_sampler().draw(
-                    int(generation_kwargs.get('choices', 1)),
+                    int(generation_kwargs.get('draws', 1)),
                     unique=bool(generation_kwargs.get('unique', True)),
                     valid_only=bool(generation_kwargs.get('valid_only', True)),
                     max_tries=generation_kwargs.get('max_tries'),
                     n_variables=(int(n_active_variables) if (match and n_active_variables is not None) else None),
                 )
             case 'softmax_sampling':
-                choices_target = int(generation_kwargs.get('choices', 1))
+                choices_target = int(generation_kwargs.get('draws', 1))
                 generation_kwargs = dict(generation_kwargs)  # local copy; resolve sentinels into it
 
                 # --- Resolve static-decode (multi-chunk regime) + the c-adaptive batch TOGETHER ---
-                # The static arm's chunk batch is BOTH the regime probe (static iff batch < choices) AND the
+                # The static arm's chunk batch is BOTH the regime probe (static iff batch < draws) AND the
                 # batch the static decode uses -> compute it ONCE here, thread it into the resolver, and reuse
                 # it below (so the regime decision and the decode can never disagree on a free-VRAM race).
                 # No per-(scale,c) table, no hardware gate: the regime is read from the card's own free VRAM,
@@ -1776,7 +1746,7 @@ class FlashANSR(BaseEstimator):
                             static_decode=True, free_bytes=_free)
 
                 _static = self.flash_ansr_model._resolve_static_decode(
-                    _static_kwarg, choices=choices_target, static_batch=_static_batch)
+                    _static_kwarg, draws=choices_target, static_batch=_static_batch)
                 generation_kwargs['static_decode'] = _static
 
                 # Resolve the ACTUAL chunk batch. Static reuses _static_batch (the exact value the regime used);
@@ -1803,7 +1773,7 @@ class FlashANSR(BaseEstimator):
                                 pass
                         _raw_bs = suggest_batch_size(choices_target, self._n_params, _vram_gb)
                     if verbose:
-                        print(f"[auto batch] choices={choices_target} static={_static} -> batch_size={_raw_bs}")
+                        print(f"[auto batch] draws={choices_target} static={_static} -> batch_size={_raw_bs}")
                 # Clamp to >= 1 so a misconfigured batch_size <= 0 cannot stall the batched loop below
                 # (this_chunk would be 0 and ``drawn`` never advance). Write the RESOLVED int back so no
                 # downstream path (esp. the single-shot path, which forwards generation_kwargs verbatim)
@@ -1891,7 +1861,7 @@ class FlashANSR(BaseEstimator):
                     while drawn < choices_target:
                         this_chunk = min(batch_size, choices_target - drawn)
                         ck = dict(generation_kwargs)
-                        ck['choices'] = this_chunk
+                        ck['draws'] = this_chunk
                         ck['batch_size'] = this_chunk
                         ck.pop('return_raw', None)
                         raw_seqs, raw_scores = self.flash_ansr_model.sample_top_kp(
@@ -1941,7 +1911,7 @@ class FlashANSR(BaseEstimator):
                 while drawn < choices_target:
                     this_chunk = min(batch_size, choices_target - drawn)
                     chunk_kwargs = dict(generation_kwargs)
-                    chunk_kwargs['choices'] = this_chunk
+                    chunk_kwargs['draws'] = this_chunk
                     chunk_kwargs['batch_size'] = this_chunk
                     beams_c, log_probs_c, completed_c, _ = run_softmax_sampling(
                         self.flash_ansr_model,
@@ -2099,14 +2069,19 @@ class FlashANSR(BaseEstimator):
             X: np.ndarray | torch.Tensor | pd.DataFrame,
             y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
-            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-            verbose: bool = False,
             *,
+            draws: int | None = None,
             complexity: int | float | None = None,
-            emission: str = 'fittable',
-            conditioned: bool = True,
-            refine_seed: int | None = None) -> None:
-        """Perform symbolic regression on ``(X, y)`` and refine candidate expressions.
+            seed: int | None = None,
+            on_empty: Literal['return', 'raise'] = 'return',
+            verbose: bool = False) -> FitResult:
+        """Symbolic regression on ``(X, y)``: draw candidates, fit their constants, rank them.
+
+        Returns the :class:`~flash_ansr.inference.FitResult` (the score-sorted refined candidates,
+        the full candidate ledger, the ranking that ordered them and the phase times) and keeps it
+        as ``self.result_``, which :meth:`predict`, :meth:`get_expression` and :attr:`results` read.
+        The estimator's policy (sampler, refiner, ranking, compute) is fixed at construction; this
+        call carries only the problem and the question.
 
         Parameters
         ----------
@@ -2115,91 +2090,145 @@ class FlashANSR(BaseEstimator):
         y : ndarray or Tensor or DataFrame or Series
             Target values. Multi-output targets are unsupported.
         variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
-            Mapping from internal variable tokens to descriptive names.
-        converge_error : {'raise', 'ignore', 'print'}, optional
-            Handling strategy when the refiner fails to converge.
-        emission : {'constants', 'skeleton', 'fittable'}, optional
-            Emission FORMAT the model is directed to use, by default ``'fittable'`` -- the
-            application mode (owner ruling 2026-09-02): ``<mask_fittable>`` makes the model
-            spell the typed literals (pow exponents, rootn indices) and leave every fittable
-            constant as a placeholder for the refiner. ``'skeleton'`` sends ``<mask_all>``
-            (placeholders only; the refiner fits every slot) and ``'constants'`` is the
-            unflagged training format, where constants are spelled out as ieee754 spans.
-            Raises ``CapabilityUnavailable`` on a checkpoint whose vocabulary lacks the flag.
-        verbose : bool, optional
-            If ``True`` progress bars and diagnostic output are displayed.
+            Names for the columns (``'auto'``: a DataFrame's column names, else ``x1..xN``).
+        draws : int, optional
+            The search budget for this call, overriding the generation config's ``draws``.
         complexity : int or float or None, optional
-            Keyword-only target complexity in **simplipy mu** -- the unit
-            ``simplipy_engine.complexity(skeleton)`` returns, where a ``<constant>`` prices one
-            symbol unit. It runs roughly 1e3-1e6, NOT a token count. :meth:`predict_complexity`
-            produces a value on this scale and ``Candidate.mu`` reports it back, so a value can
-            round-trip. Emitted as the trained bare ``<complexity>`` block.
-        refine_seed : int or None, optional
-            Keyword-only seed for the constant-refinement ``p0`` noise. When
-            provided, the per-candidate refiner seeds are derived deterministically
-            from it (via ``np.random.SeedSequence(refine_seed)``), so refinement is
-            reproducible and independent of completion order. When ``None`` (the
-            default) fresh OS entropy is used, preserving the legacy behaviour.
+            Target complexity in **simplipy mu** -- the unit ``simplipy_engine.complexity(skeleton)``
+            returns (roughly 1e3-1e6, NOT a token count); ``Candidate.mu`` reports it back, so a
+            value can round-trip. Emitted as the trained bare ``<complexity>`` block.
+        seed : int or None, optional
+            Seeds the draw and the constant refinement (per-candidate refiner seeds are derived
+            from it through ``np.random.SeedSequence``, so refinement is reproducible and
+            independent of completion order). Softmax sampling on a GPU is best-effort only.
+        on_empty : {'return', 'raise'}, optional
+            What to do when NO candidate fitted: return the (empty) result with its ledger, or
+            raise :class:`ConvergenceError`. A candidate whose refinement fails is never an error;
+            it is a ``FIT_FAILED`` row of the ledger.
+        verbose : bool, optional
+            Progress bars and the refiner's convergence warnings.
 
         Raises
         ------
         ValueError
-            If ``y`` has more than one output dimension or cannot be reshaped.
+            If ``y`` has more than one output dimension or ``X`` carries non-finite values.
+        ConvergenceError
+            Under ``on_empty='raise'``, when no candidate fitted.
         """
-        # TODO: Support lists
-        # TODO: Support 0-d and 1-d tensors
+        if on_empty not in ('return', 'raise'):
+            raise ValueError(f"on_empty must be 'return' or 'raise'; got {on_empty!r}")
+        self.result_ = None
 
-        # Reset per-fit instance state up front so a ConvergenceError mid-fit leaves a clean (not
-        # stale) view for library callers; the eval adapter ignores self on the error path.
-        self._results = []
-        self.results = pd.DataFrame()
-        self._input_dim = None
-        self.variable_mapping = {}
-        self._generation_time = 0.0
-        self._refinement_time = 0.0
-
-        # Adopt the configured floating-point error policy for refinement; try/finally restores it
-        # even when refinement raises ConvergenceError (which must still propagate to the caller).
         numpy_errors_before = np.geterr()
         np.seterr(all=self.numpy_errors)
         try:
-            gen_state = self._fit_generate(
-                X, y, variable_names,
-                emission=emission,
-                complexity=complexity,
-                conditioned=conditioned,
+            generation = self.generate(X, y, variable_names, draws=draws, complexity=complexity, seed=seed, verbose=verbose)
+            outcome = self._fit_refine(
+                generation,
+                converge_error='print' if verbose else 'ignore',
+                refine_seed=seed,
                 verbose=verbose,
+                allow_empty=True,
             )
-            # Generation-phase state, applied so callers see it even if refinement raises.
-            self.variable_mapping = gen_state.variable_mapping
-            self._generation_time = gen_state.generation_time
-
-            fit_result = self._fit_refine(
-                gen_state,
-                converge_error=converge_error,
-                refine_seed=refine_seed,
-                verbose=verbose,
-            )
-            self._apply_fit_result(fit_result)
         finally:
             np.seterr(**numpy_errors_before)
 
-    def _fit_generate(
+        result = self._build_result(generation, outcome)
+        self.result_ = result
+        if on_empty == 'raise' and not result.candidates:
+            raise ConvergenceError("The optimization did not converge for any beam")
+        return result
+
+    def _build_result(self, generation: "Generation", outcome: "_RefineOutcome") -> FitResult:
+        """The public result from the ordered refined rows: plain-data candidates + the ledger."""
+        results = outcome.results  # already ordered by _order_results
+
+        def _decode_expr(raw_beam: list[int]) -> list[str] | None:
+            expr_ids = self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0]
+            return self._ensure_explicit_dialect(self.tokenizer.decode_expression(expr_ids))
+
+        ledger = build_candidate_ledger(
+            generation.raw_beams, generation.log_probs, results,
+            decode_expr=_decode_expr, is_valid=self.simplipy_engine.is_valid,
+        )
+        variable_mapping = outcome.variable_mapping
+        candidates: list[Candidate] = []
+        for rank, r in enumerate(results):
+            refiner = r['refiner']
+            expression_prefix = refiner.transform(expression=r['expression'], return_prefix=True, variable_mapping=None)
+            expression_infix = refiner.transform(expression=r['expression'], return_prefix=False, variable_mapping=variable_mapping)
+            skeleton_prefix = normalize_skeleton(r['expression'])
+            candidates.append(Candidate(
+                raw_beam=list(r['raw_beam']),
+                expression=list(r['expression']),
+                slots=[int(i) for i in getattr(refiner, 'slot_indices', [])],
+                expression_prefix=list(expression_prefix) if expression_prefix is not None else [],
+                expression_infix=str(expression_infix),
+                skeleton_prefix=list(skeleton_prefix) if skeleton_prefix is not None else [],
+                constants=_best_constants(r),
+                constants_emitted=(list(r['constants_emitted']) if r.get('constants_emitted') is not None else None),
+                log_prob=float(r.get('log_prob', float('nan'))),
+                score=float(r.get('score', float('nan'))),
+                fvu=float(r.get('fvu', float('nan'))),
+                n_nodes=int(r.get('complexity', len(r['expression']))),
+                # mu, NOT the token count: fit(complexity=) consumes simplipy mu (1e3-1e6) while
+                # `complexity` above is a token count (~1e1). Computed here (bounded by the refined
+                # survivors), never per beam.
+                mu=self._skeleton_mu(skeleton_prefix),
+                # The RANKING currency, priced by the refine worker on the REALIZED expression.
+                # Read through, never recomputed here.
+                mdl=r.get('mdl'),
+                constant_count=int(r.get('constant_count', 0)),
+                pruned_variant=bool(r.get('pruned_variant', False)),
+                pareto_rank=int(r.get('pareto_rank', PARETO_RANK_NOT_COMPUTED)),
+                rank=rank,
+                spelling=r.get('spelling'),
+                typed_frozen=int(r.get('typed_frozen', 0) or 0),
+                typed_thaw=r.get('typed_thaw'),
+            ))
+        return FitResult(
+            candidates=candidates,
+            ledger=ledger,
+            generation_time=generation.generation_time,
+            refinement_time=outcome.refinement_time,
+            ranking=self.ranking,
+            n_variables=self.n_variables,
+            variable_mapping=dict(variable_mapping or {}),
+            draws=generation.draws,
+            engine=self.simplipy_engine,
+        )
+
+    def generate(
             self,
             X: np.ndarray | torch.Tensor | pd.DataFrame,
             y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             *,
+            draws: int | None = None,
             complexity: int | float | None = None,
-            emission: str = 'fittable',
-            conditioned: bool = True,
-            verbose: bool = False) -> "GenState":
-        """GPU generation phase of :meth:`fit`: prepare inputs, sample candidates, return a GenState.
+            seed: int | None = None,
+            verbose: bool = False) -> "Generation":
+        """The generation phase alone: read ``(X, y)``, draw candidates, return a :class:`Generation`.
 
-        Writes NOTHING to ``self`` (the serial ``fit`` and the overlapped engine apply the returned
-        state), so generation for problem N+1 cannot clobber problem N's refinement. (NB
-        ``_prepare_prompt_prefix`` still sets ``self._prompt_prefix``; refinement reads the prefix
-        from the returned GenState, not from ``self``, so that write is benign.)
+        :meth:`fit` is this followed by refinement and ranking. Writes NOTHING to ``self``, so a
+        caller that wants the raw draws (their token ids, log-likelihoods, the encoder memory and
+        the prompt they continued) gets them without touching the fitted state.
+
+        Parameters
+        ----------
+        X, y : array-like
+            The support set: ``(n_points, n_columns)`` features and ``(n_points,)`` targets.
+        variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
+            Names for the columns (``'auto'``: a DataFrame's column names, else ``x1..xN``).
+        draws : int, optional
+            The search budget for this call; ``None`` = the generation config's ``draws``.
+        complexity : int or float, optional
+            A target complexity in simplipy mu for the trained ``<complexity>`` block.
+        seed : int, optional
+            Seeds the draw: the prior sampler's stream, or the torch generator for softmax
+            sampling (best-effort on a GPU, whose kernels are not bitwise reproducible).
+        verbose : bool, optional
+            Progress bars.
         """
         if len(X.shape) == 1:
             X = X.reshape(-1, 1)
@@ -2307,59 +2336,56 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
-            if conditioned:
-                memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
-            else:
+            guidance_weight = getattr(self.generation_config, 'guidance_weight', None)
+            if guidance_weight is not None and float(guidance_weight) == 0.0:
                 # The trained UNCONDITIONED mode (condition_dropout): the learned null_memory
                 # replaces the encoder's, so candidates come from the model's PRIOR over
                 # expressions rather than from this data set. The data is still used downstream --
                 # refinement fits the constants and scores the fits -- which makes this the
-                # "propose from the prior, fit to the data" arm, not a blind decode.
-                model = self.flash_ansr_model
-                if not getattr(model, "optional_condition", False):
-                    raise CapabilityUnavailable(
-                        "fit(conditioned=False) needs a model trained with optional_condition=True "
-                        "(the learned null_memory); this checkpoint has no unconditioned mode.")
-                # Pin to null_memory's OWN dtype (the model's parameter dtype), not to the
-                # data's: memory feeds the decoder's cross-attention projections, which are
-                # parameters. data_tensor is binary64 encoder INPUT and stops at the pre-encoder.
-                # One problem, so batch 1: the sampler broadcasts a batch-1 memory over its
-                # candidates. (data_tensor is (points, features) here -- its leading dimension is
-                # the support size, not a batch -- so expanding over it fed the decoder one memory
-                # row per data point and the cross-attention refused the batch.)
-                memory_for_scoring = model.null_memory.detach().to(device=data_tensor.device)
+                # "propose from the prior, fit to the data" arm, not a blind decode. One problem,
+                # so batch 1: the sampler broadcasts a batch-1 memory over its candidates.
+                memory_for_scoring = self.flash_ansr_model.null_memory.detach().to(device=data_tensor.device)
+            else:
+                memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
 
+            is_prior = getattr(self.generation_config, 'method', None) == 'prior_sampling'
+            emission = 'constants' if is_prior else str(getattr(self.generation_config, 'emission', 'fittable'))
             prompt_prefix = self._prepare_prompt_prefix(
                 emission=emission,
                 complexity=complexity,
             )
 
+            resolved_draws = int(draws) if draws is not None else int(getattr(self.generation_config, 'draws', 1))
             _t_gen = time.time()
-            raw_beams, log_probs, _completed_flags, _rewards = self.generate(
-                data_tensor,
-                prompt_prefix=prompt_prefix,
-                complexity=complexity,
-                verbose=verbose,
-                memory=memory_for_scoring,
-                n_active_variables=n_input_columns,
-            )
+            with _seeded_generation(seed, prior_sampler=(self._prior_sampler() if is_prior else None)):
+                raw_beams, log_probs, _completed_flags, _rewards = self._sample(
+                    data_tensor,
+                    prompt_prefix=prompt_prefix,
+                    complexity=complexity,
+                    verbose=verbose,
+                    memory=memory_for_scoring,
+                    n_active_variables=n_input_columns,
+                    draws=resolved_draws,
+                )
             generation_time = time.time() - _t_gen
 
             X_np = X.cpu().numpy()
             y_np = y.cpu().numpy()
 
-        return GenState(
+        return Generation(
             raw_beams=raw_beams,
             log_probs=log_probs,
-            X_np=X_np,
-            y_np=y_np,
+            X=X_np,
+            y=y_np,
             y_variance=y_variance,
             prompt_prefix=prompt_prefix,
-            memory_for_scoring=memory_for_scoring,
+            memory=memory_for_scoring,
             device=data_tensor.device,
             variable_mapping=variable_mapping,
             complexity=complexity,
             generation_time=generation_time,
+            draws=resolved_draws,
+            seed=seed,
         )
 
     @property
@@ -2368,7 +2394,7 @@ class FlashANSR(BaseEstimator):
         ladder = getattr(self, 'constant_ladder', None)
         return ladder is not None and bool(getattr(ladder, 'pool_bound', False))
 
-    def _run_ordered_jobs(self, jobs: list[dict[str, Any]], worker: Any, gs: "GenState", *, desc: str,
+    def _run_ordered_jobs(self, jobs: list[dict[str, Any]], worker: Any, gs: "Generation", *, desc: str,
                           verbose: bool) -> list[Any]:
         """Run ``worker`` over ``jobs`` and return the outcomes IN ORDER, on the same executor the
         fit phase uses: the persistent pool (per-job X/y), a per-call fork pool, or serially."""
@@ -2379,8 +2405,8 @@ class FlashANSR(BaseEstimator):
         use_parallel = max_workers > 1 and 'fork' in available_methods
         if self._refine_pool is not None and (use_parallel or self._overlap_mode):
             for job in jobs:
-                job['X'] = gs.X_np
-                job['y'] = gs.y_np
+                job['X'] = gs.X
+                job['y'] = gs.y
             chunksize = max(1, len(jobs) // (max(1, max_workers) * 8))
             try:
                 return list(self._refine_pool.map_ordered(
@@ -2399,11 +2425,11 @@ class FlashANSR(BaseEstimator):
         outcomes = []
         for job in _iterate_with_progress(jobs, total=len(jobs), verbose=verbose, desc=desc):
             serial_payload = job.copy()
-            serial_payload.update({'X': gs.X_np, 'y': gs.y_np, 'simplipy_engine': self.simplipy_engine})
+            serial_payload.update({'X': gs.X, 'y': gs.y, 'simplipy_engine': self.simplipy_engine})
             outcomes.append(worker(serial_payload))
         return outcomes
 
-    def _run_bounded_ladder(self, results: list, gs: "GenState", *, input_dim: int, converge_error: str,
+    def _run_bounded_ladder(self, results: list, gs: "Generation", *, input_dim: int, converge_error: str,
                             refine_seed: int | None, verbose: bool, chunk: int = 64) -> None:
         """The constant ladder as a post-fit pass under the POOL BOUND: candidates in score order, in
         chunks; a candidate is re-spelled only while its ``ladder_floor`` (MDL cut to nothing, fit
@@ -2460,12 +2486,12 @@ class FlashANSR(BaseEstimator):
 
     def _fit_refine(
             self,
-            gen_state: "GenState",
+            gen_state: "Generation",
             *,
             converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
             refine_seed: int | None = None,
             verbose: bool = False,
-            allow_empty: bool = False) -> "FitResult":
+            allow_empty: bool = False) -> "_RefineOutcome":
         """CPU refinement phase of :meth:`fit`: build jobs, fit constants, prune, compile.
 
         Operates on LOCAL state and returns a FitResult; writes NOTHING to ``self``. With
@@ -2476,7 +2502,7 @@ class FlashANSR(BaseEstimator):
         gs = gen_state
         results: list[Result] = []
         refinement_time = 0.0
-        input_dim = gs.X_np.shape[1]
+        input_dim = gs.X.shape[1]
 
         beams = [self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0] for raw_beam in gs.raw_beams]
 
@@ -2585,8 +2611,8 @@ class FlashANSR(BaseEstimator):
                     # fork-COW race). recover=False: this runs AFTER generation has initialized CUDA, so
                     # the pool must NOT re-fork on a worker death (that would reintroduce fork-after-CUDA).
                     for job in jobs:
-                        job['X'] = gs.X_np
-                        job['y'] = gs.y_np
+                        job['X'] = gs.X
+                        job['y'] = gs.y
                     chunksize = max(1, len(jobs) // (max(1, max_workers) * 8))
                     try:
                         outcomes = self._refine_pool.map_ordered(
@@ -2637,14 +2663,14 @@ class FlashANSR(BaseEstimator):
                         desc="Fitting Constants",
                     ):
                         serial_payload = job.copy()
-                        serial_payload.update({'X': gs.X_np, 'y': gs.y_np, 'simplipy_engine': self.simplipy_engine})
+                        serial_payload.update({'X': gs.X, 'y': gs.y, 'simplipy_engine': self.simplipy_engine})
                         result, warning_msg = _refine_candidate_worker(serial_payload)
                         if warning_msg and converge_error == 'print':
                             print(warning_msg)
                         if result is not None:
                             self._append_result_entries(results, result, input_dim)
 
-            with _RefinementContext(self.simplipy_engine, gs.X_np, gs.y_np):
+            with _RefinementContext(self.simplipy_engine, gs.X, gs.y):
                 _t_ref = time.time()
                 _run_refinement_jobs(refinement_jobs)
                 if self._ladder_bounded:
@@ -2698,7 +2724,7 @@ class FlashANSR(BaseEstimator):
                         scored_log_probs = self._score_log_probs_batch(
                             sequences=[rec[1] for rec in variant_records],
                             prompt_prefix=gs.prompt_prefix,
-                            memory=gs.memory_for_scoring,
+                            memory=gs.memory,
                             device=gs.device,
                         )
 
@@ -2732,246 +2758,33 @@ class FlashANSR(BaseEstimator):
                     refinement_time += time.time() - _t_prune_ref
 
         results = self._dedup_respelled(results)
-        sorted_results, results_df = self._compile_results_pure(
-            results, ranking=self.ranking, allow_empty=allow_empty)
+        if not results and not allow_empty:
+            raise ConvergenceError("The optimization did not converge for any beam")
+        sorted_results = self._order_results(results)
 
-        return FitResult(
+        return _RefineOutcome(
             results=sorted_results,
-            results_df=results_df,
             refinement_time=refinement_time,
             generation_time=gs.generation_time,
             variable_mapping=gs.variable_mapping,
             input_dim=input_dim,
         )
 
-    def _apply_fit_result(self, fit_result: "FitResult") -> None:
-        """Commit a FitResult to instance state (the serial ``fit`` and the overlap engine's commit)."""
-        self._results = fit_result.results
-        self.results = fit_result.results_df
-        self._refinement_time = fit_result.refinement_time
-        self._generation_time = fit_result.generation_time
-        self._input_dim = fit_result.input_dim
-        self.variable_mapping = fit_result.variable_mapping
+    def _order_results(self, results: list[Any]) -> list[Any]:
+        """Score and order the refined result rows under the estimator's ranking -- through the
+        library's one ordering rule (:func:`flash_ansr.scoring.order_rows`), so
+        :meth:`FitResult.rerank` reproduces this order offline bit for bit."""
+        return order_rows(results, self.ranking)
 
-    def ranking_config(self) -> dict[str, Any]:
-        """The resolved ranking actually in force, as a plain dict -- what a benchmark writes to its
-        provenance record (mode plus the knobs of THAT mode, nothing dormant)."""
-        return self.ranking.as_dict()
+    def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, rank: int = 0) -> np.ndarray:
+        """Evaluate the last fit's candidate at ``rank`` (0 = the answer) on ``X`` -> ``(n_points, 1)``.
 
-    def compile_results(
-            self,
-            *,
-            ranking_mode: str | None = None,
-            mdl_strength: float | None = None,
-            ranking_weights: dict[str, float] | None = None,
-            ranking_metrics: Sequence[str] | None = None,
-            ranking_tie_break: str | None = None) -> None:
-        """Re-score and re-sort the fitted results into ``self.results`` (a tidy ``DataFrame``).
-
-        With no arguments the estimator's own ranking (``self.ranking``) is applied. Any argument
-        given makes a CALL-SCOPED ranking: ``ranking_mode`` defaults to the estimator's mode and
-        the remaining knobs are resolved for that mode exactly as at construction (so a knob of
-        another mode raises rather than being ignored). Nothing is written back onto ``self`` --
-        a sweep (``for s in ...: compile_results(mdl_strength=s)``) must not leave the estimator
-        reconfigured at the last value for every subsequent ``fit()``.
-
-        Raises
-        ------
-        ConvergenceError
-            If no beams converged during refinement.
+        Sugar for ``self.result_.predict(X, rank)``. Raises ``ValueError`` before the first fit or
+        when the last fit produced no candidate.
         """
-        if not self._results:
-            raise ConvergenceError("The optimization did not converge for any beam")
+        return self._require_result().predict(self._truncate_input(X), rank)
 
-        if all(v is None for v in (ranking_mode, mdl_strength, ranking_weights, ranking_metrics, ranking_tie_break)):
-            ranking = self.ranking
-        else:
-            ranking = resolve_ranking(
-                self.ranking.mode if ranking_mode is None else ranking_mode,
-                mdl_strength=mdl_strength, weights=ranking_weights,
-                metrics=ranking_metrics, tie_break=ranking_tie_break)
-
-        self._results, self.results = self._compile_results_pure(self._results, ranking=ranking)
-
-    def _compile_results_pure(
-            self,
-            results: list[Any],
-            *,
-            ranking: RankingConfig,
-            allow_empty: bool = False) -> tuple[list[Any], "pd.DataFrame"]:
-        """Pure core of :meth:`compile_results`: score + sort + build the DataFrame for a results
-        list under ``ranking``, returning ``(sorted_results, results_df)``.
-
-        Writes NOTHING to ``self``, so the refinement phase (and the overlap engine) can compile a
-        problem's results without touching shared state. Raises ConvergenceError if ``results`` is
-        empty, UNLESS ``allow_empty`` (then returns ``([], empty_df)`` -- the path :meth:`infer`
-        uses to still return its full candidate ledger when no beam converged, rather than raising).
-        """
-        if not results:
-            if allow_empty:
-                return [], pd.DataFrame()
-            raise ConvergenceError("The optimization did not converge for any beam")
-
-        weights = ranking.effective_weights
-        mdl_weight = float(weights.get('mdl', 0.0))
-
-        # NOTHING priceable while the MDL weight is live means the declared ranking criterion
-        # produced no ordering at all: every candidate would score +inf and the sort would fall
-        # through to the alphabetical token tie-break, returning a confident answer chosen by
-        # spelling. That is the aggregate case, and it is the one that must raise -- a SINGLE
-        # unpriceable row must not, or one pathological candidate would abort a whole problem and
-        # discard the ~283 good ones beside it. Rate on the reference population: 0 of 8,476.
-        if mdl_weight != 0.0 and ranking.mode != 'pareto':
-            priceable = sum(1 for r in results
-                            if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
-            if priceable == 0:
-                raise RankingError(
-                    f"ranking_mode={ranking.mode!r} weighs mdl at {mdl_weight} per bit but none of the "
-                    f"{len(results)} candidates could be priced, so the ranking would be decided by the "
-                    f"expression-token tie-break alone. Check the simplipy engine and the refine "
-                    f"worker's pricer, or rank without mdl."
-                )
-
-        # Compute the new score for each result. `mdl` is read through, never recomputed: the
-        # pricer already ran in the refine worker on the REALIZED expression, and recomputing here
-        # would price the EMITTED spelling and quietly score a different quantity from the one the
-        # ledger records.
-        for result in results:
-            if 'score' in result:
-                if 'constant_count' not in result:
-                    result['constant_count'] = int(self._count_constants(result.get('expression', [])))
-                if np.isfinite(result.get('fvu', np.nan)):
-                    result['score'] = score_row(result, weights)
-                else:
-                    result['score'] = np.nan
-
-        # Sort the results by the best loss of each beam. The third key is a deterministic
-        # tie-break on the expression tokens: `sorted` is stable, so without it two exactly
-        # equal scores keep their insertion order, which is the (non-deterministic) parallel
-        # refinement completion order. Candidates are deduplicated to distinct expressions
-        # (unique=True), so the token tuple is a total order over ties -> the final ranking is
-        # independent of completion order (a prerequisite for byte-identical overlap).
-        if ranking.mode == 'pareto':
-            # NON-DOMINATED. The scalar score does not order this run, so it is set to nan -- nothing
-            # downstream may read a stale number as if it had.
-            metrics, tie_break = ranking.metrics, ranking.tie_break
-            V = objective_vector(results, metrics)
-            if 'mdl' in metrics:
-                blind = int(np.isinf(V[:, metrics.index('mdl')]).sum())
-                if blind == len(results):
-                    raise RankingError(
-                        f"'mdl' is a declared front metric but none of the {len(results)} candidates "
-                        f"could be priced, so that axis ordered nothing.")
-                if blind:
-                    warnings.warn(
-                        f"{blind} of {len(results)} candidates could not be priced; they lose the "
-                        f"'mdl' axis rather than being dropped.", RuntimeWarning, stacklevel=2)
-            ranks = non_dominated_ranks(V)
-            read_tie = RANKING_METRICS[tie_break]
-            for result, rank in zip(results, ranks):
-                result['pareto_rank'] = int(rank)
-                result['score'] = np.nan
-
-            def _tie_value(r: dict[str, Any]) -> float:
-                # Undefined or non-finite sorts LAST within its front, so the order stays total even
-                # when the tie-break names a metric some rows lack.
-                v = read_tie(r)
-                if v is None:
-                    return float('inf')
-                v = float(v)
-                return v if np.isfinite(v) else float('inf')
-
-            sorted_results = list(sorted(results, key=lambda x: (
-                x['pareto_rank'],
-                _tie_value(x),
-                tuple(map(str, x.get('expression', [])))
-            )))
-        else:
-            # SCALAR ('mdl' and 'weighted').
-            #
-            # The LENGTH key is not cosmetic. `score` floors fvu at 2.22e-16, so every
-            # machine-precision fit of one function scores byte-identically, and `mdl` is priced on
-            # the CANONICAL form, so it cannot separate two spellings of the same law either. Exact
-            # ties among correct answers are therefore the normal case, not the exception -- and the
-            # remaining lexicographic key resolves them by ASCII, which is arbitrary with respect to
-            # quality: on `(x - 0.3)**2` it ranked `pow - x1 / 1.97e16 6.57e16 2` (7 tokens,
-            # fvu 2e-33) above `pow - x1 0.3 2` (5 tokens, fvu 0) because '/' is chr(47) and '0'
-            # is chr(48). Preferring the shorter EMITTED expression among equal scores is the
-            # project's own thesis applied to its output, and it is structural and parameter-free
-            # (owner ruling 2026-09-09: no arbitrary tie-break constants).
-            #
-            # It can only reorder EXACT score ties, so no candidate ever overtakes a better-scoring
-            # one and no fit/recovery/exactness metric can move -- only which spelling is printed.
-            # The lexicographic key stays last, so the order remains total and deterministic.
-            for result in results:
-                result['pareto_rank'] = PARETO_RANK_NOT_COMPUTED
-            sorted_results = list(sorted(results, key=lambda x: (
-                x['score'] if not np.isnan(x['score']) else float('inf'),
-                np.isnan(x['score']),
-                len(x.get('expression', [])),
-                tuple(map(str, x.get('expression', [])))
-            )))
-
-        # Attach only the best fit (lowest loss) per beam for readability
-        best_fit_payloads: list[tuple[np.ndarray, np.ndarray | None, float]] = []
-        for result in sorted_results:
-            fits_list = result.get('fits', [])
-            if fits_list:
-                # fit_sort_key: a NaN loss anywhere in the list makes a bare-loss `min` return an
-                # arbitrary element, so fit_constants/fit_loss could report a divergent restart.
-                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], min(fits_list, key=fit_sort_key))
-            else:
-                best_fit = cast(tuple[np.ndarray, np.ndarray | None, float], (np.array([]), None, float('nan')))
-            best_fit_payloads.append(best_fit)
-
-        results_df = pd.DataFrame(sorted_results)
-        if not results_df.empty:
-            results_df['beam_id'] = results_df.index
-            results_df['fit_constants'] = [bf[0] for bf in best_fit_payloads]
-            results_df['fit_covariances'] = [bf[1] for bf in best_fit_payloads]
-            results_df['fit_loss'] = [bf[2] for bf in best_fit_payloads]
-            results_df.drop(columns=['fits'], inplace=True, errors='ignore')
-
-        return sorted_results, results_df
-
-    def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, nth_best_beam: int = 0, nth_best_constants: int = 0) -> np.ndarray:
-        """Evaluate a fitted expression on new data.
-
-        Parameters
-        ----------
-        X : ndarray or Tensor or DataFrame
-            Feature matrix to evaluate.
-        nth_best_beam : int, optional
-            Beam index to select from the ranked results.
-        nth_best_constants : int, optional
-            Index of the constant fit to choose for the selected beam.
-
-        Returns
-        -------
-        y_pred : ndarray
-            Predicted targets with the same leading dimension as ``X``.
-
-        Raises
-        ------
-        ValueError
-            If the model has not been fitted before prediction.
-        """
-        # TODO: Support lists
-        # TODO: Support 0-d and 1-d tensors
-
-        X = self._truncate_input(X)
-
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-
-        X = pad_input_set(X, self.n_variables)
-
-        if len(self._results) == 0:
-            raise ValueError("The model has not been fitted yet. Please call the fit method first.")
-
-        return self._results[nth_best_beam]['refiner'].predict(X, nth_best_constants=nth_best_constants)
-
-    def score_outliers(self, X: Any, y: Any) -> np.ndarray:
+    def _score_outliers(self, X: Any, y: Any) -> np.ndarray:
         """Per-point outlier probability from the trained outlier head.
 
         Parameters
@@ -3006,7 +2819,7 @@ class FlashANSR(BaseEstimator):
         """
         return score_outliers(self, X, y)
 
-    def predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
+    def _predict_constants(self, X: Any, y: Any, expression: Sequence[str] | str, *,
                           conditioned: bool = True, n_samples: int = DEFAULT_SAMPLES,
                           temperature: float = 1.0,
                           seed: int | None = None) -> list[ValueDistribution]:
@@ -3056,7 +2869,7 @@ class FlashANSR(BaseEstimator):
         return predict_constants(self, X, y, expression, conditioned=conditioned,
                                  n_samples=n_samples, temperature=temperature, seed=seed)
 
-    def predict_y(self, X: Any, y: Any, x_query: Any, *,
+    def _predict_y(self, X: Any, y: Any, x_query: Any, *,
                   expression: Sequence[str] | str | None = None, conditioned: bool = True,
                   n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
                   seed: int | None = None) -> list[ValueDistribution]:
@@ -3100,7 +2913,7 @@ class FlashANSR(BaseEstimator):
         return predict_y(self, X, y, x_query, expression=expression, conditioned=conditioned,
                          n_samples=n_samples, temperature=temperature, seed=seed)
 
-    def predict_complexity(self, X: Any, y: Any, *, conditioned: bool = True,
+    def _predict_complexity(self, X: Any, y: Any, *, conditioned: bool = True,
                            n_samples: int = DEFAULT_SAMPLES, temperature: float = 1.0,
                            seed: int | None = None) -> ComplexityDistribution:
         """Ask the model how complex it thinks the generating expression is.
@@ -3143,247 +2956,15 @@ class FlashANSR(BaseEstimator):
         except Exception:
             return None
 
-    def get_expression(self, nth_best_beam: int = 0, nth_best_constants: int = 0, return_prefix: bool = False, precision: int | None = None, map_variables: bool = True, **kwargs: Any) -> list[str] | str:
-        """Retrieve a formatted expression from the compiled results.
+    def get_expression(self, rank: int = 0, *, return_prefix: bool = False, precision: int | None = None,
+                       map_variables: bool = True) -> list[str] | str:
+        """The last fit's candidate at ``rank`` with its constants substituted.
 
-        Parameters
-        ----------
-        nth_best_beam : int, optional
-            Beam index to extract from ``self._results``.
-        nth_best_constants : int, optional
-            Constant fit index for the selected beam.
-        return_prefix : bool, optional
-            If ``True`` return the prefix notation instead of infix string.
-        precision : int, optional
-            Number of decimal places used when rendering constants.
-        map_variables : bool, optional
-            When ``True`` apply ``self.variable_mapping`` to humanise variables.
-        **kwargs : Any
-            Extra keyword arguments forwarded to :meth:`Refiner.transform`.
-
-        Returns
-        -------
-        expression : list[str] or str
-            Expression either as a token list or human-readable string.
+        Sugar for ``self.result_.get_expression(...)``: an infix string (default) or the prefix
+        tokens (``return_prefix=True``); ``precision`` rounds the constants for display (``None`` =
+        the round-trip-exact ``repr``); ``map_variables`` applies the fit's variable names.
         """
-        if len(self._results) == 0:
-            raise ValueError("The model has not been fitted yet. Please call the fit method first.")
-
-        return self._results[nth_best_beam]['refiner'].transform(
-            expression=self._results[nth_best_beam]['expression'],
-            nth_best_constants=nth_best_constants,
-            return_prefix=return_prefix,
-            precision=precision,
-            variable_mapping=self.variable_mapping if map_variables else None,
-            **kwargs)
-
-    def infer(
-            self,
-            X: np.ndarray | torch.Tensor | pd.DataFrame,
-            y: np.ndarray | torch.Tensor | pd.DataFrame | pd.Series,
-            variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
-            *,
-            X_val: np.ndarray | torch.Tensor | pd.DataFrame | None = None,
-            complexity: int | float | None = None,
-            emission: str = 'fittable',
-            conditioned: bool = True,
-            converge_error: Literal['raise', 'ignore', 'print'] = 'ignore',
-            refine_seed: int | None = None,
-            predict_val: bool = True,
-            top_k: int | Literal['all'] | None = None,
-            verbose: bool = False) -> InferenceResult:
-        """Run symbolic regression on ``(X, y)`` and return ALL candidates directly.
-
-        Unlike :meth:`fit` (which commits to ``self._results`` for later ``predict`` /
-        ``get_expression`` read-back), ``infer`` returns an :class:`~flash_ansr.inference.InferenceResult`:
-        the score-sorted refined :class:`~flash_ansr.inference.Candidate`s PLUS the full
-        :class:`~flash_ansr.inference.CandidateLedger` (the generation pool joined with the refined
-        survivors, classified FIT_OK / FIT_FAILED / INVALID). It writes NOTHING to instance state, so
-        it neither disturbs nor depends on ``self._results``.
-
-        ``y_pred`` / ``y_pred_val`` are computed only for the top ``top_k`` candidates (``top_k=None``
-        -> the best only): evaluating every candidate is O(candidates x n_support) and would blow up
-        RAM at high candidate counts. ``predict_val`` toggles the validation-set prediction.
-
-        Parameters
-        ----------
-        X, y : array-like
-            Support feature matrix and targets (the data to fit).
-        variable_names : list[str] or dict[str, str] or {'auto'} or None, optional
-            Variable-name mapping (as in :meth:`fit`).
-        X_val : array-like, optional
-            Out-of-sample features for ``y_pred_val`` (validation predictions).
-        complexity, converge_error, refine_seed, verbose : optional
-            As in :meth:`fit`.
-        predict_val : bool, optional
-            Whether to compute validation predictions for the top candidates.
-        top_k : int or 'all' or None, optional
-            Compute ``y_pred`` / ``y_pred_val`` for the top ``top_k`` candidates; ``None`` -> best
-            only; ``'all'`` -> every refined candidate (what a benchmark needs to score the whole
-            pool on the validation split; ~300 candidates x n_val floats held for the call).
-
-        Returns
-        -------
-        InferenceResult
-            Score-sorted candidates + the full candidate ledger + generation / refinement times.
-            If NO beam converges, ``candidates`` is empty and the ledger classifies every generated
-            beam FIT_FAILED / INVALID -- ``infer`` returns it rather than raising (unlike ``fit``).
-        """
-        numpy_errors_before = np.geterr()
-        np.seterr(all=self.numpy_errors)
-        try:
-            gen_state = self._fit_generate(X, y, variable_names, complexity=complexity,
-                                           emission=emission, conditioned=conditioned,
-                                           verbose=verbose)
-            # allow_empty=True: infer() returns the FULL candidate ledger (all FIT_FAILED/INVALID)
-            # even when no beam converged, per its contract, instead of raising ConvergenceError.
-            fit_result = self._fit_refine(gen_state, converge_error=converge_error, refine_seed=refine_seed, verbose=verbose, allow_empty=True)
-        finally:
-            np.seterr(**numpy_errors_before)
-
-        results = fit_result.results  # already score-sorted (best first) by _compile_results_pure
-
-        def _decode_expr(raw_beam: list[int]) -> list[str] | None:
-            expr_ids = self.flash_ansr_model.tokenizer.extract_expression_from_beam(raw_beam)[0]
-            return self._ensure_explicit_dialect(self.tokenizer.decode_expression(expr_ids))
-
-        ledger = build_candidate_ledger(
-            gen_state.raw_beams, gen_state.log_probs, results,
-            decode_expr=_decode_expr, is_valid=self.simplipy_engine.is_valid,
-        )
-
-        if top_k is None:
-            n_pred = 1
-        elif isinstance(top_k, str):
-            if top_k != 'all':
-                raise ValueError(f"top_k must be an int, None or 'all'; got {top_k!r}")
-            n_pred = len(results)
-        else:
-            n_pred = int(top_k)
-        n_pred = n_pred if results else 0
-        X_support_p = pad_input_set(self._truncate_input(X), self.n_variables) if n_pred else None
-        X_val_p = (pad_input_set(self._truncate_input(X_val), self.n_variables)
-                   if (n_pred and predict_val and X_val is not None) else None)
-
-        variable_mapping = fit_result.variable_mapping
-        candidates: list[Candidate] = []
-        for rank, r in enumerate(results):
-            refiner = r['refiner']
-            want_pred = rank < n_pred
-            expression_prefix = refiner.transform(expression=r['expression'], return_prefix=True, variable_mapping=None)
-            # The variable-MAPPED INFIX string -- exactly get_expression(map_variables=True), but built from
-            # the local refiner (no self._results read). Engine-bound prefix->infix lives in the refiner, so
-            # a consumer cannot reproduce this without reaching into the model; expose it on the candidate.
-            expression_infix = refiner.transform(expression=r['expression'], return_prefix=False, variable_mapping=variable_mapping)
-            skeleton_prefix = normalize_skeleton(r['expression'])
-            candidates.append(Candidate(
-                raw_beam=list(r['raw_beam']),
-                expression=list(r['expression']),
-                expression_prefix=list(expression_prefix) if expression_prefix is not None else [],
-                expression_infix=str(expression_infix),
-                skeleton_prefix=list(skeleton_prefix) if skeleton_prefix is not None else [],
-                constants=_best_constants(r),
-                constants_emitted=(list(r['constants_emitted'])
-                                   if r.get('constants_emitted') is not None else None),
-                log_prob=float(r.get('log_prob', float('nan'))),
-                score=float(r.get('score', float('nan'))),
-                fvu=float(r.get('fvu', float('nan'))),
-                n_nodes=int(r.get('complexity', len(r['expression']))),
-                # mu, NOT the token count: fit(complexity=) consumes simplipy mu (1e3-1e6) while
-                # `complexity` above is a token count (~1e1). Reporting only the latter is why
-                # feeding a result's complexity back into a prompt was measurably worse than
-                # passing nothing. Computed here (bounded by the refined survivors), never per beam.
-                mu=self._skeleton_mu(skeleton_prefix),
-                # The RANKING currency, priced by the refine worker on the REALIZED expression.
-                # Read through, never recomputed here: recomputing would price a different spelling
-                # from the one that produced the score, and the two would drift apart silently.
-                mdl=r.get('mdl'),
-                constant_count=int(r.get('constant_count', 0)),
-                pruned_variant=bool(r.get('pruned_variant', False)),
-                pareto_rank=int(r.get('pareto_rank', PARETO_RANK_NOT_COMPUTED)),
-                rank=rank,
-                spelling=r.get('spelling'),
-                typed_frozen=int(r.get('typed_frozen', 0) or 0),
-                typed_thaw=r.get('typed_thaw'),
-                y_pred=(refiner.predict(X_support_p) if want_pred and X_support_p is not None else None),
-                y_pred_val=(refiner.predict(X_val_p) if want_pred and X_val_p is not None else None),
-            ))
-
-        return InferenceResult(
-            candidates=candidates,
-            ledger=ledger,
-            generation_time=gen_state.generation_time,
-            refinement_time=fit_result.refinement_time,
-            variable_mapping=fit_result.variable_mapping,
-        )
-
-    def save_results(self, path: str) -> None:
-        """Persist fitted results (minus lambdas) for later reuse, with the ranking that ordered them."""
-
-        if not self._results:
-            raise ValueError("No results available to save. Run `fit` first.")
-
-        input_dim = self._input_dim if self._input_dim is not None else self.n_variables
-        metadata = {
-            "format_version": RESULTS_FORMAT_VERSION,
-            "ranking": self.ranking.as_dict(),
-            "n_variables": self.n_variables,
-            "input_dim": input_dim,
-            "variable_mapping": copy.deepcopy(self.variable_mapping),
-        }
-
-        payload = serialize_results_payload(self._results, metadata=metadata)
-        save_results_payload(payload, path)
-
-    def load_results(self, path: str, *, rebuild_refiners: bool = True) -> None:
-        """Load previously saved results, rebuild refiners if requested, and re-rank them under the
-        ranking RECORDED IN THE FILE (call-scoped: this estimator's own ranking is not changed)."""
-
-        payload = load_results_payload(path)
-        metadata = payload.get("metadata", {})
-
-        version = int(payload.get("version", 0))
-        if version < 2 or "length_penalty" in metadata or "ranking" not in metadata:
-            # v1 spelled the node penalty `length_penalty` and carried no ranking record. Reading
-            # such a payload here would have to fall back to THIS estimator's ranking and SILENTLY
-            # rescore the restored table under it instead of the file's -- the same
-            # silent-default-inheritance defect that left every srbf run ranking at 0.0. The
-            # format is a clean break, so refuse the payload and say exactly what to do about it.
-            raise ValueError(
-                f"Results payload version {version} predates the ranking record (format version "
-                f"{RESULTS_FORMAT_VERSION}: metadata['ranking'] with mode + its knobs). Its ordering "
-                f"cannot be reproduced without silently substituting this estimator's own ranking. "
-                f"Re-run fit() and save again."
-            )
-        if version != RESULTS_FORMAT_VERSION:
-            warnings.warn(
-                f"Results payload version {version} does not match expected {RESULTS_FORMAT_VERSION}; attempting to proceed anyway."
-            )
-
-        ranking = RankingConfig.from_dict(metadata["ranking"])
-        n_variables = int(metadata.get("n_variables", self.n_variables))
-        input_dim = int(metadata.get("input_dim", n_variables))
-
-        self._input_dim = input_dim
-        # The file's ranking is USED to re-order the restored results, but it is not adopted:
-        # loading someone else's saved run must not silently reconfigure this estimator's ranking
-        # for every subsequent fit(). Warn when they differ so the difference is visible.
-        if ranking != self.ranking:
-            warnings.warn(
-                f"The loaded results were ranked under {ranking.as_dict()} but this estimator ranks "
-                f"under {self.ranking.as_dict()}. The restored table keeps the file's ranking; the "
-                f"estimator is unchanged.", RuntimeWarning, stacklevel=2)
-        self.variable_mapping = metadata.get("variable_mapping", self.variable_mapping)
-
-        restored = deserialize_results_payload(
-            payload,
-            simplipy_engine=self.simplipy_engine,
-            n_variables=n_variables,
-            input_dim=input_dim,
-            rebuild_refiners=rebuild_refiners,
-        )
-
-        self._results, self.results = self._compile_results_pure(restored, ranking=ranking)
+        return self._require_result().get_expression(rank, return_prefix=return_prefix, precision=precision, map_variables=map_variables)
 
     def to(self, device: str) -> "FlashANSR":
         """Move the transformer weights to ``device``.

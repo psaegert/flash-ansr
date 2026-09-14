@@ -134,7 +134,7 @@ class TransformerDecoder(nn.Module):
             raise ValueError(f"encoder memory has {mem.shape[1]} slots, the prefix decoder was built for {self.memory_len}")
         batch = h.shape[0]
         if mem.shape[0] != batch:
-            # One memory shared by every row (the sampler decodes `choices` rows from one problem).
+            # One memory shared by every row (the sampler decodes `draws` rows from one problem).
             mem = mem.expand(batch, -1, -1)
         tags = self.data_tags.to(dtype=h.dtype).expand(batch, -1, -1)
         return torch.cat([h[:, :1], tags[:, :1], mem.to(dtype=h.dtype), tags[:, 1:], h[:, 1:]], dim=1)

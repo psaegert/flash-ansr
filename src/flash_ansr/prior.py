@@ -106,6 +106,10 @@ class PriorSampler:
         mapping = {old: f"x{int(new) + 1}" for old, new in zip(seen, targets)}
         return [mapping.get(token, token) for token in expression]
 
+    def reseed(self, seed: int | None) -> None:
+        """Restart the draw stream from ``seed`` (``fit(seed=)``)."""
+        self.rng = np.random.default_rng(seed)
+
     def draw_one(self, n_variables: int | None = None) -> tuple[list[int], list[str]] | None:
         """One prior candidate as ``(token ids, masked expression)``, or ``None`` for an unusable draw."""
         self.n_attempts += 1
@@ -143,10 +147,10 @@ class PriorSampler:
             return None
         return [int(i) for i in ids], list(masked)
 
-    def draw(self, choices: int, *, unique: bool = True, valid_only: bool = True,
+    def draw(self, draws: int, *, unique: bool = True, valid_only: bool = True,
              max_tries: int | None = None, n_variables: int | None = None,
              ) -> tuple[list[list[int]], list[float], list[bool], list[float]]:
-        """``choices`` candidates in the ``generate`` contract: ``(beams, log_probs, completed, rewards)``.
+        """``draws`` candidates in the ``generate`` contract: ``(beams, log_probs, completed, rewards)``.
 
         A prior draw carries no log-probability (``nan``); ``unique`` keys on the token ids, so two
         draws that differ only in a spelled literal are two candidates. ``n_variables`` conditions
@@ -154,7 +158,7 @@ class PriorSampler:
         attempts (default: 32 per requested candidate, at least 256, since a low-dimensional problem
         rejects most raw draws).
         """
-        target = int(choices)
+        target = int(draws)
         budget = int(max_tries) if max_tries is not None else max(256, 32 * target)
         beams: list[list[int]] = []
         seen: set[tuple[int, ...]] = set()

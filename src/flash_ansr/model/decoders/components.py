@@ -161,7 +161,7 @@ class Attention(nn.Module):
         # Ensure K/V batch dim matches Q (handles encoder memory broadcast).
         #
         # The EXPAND is a correctness requirement, not an optimization (#52): cross-attention
-        # decodes `choices` rows against a single encoder memory, so K/V arrive with batch 1, and
+        # decodes `draws` rows against a single encoder memory, so K/V arrive with batch 1, and
         # SDPA's contract pairs (N, ..., Hq, L, E) with (N, ..., H, S, E) -- the SAME N. Leaving
         # the batch dim to broadcast is outside that contract and backends disagree: correct on
         # CPU/CUDA, silently wrong on MPS once head_dim >= 64. Never drop the expand.
@@ -174,7 +174,7 @@ class Attention(nn.Module):
         # c=256 5.63 -> 5.72 s, beam w=32 1.39 -> 1.42 s, min of 3, CPU / 4 threads, 2026-08-26),
         # because SDPA takes a faster kernel on contiguous storage than on a broadcast view.
         # CPU wall-clock at modest shapes; the memory side is NOT measured here, and at GPU shapes
-        # (choices=512) the footprint argument may well win. Re-measure both before changing.
+        # (draws=512) the footprint argument may well win. Re-measure both before changing.
         if k.shape[0] != batch_size_q:
             k = k.expand(batch_size_q, -1, -1, -1).contiguous()
             v = v.expand(batch_size_q, -1, -1, -1).contiguous()

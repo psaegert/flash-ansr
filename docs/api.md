@@ -7,24 +7,22 @@
       members:
         - load
         - fit
-        - infer
+        - generate
         - predict
         - get_expression
-        - save_results
-        - load_results
-        - compile_results
+        - results
+        - to
+        - close
       members_order: source
       filters:
         - "!^_"
       show_root_toc_entry: false
 
-## Inference results
-The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refined candidates plus the full classified candidate ledger.
+## The result
+The object [`FlashANSR.fit`](#flashansr) returns and keeps as `model.result_`: the score-sorted refined candidates, the full classified candidate ledger, the ranking that ordered them and the phase times. Plain data: it pickles, re-ranks offline (`rerank`) and evaluates through the engine it was bound to.
 
-`InferenceResult.to_dataframe()` returns the refined survivors (the `FIT_OK` candidates in `result.candidates`) as a pandas DataFrame, one row per candidate; it does not include the full ledger.
-
-### InferenceResult
-::: flash_ansr.inference.InferenceResult
+### FitResult
+::: flash_ansr.inference.FitResult
     options:
       heading_level: 4
       show_root_toc_entry: false
@@ -37,6 +35,45 @@ The objects returned by [`FlashANSR.infer`](#flashansr): the score-sorted refine
 
 ### CandidateLedger
 ::: flash_ansr.inference.CandidateLedger
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### Generation
+::: flash_ansr.flash_ansr.Generation
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+## The estimator's policy
+The four config objects `FlashANSR.load` takes: the sampler, the refiner, the ranking and the compute.
+
+### SoftmaxSamplingConfig
+::: flash_ansr.utils.generation.SoftmaxSamplingConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### PriorSamplingConfig
+::: flash_ansr.utils.generation.PriorSamplingConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### RefineConfig
+::: flash_ansr.estimator_config.RefineConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### RankingConfig
+::: flash_ansr.scoring.RankingConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### ComputeConfig
+::: flash_ansr.estimator_config.ComputeConfig
     options:
       heading_level: 4
       show_root_toc_entry: false

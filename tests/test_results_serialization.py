@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from simplipy import SimpliPyEngine
 
-from flash_ansr import FlashANSR, SoftmaxSamplingConfig, install_model, get_path
+from flash_ansr import FlashANSR, get_path
 from flash_ansr.results import (
     RESULTS_FORMAT_VERSION,
     deserialize_results_payload,
@@ -103,70 +103,63 @@ def test_deserialize_without_rebuild_preserves_fits_only(tmp_path, simplipy_engi
     assert entry["fits"] == [(np.array([3.0]), None, 0.0)]
 
 
-#: See tests/test_inference.py: no v24 checkpoint is published yet.
-PUBLISHED_MODEL: str | None = None
+def test_fit_result_roundtrip_on_the_test_model(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
+    """A FitResult is plain data: it saves, loads with an engine, predicts the same numbers, keeps its
+    ranking, and re-ranks offline exactly as the live run ordered it."""
+    import torch
+    from test_prior_sampling import _catalog_config
+    from flash_ansr import FitResult
+    from flash_ansr.model.flash_ansr_model import FlashANSRModel
+    from flash_ansr.model.tokenizer import Tokenizer
+    from flash_ansr.utils.generation import create_generation_config
 
+    tokenizer = Tokenizer.from_config(get_path("configs", "test", "tokenizer.yaml"))
+    torch.manual_seed(0)
+    model = FlashANSRModel.from_config(get_path("configs", "test", "model.yaml"))
+    nsr = FlashANSR(simplipy_engine=simplipy_engine, flash_ansr_model=model, tokenizer=tokenizer,
+                    generation_config=create_generation_config(method="prior_sampling", catalog=_catalog_config(), draws=48),
+                    refine={"n_restarts": 2}, compute={"workers": 0}, model_directory=None)
+    rng = np.random.default_rng(0)
+    X = rng.uniform(-3, 3, size=(64, 2))
+    y = (2.0 * X[:, 0] - 0.5 * X[:, 1] + 1.0).reshape(-1, 1)
+    result = nsr.fit(X, y, seed=0)
+    assert result.best is not None and nsr.result_ is result
 
-@pytest.mark.skipif(PUBLISHED_MODEL is None, reason="no published v24 checkpoint to run against")
-def test_flash_ansr_save_load_roundtrip_softmax_sampling(tmp_path, simplipy_engine: SimpliPyEngine) -> None:
-    model_repo = PUBLISHED_MODEL or ""
-    install_model(model_repo)
-    model_dir = get_path("models", model_repo)
+    val = rng.uniform(-3, 3, size=(5, 2))
+    before = result.predict(val)
+    path = tmp_path / "result.pkl"
+    result.save(path)
+    loaded = FitResult.load(path, engine=simplipy_engine)
+    assert [c.raw_beam for c in loaded.candidates] == [c.raw_beam for c in result.candidates]
+    assert loaded.ranking == result.ranking and loaded.draws == result.draws
+    np.testing.assert_allclose(loaded.predict(val), before, rtol=1e-12, atol=0.0)
+    assert loaded.get_expression() == result.get_expression()
+    assert loaded.get_expression(return_prefix=True) == result.get_expression(return_prefix=True)
+    assert loaded.get_expression(precision=2) == result.get_expression(precision=2)
 
-    generation_config = SoftmaxSamplingConfig(
-        choices=16,
-        top_k=8,
-        top_p=0.95,
-        max_len=24,
-        batch_size=32,
-        temperature=0.8,
-        simplify=True,
-        unique=True,
-    )
+    # loading without an engine keeps the data but refuses to evaluate
+    bare = FitResult.load(path)
+    assert bare.best is not None
+    with pytest.raises(ValueError, match="engine"):
+        bare.predict(val)
 
-    regressor = FlashANSR.load(
-        directory=model_dir,
-        generation_config=generation_config,
-        n_restarts=4,
-        ranking_mode="weighted",
-    )
+    # the offline re-rank under the SAME ranking reproduces the live order exactly
+    again = loaded.rerank()
+    assert [c.raw_beam for c in again.candidates] == [c.raw_beam for c in result.candidates]
+    assert [c.score for c in again.candidates] == [c.score for c in result.candidates]
+    # under another ranking the set is the same, the order may differ, and the ledger follows
+    other = loaded.rerank("weighted", weights={"n_nodes": 0.05})
+    assert other.ranking.mode == "weighted" and loaded.ranking.mode == "mdl"
+    assert sorted(map(tuple, (c.raw_beam for c in other.candidates))) == sorted(map(tuple, (c.raw_beam for c in loaded.candidates)))
+    assert [c.rank for c in other.candidates] == list(range(len(other.candidates)))
+    fitted_rows = [i for i, st in enumerate(other.ledger.fit_status) if st == 0]
+    assert sorted(other.ledger.rank[i] for i in fitted_rows) == list(range(len(other.candidates)))
 
-    x = np.linspace(-2.0, 2.0, 24, dtype=float).reshape(-1, 1)
-    y = 2.0 * x + 1.0
-
-    regressor.fit(x, y)
-
-    val = np.array([[-1.5], [0.0], [1.5]], dtype=float)
-    preds_before = regressor.predict(val)
-
-    save_path = tmp_path / "flash_roundtrip.pkl"
-    regressor.save_results(save_path)
-
-    reloaded = FlashANSR.load(
-        directory=model_dir,
-        generation_config=generation_config,
-        n_restarts=4,
-        ranking_mode="weighted",
-    )
-    reloaded.load_results(save_path)
-
-    preds_after = reloaded.predict(val)
-
-    np.testing.assert_allclose(preds_before, preds_after, rtol=1e-6, atol=1e-8)
-
-    # The file carries the ranking that ordered it. An estimator ranking differently re-orders the
-    # restored table under the FILE's ranking and says so; it does not adopt it.
-    other = FlashANSR.load(directory=model_dir, generation_config=generation_config, n_restarts=4)
-    assert other.ranking.mode == 'mdl'
-    with pytest.warns(RuntimeWarning, match="ranked under"):
-        other.load_results(save_path)
-    assert other.ranking.mode == 'mdl', "loading must not reconfigure the estimator"
-    assert [list(r['expression']) for r in other._results] == [list(r['expression']) for r in reloaded._results]
-
-    # A payload without a ranking record cannot be re-ordered faithfully and is refused outright.
-    payload = load_results_payload(save_path)
-    del payload["metadata"]["ranking"]
-    stripped = tmp_path / "no_ranking.pkl"
-    save_results_payload(payload, stripped)
-    with pytest.raises(ValueError, match="predates the ranking record"):
-        reloaded.load_results(stripped)
+    # a foreign format version is refused
+    import pickle
+    payload = pickle.load(open(path, "rb"))
+    payload["format_version"] = 1
+    stale = tmp_path / "stale.pkl"
+    pickle.dump(payload, open(stale, "wb"))
+    with pytest.raises(ValueError, match="format"):
+        FitResult.load(stale)
