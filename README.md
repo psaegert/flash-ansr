@@ -28,7 +28,7 @@ Requires Python >= 3.12.
 
 ```sh
 pip install flash-ansr
-flash_ansr install psaegert/flash-ansr-v25.0-T7-3M   # the reference checkpoint (see "Models")
+flash_ansr install psaegert/flash-ansr-v25.0-T8-20M   # the reference checkpoint (see "Models")
 ```
 
 ```python
@@ -44,7 +44,7 @@ from flash_ansr import (
 
 # The installed checkpoint directory
 from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T7-3M")
+CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default; see "Inference speed")
 model = FlashANSR.load(
@@ -86,12 +86,16 @@ Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/
 
 # Models
 
+The v25.0-T8 series: one recipe and one data prior at three sizes. Pick by the hardware you have; every one of them runs the examples above unchanged.
+
 | Checkpoint | Parameters | Training | Notes |
 |---|---|---|---|
-| [`psaegert/flash-ansr-v25.0-T7-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T7-3M) | 3.5M | 1M steps, batch 128, `configs/v25.0-T7` | the reference checkpoint for this release |
+| [`psaegert/flash-ansr-v25.0-T8-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-3M) | 3.5M | 1.5M steps, batch 128, `configs/v25.0-T8-3M` | the smallest; comfortable on a CPU |
+| [`psaegert/flash-ansr-v25.0-T8-20M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-20M) | 23.7M | 1.5M steps, batch 128, `configs/v25.0-T8-20M` | the reference checkpoint for this release |
+| [`psaegert/flash-ansr-v25.0-T8-120M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-120M) | 123.6M | 1.5M steps, batch 128, `configs/v25.0-T8-120M` | the largest; a GPU is advisable |
 
 ```sh
-flash_ansr install psaegert/flash-ansr-v25.0-T7-3M
+flash_ansr install psaegert/flash-ansr-v25.0-T8-20M
 ```
 
 Every catalog that [srbf](https://github.com/psaegert/srbf) evaluates on is held out of the training data by canonical form (6,660 expressions across 29 catalogs).

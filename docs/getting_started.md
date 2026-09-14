@@ -10,9 +10,9 @@ This also pulls in `symbolic-data` and `simplipy` automatically, so no manual se
 
 ## Download a checkpoint
 ```bash
-flash_ansr install psaegert/flash-ansr-v25.0-T7-3M
+flash_ansr install psaegert/flash-ansr-v25.0-T8-20M
 ```
-The reference checkpoint for this release is [`psaegert/flash-ansr-v25.0-T7-3M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T7-3M) (3.5M parameters, trained with `configs/v25.0-T7`).
+The reference checkpoint for this release is [`psaegert/flash-ansr-v25.0-T8-20M`](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-20M) (23.7M parameters, trained with `configs/v25.0-T8-20M`). The same series has a [3M](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-3M) checkpoint for CPU-bound use and a [120M](https://huggingface.co/psaegert/flash-ansr-v25.0-T8-120M) checkpoint for a GPU; all three run every example on this page unchanged.
 By default models are cached under `./models/` relative to the package root and can be uninstalled with `flash_ansr remove <repo>`.
 Models can also be managed with the Python API via `flash_ansr.model.manage.install_model` and `flash_ansr.model.manage.remove_model`, and `flash_ansr.get_path('models', repo)` resolves the cached directory.
 
@@ -31,7 +31,7 @@ from flash_ansr import (
 
 # The installed checkpoint directory
 from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T7-3M")
+CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default)
 model = FlashANSR.load(

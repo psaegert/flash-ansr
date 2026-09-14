@@ -14,7 +14,7 @@ Requires Python >= 3.12.
 
 ```bash
 pip install flash-ansr
-flash_ansr install psaegert/flash-ansr-v25.0-T7-3M
+flash_ansr install psaegert/flash-ansr-v25.0-T8-20M
 ```
 ```python
 import torch
@@ -28,7 +28,7 @@ from flash_ansr import (
 
 # The installed checkpoint directory
 from flash_ansr import get_path
-CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T7-3M")
+CHECKPOINT = get_path("models", "psaegert/flash-ansr-v25.0-T8-20M")
 
 # Load the model (KV-cache, auto-batching and static decoding are on by default)
 model = FlashANSR.load(
