@@ -149,7 +149,7 @@ class TestCandidateCarriesBothConstantSets:
         # only the refined values discards a competitive answer on nearly half of them.
         from flash_ansr.inference import Candidate
         c = Candidate(
-            raw_beam=[1, 2], expression=['+', '<constant>', 'x1'], expression_prefix=['+', '2.0', 'x1'],
+            raw_beam=[1, 2], expression=['+', '<constant>', 'x1'], slots=[1], expression_prefix=['+', '2.0', 'x1'],
             expression_infix='2.0 + x1', skeleton_prefix=['+', '<constant>', 'x1'],
             constants=[2.5], constants_emitted=[2.0], log_prob=-1.0, score=-3.0, fvu=1e-15,
             n_nodes=3, mu=146000.0, mdl=141000.0, constant_count=1, pruned_variant=False,
@@ -160,7 +160,7 @@ class TestCandidateCarriesBothConstantSets:
     def test_beams_without_spans_carry_no_emitted_constants(self) -> None:
         from flash_ansr.inference import Candidate
         c = Candidate(
-            raw_beam=[1], expression=['x1'], expression_prefix=['x1'], expression_infix='x1',
+            raw_beam=[1], expression=['x1'], slots=[], expression_prefix=['x1'], expression_infix='x1',
             skeleton_prefix=['x1'], constants=[], constants_emitted=None, log_prob=-1.0,
             score=-1.0, fvu=0.5, n_nodes=1, mu=None, mdl=None, constant_count=0, pruned_variant=False,
             pareto_rank=-1, rank=0)
