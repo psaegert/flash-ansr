@@ -807,6 +807,7 @@ class Generation:
     X: np.ndarray
     y: np.ndarray
     y_variance: float
+    n_points: int                      # finite support rows: the two-part ranking's n
     prompt_prefix: Any
     memory: Any
     device: Any
@@ -855,14 +856,17 @@ class FlashANSR(BaseEstimator):
     numpy_errors : {'ignore', 'warn', 'raise', 'call', 'print', 'log'} or None, optional
         Desired NumPy error handling strategy applied during constant refinement.
     ranking_mode : {'mdl', 'weighted', 'pareto'}, optional
-        How refined candidates are ordered (RANKING_SPEC.md). ``'mdl'`` (default): ``log10(fvu)``
-        plus ``mdl_strength`` times the description length, in bits, of the REALIZED expression.
+        How refined candidates are ordered (RANKING_SPEC.md). ``'mdl'`` (default): the two-part
+        code ``(n/2) * log2(fvu) + bits`` -- the data coded under the candidate's residual variance
+        plus the description length, in bits, of the REALIZED expression, ``n`` the finite support
+        points of the fit; an explicit ``mdl_strength`` replaces its n-scaled weight by a fixed one.
         ``'weighted'``: ``log10(fvu)`` plus ``ranking_weights`` over the metric registry.
         ``'pareto'``: the non-dominated front over ``ranking_metrics``, ordered within a front by
         ``ranking_tie_break``. Each knob belongs to one mode; passing it with another raises.
     mdl_strength : float or None, optional
-        Mode ``'mdl'`` only: decades of FVU per bit. ``None`` -> the engineered default
-        :data:`flash_ansr.scoring.MDL_STRENGTH_DEFAULT` (1e-2).
+        Mode ``'mdl'`` only: a FIXED weight in decades of FVU per bit (``MDL_STRENGTH_S0`` = 1e-2
+        reproduces the pre-0.18 ranking). ``None`` (default) -> the two-part code, whose weight
+        ``2 / (n * log2(10))`` falls with the support size (:func:`flash_ansr.scoring.two_part_strength`).
     ranking_weights : dict[str, float] or None, optional
         Mode ``'weighted'`` only: weight per metric name (``n_nodes``, ``n_constants``,
         ``n_constant_placeholders``, ``n_typed_literals``, ``mdl`` (per bit), ``neg_log_prob``).
@@ -1283,7 +1287,8 @@ class FlashANSR(BaseEstimator):
         ranking : RankingConfig or mapping or str, optional
             The candidate ranking: ``'mdl'`` (default: ``log10(FVU)`` plus ``1e-2`` decades per bit
             of the refined expression's description length), ``'weighted'`` or ``'pareto'``, with
-            that mode's knobs as a mapping (``{'mode': 'mdl', 'mdl_strength': 1e-2}``).
+            that mode's knobs as a mapping (``{'mode': 'mdl', 'mdl_strength': 1e-2}`` for the fixed
+            pre-0.18 weight; the bare ``'mdl'`` is the two-part code).
         compute : ComputeConfig or mapping, optional
             The torch ``device``, the refiner ``workers`` (``None`` = every core, ``0`` = serial) and
             ``persistent_pool`` (one worker pool forked BEFORE any CUDA initialization and reused
@@ -1417,7 +1422,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': 'ignore',
                 'numpy_errors': self.numpy_errors,
                 'y_variance': 1.0,
-                'ranking_weights': self.ranking.effective_weights,
+                'ranking_weights': self.ranking.weights_for(8),   # the 8-point warm-up problem
                 'complexity': None,
                 'seed': None,
                 'X': X,
@@ -1686,8 +1691,7 @@ class FlashANSR(BaseEstimator):
             case 'prior_sampling':
                 # The training prior instead of the decoder: the data is not consulted here (it
                 # reaches the refiner and the ranking), and a draw carries no log-probability.
-                weights = self.ranking.effective_weights
-                if float(weights.get('neg_log_prob', 0.0)) != 0.0:
+                if self.ranking.mode == 'weighted' and float(self.ranking.weights.get('neg_log_prob', 0.0)) != 0.0:
                     raise RankingError(
                         "prior_sampling candidates carry no log-probability, but the ranking weights "
                         "'neg_log_prob'; use ranking_mode='mdl' or weights without it.")
@@ -2190,6 +2194,7 @@ class FlashANSR(BaseEstimator):
             n_variables=self.n_variables,
             variable_mapping=dict(variable_mapping or {}),
             draws=generation.draws,
+            n_points=generation.n_points,
             engine=self.simplipy_engine,
         )
 
@@ -2373,6 +2378,7 @@ class FlashANSR(BaseEstimator):
             X=X_np,
             y=y_np,
             y_variance=y_variance,
+            n_points=int(n_finite),
             prompt_prefix=prompt_prefix,
             memory=memory_for_scoring,
             device=data_tensor.device,
@@ -2433,7 +2439,7 @@ class FlashANSR(BaseEstimator):
         ladder = self.constant_ladder
         if ladder is None:
             return
-        weights = self.ranking.effective_weights
+        weights = self.ranking.weights_for(gs.n_points)
         entries = sorted((r for r in results if np.isfinite(float(r.get('score', np.nan)))), key=lambda r: float(r['score']))
         if not entries:
             return
@@ -2568,7 +2574,7 @@ class FlashANSR(BaseEstimator):
                 'converge_error': converge_error,
                 'numpy_errors': self.numpy_errors,
                 'y_variance': gs.y_variance,
-                'ranking_weights': self.ranking.effective_weights,
+                'ranking_weights': self.ranking.weights_for(gs.n_points),
                 'complexity': gs.complexity,
             }
             refinement_jobs.append(job)
@@ -2743,7 +2749,7 @@ class FlashANSR(BaseEstimator):
                                 'converge_error': converge_error,
                                 'numpy_errors': self.numpy_errors,
                                 'y_variance': gs.y_variance,
-                                'ranking_weights': self.ranking.effective_weights,
+                                'ranking_weights': self.ranking.weights_for(gs.n_points),
                                 'complexity': gs.complexity,
                             }
                             pruning_jobs.append(pruning_job)
@@ -2755,7 +2761,7 @@ class FlashANSR(BaseEstimator):
         results = self._dedup_respelled(results)
         if not results and not allow_empty:
             raise ConvergenceError("The optimization did not converge for any beam")
-        sorted_results = self._order_results(results)
+        sorted_results = self._order_results(results, gs.n_points)
 
         return _RefineOutcome(
             results=sorted_results,
@@ -2765,11 +2771,12 @@ class FlashANSR(BaseEstimator):
             input_dim=input_dim,
         )
 
-    def _order_results(self, results: list[Any]) -> list[Any]:
+    def _order_results(self, results: list[Any], n_points: int | None = None) -> list[Any]:
         """Score and order the refined result rows under the estimator's ranking -- through the
         library's one ordering rule (:func:`flash_ansr.scoring.order_rows`), so
-        :meth:`FitResult.rerank` reproduces this order offline bit for bit."""
-        return order_rows(results, self.ranking)
+        :meth:`FitResult.rerank` reproduces this order offline bit for bit. ``n_points`` is the
+        fit's finite support size, which the two-part code's weight depends on."""
+        return order_rows(results, self.ranking, n_points=n_points)
 
     def predict(self, X: np.ndarray | torch.Tensor | pd.DataFrame, rank: int = 0) -> np.ndarray:
         """Evaluate the last fit's candidate at ``rank`` (0 = the answer) on ``X`` -> ``(n_points, 1)``.

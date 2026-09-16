@@ -30,7 +30,7 @@ model = FlashANSR.load(
   directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),
   generation_config=SoftmaxSamplingConfig(draws=1024),   # the search budget: expressions drawn per problem
   refine={"n_restarts": 8},                              # RefineConfig: the constant optimizer (defaults shown)
-  ranking="mdl",                                         # log10(FVU) + 1e-2 per bit of description length (default)
+  ranking="mdl",                                         # the two-part code: (n/2) log2 FVU + description length in bits (default)
   compute={"device": device, "workers": None},           # ComputeConfig: device and refiner workers (None = every core)
 )
 

@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-16
+
+The default ranking is the two-part code (owner ruling 2026-09-16, from the n-scaled score study:
+92 cells on a disjoint validation substrate, 804 laws, T8 models; recovery up at every noisy
+support size, +4 pp at 512 points with 5 % noise, fit within a fraction of a decade elsewhere).
+
+### Changed
+- **`ranking="mdl"` is the two-part code** `(n/2) * log2(FVU) + bits`: the data coded under the
+  candidate's residual variance plus the refined expression's description length, `n` the fit's
+  finite support points. On the score scale that is `log10(FVU) + bits * 2 / (n * log2(10))`: the
+  per-bit weight FALLS with the support size (more data buys more complexity) instead of the fixed
+  `1e-2` decades per bit of 0.14-0.17 (equal at n = 60). `mdl_strength=1e-2`
+  (`flash_ansr.scoring.MDL_STRENGTH_S0`) reproduces the old ranking exactly.
+- `RankingConfig.weights_for(n_points)` replaces `effective_weights` wherever the ranking meets a
+  fit; `effective_weights` still serves the size-independent rankings and raises for the two-part
+  code. `order_rows(rows, ranking, n_points=...)`. `RankingConfig.as_dict()` records the two-part
+  code as `mdl_strength: None`.
+- `FitResult.n_points` (the finite support size the ranking saw) is stored and used by `rerank`;
+  the saved-result format is 4 (a 0.17 file is refused rather than misread).
+- `flash_ansr.scoring.MDL_STRENGTH_DEFAULT` is gone (`MDL_STRENGTH_S0` names the old fixed weight);
+  `two_part_strength(n_points)` is the new weight.
+
 ## [0.17.0] - 2026-09-14
 
 One verb, one result, one place for every knob (owner design 2026-09-14). The estimator's
