@@ -287,7 +287,7 @@ class TestPoolBound:
         stub = SimpleNamespace(
             refiner_workers=1, _refine_pool=None, _overlap_mode=False, simplipy_engine=engine, n_variables=N_VARIABLES,
             n_restarts=4, refiner_method="curve_fit_lm", refiner_p0_noise="normal", refiner_p0_noise_kwargs=None,
-            numpy_errors="ignore", ranking=SimpleNamespace(effective_weights=resolve_ranking("mdl", mdl_strength=1e-2).effective_weights),
+            numpy_errors="ignore", ranking=SimpleNamespace(weights_for=lambda n: resolve_ranking("mdl", mdl_strength=1e-2).effective_weights),
             constant_ladder=ladder, refiner_scope="fittable", _count_constants=harness.FlashANSR._count_constants, close=lambda: None)
         stub._create_result_entry = lambda **kw: harness.FlashANSR._create_result_entry(stub, **kw)
 
@@ -311,7 +311,7 @@ class TestPoolBound:
         counter: list[int] = []
         stub = self._stub(engine, bounded_cfg, counter)
         results = [stub._create_result_entry(payload=r, input_dim=N_VARIABLES) for r in fitted]
-        gs = SimpleNamespace(X=X, y=y.reshape(-1, 1), y_variance=float(np.var(y)))
+        gs = SimpleNamespace(X=X, y=y.reshape(-1, 1), y_variance=float(np.var(y)), n_points=int(len(y)))
         harness.FlashANSR._run_bounded_ladder(stub, results, gs, input_dim=N_VARIABLES, converge_error="ignore", refine_seed=0, verbose=False)
         # the exact and the constant-free candidates are tried, the hopeless quadratic is not
         assert sum(counter) == 2

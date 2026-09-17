@@ -42,7 +42,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = FlashANSR.load(
   directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-20M"),
   generation_config=SoftmaxSamplingConfig(draws=1024),  # the search budget: expressions drawn per problem
-  ranking="mdl",                                        # log10(FVU) + 1e-2 per bit of description length (default)
+  ranking="mdl",                                        # the two-part code: (n/2) log2 FVU + description length in bits (default)
   compute={"device": device},
 )
 
@@ -120,7 +120,7 @@ To opt out of these defaults:
 SoftmaxSamplingConfig(draws=1024, use_cache=False, batch_size=128, static_decode=False)
 ```
 
-> **Candidate ranking.** Three modes, one sort: `ranking="mdl"` (default; `log10(FVU)` plus `mdl_strength` decades per bit of the refined expression's description length), `{"mode": "weighted", "weights": {...}}` (weights over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl`, `neg_log_prob`) and `{"mode": "pareto", "metrics": [...], "tie_break": ...}` (the non-dominated front over the metrics). Each knob belongs to one mode and raises under another. A fitted result can be re-ordered under any ranking without refitting: `result.rerank(...)`.
+> **Candidate ranking.** Three modes, one sort: `ranking="mdl"` (default; the two-part code `(n/2) * log2(FVU) + bits`: the data coded under the candidate's residual variance plus the refined expression's description length, `n` the support size, so more data buys more complexity; `{"mode": "mdl", "mdl_strength": 1e-2}` fixes the per-bit weight instead), `{"mode": "weighted", "weights": {...}}` (weights over `n_nodes`, `n_constants`, `n_constant_placeholders`, `n_typed_literals`, `mdl`, `neg_log_prob`) and `{"mode": "pareto", "metrics": [...], "tie_break": ...}` (the non-dominated front over the metrics). Each knob belongs to one mode and raises under another. A fitted result can be re-ordered under any ranking without refitting: `result.rerank(...)`.
 
 # Overview
 

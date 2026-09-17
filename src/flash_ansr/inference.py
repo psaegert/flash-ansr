@@ -29,7 +29,7 @@ FIT_OK = 0        # refined successfully (finite fvu); carries fitted constants
 FIT_FAILED = 1    # a VALID expression whose constant refinement did not converge
 INVALID = 2       # not a valid expression (rejected before refinement)
 
-RESULT_FORMAT_VERSION = 3
+RESULT_FORMAT_VERSION = 4   # 4: n_points (the two-part code's support size)
 
 
 @dataclass
@@ -161,6 +161,7 @@ class FitResult:
     n_variables: int                    # the model's input width (X is padded to it for evaluation)
     variable_mapping: dict[str, str] = field(default_factory=dict)
     draws: int | None = None            # the search budget of the call
+    n_points: int | None = None         # finite support points the fit and its two-part ranking saw
     engine: Any = field(default=None, repr=False, compare=False)   # the simplipy engine, for evaluation / rendering; not serialized
 
     @property
@@ -210,7 +211,7 @@ class FitResult:
             cfg = resolve_ranking(mode, **knobs)
         rows = [{'index': i, 'fvu': c.fvu, 'mdl': c.mdl, 'expression': list(c.expression), 'constant_count': c.constant_count,
                  'log_prob': c.log_prob, 'score': 0.0, 'pareto_rank': PARETO_RANK_NOT_COMPUTED} for i, c in enumerate(self.candidates)]
-        ordered = order_rows(rows, cfg)
+        ordered = order_rows(rows, cfg, n_points=self.n_points)
         new_rank_of = {row['index']: new_rank for new_rank, row in enumerate(ordered)}
         candidates = [replace(self.candidates[row['index']], score=float(row['score']), pareto_rank=int(row['pareto_rank']), rank=new_rank)
                       for new_rank, row in enumerate(ordered)]
@@ -262,6 +263,7 @@ class FitResult:
             'n_variables': self.n_variables,
             'variable_mapping': dict(self.variable_mapping),
             'draws': self.draws,
+            'n_points': self.n_points,
         }
         with open(path, 'wb') as fh:
             pickle.dump(payload, fh)
@@ -283,6 +285,7 @@ class FitResult:
             n_variables=int(payload['n_variables']),
             variable_mapping=dict(payload.get('variable_mapping') or {}),
             draws=payload.get('draws'),
+            n_points=payload.get('n_points'),
             engine=engine,
         )
 

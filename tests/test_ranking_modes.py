@@ -6,6 +6,8 @@ pool raising, and a tie-break outside the declared metric set giving a total ord
 from __future__ import annotations
 
 import numpy as np
+import math
+
 import pytest
 
 from flash_ansr.scoring import (
@@ -99,21 +101,53 @@ class TestObjectiveVector:
 
 # --- resolution: each knob belongs to exactly one mode ------------------------------------------
 from flash_ansr.scoring import (  # noqa: E402
-    MDL_STRENGTH_DEFAULT,
+    MDL_STRENGTH_S0,
     WEIGHTABLE_METRICS,
     RankingConfig,
+    order_rows,
     resolve_ranking,
     score_from_fvu,
     score_row,
+    two_part_strength,
 )
 
 
 class TestResolveRanking:
-    def test_default_is_the_engineered_mdl_mode(self) -> None:
+    def test_default_is_the_two_part_code(self) -> None:
         cfg = resolve_ranking()
-        assert cfg.mode == 'mdl'
-        assert cfg.mdl_strength == MDL_STRENGTH_DEFAULT == 1e-2
-        assert cfg.effective_weights == {'mdl': 1e-2}
+        assert cfg.mode == 'mdl' and cfg.mdl_strength is None and cfg.two_part
+        # the weight falls with the support size: 2 / (n log2 10) decades per bit
+        assert cfg.weights_for(60) == {'mdl': pytest.approx(1e-2, rel=5e-3)}   # 0.01003: the old fixed weight at n = 60
+        assert cfg.weights_for(16)['mdl'] == pytest.approx(2.0 / (16 * math.log2(10)))
+        assert cfg.weights_for(512)['mdl'] == pytest.approx(2.0 / (512 * math.log2(10)))
+        assert cfg.weights_for(512)['mdl'] < cfg.weights_for(60)['mdl'] < cfg.weights_for(16)['mdl']
+        with pytest.raises(RankingError):
+            _ = cfg.effective_weights          # no support size -> no constant weight
+        with pytest.raises(RankingError):
+            cfg.weights_for(None)
+        assert cfg.as_dict() == {'mode': 'mdl', 'mdl_strength': None}
+        assert RankingConfig.from_dict(cfg.as_dict()) == cfg
+
+    def test_two_part_strength_is_the_s1_order(self) -> None:
+        # S1 = (n/2) log2 FVU + bits; on the score_row scale that is log10 FVU + bits * 2/(n log2 10)
+        n = 100
+        w = two_part_strength(n)
+        rows = [{'fvu': 1e-3, 'mdl': 40_000.0, 'expression': ['x1'], 'constant_count': 0, 'log_prob': None, 'score': 0.0, 'pareto_rank': -1},
+                {'fvu': 1e-4, 'mdl': 90_000.0, 'expression': ['x1'], 'constant_count': 0, 'log_prob': None, 'score': 0.0, 'pareto_rank': -1}]
+        s1 = [(n / 2) * math.log2(r['fvu']) + r['mdl'] / 1000.0 for r in rows]
+        ordered = order_rows([dict(r) for r in rows], resolve_ranking(), n_points=n)
+        assert [r['fvu'] for r in ordered] == [rows[i]['fvu'] for i in sorted(range(2), key=lambda i: s1[i])]
+        assert ordered[0]['score'] == pytest.approx(math.log10(ordered[0]['fvu']) + w * ordered[0]['mdl'] / 1000.0)
+        with pytest.raises(RankingError):
+            order_rows([dict(r) for r in rows], resolve_ranking())   # the two-part code without n
+        with pytest.raises(RankingError):
+            two_part_strength(0)
+
+    def test_the_fixed_weight_reproduces_the_pre_018_ranking(self) -> None:
+        cfg = resolve_ranking('mdl', mdl_strength=MDL_STRENGTH_S0)
+        assert not cfg.two_part
+        assert cfg.effective_weights == {'mdl': 1e-2} == cfg.weights_for(None) == cfg.weights_for(512)
+        assert cfg.as_dict() == {'mode': 'mdl', 'mdl_strength': 1e-2}
 
     def test_weighted_defaults_to_no_penalty_at_all(self) -> None:
         cfg = resolve_ranking('weighted')
@@ -225,8 +259,8 @@ class TestModeOneVersusModeTwo:
 
     #: mu ~= 4,444 * n_nodes + 59,589 * n_constants + 8,073 mB on 8,476 T7 candidates (R^2 0.9969);
     #: the count weights scale with the strength, so the agreement is strength-independent.
-    NODE_WEIGHT = 4.444 * MDL_STRENGTH_DEFAULT
-    CONSTANT_WEIGHT = 59.589 * MDL_STRENGTH_DEFAULT
+    NODE_WEIGHT = 4.444 * MDL_STRENGTH_S0
+    CONSTANT_WEIGHT = 59.589 * MDL_STRENGTH_S0
 
     def test_pair_inversion_rate_on_the_emitted_spelling(self, engine: SimpliPyEngine) -> None:
         with open(_FIXTURE) as fh:
@@ -238,7 +272,7 @@ class TestModeOneVersusModeTwo:
                          'constant_count': sum(t == '<constant>' for t in tokens),
                          'mdl': _mu(engine, tokens)})
         # identical fvu on every row, so the two scores ARE the two penalties
-        mode1 = resolve_ranking('mdl').effective_weights
+        mode1 = resolve_ranking('mdl', mdl_strength=MDL_STRENGTH_S0).effective_weights
         mode2 = resolve_ranking('weighted', weights={
             'n_nodes': self.NODE_WEIGHT, 'n_constants': self.CONSTANT_WEIGHT}).effective_weights
         s1 = np.array([score_row(r, mode1) for r in rows])
@@ -271,7 +305,7 @@ class TestPrecisionMonotonicity:
             tokens = [spelled if t == '{c}' else t for t in skeleton]
             prices.append(score_row({'fvu': 1.0, 'expression': tokens, 'log_prob': None,
                                      'constant_count': 0, 'mdl': _mu(engine, tokens)},
-                                    resolve_ranking('mdl').effective_weights))
+                                    resolve_ranking('mdl', mdl_strength=MDL_STRENGTH_S0).effective_weights))
         assert all(b <= a for a, b in zip(prices, prices[1:])), (skeleton, ladder, prices)
         assert prices[-1] < prices[0], "17 digits must cost more than an integer"
 

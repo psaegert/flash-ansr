@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+import math
+
 import numpy as np
 import warnings
 
@@ -223,7 +225,27 @@ class RankingError(ValueError):
 #: old `node_penalty = 0.05` into bits (4.5e-3) was the plateau's midpoint; the ruling trades 0.4
 #: points of recovery for answers close to the law's length. Not a tuning surface: a run that wants
 #: a different weight on `mdl` says so in `weighted` mode, where the number is visible.
-MDL_STRENGTH_DEFAULT = 1e-2
+#: The FIXED weight of the pre-0.18 default ranking (S0 in the score study): 1e-2 decades of FVU per
+#: bit, whatever the support size. Pass ``mdl_strength=MDL_STRENGTH_S0`` to reproduce those numbers.
+MDL_STRENGTH_S0 = 1e-2
+
+
+def two_part_strength(n_points: int) -> float:
+    """The two-part code's weight in decades of FVU per bit, for a fit on ``n_points`` support points.
+
+    The default ranking since 0.18 (the score study's S1, owner ruling 2026-09-16): the candidate's
+    two-part description length ``(n/2) * log2(FVU) + bits``, i.e. the data coded under the
+    candidate's residual variance plus the candidate's own price. Divided by ``(n/2) * log2(10)``
+    that is ``log10(FVU) + bits * 2 / (n * log2(10))`` -- the same order, on the ``score_row``
+    scale, with a weight that FALLS with the support size: more data buys more complexity. At
+    n = 60 it equals the old fixed weight of 1e-2; at n = 512 it is 6 times weaker, at n = 16
+    4 times stronger.
+    """
+    n = int(n_points)
+    if n < 1:
+        raise RankingError(f"the two-part code needs at least one support point; got n_points={n_points!r}")
+    return 2.0 / (n * math.log2(10.0))
+
 
 RANKING_MODES = ('mdl', 'weighted', 'pareto')
 
@@ -238,30 +260,44 @@ class RankingConfig:
     dormant. Built only through :func:`resolve_ranking`, which validates."""
 
     mode: str
-    mdl_strength: float | None = None                 # 'mdl' only
+    mdl_strength: float | None = None                 # 'mdl' only; None = the two-part code (n-scaled)
     weights: Mapping[str, float] = field(default_factory=dict)   # 'weighted' only
     metrics: tuple[str, ...] = ()                     # 'pareto' only
     tie_break: str | None = None                      # 'pareto' only
 
-    def _mdl_strength_value(self) -> float:
-        if self.mdl_strength is None:
-            raise RankingError("ranking_mode='mdl' carries no mdl_strength; build the config through resolve_ranking")
-        return float(self.mdl_strength)
-
     @property
-    def effective_weights(self) -> dict[str, float]:
-        """The scalar addends this ranking applies (empty for `pareto`, whose score is nan)."""
+    def two_part(self) -> bool:
+        """``mdl`` mode with the two-part code (the default): the per-bit weight depends on the fit's
+        support size, so the weights come from :meth:`weights_for`, never from a constant."""
+        return self.mode == 'mdl' and self.mdl_strength is None
+
+    def weights_for(self, n_points: int | None) -> dict[str, float]:
+        """The scalar addends this ranking applies to a fit on ``n_points`` FINITE support points
+        (empty for `pareto`, whose score is nan). Only the two-part code reads ``n_points``."""
         if self.mode == 'mdl':
-            return {'mdl': self._mdl_strength_value()}
+            if self.mdl_strength is not None:
+                return {'mdl': float(self.mdl_strength)}
+            if n_points is None:
+                raise RankingError(
+                    "the two-part code's weight depends on the support size: pass n_points "
+                    "(RankingConfig.weights_for / order_rows(n_points=...)), or fix mdl_strength.")
+            return {'mdl': two_part_strength(n_points)}
         if self.mode == 'weighted':
             return {k: float(v) for k, v in self.weights.items()}
         return {}
 
+    @property
+    def effective_weights(self) -> dict[str, float]:
+        """The scalar addends of a ranking that does not depend on the support size (a fixed
+        ``mdl_strength``, `weighted`, `pareto`); the two-part code raises: use :meth:`weights_for`."""
+        return self.weights_for(None)
+
     def as_dict(self) -> dict[str, Any]:
-        """Plain, picklable, YAML-able record of the resolved values -- what provenance stores."""
+        """Plain, picklable, YAML-able record of the resolved values -- what provenance stores.
+        ``mdl_strength: None`` records the two-part code."""
         out: dict[str, Any] = {'mode': self.mode}
         if self.mode == 'mdl':
-            out['mdl_strength'] = self._mdl_strength_value()
+            out['mdl_strength'] = None if self.mdl_strength is None else float(self.mdl_strength)
         elif self.mode == 'weighted':
             out['weights'] = {k: float(v) for k, v in sorted(self.weights.items())}
         else:
@@ -315,7 +351,9 @@ def resolve_ranking(
         _refuse('ranking_weights', weights, 'weighted')
         _refuse('ranking_metrics', metrics, 'pareto')
         _refuse('ranking_tie_break', tie_break, 'pareto')
-        strength = MDL_STRENGTH_DEFAULT if mdl_strength is None else float(mdl_strength)
+        if mdl_strength is None:
+            return RankingConfig(mode='mdl', mdl_strength=None)        # the two-part code (default)
+        strength = float(mdl_strength)
         if not np.isfinite(strength) or strength < 0.0:
             raise ValueError(f"mdl_strength must be a finite non-negative number of decades per bit; got {mdl_strength!r}")
         return RankingConfig(mode='mdl', mdl_strength=strength)
@@ -449,7 +487,7 @@ def non_dominated_ranks(V: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dict[str, Any]]:
+def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig", n_points: int | None = None) -> list[dict[str, Any]]:
     """Score and ORDER candidate rows under ``ranking`` -- the one ordering rule of the library.
 
     Every row is a mapping with the ranking metrics' inputs (``fvu``, ``mdl`` in milli-bits,
@@ -471,7 +509,7 @@ def order_rows(rows: list[dict[str, Any]], ranking: "RankingConfig") -> list[dic
     """
     if not rows:
         return []
-    weights = ranking.effective_weights
+    weights = ranking.weights_for(n_points)          # the two-part code needs the support size
     mdl_weight = float(weights.get('mdl', 0.0))
     if mdl_weight != 0.0 and ranking.mode != 'pareto':
         priceable = sum(1 for r in rows if r.get('mdl') is not None and np.isfinite(r.get('mdl', np.nan)))
