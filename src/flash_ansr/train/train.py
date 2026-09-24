@@ -643,7 +643,7 @@ class Trainer:
         if not preprocess:
             worker_preprocess = False
 
-        if resume_from is None:
+        if resume_from is None and not resume_step:
             self._check_fresh_run_settings()
 
         try:
@@ -1318,10 +1318,10 @@ class Trainer:
     def _check_fresh_run_settings(self) -> None:
         """Refuse to train a fresh model without the fixes that only default off for old checkpoints.
 
-        A resumed run keeps the settings it started with; a fresh one must carry every value of
-        :data:`flash_ansr.model.flash_ansr_model.FRESH_RUN_SETTINGS`, read off the built model. A run that
-        must reproduce a legacy setting (a control arm, say) names the key under ``legacy_model_settings``
-        in the trainer config, with the reason as its value.
+        A resumed run (``resume_from`` or a non-zero ``resume_step``) keeps the settings it started with; a
+        fresh one must carry every value of :data:`flash_ansr.model.flash_ansr_model.FRESH_RUN_SETTINGS`, read
+        off the built model. A run that must reproduce a legacy setting (a control arm, say) names the key
+        under ``legacy_model_settings`` in the trainer config, with the reason as its value.
         """
         allowed = (self.config.get("legacy_model_settings") if isinstance(self.config, dict) else None) or {}
         if not isinstance(allowed, dict):

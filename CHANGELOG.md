@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A fresh training run must carry every fix whose default is legacy.** `FRESH_RUN_SETTINGS`
   (`flash_ansr.model.flash_ansr_model`) lists them with the value a new model needs:
   `encoder_mask_query_norms: true`, `sanitize_input_num: true`, `head_fp32: true`,
-  `pre_encoder_bits: 64`. `Trainer.run` without `resume_from` reads them off the built model
-  (`FlashANSRModel.fresh_run_deviations()`) and refuses to start when one is missing, unless the
+  `pre_encoder_bits: 64`. A fresh `Trainer.run` (no `resume_from`, no `resume_step`) reads them off
+  the built model (`FlashANSRModel.fresh_run_deviations()`) and refuses to start when one is missing, unless the
   trainer config names the key under `legacy_model_settings` with a reason. Loading is unchanged:
   checkpoints without the keys keep their legacy behaviour. A test fails on any key `from_config`
   reads with a default that is neither registered nor listed as a plain default.
