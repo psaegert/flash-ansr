@@ -11,6 +11,7 @@ import torch
 from flash_ansr.utils.numeric import NUMERIC_DTYPE
 
 from flash_ansr import FlashANSRModel, get_path
+from flash_ansr.utils.config_io import load_config
 from flash_ansr.model.encoders.set_transformer import MAB, SetTransformer
 from flash_ansr.model.pre_encoder import IEEE75432PreEncoder
 
@@ -126,7 +127,10 @@ class TestSanitizeInputNum:
         assert bits.abs().eq(1).all()
 
     def test_sanitize_zeroes_only_nan_positions(self):
-        model = FlashANSRModel.from_config(get_path("configs", "test", "model.yaml"))
+        config = load_config(get_path("configs", "test", "model.yaml"))
+        for key in ("encoder_mask_query_norms", "sanitize_input_num"):
+            config.pop(key)
+        model = FlashANSRModel.from_config(config)
         model.eval()
         # from_config defaults: both flags stay legacy-False for configs without the new keys.
         assert model.sanitize_input_num is False
