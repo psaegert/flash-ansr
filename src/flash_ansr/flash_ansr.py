@@ -1703,6 +1703,20 @@ class FlashANSR(BaseEstimator):
                     max_tries=generation_kwargs.get('max_tries'),
                     n_variables=(int(n_active_variables) if (match and n_active_variables is not None) else None),
                 )
+            case 'oracle':
+                # The ground truth instead of the decoder: one candidate, which the refiner fits like any
+                # other (its restarts are the oracle's budget); it carries no log-probability.
+                if self.ranking.mode == 'weighted' and float(self.ranking.weights.get('neg_log_prob', 0.0)) != 0.0:
+                    raise RankingError(
+                        "oracle candidates carry no log-probability, but the ranking weights "
+                        "'neg_log_prob'; use ranking_mode='mdl' or weights without it.")
+                expression = generation_kwargs.get('expression')
+                if expression is None:
+                    raise ValueError(
+                        "The oracle needs the problem's ground truth: OracleConfig(expression=<prefix tokens "
+                        "over x1..xN>), set for each problem.")
+                from flash_ansr.oracle import oracle_beams
+                return oracle_beams(expression, engine=self.simplipy_engine, tokenizer=self.tokenizer)
             case 'softmax_sampling':
                 choices_target = int(generation_kwargs.get('draws', 1))
                 generation_kwargs = dict(generation_kwargs)  # local copy; resolve sentinels into it
@@ -2348,8 +2362,11 @@ class FlashANSR(BaseEstimator):
             else:
                 memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
 
-            is_prior = getattr(self.generation_config, 'method', None) == 'prior_sampling'
-            emission = 'constants' if is_prior else str(getattr(self.generation_config, 'emission', 'fittable'))
+            generation_method = getattr(self.generation_config, 'method', None)
+            is_prior = generation_method == 'prior_sampling'
+            # no decoder reads a prompt when the candidates come from elsewhere (the prior, the ground truth)
+            emission = ('constants' if generation_method in ('prior_sampling', 'oracle')
+                        else str(getattr(self.generation_config, 'emission', 'fittable')))
             prompt_prefix = self._prepare_prompt_prefix(
                 emission=emission,
                 complexity=complexity,

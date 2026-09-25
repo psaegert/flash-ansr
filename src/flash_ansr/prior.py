@@ -38,6 +38,39 @@ CATALOG_FILENAME = "catalog_train.yaml"
 """The training prior's spec, shipped beside ``model.yaml`` in a model bundle."""
 
 
+def wraps_expressions(tokenizer: Any) -> bool:
+    """Whether the vocabulary delimits an expression with ``<expression>`` ... ``</expression>``."""
+    vocab = getattr(tokenizer, "token2idx", {})
+    return "<expression>" in vocab and "</expression>" in vocab
+
+
+def encode_candidate(expression: list[str], *, engine: Any, tokenizer: Any,
+                     wrap: bool) -> tuple[list[int], list[str]] | None:
+    """A concrete expression (prefix tokens, literals spelled) as a candidate beam: ``(token ids, masked
+    expression)``, or ``None`` when it cannot be one (a non-finite literal, a slot/value mismatch, a token
+    the vocabulary cannot spell).
+
+    The emission format under the fittable flag, through the training stream's own steps: positional
+    literal masking, the fittable-slot policy, ieee754 serialization of the kept literals, the tokenizer.
+    A fittable literal becomes the model's ``<constant>`` placeholder, a structural literal (pow exponent,
+    rootn index) is spelled."""
+    try:
+        masked, values = mask_literals_positional(engine, expression)
+        placeheld = fittable_slots(engine, expression)
+    except NonFiniteExpressionError:
+        return None
+    if len(placeheld) != len(values) or any(not math.isfinite(v) for v in values):
+        return None
+    tokens, _numeric = serialize_constant_tokens(
+        masked, [None if kept else value for value, kept in zip(values, placeheld)])
+    body = ["<expression>", *tokens, "</expression>"] if wrap else tokens
+    try:
+        ids = tokenizer.encode(body, oov="raise")
+    except KeyError:
+        return None
+    return [int(i) for i in ids], list(masked)
+
+
 def resolve_prior_catalog(catalog: Any, model_directory: str | None) -> Any:
     """The catalog spec ``prior_sampling`` draws from: the config's ``catalog`` (a path, a
     ``name[@version]`` ref, or an inline mapping), else ``catalog_train.yaml`` beside the model."""
@@ -88,8 +121,7 @@ class PriorSampler:
         self.tokenizer = tokenizer
         self.decontaminate = bool(decontaminate)
         self.rng = np.random.default_rng(seed)
-        vocab = getattr(tokenizer, "token2idx", {})
-        self._wrap = "<expression>" in vocab and "</expression>" in vocab
+        self._wrap = wraps_expressions(tokenizer)
         self.n_attempts = 0
         self.n_discarded = 0
 
@@ -126,26 +158,10 @@ class PriorSampler:
                 self.n_discarded += 1
                 return None
             expression = relabeled
-        try:
-            masked, values = mask_literals_positional(self.engine, expression)
-            placeheld = fittable_slots(self.engine, expression)
-        except NonFiniteExpressionError:
+        encoded = encode_candidate(expression, engine=self.engine, tokenizer=self.tokenizer, wrap=self._wrap)
+        if encoded is None:
             self.n_discarded += 1
-            return None
-        if len(placeheld) != len(values) or any(not math.isfinite(v) for v in values):
-            self.n_discarded += 1
-            return None
-        # The emission format under the fittable flag: a fittable literal is the model's
-        # <constant> placeholder, a structural literal (pow exponent, rootn index) is spelled.
-        tokens, _numeric = serialize_constant_tokens(
-            masked, [None if kept else value for value, kept in zip(values, placeheld)])
-        body = ["<expression>", *tokens, "</expression>"] if self._wrap else tokens
-        try:
-            ids = self.tokenizer.encode(body, oov="raise")
-        except KeyError:
-            self.n_discarded += 1
-            return None
-        return [int(i) for i in ids], list(masked)
+        return encoded
 
     def draw(self, draws: int, *, unique: bool = True, valid_only: bool = True,
              max_tries: int | None = None, n_variables: int | None = None,
@@ -182,4 +198,4 @@ class PriorSampler:
         return beams, [float("nan")] * n, [True] * n, [float("nan")] * n
 
 
-__all__ = ["CATALOG_FILENAME", "PriorSampler", "resolve_prior_catalog"]
+__all__ = ["CATALOG_FILENAME", "PriorSampler", "encode_candidate", "resolve_prior_catalog", "wraps_expressions"]

@@ -1,5 +1,5 @@
 """Generation configuration helpers with method-specific signatures."""
-from typing import Any, Iterator, Literal, Mapping
+from typing import Any, Iterator, Literal, Mapping, Sequence
 
 
 def validate_simplify(value: Any) -> bool:
@@ -33,7 +33,7 @@ class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
     __slots__ = ('method',)
-    method: Literal['softmax_sampling', 'prior_sampling']
+    method: Literal['softmax_sampling', 'prior_sampling', 'oracle']
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments appropriate for the configured method."""
@@ -227,16 +227,39 @@ class PriorSamplingConfig(GenerationConfigBase):
         }
 
 
-GenerationConfig = SoftmaxSamplingConfig | PriorSamplingConfig
+class OracleConfig(GenerationConfigBase):
+    """The problem's ground truth as the only candidate instead of the decoder; refinement and ranking run
+    on it unchanged, so the refiner's restarts are the budget. The ceiling of the fitting stage. See
+    :mod:`flash_ansr.oracle`.
+
+    ``expression`` is the ground truth in prefix notation with its literals spelled, over the problem's
+    columns as ``x1..xN``; a harness sets it for each problem (``fit`` refuses to run without one).
+    """
+
+    __slots__ = ('expression',)
+
+    method: Literal['oracle']
+    expression: tuple[str, ...] | None
+
+    def __init__(self, *, expression: Sequence[str] | None = None) -> None:
+        self.method = 'oracle'
+        self.expression = None if expression is None else tuple(str(token) for token in expression)
+
+    def to_kwargs(self) -> dict[str, Any]:
+        return {'expression': self.expression}
 
 
-def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampling'] = 'softmax_sampling',
+GenerationConfig = SoftmaxSamplingConfig | PriorSamplingConfig | OracleConfig
+
+
+def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampling', 'oracle'] = 'softmax_sampling',
                              **kwargs: Any) -> GenerationConfig:
     """Create a generation configuration for ``method``.
 
     ``softmax_sampling`` decodes candidates from the transformer; ``prior_sampling`` draws them from
     the training prior instead (:class:`PriorSamplingConfig`), the baseline that measures what the
-    posterior is worth. Beam search and MCTS were retired, and with them the generic
+    posterior is worth; ``oracle`` proposes the problem's ground truth (:class:`OracleConfig`), the
+    ceiling of the fitting stage. Beam search and MCTS were retired, and with them the generic
     ``method`` dispatch; a request for a retired method is refused here.
     """
     name = str(method).lower()
@@ -244,9 +267,12 @@ def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampl
         return SoftmaxSamplingConfig(**kwargs)
     if name == 'prior_sampling':
         return PriorSamplingConfig(**kwargs)
+    if name == 'oracle':
+        return OracleConfig(**kwargs)
     raise ValueError(
         f"Invalid generation method: {method}. Beam search and MCTS were retired; "
-        f"'softmax_sampling' (the decoder) and 'prior_sampling' (the training prior) are the methods.")
+        f"'softmax_sampling' (the decoder), 'prior_sampling' (the training prior) and 'oracle' (the ground "
+        f"truth) are the methods.")
 
 
 # Hardware gate for the c-adaptive caps in ``suggest_batch_size``: those caps are validated only on a

@@ -135,3 +135,22 @@ checkpoint's own. A prior candidate carries no log-probability, so the ranking m
 (the default `mdl` ranking does not). The other control is the model's own unconditioned decode,
 `SoftmaxSamplingConfig(draws=1024, guidance_weight=0.0)`: the learned null memory replaces the
 encoder's, so the decoder proposes from its learned prior and the refiner still fits the data.
+
+## The oracle: the ground truth as the only candidate
+
+The ceiling of the fitting stage: hand the refiner the true expression and see how often fitting alone
+recovers the law. `OracleConfig(expression=...)` takes the ground truth in prefix notation with its
+literals spelled, over the columns as `x1..xN`; it becomes one candidate in the model's own emission
+format (a fittable literal is a `<constant>` the refiner fits, a pow exponent or root index stays
+spelled), and refinement and ranking run on it unchanged. Its budget is the refiner's restarts.
+
+```python
+from flash_ansr import FlashANSR, OracleConfig
+
+oracle = FlashANSR.load(
+  directory=get_path("models", "psaegert/flash-ansr-v25.0-T8-3M"),   # only the tokenizer and the engine are used
+  generation_config=OracleConfig(expression=["+", "*", "2.5", "pow", "x1", "2", "sin", "x2"]),
+  refine={"n_restarts": 8},
+)
+result = oracle.fit(X, y)                  # a harness sets a new OracleConfig for every problem
+```

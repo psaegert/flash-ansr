@@ -60,6 +60,12 @@ The four config objects `FlashANSR.load` takes: the sampler, the refiner, the ra
       heading_level: 4
       show_root_toc_entry: false
 
+### OracleConfig
+::: flash_ansr.utils.generation.OracleConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
 ### RefineConfig
 ::: flash_ansr.estimator_config.RefineConfig
     options:
