@@ -8,6 +8,12 @@ pre_encoder_noise_scale: 0.1
 # reaches the encoder or the numeric channel is binary64 -- see flash_ansr.utils.numeric.
 pre_encoder_bits: 64
 
+# The fixes a model trained from now on carries (FRESH_RUN_SETTINGS in flash_ansr_model.py); their legacy
+# defaults exist for old checkpoints only.
+encoder_mask_query_norms: true
+sanitize_input_num: true
+head_fp32: true
+
 encoder_max_n_variables: 11
 encoder_dim: 128
 encoder_n_heads: 4

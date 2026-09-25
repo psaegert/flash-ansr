@@ -141,7 +141,16 @@ long before it costs loss.
 - Training uses [automatic mixed precision (AMP)](https://docs.pytorch.org/docs/stable/amp.html) and [torch.compile](https://huggingface.co/docs/transformers/en/perf_torch_compile)
 
 ## Adding a new config
-- Start from `configs/v24-template/` for the tokenizer, or copy a full run bundle (e.g. `configs/v24.0-T16/`).
+- Start from `configs/v24-template/` for the tokenizer, or copy a full run bundle (e.g. `configs/v25.0-T8.1-20M/`).
+- A fresh run (no `--resume-from`) refuses a model built without the fixes in
+  `flash_ansr.model.flash_ansr_model.FRESH_RUN_SETTINGS`: `encoder_mask_query_norms: true`,
+  `sanitize_input_num: true`, `head_fp32: true` and `pre_encoder_bits: 64` in `model.yaml`. Their code defaults
+  stay legacy so that older checkpoints load unchanged, which is why a copied config must state them. To
+  reproduce a legacy setting on purpose (a control arm), name the key in the trainer config with the reason:
+    ```yaml
+    legacy_model_settings:
+      encoder_mask_query_norms: "control arm: the v25.0-T8 encoder"
+    ```
 - Update paths and tokenizer/operator choices; ensure special prompt tokens exist before enabling prompt features.
 - Prefer cloning configs instead of mutating in-place to keep saved YAMLs portable.
 

@@ -52,6 +52,26 @@ _DEPLOYED_STATIC_ENABLED = True
 # transient of ~18.6 free) with margin and trips on a gross over-budget chunk.
 _VRAM_GUARD_FRACTION = 0.9
 
+# Fixes that shipped behind a legacy default, so that checkpoints trained before them load and run
+# bit-identically: the model-config key and the value a model trained FROM NOW ON must carry. Loading
+# (from_config, load) keeps the legacy default; a fresh training run refuses a model that does not carry
+# the value here (Trainer.run, via FlashANSRModel.fresh_run_deviations). A default-off fix with no such
+# check stayed off: 900e20d (2026-07-13) added encoder_mask_query_norms and sanitize_input_num, and every
+# model trained after it, the v25.0-T8 series included, was trained without them because each run
+# config was copied from one written before the keys existed. A key from_config reads with a default
+# must be classified here or as a plain default (tests/test_models/test_fresh_run_settings.py).
+FRESH_RUN_SETTINGS: dict[str, Any] = {
+    # ISAB self-refinement set norms over the valid rows only: the encoding does not depend on how
+    # many zero rows the batch pads a set with (training pads, inference does not).
+    "encoder_mask_query_norms": True,
+    # The numeric embedding is zero where input_num is NaN (no payload), not the embedding of NaN's bits.
+    "sanitize_input_num": True,
+    # The head runs in float32 under mixed precision (owner ruling 2026-09-08).
+    "head_fp32": True,
+    # Binary64 support rows: 32 bits overflow or flush a fraction of the training support to zero.
+    "pre_encoder_bits": 64,
+}
+
 # Per-row pad the spill-guard uses, DELIBERATELY LARGER than suggest_batch_size_dims's cap overhead (1.6)
 # so the guard is an INDEPENDENT backstop: a guard self-consistent with the cap could never catch a cap
 # under-estimate. At 2.0 the guard passes the validated static b256 but trips b384+ (the measured spill
@@ -353,6 +373,21 @@ class FlashANSRModel(nn.Module):
         if draws is None or static_batch is None:   # regime undeterminable -> dynamic (validated path)
             return False
         return int(static_batch) < int(draws)        # multi-chunk -> static
+
+    def fresh_run_settings(self) -> dict[str, Any]:
+        """The value of every :data:`FRESH_RUN_SETTINGS` key, read off the BUILT modules (not the config
+        that asked for them), so a key the constructor dropped on the way still shows."""
+        return {
+            "encoder_mask_query_norms": all(isab.mab_self.mask_query_norms for isab in self.encoder.isabs),
+            "sanitize_input_num": bool(self.sanitize_input_num),
+            "head_fp32": bool(self.head_fp32),
+            "pre_encoder_bits": int(self.pre_encoder.bits),
+        }
+
+    def fresh_run_deviations(self) -> dict[str, tuple[Any, Any]]:
+        """``{key: (built value, required value)}`` for every fix this model is built without."""
+        built = self.fresh_run_settings()
+        return {key: (built[key], wanted) for key, wanted in FRESH_RUN_SETTINGS.items() if built[key] != wanted}
 
     def parameter_roles(self) -> dict[str, str]:
         """Role of every trainable parameter, for optimizers that treat weight matrices specially

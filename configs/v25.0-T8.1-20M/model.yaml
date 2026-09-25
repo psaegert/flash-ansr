@@ -1,0 +1,78 @@
+# v25.0-T8.1-20M: v25.0-T8-20M with the two fixes T8 was trained without (flash-ansr 900e20d, default off
+# so that old checkpoints load bit-identically, and never switched on in a run config): the ISAB
+# self-refinement set norms read the valid rows only (encoder_mask_query_norms), so the encoding no
+# longer depends on the zero rows a training batch pads a set with and inference never adds; and the
+# numeric embedding is zero where a position carries no number (sanitize_input_num). It also states
+# head_fp32, which T8-20M predates (its head trained in bf16; T8-3M and T8-120M have it). Every other line
+# is T8's; its header follows.
+#
+# v25.0-T8-20M: the T7-20M shape (the 20M point of the v23 size ladder: encoder 384-d, 6 heads,
+# 2 ISAB + 2 SAB, FFN 1152; decoder 384-d, 6 heads, 6 layers, FFN 1152) WITHOUT the pre-logits
+# LayerNorm (owner ruling 2026-09-07, see head_pre_logits_norm below). Every other pin is T7's
+# (binary64 numeric channel, seq len 256, optional condition, outlier head).
+simplipy_engine: 'acj-5-4-llm'
+tokenizer: './tokenizer.yaml'
+
+pre_encoder_noise_scale: 0.1
+
+# The numeric format, pinned explicitly rather than left to the code default: everything
+# reaching the encoder or the numeric channel is binary64. See flash_ansr.utils.numeric.
+pre_encoder_bits: 64
+
+# The fixes a model trained from now on carries (FRESH_RUN_SETTINGS in flash_ansr_model.py; the trainer
+# refuses a fresh run without them). T8 left the first two at their legacy defaults.
+encoder_mask_query_norms: true
+sanitize_input_num: true
+
+encoder_max_n_variables: 18
+encoder_dim: 384
+encoder_n_heads: 6
+encoder_n_isab: 2
+encoder_n_sab: 2
+encoder_n_inducing_points: 128
+encoder_n_seeds: 128
+encoder_ffn_hidden_dim: 1152
+encoder_dropout: 0.1
+encoder_attn_norm: 'rms_set'
+encoder_ffn_norm: 'rms_set'
+encoder_output_norm: 'rms_set'
+
+decoder_input_dim: 384
+decoder_model_dim: 384
+decoder_n_heads: 6
+decoder_n_layers: 6
+# 256 holds the task set with room to spare: measured over 25,600 instances of this
+# prior, the longest runs 193 tokens, the 99th percentile 151 and the median 78.
+decoder_max_seq_len: 256
+decoder_ffn_hidden_dim: 1152
+decoder_dropout: 0.1
+decoder_block_self_attn_norm: 'rms'
+decoder_block_cross_attn_norm: 'rms'
+# No LayerNorm before the final logit projection (owner ruling 2026-09-07). T7-20M showed the
+# norm moves the loss-flat logit-offset drift into its own gain and bias (rms 1.65/0.48 at 575k
+# -> 14.5/16.3 at 1.5M, mean |logit| 34 -> 1,881) instead of removing it; the restoring force
+# is the z-loss in train.yaml, and the head activations stay bounded by decoder_output_norm.
+head_pre_logits_norm: false
+# The head runs in float32 under mixed precision (the rule for every model from 2026-09-08 on;
+# T8-20M predates it and trained its head in bf16).
+head_fp32: true
+decoder_block_ffn_norm: 'rms'
+decoder_cross_attn_kv_norm: 'rms'
+decoder_output_norm: 'rms'
+decoder_use_rope_self_attn: true
+decoder_use_rope_cross_attn: false
+
+use_checkpointing: false
+
+# First-class optional condition (classifier-free guidance). When true, the model carries a learned
+# `null_memory` and routes UNCONDITIONED examples (per-example condition_mask=False, set by the data
+# layer via `condition_dropout` in dataset_train.yaml) to it -- a data-driven, train/inference-symmetric
+# mode. Required whenever the dataset emits a condition_mask, which the 10% dropout does.
+# null_memory_init_seed selects the init.
+optional_condition: true
+null_memory_init_seed: 0
+
+# Per-point outlier head over the encoder's pre-pooling representations, trained against
+# the noise mixture's generative contamination labels (see train.yaml: outlier_loss_weight).
+# The decoder-side tasks need no head: they are ordinary next-token prediction.
+outlier_head: true

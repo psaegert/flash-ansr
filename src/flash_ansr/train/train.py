@@ -643,6 +643,9 @@ class Trainer:
         if not preprocess:
             worker_preprocess = False
 
+        if resume_from is None and not resume_step:
+            self._check_fresh_run_settings()
+
         try:
             self._setup_training_state(device, verbose=verbose)
 
@@ -1311,6 +1314,30 @@ class Trainer:
             recursive=True,
             resolve_paths=True)
         print(f"Checkpoint saved at {save_directory}")
+
+    def _check_fresh_run_settings(self) -> None:
+        """Refuse to train a fresh model without the fixes that only default off for old checkpoints.
+
+        A resumed run (``resume_from`` or a non-zero ``resume_step``) keeps the settings it started with; a
+        fresh one must carry every value of :data:`flash_ansr.model.flash_ansr_model.FRESH_RUN_SETTINGS`, read
+        off the built model. A run that must reproduce a legacy setting (a control arm, say) names the key
+        under ``legacy_model_settings`` in the trainer config, with the reason as its value.
+        """
+        allowed = (self.config.get("legacy_model_settings") if isinstance(self.config, dict) else None) or {}
+        if not isinstance(allowed, dict):
+            raise ValueError(f"legacy_model_settings maps each key to its reason, got {allowed!r}")
+        unexplained = [key for key, reason in allowed.items() if not str(reason or "").strip()]
+        if unexplained:
+            raise ValueError(f"legacy_model_settings needs a reason for every key; none given for {unexplained}")
+        deviations = {key: pair for key, pair in self.model.fresh_run_deviations().items() if key not in allowed}
+        if deviations:
+            listed = "\n".join(f"  {key}: {wanted!r}   (the model is built with {built!r})" for key, (built, wanted) in deviations.items())
+            raise ValueError(
+                "A fresh training run must not inherit a legacy default. Set in model.yaml:\n" + listed + "\n"
+                "or, to reproduce the legacy behaviour on purpose, name the key under legacy_model_settings "
+                "in the trainer config with the reason.")
+        for key, reason in allowed.items():
+            print(f"legacy_model_settings: {key} kept at its legacy value ({reason})")
 
     def _infer_resume_step(self, checkpoint_directory: str) -> int | None:
         """Infer the resume step from the checkpoint directory name."""

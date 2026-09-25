@@ -6,6 +6,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A fresh training run must carry every fix whose default is legacy.** `FRESH_RUN_SETTINGS`
+  (`flash_ansr.model.flash_ansr_model`) lists them with the value a new model needs:
+  `encoder_mask_query_norms: true`, `sanitize_input_num: true`, `head_fp32: true`,
+  `pre_encoder_bits: 64`. A fresh `Trainer.run` (no `resume_from`, no `resume_step`) reads them off
+  the built model (`FlashANSRModel.fresh_run_deviations()`) and refuses to start when one is missing, unless the
+  trainer config names the key under `legacy_model_settings` with a reason. Loading is unchanged:
+  checkpoints without the keys keep their legacy behaviour. A test fails on any key `from_config`
+  reads with a default that is neither registered nor listed as a plain default.
+- **`configs/v25.0-T8.1-{3M,20M,120M}`**: the v25.0-T8 configs with `encoder_mask_query_norms` and
+  `sanitize_input_num` on. The v25.0-T8 series was trained with both at their legacy defaults: the
+  encoder's self-refinement set norms averaged over the zero rows every training batch pads a set
+  with (valid rows inflated by sqrt(1024/n)), which inference never adds.
+
+### Changed
+- `configs/test/model.yaml` states the fresh-run settings, so the suite trains what a new model is.
+
 ## [0.18.0] - 2026-09-16
 
 The default ranking is the two-part code (owner ruling 2026-09-16, from the n-scaled score study:
