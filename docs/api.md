@@ -130,3 +130,35 @@ The four config objects `FlashANSR.load` takes: the sampler, the refiner, the ra
     options:
       heading_level: 3
       show_root_toc_entry: false
+
+## HybridRegressor
+Flash-ANSR seeding PySR ([Flash-ANSR + PySR](hybrid.md)); install with `pip install flash-ansr[pysr]`.
+
+::: flash_ansr.hybrid.HybridRegressor
+    options:
+      heading_level: 3
+      members:
+        - fit
+        - predict
+        - get_expression
+        - solve
+      members_order: source
+      show_root_toc_entry: false
+
+### HybridConfig
+::: flash_ansr.hybrid.HybridConfig
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### HybridFitResult
+::: flash_ansr.hybrid.HybridFitResult
+    options:
+      heading_level: 4
+      show_root_toc_entry: false
+
+### HybridCandidate
+::: flash_ansr.hybrid.HybridCandidate
+    options:
+      heading_level: 4
+      show_root_toc_entry: false

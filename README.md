@@ -71,6 +71,15 @@ FitResult.load("result.pkl", engine=model.simplipy_engine)  # ... and back, eval
 
 **The call.** Everything that changes with the problem is an argument of `fit`: `draws=` overrides the budget for this call, `seed=` makes the draw and the refinement reproducible, `complexity=` hints the target complexity, `on_empty="raise"` raises `ConvergenceError` instead of returning an empty result when nothing fitted, `variable_names=` names the columns. Everything else is policy and lives on the estimator.
 
+**Flash-ANSR + PySR.** `flash_ansr.hybrid.HybridRegressor` lets Flash-ANSR's best candidates seed PySR's evolutionary search, prices PySR's hall of fame the way Flash-ANSR prices its own candidates, and lets Flash-ANSR's ranking pick from the combined pool (`pip install flash-ansr[pysr]`; see the [guide](https://flash-ansr.readthedocs.io/en/latest/hybrid/)):
+
+```python
+from flash_ansr.hybrid import HybridRegressor
+
+hybrid = HybridRegressor(model)     # by default 1024 draws, then 64 PySR iterations: both stages take the same time
+result = hybrid.fit(X, y)           # a FitResult of the combined pool; result.best.source says where the answer came from
+```
+
 Explore more in the [Demo Notebook](https://github.com/psaegert/flash-ansr/blob/main/demo.ipynb).
 
 **Train your own:** see the [training guide](https://flash-ansr.readthedocs.io/en/latest/training/).

@@ -7,7 +7,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
-version = "0.18.0"
+version = "0.19.0"
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
@@ -72,6 +72,8 @@ dependencies = {file = ["requirements.txt"]}
 
 
 [project.optional-dependencies]
+# the hybrid's GP stage (flash_ansr.hybrid): PySR, the version the published hybrid results ran with
+pysr = ["pysr==2.4.0"]
 dev = [
     "pre-commit",
     "pytest",
