@@ -55,6 +55,7 @@ nav:
   - Concepts & Architecture: concepts.md
   - Training: training.md
   - Evaluation: evaluation.md
+  - Flash-ANSR + PySR: hybrid.md
   - API Reference: api.md
   - Contributing: contributing.md
   - FAQ & Troubleshooting: faq.md

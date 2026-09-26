@@ -6,7 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
 ### Added
+- **`flash_ansr.hybrid`: Flash-ANSR + PySR.** `HybridRegressor(model)` lets the best `k_seeds` Flash-ANSR candidates
+  seed PySR's populations, prices PySR's hall of fame the way Flash-ANSR prices its own candidates (refit with the
+  Refiner, re-spelled by the constant ladder, the certified MDL, the ranking's score) and lets Flash-ANSR's ranking
+  pick from the combined pool. `fit(X, y, draws=, niterations=)` returns a `HybridFitResult` (a `FitResult` whose
+  `HybridCandidate`s carry their `source`), by default at the r* = 0.5 pairing `R_STAR_LADDER` (1024 draws : 64
+  iterations; draws alone take their pair). `solve` is the evaluation path benchmark harnesses drive: a record, by
+  work or by the clock (`HybridConfig(budget_s=, ratio=)`), with a per-problem generation cache across a ladder or a
+  sweep. Moved from the separate `flash-ansr-hybrid` package (0.2.1); `solve` returns exactly what its `fit`
+  returned (identity-checked on a real model). PySR is the optional extra `flash-ansr[pysr]` (pysr 2.4.0).
 - **A fresh training run must carry every fix whose default is legacy.** `FRESH_RUN_SETTINGS`
   (`flash_ansr.model.flash_ansr_model`) lists them with the value a new model needs:
   `encoder_mask_query_norms: true`, `sanitize_input_num: true`, `head_fp32: true`,
