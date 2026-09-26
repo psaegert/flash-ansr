@@ -32,7 +32,9 @@ class TestSplit:
 
     def test_running_costs_persist_across_cells(self, tmp_path):
         first = _regressor(0.5, [0.5], snapshot_dir=tmp_path / "snapshots" / "fastsrb")
-        first.clock.pysr_overhead.observe(6.0); first.clock.pricing_reserve.observe(0.6); first.clock.save()
+        first.clock.pysr_overhead.observe(6.0)
+        first.clock.pricing_reserve.observe(0.6)
+        first.clock.save()
         assert (tmp_path / "snapshots" / "clock_state.json").exists()      # beside the snapshot directories
         second = _regressor(0.3, [0.3], snapshot_dir=tmp_path / "snapshots" / "feynman")
         assert second.clock.pysr_overhead.value == pytest.approx(5.0) and second.clock.pysr_overhead.count == 2
@@ -40,7 +42,9 @@ class TestSplit:
 
     def test_running_mean_and_unreadable_state(self, tmp_path):
         m = RunningMean(4.0)
-        m.observe(6.0); m.observe(None); m.observe(float("inf"))
+        m.observe(6.0)
+        m.observe(None)
+        m.observe(float("inf"))
         assert m.value == 5.0 and m.count == 2
         path = tmp_path / "clock_state.json"
         path.write_text("not json")

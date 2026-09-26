@@ -42,7 +42,7 @@ import math
 import pickle
 import time
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
@@ -219,24 +219,24 @@ class HybridRegressor:
         if generation is not None and hasattr(generation, "emission"):
             generation.emission = self.config.emission
         cfg = self.config
-        searches = cfg.niterations > 0 if cfg.mode == "knobs" else self.pysr_seconds(cfg.ratio) > 0
+        searches = int(cfg.niterations or 0) > 0 if cfg.mode == "knobs" else self.pysr_seconds(float(cfg.ratio or 0.0)) > 0
         if searches and cfg.pysr.warmup:
             warmup(cfg.pysr)
 
     # -- the budget split, by the clock ---------------------------------------------------------
     def generation_seconds(self, ratio: float, budget: float | None = None) -> float:
         """Flash-ANSR's share of the budget: (1 - r) T of wall time (T: the configured budget)."""
-        return round((1.0 - ratio) * (self.config.budget_s if budget is None else float(budget)), 6)
+        return round((1.0 - ratio) * (float(self.config.budget_s or 0.0) if budget is None else float(budget)), 6)
 
     def pysr_seconds(self, ratio: float, budget: float | None = None) -> float:
         """PySR's share of the budget: r T of wall time (search + its fixed cost + the added
         candidates' pricing)."""
-        return round(ratio * (self.config.budget_s if budget is None else float(budget)), 6)
+        return round(ratio * (float(self.config.budget_s or 0.0) if budget is None else float(budget)), 6)
 
     def time_targets(self) -> list[float]:
         """The generation wall-time targets of every (ratio, budget) cell of the sweep, ascending:
         one chunked generation pass per problem snapshots at each of them."""
-        return sorted({self.generation_seconds(r, t) for r in self.config.ratios for t in self.config.budgets} - {0.0})
+        return sorted({self.generation_seconds(r, t) for r in (self.config.ratios or []) for t in (self.config.budgets or [])} - {0.0})
 
     def pysr_search_seconds(self, ratio: float, budget: float | None = None) -> float:
         """PySR's own clock (``timeout_in_seconds``): its share minus the running means of its fixed
@@ -276,7 +276,7 @@ class HybridRegressor:
             targets = self._generate_draw_snapshots(X, y, X_val, variables=variables, complexity=complexity,
                                                     up_to=None if path is not None else up_to)
         else:
-            targets = self._generate_snapshots(X, y, X_val, variables=variables, complexity=complexity)
+            targets = self._generate_snapshots(X, y, X_val, variables=variables, complexity=complexity)  # type: ignore[assignment]
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".pkl.tmp")
@@ -285,8 +285,10 @@ class HybridRegressor:
             tmp.replace(path)
         return targets
 
-    def _targets(self) -> list:
-        return self.draw_targets() if self.config.mode == "knobs" else self.time_targets()
+    def _targets(self) -> list[Any]:
+        if self.config.mode == "knobs":
+            return list(self.draw_targets())
+        return list(self.time_targets())
 
     def _pass(self, X: np.ndarray, y: np.ndarray, X_val: np.ndarray | None, *, variables: Sequence[str],
               complexity: int | float | None) -> "_GenerationPass":
@@ -297,7 +299,7 @@ class HybridRegressor:
         """The clock mode's pass: generate until the wall clock reaches each share."""
         cfg = self.config
         run = self._pass(X, y, X_val, variables=variables, complexity=complexity)
-        tolerance = cfg.landing_tolerance * min(cfg.budgets)   # the tightest cell's tolerance serves every target
+        tolerance = cfg.landing_tolerance * min(cfg.budgets or [0.0])   # the tightest cell's tolerance serves every target
         snap: dict[float, dict[str, Any]] = {}
         for target in self.time_targets():
             # generate until the wall clock reaches the target: a big chunk aimed at 97 % of the
@@ -418,11 +420,11 @@ class HybridRegressor:
                                    draws=draws, niterations=niterations)
         if draws is not None or niterations is not None:
             raise ValueError("draws / niterations select a rung of the knob mode; this configuration runs by the clock")
-        r = cfg.ratio if ratio is None else float(ratio)
-        if r not in cfg.ratios:
+        r = float(cfg.ratio or 0.0) if ratio is None else float(ratio)
+        if r not in (cfg.ratios or []):
             raise ValueError(f"ratio {r} is not one of the configured ratios {cfg.ratios}")
-        T = cfg.budget_s if budget is None else float(budget)
-        if T not in cfg.budgets:
+        T = float(cfg.budget_s or 0.0) if budget is None else float(budget)
+        if T not in (cfg.budgets or []):
             raise ValueError(f"budget {T} is not one of the configured budgets {cfg.budgets}")
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float).reshape(-1)
@@ -507,16 +509,16 @@ class HybridRegressor:
         the cached pass when the ladder has several rungs), PySR runs exactly ``niterations`` iterations
         from the seeds under a safety cap, the hall of fame joins the pool and the ranking picks."""
         cfg = self.config
-        D = cfg.draws if draws is None else int(draws)
-        I = cfg.niterations if niterations is None else int(niterations)
-        if (D, I) not in cfg.rungs:
-            raise ValueError(f"rung ({D}, {I}) is not one of the configured rungs {cfg.rungs}")
+        D = int(cfg.draws or 0) if draws is None else int(draws)
+        iters = int(cfg.niterations or 0) if niterations is None else int(niterations)
+        if (D, iters) not in (cfg.rungs or []):
+            raise ValueError(f"rung ({D}, {iters}) is not one of the configured rungs {cfg.rungs}")
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float).reshape(-1)
         Xv = np.asarray(X_val, dtype=float) if X_val is not None and np.size(X_val) else np.empty((0, X.shape[1]))
         names = self._variables(variables, X.shape[1])
         values: dict[str, Any] = {
-            "hybrid_mode": "knobs", "hybrid_draws": D, "hybrid_niterations": I, "hybrid_k_seeds": cfg.k_seeds,
+            "hybrid_mode": "knobs", "hybrid_draws": D, "hybrid_niterations": iters, "hybrid_k_seeds": cfg.k_seeds,
             "hybrid_choices": D, "prediction_success": False, "error": None,
         }
         seeds: list[str] = []
@@ -539,7 +541,7 @@ class HybridRegressor:
                           hybrid_n_seeds=len(seeds), generation_time=snap["cum_generation"], refinement_time=snap["cum_refinement"])
             if best is not None:
                 values["hybrid_seed_best_expression"] = best.get("expression_infix")
-        if I <= 0:
+        if iters <= 0:
             values["fit_time"] = gen_wall
             if best is None:
                 values["error"] = "hybrid: no Flash-ANSR candidate at this rung"
@@ -547,7 +549,7 @@ class HybridRegressor:
             self._flash_answer(values, best, n_fit=int(y.shape[0]))
             return values
         values["hybrid_gp_timeout_s"] = cfg.pysr_timeout_cap_s
-        out = run_pysr(X, y, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=I,
+        out = run_pysr(X, y, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters,
                        guesses=seeds, X_val=Xv if Xv.shape[0] else None, settings=cfg.pysr)
         gp_wall = float(out["wall_s"])
         values.update(hybrid_gp_s=gp_wall, gp_fit_time=gp_wall, fit_time=gen_wall + gp_wall,
@@ -620,7 +622,6 @@ class HybridRegressor:
         values["hybrid_ranking_s"] = time.time() - t0
         values["fit_time"] = float(values.get("fit_time") or 0.0) + values["hybrid_ranking_s"]
 
-
     # -- the estimator: one problem in, a HybridFitResult out ----------------------------------------------------
     def fit(self, X: Any, y: Any, variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto', *,
             draws: int | None = None, niterations: int | None = None, complexity: int | float | None = None,
@@ -637,14 +638,14 @@ class HybridRegressor:
         cfg = self.config
         if draws is not None:
             D = int(draws)
-            I = int(niterations) if niterations is not None else r_star_iterations(D)
+            iters = int(niterations) if niterations is not None else r_star_iterations(D)
         elif cfg.mode == "knobs":
-            D = int(cfg.draws)
-            I = int(niterations) if niterations is not None else int(cfg.niterations)
+            D = int(cfg.draws or 0)
+            iters = int(niterations) if niterations is not None else int(cfg.niterations or 0)
         else:   # a clock configuration serves solve(); fit runs by work, at the default pair
             D = DEFAULT_DRAWS
-            I = int(niterations) if niterations is not None else r_star_iterations(D)
-        if D < 1 or I < 0:
+            iters = int(niterations) if niterations is not None else r_star_iterations(D)
+        if D < 1 or iters < 0:
             raise ValueError("fit needs at least one draw and a non-negative iteration count")
         if not self._prepared:
             self.prepare()
@@ -654,14 +655,14 @@ class HybridRegressor:
         result = self.model.fit(X, y, variable_names=variable_names, draws=D, complexity=complexity, seed=seed)
         names = [f"x{i + 1}" for i in range(Xn.shape[1])]   # PySR's names: always valid identifiers
         seeds: list[str] = []
-        if I > 0 and cfg.k_seeds > 0:
+        if iters > 0 and cfg.k_seeds > 0:
             top = [self._candidate_dict(c, result=result, X=Xn) for c in result.candidates[: cfg.k_seeds]]
             seeds = self._seeds(top, dict(self.engine.operator_arity), names, Xn)
         out: Mapping[str, Any] = {"equations": [], "wall_s": 0.0, "error": None}
         rows: list[dict[str, Any]] = []
         pricing = 0.0
-        if I > 0:
-            out = run_pysr(Xn, yn, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=I, guesses=seeds, settings=cfg.pysr)
+        if iters > 0:
+            out = run_pysr(Xn, yn, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters, guesses=seeds, settings=cfg.pysr)
             ranking = self.ranking_config()
             if ranking and out.get("equations"):
                 n_points = result.n_points if result.n_points is not None else int(np.isfinite(yn).sum())
@@ -673,7 +674,9 @@ class HybridRegressor:
         tagged = [(HybridCandidate(**c.__dict__, source="flash-ansr"), ("flash-ansr", i)) for i, c in enumerate(result.candidates)]
         tagged += [(self._pysr_candidate(row, variable_mapping=result.variable_mapping), ("pysr", j)) for j, row in enumerate(rows)]
         tagged.sort(key=lambda pair: _candidate_order(pair[0]))
-        candidates = [replace(c, rank=k) for k, (c, _) in enumerate(tagged)]
+        candidates = [c for c, _ in tagged]
+        for k, c in enumerate(candidates):
+            c.rank = k   # the candidates are this call's own copies
         position = {tag: k for k, (_, tag) in enumerate(tagged)}
         ledger = copy.deepcopy(result.ledger)   # its links into the candidate list follow the new order
         for i, old in enumerate(ledger.result_index):
@@ -682,7 +685,7 @@ class HybridRegressor:
         self.result_ = HybridFitResult(
             candidates=candidates, ledger=ledger, generation_time=result.generation_time, refinement_time=result.refinement_time,
             ranking=result.ranking, n_variables=result.n_variables, variable_mapping=dict(result.variable_mapping),
-            draws=D, n_points=result.n_points, engine=result.engine, niterations=I,
+            draws=D, n_points=result.n_points, engine=result.engine, niterations=iters,
             pysr_time=float(out.get("wall_s") or 0.0) + pricing, n_seeds=len(seeds),
             pysr_equations=[dict(e) for e in (out.get("equations") or [])], pysr_error=out.get("error"))
         return self.result_

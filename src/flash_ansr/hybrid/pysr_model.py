@@ -51,7 +51,7 @@ class PySRSettings:
         return cls(**known, extra=extra)
 
 
-def _require_pysr():
+def _require_pysr() -> Any:
     try:
         from pysr import PySRRegressor
     except ImportError as exc:  # pragma: no cover - environment dependent

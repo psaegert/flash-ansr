@@ -11,7 +11,8 @@ from flash_ansr.hybrid.candidates import pick_prediction, prediction_fvu, pysr_c
 
 def _problem():
     rng = np.random.default_rng(0)
-    x = rng.uniform(0.5, 2.0, size=(64, 2)); x_val = rng.uniform(0.5, 2.0, size=(16, 2))
+    x = rng.uniform(0.5, 2.0, size=(64, 2))
+    x_val = rng.uniform(0.5, 2.0, size=(16, 2))
     law = lambda a: 2.0 * a[:, 0] ** 2 + 1.0  # noqa: E731
     return x, law(x), x_val, law(x_val)
 

@@ -299,7 +299,6 @@ class TestKnobMode:
         out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"])
         assert model.fit.counter == 0 and out["n_guesses"] == 0 and out["prediction_success"] and out["hybrid_choices"] == 0
 
-
     def test_without_a_cache_a_rung_draws_only_its_own_count(self):
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005)
         reg = HybridRegressor(model, HybridConfig(draws=1024, niterations=0, rungs=[[16, 0], [64, 0], [1024, 0]], k_seeds=3))

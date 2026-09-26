@@ -50,7 +50,7 @@ def score_key(candidate: Mapping[str, Any]) -> tuple[float, tuple[str, ...]]:
     non-finite score sorts last."""
     score = candidate.get("score")
     try:
-        value = float(score)
+        value = float(score) if score is not None else float("inf")
     except (TypeError, ValueError):
         value = float("inf")
     if not math.isfinite(value):
