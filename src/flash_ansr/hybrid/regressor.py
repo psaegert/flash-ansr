@@ -486,7 +486,7 @@ class HybridRegressor:
                 values["error"] = values["pysr_error"]
             return values
         out = run_pysr(X, y, names, timeout_in_seconds=search_s, niterations=cfg.pysr_niterations_ceiling,
-                       guesses=seeds, X_val=Xv if Xv.shape[0] else None, settings=cfg.pysr)
+                       guesses=seeds, settings=cfg.pysr)
         gp_wall = float(out["wall_s"])
         if not out.get("error"):
             # A FAILED search is not an observation of PySR's fixed cost: a stalled worker returns after
@@ -550,7 +550,7 @@ class HybridRegressor:
             return values
         values["hybrid_gp_timeout_s"] = cfg.pysr_timeout_cap_s
         out = run_pysr(X, y, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters,
-                       guesses=seeds, X_val=Xv if Xv.shape[0] else None, settings=cfg.pysr)
+                       guesses=seeds, settings=cfg.pysr)
         gp_wall = float(out["wall_s"])
         values.update(hybrid_gp_s=gp_wall, gp_fit_time=gp_wall, fit_time=gen_wall + gp_wall,
                       equations=list(out.get("equations") or []), n_guesses=int(out.get("n_guesses") or 0),
@@ -581,7 +581,8 @@ class HybridRegressor:
     def _pysr_answer(self, values: dict[str, Any], out: Mapping[str, Any], X: np.ndarray, y: np.ndarray, Xv: np.ndarray,
                      names: Sequence[str]) -> None:
         """PySR's own pick as the record's answer (what stands when nothing can be priced): its infix
-        in the fit's variable names, its prefix in the engine grammar, its curves."""
+        in the fit's variable names, its prefix in the engine grammar, its curves evaluated by the engine
+        (PySR builds no exports of its own, see ``pysr_model.create_model``)."""
         expression = out.get("expression")
         values["prediction_success"] = expression is not None
         values["error"] = out.get("error")
@@ -594,10 +595,15 @@ class HybridRegressor:
                 values["predicted_expression_prefix"] = list(normalize_expression(raw) or [])
             except Exception:  # noqa: BLE001 - PySR's spelling the engine cannot read: the infix stands
                 pass
-        y_pred = out.get("y_pred")
+        y_pred = y_pred_val = None
+        if values["predicted_expression_prefix"]:
+            try:
+                y_pred, y_pred_val = evaluate_prefix(self.engine, list(values["predicted_expression_prefix"]),
+                                                     [f"x{i + 1}" for i in range(len(names))], X, Xv)
+            except Exception:  # noqa: BLE001 - the pick stands without its curves
+                pass
         values["y_pred"] = (np.asarray(y_pred, dtype=float).reshape(-1, 1) if y_pred is not None and np.size(y_pred)
                             else np.full((int(y.shape[0]), 1), np.nan))
-        y_pred_val = out.get("y_pred_val")
         values["y_pred_val"] = (np.asarray(y_pred_val, dtype=float).reshape(-1, 1)
                                 if y_pred_val is not None and np.size(y_pred_val) else np.empty((0, 1)))
 

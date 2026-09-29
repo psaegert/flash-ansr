@@ -112,11 +112,11 @@ class TestPySRBranch:
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
         seen = {}
 
-        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, X_val=None, settings=None):
+        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
             seen.update(timeout=timeout_in_seconds, niterations=niterations, guesses=list(guesses or []), variables=list(variables))
             return {"expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"},
                                                       {"complexity": 7, "loss": 0.0, "score": 1.0, "equation": "((1.5 * v1) - (0.5 * v2)) + 2.0"}],
-                    "y_pred": X[:, 0], "y_pred_val": None if X_val is None else X_val[:, 0], "n_guesses": len(guesses or []),
+                    "n_guesses": len(guesses or []),
                     "niterations_used": niterations, "error": None, "wall_s": timeout_in_seconds + 0.3}
 
         monkeypatch.setattr(regressor_module, "run_pysr", canned_run_pysr)
@@ -151,10 +151,10 @@ class TestPySRBranch:
         assert RankingConfig.from_dict(model.ranking.as_dict()).two_part
         seen = {}
 
-        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, X_val=None, settings=None):
+        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
             return {"expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"},
                                                       {"complexity": 7, "loss": 0.0, "score": 1.0, "equation": "((1.5 * v1) - (0.5 * v2)) + 2.0"}],
-                    "y_pred": X[:, 0], "y_pred_val": None if X_val is None else X_val[:, 0], "n_guesses": len(guesses or []),
+                    "n_guesses": len(guesses or []),
                     "niterations_used": niterations, "error": None, "wall_s": timeout_in_seconds + 0.3}
 
         real_pick = regressor_module.pick_prediction
@@ -183,8 +183,8 @@ class TestPySRBranch:
         stall, the clock does not."""
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
 
-        def stalled_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, X_val=None, settings=None):
-            return {"expression": None, "equations": [], "y_pred": None, "y_pred_val": None, "n_guesses": len(guesses or []),
+        def stalled_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
+            return {"expression": None, "equations": [], "n_guesses": len(guesses or []),
                     "niterations_used": 0, "error": "WorkerTimeout: no reply within 7200 s", "wall_s": timeout_in_seconds + 7200.0}
 
         monkeypatch.setattr(regressor_module, "run_pysr", stalled_run_pysr)
@@ -208,10 +208,26 @@ class TestPySRBranch:
         assert out["hybrid_gp_s"] == 0.0 and "no search time" in out["pysr_error"] and out["error"] is None
         assert out["predicted_source"] == "flash-ansr" and out["prediction_success"]   # the Flash-ANSR candidates rank alone
 
+    def test_pysr_s_own_pick_is_evaluated_by_the_engine(self, tmp_path, monkeypatch, engine):
+        """PySR builds no exports in the hybrid (a sympy export held a fit for 8 h on 2026-09-29), so it has no curves
+        of its own: when its pick stands (nothing could be priced), the engine evaluates the pick's equation string."""
+        model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
+        model.ranking = None                                                 # no ranking: nothing is priced, PySR's pick stands
+        monkeypatch.setattr(regressor_module, "run_pysr", lambda X, y, v, **k: {
+            "expression": "((1.5 * v1) - (0.5 * v2)) + 2.0",
+            "equations": [{"complexity": 7, "loss": 0.0, "score": 1.0, "equation": "((1.5 * v1) - (0.5 * v2)) + 2.0"}],
+            "n_guesses": 0, "niterations_used": k["niterations"], "error": None, "wall_s": 0.2})
+        reg = HybridRegressor(model, HybridConfig(draws=16, niterations=4, k_seeds=2, pysr={"warmup": False}), snapshot_dir=tmp_path)
+        x, y, x_val, y_val = toy_problem(0)
+        out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"], problem_id=0)
+        assert out["predicted_source"] == "pysr" and out["hybrid_ranking_error"] and out["prediction_success"]
+        np.testing.assert_allclose(out["y_pred"].reshape(-1), y, atol=1e-9)
+        np.testing.assert_allclose(out["y_pred_val"].reshape(-1), y_val, atol=1e-9)
+
     def test_a_failed_search_falls_back_on_flash(self, tmp_path, monkeypatch, engine):
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
         monkeypatch.setattr(regressor_module, "run_pysr", lambda X, y, v, **k: {
-            "expression": None, "equations": [], "y_pred": None, "y_pred_val": None, "n_guesses": 0, "niterations_used": 0,
+            "expression": None, "equations": [], "n_guesses": 0, "niterations_used": 0,
             "error": "RuntimeError: Julia died", "wall_s": 0.5})
         reg = HybridRegressor(model, HybridConfig(budget_s=3.0, ratio=0.5, ratios=[0.5], k_seeds=2, landing_tolerance=0.05,
                                                   first_chunk=16, min_chunk=4, pysr_overhead_s=0.5, pysr={"warmup": False}), snapshot_dir=tmp_path)
@@ -269,11 +285,11 @@ class TestKnobMode:
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
         seen = {}
 
-        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, X_val=None, settings=None):
+        def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
             seen.update(timeout=timeout_in_seconds, niterations=niterations, guesses=list(guesses or []), variables=list(variables))
             return {"expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"},
                                                       {"complexity": 7, "loss": 0.0, "score": 1.0, "equation": "((1.5 * v1) - (0.5 * v2)) + 2.0"}],
-                    "y_pred": X[:, 0], "y_pred_val": None if X_val is None else X_val[:, 0], "n_guesses": len(guesses or []),
+                    "n_guesses": len(guesses or []),
                     "niterations_used": niterations, "error": None, "wall_s": 0.7}
 
         monkeypatch.setattr(regressor_module, "run_pysr", canned_run_pysr)
@@ -292,8 +308,8 @@ class TestKnobMode:
     def test_zero_draws_is_pysr_cold(self, tmp_path, monkeypatch, engine):
         model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
         monkeypatch.setattr(regressor_module, "run_pysr", lambda X, y, v, **k: {
-            "expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"}], "y_pred": X[:, 0],
-            "y_pred_val": None, "n_guesses": len(k.get("guesses") or []), "niterations_used": k["niterations"], "error": None, "wall_s": 0.2})
+            "expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"}],
+            "n_guesses": len(k.get("guesses") or []), "niterations_used": k["niterations"], "error": None, "wall_s": 0.2})
         reg = HybridRegressor(model, HybridConfig(draws=0, niterations=8, pysr={"warmup": False}))
         x, y, x_val, _ = toy_problem(0)
         out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"])

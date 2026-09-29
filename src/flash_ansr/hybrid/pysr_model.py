@@ -1,7 +1,9 @@
 """The GP stage: PySRRegressor over flash-ansr's 23-operator vocabulary, in-process.
 
 The same regressor srbf's PySR baseline worker builds (srbf/worker/models/pysr_worker.py keeps its own
-copy: the two must not drift -- 17 unaries + {+, -, *, /, ^, rootn}, upstream defaults otherwise).
+copy: the two must not drift -- 17 unaries + {+, -, *, /, ^, rootn}, upstream defaults otherwise), with one
+difference outside the search: the hybrid's PySR builds no sympy/numpy exports of its hall of fame
+(``pysr_spec.NoExportExpressionSpec``), because the hybrid parses and evaluates the equation strings itself.
 ``pysr`` is imported lazily: Julia is fetched and compiled on first use, and ``warmup`` pays the
 one-off SymbolicRegression.jl compile on a throwaway fit so the first timed search starts warm.
 """
@@ -59,13 +61,23 @@ def _require_pysr() -> Any:
     return PySRRegressor
 
 
+def _no_export_spec() -> Any:
+    """PySR's default expression spec without the export step (``flash_ansr.hybrid.pysr_spec``, which imports pysr)."""
+    from flash_ansr.hybrid.pysr_spec import NoExportExpressionSpec
+    return NoExportExpressionSpec()
+
+
 def create_model(*, timeout_in_seconds: float, niterations: int, settings: PySRSettings | None = None,
                  guesses: Sequence[str] | None = None) -> Any:
     """A PySRRegressor over the 23-operator vocabulary; ``guesses`` (Julia-syntax infix strings in the
-    fit's variable names) seed its initial populations (PySR >= 2.0)."""
+    fit's variable names) seed its initial populations (PySR >= 2.0). It builds no sympy/numpy exports
+    of its hall of fame (an ``expression_spec`` in ``settings.extra`` replaces that choice), so it has
+    no ``predict``: the hybrid evaluates the equation strings with its own engine."""
     PySRRegressor = _require_pysr()
     settings = settings or PySRSettings()
     optional: dict[str, Any] = dict(settings.extra)
+    if "expression_spec" not in optional:
+        optional["expression_spec"] = _no_export_spec()
     if settings.maxsize is not None:
         optional["maxsize"] = int(settings.maxsize)
     if settings.parsimony is not None:
@@ -98,22 +110,19 @@ def warmup(settings: PySRSettings | None = None) -> None:
 
 
 def run_pysr(X: np.ndarray, y: np.ndarray, variables: Sequence[str], *, timeout_in_seconds: float, niterations: int,
-             guesses: Sequence[str] | None = None, X_val: np.ndarray | None = None,
-             settings: PySRSettings | None = None) -> dict[str, Any]:
+             guesses: Sequence[str] | None = None, settings: PySRSettings | None = None) -> dict[str, Any]:
     """One PySR search on its own clock. Returns PySR's own pick (``expression``, infix in the fit's
-    variable names, its curves), the whole hall of fame (``equations``: complexity, loss, score,
-    equation) and the wall time; on failure ``error`` and no expression."""
+    variable names), the whole hall of fame (``equations``: complexity, loss, score, equation) and the
+    wall time; on failure ``error`` and no expression. No curves: the caller evaluates the equation
+    strings with its own engine (PySR builds no exports here, see ``create_model``)."""
     X = np.asarray(X, dtype=float)
     target = np.asarray(y, dtype=float).ravel()
-    out: dict[str, Any] = {"expression": None, "equations": [], "y_pred": None, "y_pred_val": None,
-                           "n_guesses": len(guesses or []), "niterations_used": int(niterations), "error": None}
+    out: dict[str, Any] = {"expression": None, "equations": [], "n_guesses": len(guesses or []),
+                           "niterations_used": int(niterations), "error": None}
     t0 = time.time()
     try:
         model = create_model(timeout_in_seconds=timeout_in_seconds, niterations=niterations, settings=settings, guesses=guesses)
         model.fit(X, target, variable_names=list(variables))
-        out["y_pred"] = np.asarray(model.predict(X), dtype=float).ravel()
-        if X_val is not None and np.size(X_val):
-            out["y_pred_val"] = np.asarray(model.predict(np.asarray(X_val, dtype=float).reshape(-1, X.shape[1])), dtype=float).ravel()
         try:
             hof = model.equations_
             out["equations"] = hof[["complexity", "loss", "score", "equation"]].to_dict("records")
