@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-09-29
+
+### Fixed
+- **The hybrid's PySR stage no longer converts its hall of fame to sympy.** At the end of every fit, PySR turns each
+  hall-of-fame entry into a sympy expression and a numpy function built from it. The hybrid never used them: it parses
+  and evaluates the equation strings with its own engine. The conversion has no time bound. On 2026-09-29 a
+  hall of fame holding a 25-deep `tanh`/`sinh` chain kept one fit busy for more than 8 hours after an
+  11-second search. `create_model` now passes PySR an expression spec that builds no exports
+  (`flash_ansr.hybrid.pysr_spec.NoExportExpressionSpec`; an `expression_spec` in the PySR settings still wins). The
+  search, the hall of fame, PySR's own pick and the hybrid's ranking are unchanged. A deterministic search gives the
+  same hall of fame and pick with and without the exports. When PySR's pick stands because nothing could be priced,
+  its curves now come from the engine instead of PySR's `predict`. `run_pysr` no longer takes `X_val` and returns no
+  curves. Fits are faster by the conversion time they no longer pay, so hybrid timings measured with 0.19.0 do not
+  carry over.
+
 ## [0.19.0] - 2026-09-26
 
 ### Added
