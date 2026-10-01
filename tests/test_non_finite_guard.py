@@ -47,6 +47,7 @@ from flash_ansr.utils.skeleton import (
     non_finite_drops,
     reset_non_finite_drops,
     simplify_and_mask,
+    simplify_realized,
 )
 
 # A candidate with NO numeric literal token whose simplification is non-finite: `x2 - x2`
@@ -189,8 +190,21 @@ class TestParallelSimplifyPoolAgreesWithSerial(unittest.TestCase):
 
         _simplify_pool_init(_engine())
         self.assertIsNone(_simplify_pool_worker(tuple(LITERAL_FREE_INF)))
+        # the worker computes the SERIAL path's key (simplify_realized), numbers kept
         self.assertEqual(_simplify_pool_worker(('+', 'x1', 'x1')),
-                         tuple(simplify_and_mask(_engine(), ['+', 'x1', 'x1'])))
+                         tuple(simplify_realized(_engine(), ['+', 'x1', 'x1'])))
+
+    def test_worker_keeps_numbers_so_one_shape_with_two_exponents_stays_two_candidates(self) -> None:
+        """From _SIMPLIFY_PARALLEL_THRESHOLD draws up the keys come from the worker. They must keep the
+        numbers as the serial key does, or x1**2 and x1**3 collapse into one candidate and one is never
+        refined (the masked worker dropped ~1 % of distinct candidates at 4,096 draws)."""
+        from flash_ansr.flash_ansr import _simplify_pool_init, _simplify_pool_worker
+
+        _simplify_pool_init(_engine())
+        square, cube = ('pow', 'x1', '2'), ('pow', 'x1', '3')
+        self.assertNotEqual(_simplify_pool_worker(square), _simplify_pool_worker(cube))
+        for expr in (square, cube, ('*', '2.5', 'x1'), ('+', 'x1', 'x1')):
+            self.assertEqual(_simplify_pool_worker(expr), tuple(simplify_realized(_engine(), list(expr))))
 
     def test_map_miss_falls_back_to_the_guarded_serial_path(self) -> None:
         model = _model()

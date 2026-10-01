@@ -62,7 +62,7 @@ from flash_ansr.scoring import (
 from flash_ansr.model.flash_ansr_model import _VRAM_GUARD_FRACTION
 from flash_ansr.utils.generation import GenerationConfig, SoftmaxSamplingConfig, suggest_batch_size, suggest_batch_size_dims, _FULL_CAP_MIN_VRAM_GB, _spill_over_budget
 from flash_ansr.utils.paths import substitute_root_path
-from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask
+from flash_ansr.utils.skeleton import NonFiniteExpressionError, record_non_finite_drop, simplify_and_mask, simplify_realized
 from flash_ansr.data.serialization import TAGGED_DELIMITER_TOKENS
 from flash_ansr.utils.ieee754 import IEEE754_START_TOKEN
 from flash_ansr.utils.tensor_ops import pad_input_set
@@ -776,9 +776,12 @@ def _persistent_pool_init(engine: Any) -> None:
 
 
 def _simplify_pool_worker(raw_expr: tuple) -> tuple | None:
-    """Simplify one raw expression (pure CPU; deterministic -> byte-identical to serial).
-    simplipy.simplify is the equivalence loop only; mask() relabels any emitted literals to
-    <constant> for the model's vocabulary (matching the pre-carve-out masked output).
+    """The dedup key of one raw expression, computed in a worker: ``simplify_realized``, the very
+    function the serial path calls (pure CPU, deterministic), so the parallel map holds the serial
+    keys. The key keeps the expression's numbers: two draws of one shape with different numbers
+    (``x1 ** 2`` and ``x1 ** 3``) stay two candidates. Until 2026-10 this worker masked the numbers
+    (``simplify_and_mask``), so from ``_SIMPLIFY_PARALLEL_THRESHOLD`` draws up such draws collapsed
+    into one and ~1 % of the distinct candidates never reached refinement.
 
     Returns ``None`` when the expression folds to a non-finite skeleton. The worker does NOT drop
     the candidate itself: it runs in a forked process, so it can neither raise across the fork
@@ -786,7 +789,7 @@ def _simplify_pool_worker(raw_expr: tuple) -> tuple | None:
     the key out of the lookup map, and the parent then takes its normal serial path -- which
     raises, drops and counts in the process that can be observed."""
     try:
-        return tuple(simplify_and_mask(_SIMPLIFY_ENGINE, list(raw_expr)))
+        return tuple(simplify_realized(_SIMPLIFY_ENGINE, list(raw_expr)))
     except NonFiniteExpressionError:
         return None
 
