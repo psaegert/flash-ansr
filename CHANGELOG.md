@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **From 4,096 draws up, candidates that differ only in their numbers are no longer merged.** Duplicate draws are
+  removed by a key, the canonical form of the expression with its numbers kept (since 0.16.0), so `x1 ** 2` and
+  `x1 ** 3` stay two candidates. From `_SIMPLIFY_PARALLEL_THRESHOLD` (4,096) draws up the keys are computed in a
+  worker pool, and that worker still masked the numbers, so such draws collapsed into one and only the first was
+  refined. The worker now calls `simplify_realized`, the serial path's own function, and the two paths give the same
+  keys again. The candidates themselves always kept their numbers. Measured on T8-20M at 4,096 draws (49 problems of
+  srbf's timing subset): 45 problems lost candidates, 1.1 % of the distinct candidates in all (at most 5.9 % on one
+  problem). Results at 4,096 draws or more from earlier versions refined slightly fewer candidates.
+
 ## [0.19.1] - 2026-09-29
 
 ### Fixed
