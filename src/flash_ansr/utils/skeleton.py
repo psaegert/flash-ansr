@@ -17,6 +17,7 @@ site keeps ONE shared behavior:
 """
 import math
 import threading
+from fractions import Fraction
 from typing import TYPE_CHECKING, Iterable, cast
 
 from simplipy import masking
@@ -181,7 +182,12 @@ def simplify_realized(engine: "SimpliPyEngine", expression: list[str]) -> list[s
 
 def _literal_value(token: str) -> float:
     """Numeric value of a literal token as classified by ``simplipy.masking.literal_sites``:
-    a plain int/float spelling, a one-token exact rational (``1/3``), or ``np.pi``/``np.e``."""
+    a plain int/float spelling, a one-token exact rational (``1/3``), or ``np.pi``/``np.e``.
+
+    An exact rational reads as its NEAREST float, as Python's ``int / int`` and simplipy's own
+    evaluator do: ``float(p) / float(q)`` rounds three times and lands an ulp or two off once
+    ``p`` or ``q`` leaves 53 bits. A rational beyond float range raises
+    :class:`NonFiniteExpressionError` (it used to escape as a bare ``OverflowError``)."""
     if token == 'np.pi':
         return math.pi
     if token == 'np.e':
@@ -190,7 +196,10 @@ def _literal_value(token: str) -> float:
         return float(token)
     except ValueError:
         numerator, _, denominator = token.partition('/')
-        return float(numerator) / float(denominator)
+        try:
+            return float(Fraction(int(numerator), int(denominator)))
+        except OverflowError:
+            raise NonFiniteExpressionError([token]) from None
 
 
 _SPECIAL_CONSTANT_TOKENS = ("np.pi", "np.e")

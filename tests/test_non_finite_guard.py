@@ -233,6 +233,25 @@ class TestIngestRaisesInsteadOfDropping(unittest.TestCase):
         self.assertEqual(values, [2.5])
 
 
+class TestLiteralValues(unittest.TestCase):
+    """The values the ieee754 targets carry: an exact rational token reads as its NEAREST float."""
+
+    def test_a_long_fraction_reads_as_the_nearest_float(self) -> None:
+        from fractions import Fraction
+        from flash_ansr.utils.skeleton import _literal_value
+        p, q = 673107593011939307760027002528, 810572757194796821120128085049
+        # float(p) / float(q) gave 0.8304098392615704, two ulps from the fraction.
+        self.assertEqual(_literal_value(f'{p}/{q}'), float(Fraction(p, q)))
+        self.assertEqual(_literal_value(f'{p}/{q}'), 0.8304098392615706)
+
+    def test_a_fraction_beyond_float_range_is_non_finite(self) -> None:
+        from flash_ansr.utils.skeleton import _literal_value
+        with self.assertRaises(NonFiniteExpressionError):
+            _literal_value(f'{10**400}/3')
+        # Components beyond float range are fine when the value is not.
+        self.assertEqual(_literal_value(f'{10**400}/{3 * 10**400}'), 1 / 3)
+
+
 class TestDatasetConversionCountsItAsInvalid(unittest.TestCase):
     """`convert_data` imports external benchmark files. A row that folds to non-finite is the
     designed, reported attrition of importing an external set (the invalid tally), not a crash."""
