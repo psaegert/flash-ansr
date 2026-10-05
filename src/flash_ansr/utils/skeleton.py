@@ -193,7 +193,8 @@ def fraction_float(numerator: str, denominator: str) -> float:
     try:
         return float(Fraction(int(numerator), int(denominator)))
     except OverflowError:
-        return math.copysign(math.inf, -1.0 if numerator.startswith('-') else 1.0)
+        negative = numerator.lstrip().startswith('-') != denominator.lstrip().startswith('-')
+        return -math.inf if negative else math.inf
     except ValueError:
         return float(numerator) / float(denominator)
 

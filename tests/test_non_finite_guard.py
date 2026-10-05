@@ -262,12 +262,23 @@ class TestLiteralValues(unittest.TestCase):
         # seeds keep a value beyond float range as inf, as before
         self.assertEqual(literal_value(f'-{10**400}/3'), float('-inf'))
 
+    def test_the_sign_of_an_out_of_range_value_counts_both_components(self) -> None:
+        from flash_ansr.utils.skeleton import fraction_float
+        self.assertEqual(fraction_float(str(10**400), '-3'), float('-inf'))
+        self.assertEqual(fraction_float(f'-{10**400}', '-3'), float('inf'))
+
     def test_components_beyond_the_integer_string_limit_keep_the_old_reading(self) -> None:
         import math
+        import sys
         from flash_ansr.utils.skeleton import fraction_float
-        big = '1' + '0' * 5000
-        self.assertTrue(math.isnan(fraction_float(big, big)))  # inf / inf, as before
-        self.assertEqual(fraction_float('3' + '0' * 5000, '7'), float('inf'))
+        limit = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(4300)  # the default; PYTHONINTMAXSTRDIGITS may change it
+        try:
+            big = '1' + '0' * 5000
+            self.assertTrue(math.isnan(fraction_float(big, big)))  # inf / inf, as before
+            self.assertEqual(fraction_float('3' + '0' * 5000, '7'), float('inf'))
+        finally:
+            sys.set_int_max_str_digits(limit)
 
 
 class TestDatasetConversionCountsItAsInvalid(unittest.TestCase):
