@@ -19,6 +19,7 @@ from simplipy import SimpliPyEngine
 from simplipy import masking
 from simplipy.utils import codify, explicit_constant_placeholders as identify_constants, is_constant_placeholder
 from symbolic_data.token_ops import apply_variable_mapping
+from flash_ansr.utils.skeleton import fraction_float
 from flash_ansr.utils.tensor_ops import pad_input_set
 
 
@@ -81,7 +82,8 @@ def refinement_slots(expression: list[str], simplipy_engine: SimpliPyEngine,
 
 def literal_value(token: str) -> float:
     """Numeric value of a spelled literal site: plain int/float, one-token rational
-    (``3/2``) or a special constant."""
+    (``3/2``, read as its nearest float, :func:`~flash_ansr.utils.skeleton.fraction_float`)
+    or a special constant."""
     if token == 'np.pi':
         return float(np.pi)
     if token == 'np.e':
@@ -90,7 +92,7 @@ def literal_value(token: str) -> float:
         return float(token)
     except ValueError:
         numerator, _, denominator = token.partition('/')
-        return float(numerator) / float(denominator)
+        return fraction_float(numerator, denominator)
 
 
 #: What happens to a literal the model PREDICTED in a TYPED position -- a ``pow`` exponent or a

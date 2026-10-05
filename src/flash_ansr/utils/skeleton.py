@@ -47,9 +47,12 @@ class NonFiniteExpressionError(ValueError):
     instead of failing.
     """
 
-    def __init__(self, expression: Iterable[str]) -> None:
+    def __init__(self, expression: Iterable[str], detail: str | None = None) -> None:
         self.expression = list(expression)
         self.tokens = find_non_finite(self.expression)
+        if detail is not None:
+            super().__init__(f"Expression is non-finite: {detail}: {self.expression}.")
+            return
         super().__init__(
             f"Expression contains non-finite token(s) {self.tokens}: {self.expression}. "
             "A simplification folded a degenerate sub-expression (division by zero, log of zero, "
@@ -180,14 +183,28 @@ def simplify_realized(engine: "SimpliPyEngine", expression: list[str]) -> list[s
     return simplified
 
 
+def fraction_float(numerator: str, denominator: str) -> float:
+    """The float of the exact fraction ``numerator / denominator`` (integer spellings): the
+    NEAREST float, as Python's ``int / int`` gives it, and +-inf beyond float range.
+
+    ``float(p) / float(q)`` rounds three times and lands an ulp or two off once ``p`` or ``q``
+    leaves 53 bits. Components longer than Python's integer-string limit (4,300 digits) keep
+    that old reading."""
+    try:
+        return float(Fraction(int(numerator), int(denominator)))
+    except OverflowError:
+        return math.copysign(math.inf, -1.0 if numerator.startswith('-') else 1.0)
+    except ValueError:
+        return float(numerator) / float(denominator)
+
+
 def _literal_value(token: str) -> float:
     """Numeric value of a literal token as classified by ``simplipy.masking.literal_sites``:
     a plain int/float spelling, a one-token exact rational (``1/3``), or ``np.pi``/``np.e``.
 
-    An exact rational reads as its NEAREST float, as Python's ``int / int`` and simplipy's own
-    evaluator do: ``float(p) / float(q)`` rounds three times and lands an ulp or two off once
-    ``p`` or ``q`` leaves 53 bits. A rational beyond float range raises
-    :class:`NonFiniteExpressionError` (it used to escape as a bare ``OverflowError``)."""
+    An exact rational reads as its nearest float (:func:`fraction_float`). One whose value is
+    beyond float range raises :class:`NonFiniteExpressionError`; it used to come out as
+    ``inf`` or ``nan`` and enter the target as that value."""
     if token == 'np.pi':
         return math.pi
     if token == 'np.e':
@@ -196,10 +213,11 @@ def _literal_value(token: str) -> float:
         return float(token)
     except ValueError:
         numerator, _, denominator = token.partition('/')
-        try:
-            return float(Fraction(int(numerator), int(denominator)))
-        except OverflowError:
-            raise NonFiniteExpressionError([token]) from None
+        value = fraction_float(numerator, denominator)
+        if not math.isfinite(value):
+            raise NonFiniteExpressionError(
+                [token], detail=f"the literal {token!r} is beyond float range")
+        return value
 
 
 _SPECIAL_CONSTANT_TOKENS = ("np.pi", "np.e")

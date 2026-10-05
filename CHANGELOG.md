@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
+  and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or
+  two off once `p` or `q` leaves 53 bits: `673107593011939307760027002528/810572757194796821120128085049` gave
+  `0.8304098392615704` where the fraction's nearest float is `0.8304098392615706`. Both now read
+  `float(Fraction(p, q))` (`flash_ansr.utils.skeleton.fraction_float`). A target literal whose value is beyond float
+  range raises `NonFiniteExpressionError` instead of entering the target as `inf` or `nan`; the refinement seeds
+  keep such a value as `inf`, as before.
 - **From 4,096 draws up, candidates that differ only in their numbers are no longer merged.** Duplicate draws are
   removed by a key, the canonical form of the expression with its numbers kept (since 0.16.0), so `x1 ** 2` and
   `x1 ** 3` stay two candidates. From `_SIMPLIFY_PARALLEL_THRESHOLD` (4,096) draws up the keys are computed in a

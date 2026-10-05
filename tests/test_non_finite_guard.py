@@ -245,11 +245,29 @@ class TestLiteralValues(unittest.TestCase):
         self.assertEqual(_literal_value(f'{p}/{q}'), 0.8304098392615706)
 
     def test_a_fraction_beyond_float_range_is_non_finite(self) -> None:
+        # It used to come out as inf (and 10**400/10**400-scale quotients as nan) and enter
+        # the target as that value.
         from flash_ansr.utils.skeleton import _literal_value
         with self.assertRaises(NonFiniteExpressionError):
             _literal_value(f'{10**400}/3')
+        with self.assertRaises(NonFiniteExpressionError):
+            _literal_value(f'-{10**400}/3')
         # Components beyond float range are fine when the value is not.
         self.assertEqual(_literal_value(f'{10**400}/{3 * 10**400}'), 1 / 3)
+
+    def test_the_refinement_seed_reads_the_same_value(self) -> None:
+        from flash_ansr.refine import literal_value
+        p, q = 673107593011939307760027002528, 810572757194796821120128085049
+        self.assertEqual(literal_value(f'{p}/{q}'), 0.8304098392615706)
+        # seeds keep a value beyond float range as inf, as before
+        self.assertEqual(literal_value(f'-{10**400}/3'), float('-inf'))
+
+    def test_components_beyond_the_integer_string_limit_keep_the_old_reading(self) -> None:
+        import math
+        from flash_ansr.utils.skeleton import fraction_float
+        big = '1' + '0' * 5000
+        self.assertTrue(math.isnan(fraction_float(big, big)))  # inf / inf, as before
+        self.assertEqual(fraction_float('3' + '0' * 5000, '7'), float('inf'))
 
 
 class TestDatasetConversionCountsItAsInvalid(unittest.TestCase):
