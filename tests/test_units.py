@@ -140,6 +140,15 @@ def test_integer_literals_are_pure_numbers(engine) -> None:  # type: ignore[no-u
         np.testing.assert_array_equal(result.literals, literals)
 
 
+def test_huge_integral_constants_absorb_units(engine) -> None:  # type: ignore[no-untyped-def]
+    """1/k_B ~ 7.24e22 is integral as a float64, but beyond 2**53 integrality is no structure: it absorbs a unit."""
+    dims = _dims(engine, "<mul> 7.242970516e+22 x1 <div> x2 </mul>")
+    assert dims.y_free_alone
+    assert any(col[0] == "w" for col in dims.cols)
+    pure = _dims(engine, "<mul> 3 x1 <div> x2 </mul>")
+    assert not pure.y_free_alone and not any(col[0] == "w" for col in pure.cols)
+
+
 def test_identity_share_and_laws_without_symmetry(engine) -> None:  # type: ignore[no-untyped-def]
     rng = np.random.default_rng(2)
     tokens, literals, x, y = _laws_data(engine, "<mul> 2.5 x1 x2 <div> x3 </mul>", rng)

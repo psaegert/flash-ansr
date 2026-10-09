@@ -13,9 +13,10 @@ admits:
   ``z_y``, every fittable literal a free log2 shift ``w``. Summands share a dimension, arguments of transcendental
   functions are dimensionless, ``*`` / ``/`` add and subtract dimensions, ``pow`` / ``rootn`` with a numeric
   exponent multiply it, ``neg`` / ``abs`` are transparent. Pure numbers: ``np.pi`` / ``np.e``, structural
-  (non-fittable) literals, and every INTEGER-valued literal (signs, counts from ``x + x -> 2 x``, rational-exponent
-  spellings): the generator spells a sampled constant as an integer only when it is exactly integral, so integers
-  are structure, not measurements.
+  (non-fittable) literals, and every INTEGER-valued literal below 2**53 (signs, counts from ``x + x -> 2 x``,
+  rational-exponent spellings): the generator spells a sampled constant as an integer only when it is exactly
+  integral, so integers are structure, not measurements -- except beyond float64's exact-integer limit, where every
+  value is integral.
 * **Scales are powers of two** on the integer solution lattice of that linear system, ``z ~ U{-z_max..z_max}`` on
   its free coordinates, applied with ``np.ldexp``: data, literals and residuals stay exact.
 * **The target is re-valued, never re-written:** the literals of the already canonical target are multiplied by
@@ -43,6 +44,8 @@ import numpy as np
 from simplipy import masking
 from simplipy.utils import codify, safe_f
 
+#: float64 represents every integer below this exactly; at and above it every value is integral.
+EXACT_INTEGER_LIMIT = 2 ** 53
 #: Literal tokens that are pure numbers by name (kept symbolic by the tagged canonical).
 PURE_SPECIALS = frozenset({"np.pi", "np.e"})
 #: Operators whose argument must be dimensionless (``log`` included: conservative).
@@ -246,8 +249,10 @@ def law_dimensions(engine: Any, tokens: Sequence[str], variables: Sequence[str])
     absorbing: set[int] = set()
     for k, (pos, fit) in enumerate(zip(positions, fittable)):
         value = _fraction(tokens[pos])
-        if fit and value is not None and value.denominator != 1:
-            absorbing.add(k)     # a sampled, non-integer constant: carries a free dimension
+        # A sampled constant carries a free dimension unless it is an integer the generator spelled as one. Beyond
+        # float64's exact-integer limit every value is integral, so integrality says nothing about structure there.
+        if fit and value is not None and (value.denominator != 1 or abs(value) >= EXACT_INTEGER_LIMIT):
+            absorbing.add(k)
     var_set = set(variables)
     rows: list[dict[tuple[Any, ...], Fraction]] = []
 
