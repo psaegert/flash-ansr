@@ -7,7 +7,7 @@ import warnings
 from dataclasses import dataclass
 from multiprocessing import shared_memory
 from multiprocessing.process import BaseProcess
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import math
 
@@ -50,6 +50,7 @@ from flash_ansr.utils.ieee754 import (
 from flash_ansr.utils.skeleton import (
     NonFiniteExpressionError, fittable_slots, mask_literals_positional)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
+from flash_ansr.data.units import UNITS_STATUSES, apply_units
 
 
 def _tagged_canonical_mode(catalog: object) -> str | None:
@@ -103,6 +104,7 @@ class WorkerConfig:
     predict_y_block: dict[str, Any] | None = None
     residual_block: dict[str, Any] | None = None
     mask_block: dict[str, Any] | None = None
+    units_block: dict[str, Any] | None = None
 
 
 #: Workers are SPAWNed, not forked. A trainer has CUDA initialised in the parent by the
@@ -128,6 +130,7 @@ class SharedMemoryWorkerPool:
         predict_y_block: dict[str, Any] | None = None,
         residual_block: dict[str, Any] | None = None,
         mask_block: dict[str, Any] | None = None,
+        units_block: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -137,6 +140,7 @@ class SharedMemoryWorkerPool:
         self.predict_y_block = predict_y_block
         self.residual_block = residual_block
         self.mask_block = mask_block
+        self.units_block = units_block
 
         self._shms: dict[str, shared_memory.SharedMemory] = {}
         self.buffers: dict[str, np.ndarray] = {}
@@ -283,6 +287,7 @@ class SharedMemoryWorkerPool:
             predict_y_block=self.predict_y_block,
             residual_block=self.residual_block,
             mask_block=self.mask_block,
+            units_block=self.units_block,
         )
 
         self._workers = []
@@ -436,6 +441,17 @@ def _producer_worker(
     mask_cfg = worker_config.mask_block
     predict_y_cfg = worker_config.predict_y_block
     residual_cfg = worker_config.residual_block
+    # Units augmentation (owner rulings 2026-10-08/09): a change of units along the law's own dimensional
+    # symmetry, applied to the data and the target's literal VALUES after the u-space draw (noise and
+    # outliers included) and before unused columns are zeroed; the target's tokens never change. A re-valued
+    # target is re-checked against the catalog's holdout pools (see flash_ansr.data.units).
+    units_cfg = worker_config.units_block
+    held_out_fn: Callable[[list[str]], bool] | None = None
+    if units_cfg is not None and hasattr(catalog, "is_held_out"):
+        def _held_out(tokens: list[str]) -> bool:
+            return bool(catalog.is_held_out(list(simplipy_engine.to_prefix(list(tokens))), [],
+                                            assume_canonical=False))
+        held_out_fn = _held_out
     # The residual block needs a noise mixture to have anything to predict: without one
     # y_encoder IS y_clean and every target is exactly 0.0.
     noise_spec = getattr(source, "noise_spec", None)
@@ -495,6 +511,8 @@ def _producer_worker(
             n_dropped_truncation = 0
             n_dropped_nonfinite = 0
             n_skipped_task_blocks = 0
+            units_counts = {status: 0 for status in UNITS_STATUSES}
+            units_redraws = 0
 
             i = 0
             while i < batch_size:
@@ -541,6 +559,22 @@ def _producer_worker(
                     skeleton, literal_values = mask_literals_positional(
                         simplipy_engine, expression)
                 literals = np.asarray(literal_values, dtype=NUMERIC_DTYPE_NP)
+
+                units_meta: dict[str, Any] | None = None
+                if units_cfg is not None:
+                    units_result = apply_units(
+                        engine=simplipy_engine, target_tokens=target_expression, literals=literals,
+                        x_support=x_support, y_support=y_support, y_encoder=y_encoder, variables=variables,
+                        rng=worker_rng, cfg=units_cfg, is_held_out=held_out_fn)
+                    units_counts[units_result.status] += 1
+                    units_redraws += units_result.redraws
+                    x_support, y_support, y_encoder = (
+                        units_result.x_support, units_result.y_support, units_result.y_encoder)
+                    literals = units_result.literals
+                    if units_result.change is not None:
+                        units_meta = {"z": dict(units_result.change.z), "zy": int(units_result.change.zy)}
+                        # The concrete expression must describe the data it is stored with.
+                        expression = list(simplipy_engine.to_prefix(list(units_result.revalued_tokens or [])))
 
                 mask_unused_variable_columns(
                     arrays=(x_support,),
@@ -934,6 +968,10 @@ def _producer_worker(
                 }
                 if isinstance(problem.noise, dict):
                     metadata["noise"] = problem.noise
+                if units_cfg is not None:
+                    # Present on EVERY instance of a units run (the batch's metadata fields are read
+                    # from the first instance's keys): None = identity units.
+                    metadata["units"] = units_meta
                 # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
                 # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
                 # The key is emitted iff the feature is active, so condition_mask present <=> feature
@@ -1020,6 +1058,10 @@ def _producer_worker(
             # Instances dropped because truncation would have cut inside an <ieee754> span
             # while filling THIS batch.
             payload["n_dropped_truncation"] = n_dropped_truncation
+            if units_cfg is not None:
+                for status, count in units_counts.items():
+                    payload[f"n_units_{status}"] = count
+                payload["n_units_redraws"] = units_redraws
             if tagged_targets:
                 # Instances whose tagged canonicalization folded a degenerate sub-expression
                 # to a non-finite spelling while filling THIS batch (tagged targets only).
