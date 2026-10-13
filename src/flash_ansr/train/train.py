@@ -409,9 +409,6 @@ class Trainer:
         # Metrics and Loss Functions
         self.metrics_ignore_index = int(self.model.tokenizer["<pad>"])
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
-        # Masked diffusion (experiment exp/mdm-decoder): the loss of flash_ansr.train.mdm instead of
-        # next-token cross-entropy, on the same batches and label masks.
-        self.mdm = getattr(self.model, 'decoder_objective', 'ar') == 'mdm'
         # Only wandb.watch(log='gradients'|'all') needs every parameter in the graph; the zero-loss
         # that guarantees it costs one reduction per parameter per step, so it is opt-in (see run()).
         self._touch_all_parameters = False
@@ -955,6 +952,13 @@ class Trainer:
             logits, labels.to(logits.dtype), pos_weight=pos_weight, reduction="none")
         weight = valid.to(per_point.dtype)
         return (per_point * weight).sum() / weight.sum().clamp_min(1.0)
+
+    @property
+    def mdm(self) -> bool:
+        """Masked diffusion (experiment exp/mdm-decoder): the loss of flash_ansr.train.mdm instead of next-token
+        cross-entropy, on the same batches and label masks. Read off the model, so a trainer built without __init__
+        (the unit tests' stand-ins) answers too."""
+        return getattr(self.model, 'decoder_objective', 'ar') == 'mdm'
 
     def _mdm_corrupt(self, batch: dict[str, Any], generator: torch.Generator | None = None) -> MaskedBatch:
         """Pad a collated, label-masked batch to the canvas and mask its targets (flash_ansr.train.mdm)."""
