@@ -24,6 +24,7 @@ from flash_ansr.data import FlashANSRDataset
 from flash_ansr.data.collate import mask_float_targets
 from flash_ansr.utils.config_io import load_config, save_config, unfold_config
 from flash_ansr.utils.paths import substitute_root_path
+from flash_ansr.train.mdm import MaskedBatch, corrupt, masked_diffusion_loss
 from flash_ansr.train.optimizers import build_optimizer
 from flash_ansr.train.schedules import pw_linear_schedule
 
@@ -408,6 +409,9 @@ class Trainer:
         # Metrics and Loss Functions
         self.metrics_ignore_index = int(self.model.tokenizer["<pad>"])
         self.cross_entropy_loss = nn.CrossEntropyLoss(ignore_index=self.metrics_ignore_index)
+        # Masked diffusion (experiment exp/mdm-decoder): the loss of flash_ansr.train.mdm instead of
+        # next-token cross-entropy, on the same batches and label masks.
+        self.mdm = getattr(self.model, 'decoder_objective', 'ar') == 'mdm'
         # Only wandb.watch(log='gradients'|'all') needs every parameter in the graph; the zero-loss
         # that guarantees it costs one reduction per parameter per step, so it is opt-in (see run()).
         self._touch_all_parameters = False
@@ -952,6 +956,15 @@ class Trainer:
         weight = valid.to(per_point.dtype)
         return (per_point * weight).sum() / weight.sum().clamp_min(1.0)
 
+    def _mdm_corrupt(self, batch: dict[str, Any], generator: torch.Generator | None = None) -> MaskedBatch:
+        """Pad a collated, label-masked batch to the canvas and mask its targets (flash_ansr.train.mdm)."""
+        tokenizer = self.model.tokenizer
+        return corrupt(
+            batch['input_ids'], batch['labels'], ignore_index=self.metrics_ignore_index,
+            eos_id=int(tokenizer['<eos>']), expression_id=int(tokenizer['<expression>']),
+            mask_id=int(tokenizer['<mask>']), canvas=self.decoder_max_seq_len,
+            input_num=batch.get('input_num', None), generator=generator)
+
     def _train_step(self, batch: dict[str, torch.Tensor], step: int, preprocess: bool, do_optimizer_step: bool = True) -> None:
         """Perform a single optimisation step with optional gradient accumulation.
 
@@ -1010,15 +1023,22 @@ class Trainer:
                 autocast_context = torch.autocast(self.device.type, dtype=self.amp_dtype)
 
             with autocast_context:
-                logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device), condition_mask=micro_batch.get('condition_mask', None))
-                flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                flat_labels = micro_batch['labels'].reshape(-1)
-                valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
-                # The mean over the supervised positions, 0 when there are none: the sum form of
-                # nn.CrossEntropyLoss(ignore_index=...) with a clamped count, so no `.any()` sync.
-                ce_loss = nn.functional.cross_entropy(
-                    flat_logits, flat_labels, ignore_index=self.metrics_ignore_index, reduction="sum"
-                ) / valid_labels.sum().clamp_min(1)
+                if self.mdm:
+                    masked_batch = self._mdm_corrupt(micro_batch)
+                    logits = self.model(masked_batch.noisy_ids, data_tensor, input_num=masked_batch.input_num, data_attn_mask=micro_batch['data_attn_mask'].to(self.device), condition_mask=micro_batch.get('condition_mask', None))
+                    ce_loss, flat_logits = masked_diffusion_loss(logits, masked_batch)
+                    valid_labels = torch.ones(flat_logits.shape[0], dtype=torch.bool, device=flat_logits.device)
+                    micro_batch['input_ids'] = masked_batch.noisy_ids   # the canvas width, for the FLOP count
+                else:
+                    logits = self.model(micro_batch['input_ids'], data_tensor, input_num=micro_batch.get('input_num', None), data_attn_mask=micro_batch['data_attn_mask'].to(self.device), condition_mask=micro_batch.get('condition_mask', None))
+                    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+                    flat_labels = micro_batch['labels'].reshape(-1)
+                    valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
+                    # The mean over the supervised positions, 0 when there are none: the sum form of
+                    # nn.CrossEntropyLoss(ignore_index=...) with a clamped count, so no `.any()` sync.
+                    ce_loss = nn.functional.cross_entropy(
+                        flat_logits, flat_labels, ignore_index=self.metrics_ignore_index, reduction="sum"
+                    ) / valid_labels.sum().clamp_min(1)
 
                 # wandb.watch on gradients wants every parameter in the graph; touch them all only
                 # then (one reduction per parameter per step, wasted otherwise).
@@ -1048,7 +1068,8 @@ class Trainer:
             log_z_sum, absmean_sum, n_positions = _logit_scale(flat_logits, valid_labels)
             logit_scale_sums = [logit_scale_sums[0] + log_z_sum, logit_scale_sums[1] + absmean_sum, logit_scale_sums[2] + n_positions]
             with torch.no_grad():
-                if 'task_segments' in micro_batch:
+                # The per-task and split CE read shifted next-token logits; a masked-diffusion step has none.
+                if 'task_segments' in micro_batch and not self.mdm:
                     for name, (ce_sum, count) in _per_task_ce(
                             logits.detach(), micro_batch['labels'],
                             micro_batch['task_segments'], self.metrics_ignore_index).items():
@@ -1058,8 +1079,8 @@ class Trainer:
                 # Unconditional (audit 2026-08-24): the segments-None fallback treats
                 # every position as expression so BASE arms log the anchor too --
                 # gating it on task_segments made that fallback dead code.
-                for name, (ce_sum, count) in _ce_split_metrics(
-                        micro_batch, logits.detach(), self.metrics_ignore_index).items():
+                for name, (ce_sum, count) in ({} if self.mdm else _ce_split_metrics(
+                        micro_batch, logits.detach(), self.metrics_ignore_index)).items():
                     entry = split_ce_sums.setdefault(name, [zero, zero])
                     entry[0] = entry[0] + ce_sum
                     entry[1] = entry[1] + count
@@ -1175,6 +1196,11 @@ class Trainer:
         val_outlier_labels: list[torch.Tensor] = []
         val_task_ce_sums: dict[str, list[float]] = {}
         val_split_ce_sums: dict[str, list[float]] = {}
+        # Masked diffusion: the same masks at every validation, so the curve moves with the model only.
+        val_generator: torch.Generator | None = None
+        if self.mdm:
+            val_generator = torch.Generator(device=self.device)
+            val_generator.manual_seed(0)
 
         with torch.no_grad():
             if size is None:
@@ -1202,20 +1228,28 @@ class Trainer:
                 with torch.autocast(device_type=self.device.type, dtype=self.amp_dtype):
                     # val keeps unconditional_prob=0.0 -> condition_mask is all-True (== None == fully
                     # conditioned), so val CE stays a pure conditioned metric comparable across runs.
-                    logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device), condition_mask=batch.get('condition_mask', None))
-                    flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
-                    flat_labels = batch['labels'].reshape(-1)
-                    valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
-                    if not valid_labels.any():
-                        ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
+                    if self.mdm:
+                        masked_batch = self._mdm_corrupt(batch, generator=val_generator)
+                        logits = self.model(masked_batch.noisy_ids, data_tensor, input_num=masked_batch.input_num, data_attn_mask=batch['data_attn_mask'].to(self.device), condition_mask=batch.get('condition_mask', None))
+                        ce_loss, flat_logits = masked_diffusion_loss(logits, masked_batch)
+                        valid_labels = torch.ones(flat_logits.shape[0], dtype=torch.bool, device=flat_logits.device)
+                        n_items = int(masked_batch.n_supervised)
                     else:
-                        ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                        logits = self.model(batch['input_ids'], data_tensor, input_num=batch.get('input_num', None), data_attn_mask=batch['data_attn_mask'].to(self.device), condition_mask=batch.get('condition_mask', None))
+                        flat_logits = logits[:, :-1].reshape(-1, logits.shape[-1])
+                        flat_labels = batch['labels'].reshape(-1)
+                        valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
+                        if not valid_labels.any():
+                            ce_loss = torch.zeros((), device=self.device, dtype=logits.dtype)
+                        else:
+                            ce_loss = self.cross_entropy_loss(flat_logits, flat_labels)
+                        n_items = flat_labels.shape[0]
 
                     # Accumulate metrics for each batch
-                    val_ce_loss += ce_loss.item() * flat_labels.shape[0]
-                    total_items += flat_labels.shape[0]
+                    val_ce_loss += ce_loss.item() * n_items
+                    total_items += n_items
                     if self.z_loss_weight > 0.0 and valid_labels.any():
-                        val_z_loss += _z_loss(flat_logits, valid_labels).item() * flat_labels.shape[0]
+                        val_z_loss += _z_loss(flat_logits, valid_labels).item() * n_items
                     log_z_sum, absmean_sum, n_positions = _logit_scale(flat_logits, valid_labels)
                     val_logit_scale_sums[0] += log_z_sum
                     val_logit_scale_sums[1] += absmean_sum
@@ -1226,7 +1260,7 @@ class Trainer:
                         if scored is not None:
                             val_outlier_scores.append(scored[0][scored[2]].detach().float().cpu())
                             val_outlier_labels.append(scored[1][scored[2]].detach().cpu())
-                    if 'task_segments' in batch:
+                    if 'task_segments' in batch and not self.mdm:
                         for name, (ce_sum, count) in _per_task_ce(
                                 logits.detach(), batch['labels'],
                                 batch['task_segments'], self.metrics_ignore_index).items():
@@ -1234,8 +1268,8 @@ class Trainer:
                             entry[0] += ce_sum
                             entry[1] += count
                     # Unconditional, mirroring the train side (audit 2026-08-24).
-                    for name, (ce_sum, count) in _ce_split_metrics(
-                            batch, logits.detach(), self.metrics_ignore_index).items():
+                    for name, (ce_sum, count) in ({} if self.mdm else _ce_split_metrics(
+                            batch, logits.detach(), self.metrics_ignore_index)).items():
                         entry = val_split_ce_sums.setdefault(name, [0.0, 0])
                         entry[0] += ce_sum
                         entry[1] += count

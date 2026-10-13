@@ -144,8 +144,18 @@ class FlashANSRModel(nn.Module):
 
         decoder_data_mode: str = "cross_attention",
         decoder_data_norm: str = "rms",
+        decoder_objective: str = "ar",
     ) -> None:
         super().__init__()
+
+        # What the decoder is trained to do (experiment exp/mdm-decoder): ``ar`` predicts the next
+        # token under a causal mask (every released model); ``mdm`` denoises a masked canvas with
+        # bidirectional self-attention (MDLM / LLaDA masked diffusion, flash_ansr.train.mdm). The
+        # weights are the same modules either way; only the attention mask, the loss and the sampler
+        # differ.
+        if decoder_objective not in ("ar", "mdm"):
+            raise ValueError(f"decoder_objective must be 'ar' or 'mdm', got {decoder_objective!r}")
+        self.decoder_objective = decoder_objective
 
         # How the data reaches the expression tokens (see decoders/transformer.py): the v25
         # cross-attention decoder, or the v26 prefix decoder that carries the encoder memory in
@@ -225,6 +235,7 @@ class FlashANSRModel(nn.Module):
             data_mode=decoder_data_mode,
             memory_len=encoder_n_seeds,
             data_norm_type=decoder_data_norm,
+            bidirectional=(decoder_objective == "mdm"),
         )
 
         # Optional LayerNorm between the head MLP and the logit projection. The T4
@@ -322,6 +333,8 @@ class FlashANSRModel(nn.Module):
         decoder = getattr(self, 'decoder', None)
         if decoder is None or not getattr(decoder, 'layers', None):
             return False, "no decoder layers"
+        if getattr(self, 'decoder_objective', 'ar') != 'ar':
+            return False, "a masked-diffusion decoder does not decode token by token"
         try:
             if not (self.decoder_max_seq_len and self.decoder_max_seq_len > 0):
                 return False, "decoder_max_seq_len not positive/finite"
@@ -535,6 +548,7 @@ class FlashANSRModel(nn.Module):
 
             decoder_data_mode=data_mode,
             decoder_data_norm=config_.get("decoder_data_norm", "rms"),
+            decoder_objective=config_.get("decoder_objective", "ar"),
         )
 
     def _logits(self, decoder_output: torch.Tensor) -> torch.Tensor:
@@ -586,6 +600,28 @@ class FlashANSRModel(nn.Module):
             memory = memory.view(B, -1, memory.size(-1))
 
         return memory
+
+    def _numeric_embeddings(self, input_num: torch.Tensor | None) -> torch.Tensor | None:
+        """The numeric-channel embedding added to the token embeddings (``None`` without a channel)."""
+        if input_num is None:
+            return None
+        input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
+        numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
+        if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
+            numeric_embeddings = numeric_embeddings.squeeze(-2)
+        if self.sanitize_input_num:
+            # NaN marks "no numeric payload at this position". Detect it on the RAW values:
+            # the bit pre-encoder maps NaN to a valid ±1 pattern, so checking the
+            # pre-encodings (as legacy code did) can never fire. Zero the embedding OUTPUT
+            # (not the input bits): numeric_embedding has a bias, so a zeroed bit-vector
+            # would still inject a learned constant. Legacy models keep the NaN-pattern
+            # embedding they were trained with (flag defaults to False).
+            payload_mask = ~torch.isnan(input_num)
+            if payload_mask.dim() == numeric_embeddings.dim():
+                numeric_embeddings = numeric_embeddings * payload_mask
+            else:
+                numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
+        return numeric_embeddings
 
     def forward(self, input_tokens: torch.Tensor, data: torch.Tensor | None, input_num: torch.Tensor | None = None, memory: torch.Tensor | None = None, data_attn_mask: torch.Tensor | None = None, condition_mask: torch.Tensor | None = None, past_key_values: list | None = None, use_cache: bool = False) -> torch.Tensor | tuple[torch.Tensor, list]:
         """Compute next-token logits for ``input_tokens`` conditioned on the ``(X, y)`` support set.
@@ -650,25 +686,7 @@ class FlashANSRModel(nn.Module):
         # Add numeric token logic back
         # The new TransformerDecoder handles embedding and positional encoding internally.
         # We need to pass the numeric embeddings to it.
-        if input_num is not None:
-            input_num_pre_encodings = self.pre_encoder_numeric_tokens(input_num)
-            numeric_embeddings = self.numeric_embedding(input_num_pre_encodings)
-            if numeric_embeddings.dim() == 4 and numeric_embeddings.size(-2) == 1:
-                numeric_embeddings = numeric_embeddings.squeeze(-2)
-            if self.sanitize_input_num:
-                # NaN marks "no numeric payload at this position". Detect it on the RAW values:
-                # the bit pre-encoder maps NaN to a valid ±1 pattern, so checking the
-                # pre-encodings (as legacy code did) can never fire. Zero the embedding OUTPUT
-                # (not the input bits): numeric_embedding has a bias, so a zeroed bit-vector
-                # would still inject a learned constant. Legacy models keep the NaN-pattern
-                # embedding they were trained with (flag defaults to False).
-                payload_mask = ~torch.isnan(input_num)
-                if payload_mask.dim() == numeric_embeddings.dim():
-                    numeric_embeddings = numeric_embeddings * payload_mask
-                else:
-                    numeric_embeddings = numeric_embeddings * payload_mask.unsqueeze(-1)
-        else:
-            numeric_embeddings = None
+        numeric_embeddings = self._numeric_embeddings(input_num)
 
         # Pass both symbolic and numeric inputs to the decoder
         # This requires modifying the decoder's forward method, but for this refactor,
@@ -982,6 +1000,9 @@ class FlashANSRModel(nn.Module):
         # Refuse a removed simplifier BEFORE decoding: `return_raw=True` skips post-processing
         # entirely, so a guard only in `_postprocess_sampled` would let the request through.
         simplify = validate_simplify(simplify)
+        if self.decoder_objective != 'ar':
+            raise ValueError("sample_top_kp decodes left to right; a masked-diffusion model samples with "
+                             "sample_masked_diffusion (generation method 'masked_diffusion')")
 
         # Static-shape, position-indexed-KV decode (Stage 1b): route to the chunk-major static loop.
         # `static_decode` is tri-state: None -> the deployed default for capable models, True/False explicit
@@ -1554,6 +1575,137 @@ class FlashANSRModel(nn.Module):
             # decode dropped or added a token, so the slots no longer line up: refuse rather than
             # attach one site's prediction to another.
             return None
+
+    def sample_masked_diffusion(
+        self,
+        data: torch.Tensor,
+        draws: int = 10,
+        steps: int | None = None,
+        order: str = "random",
+        temperature: float = 1.0,
+        canvas: int | None = None,
+        batch_size: int = 256,
+        valid_only: bool = True,
+        simplify: bool = True,
+        unique: bool = True,
+        verbose: bool = False,
+        return_raw: bool = False,
+        *,
+        prompt_prefix: PromptPrefix | None = None,
+        memory: torch.Tensor | None = None,
+    ) -> tuple[list[list[int]], list[float], list[bool]] | tuple[list[list[int]], list[float]]:
+        """Draw candidates from a masked-diffusion decoder (experiment exp/mdm-decoder).
+
+        Every row starts as the prompt followed by ``<mask>`` up to ``canvas`` positions (the trained
+        sequence length by default) and is denoised in ``steps`` steps (default: one per masked
+        position). ``order='random'`` is the MDLM ancestral sampler under the linear schedule: each
+        position's reveal step is uniform over the steps, independently of the model, and a revealed
+        token is drawn from the model's prediction given everything revealed so far.
+        ``order='confidence'`` reveals the same number of positions per step but picks the positions
+        whose sampled token is most probable (MaskGIT). A revealed token is never changed.
+
+        A row's candidate is the body between the prompt's ``<expression>`` and the first
+        ``</expression>``; the post-processing (validity, simplify, dedup, sort) is the decoder's
+        usual one. The score is the summed log-probability of each token at the step it was revealed,
+        a ranking proxy, not the sequence likelihood.
+        """
+        simplify = validate_simplify(simplify)
+        if self.decoder_objective != 'mdm':
+            raise ValueError("sample_masked_diffusion needs a model trained with decoder_objective='mdm'")
+        if order not in ("random", "confidence"):
+            raise ValueError(f"order must be 'random' or 'confidence', got {order!r}")
+        if temperature <= 0:
+            raise ValueError(f"temperature must be positive, got {temperature!r}")
+
+        device = data.device
+        base_tokens, base_input_num = self._resolve_generation_prefix(prompt_prefix=prompt_prefix)
+        n_canvas = int(canvas) if canvas is not None else self.decoder_max_seq_len
+        n_prompt = len(base_tokens)
+        n_free = n_canvas - n_prompt
+        if n_free < 2:
+            raise ValueError(f"the canvas ({n_canvas}) leaves no room after the prompt ({n_prompt} tokens)")
+        n_steps = n_free if steps is None else max(1, min(int(steps), n_free))
+        if memory is None:
+            memory = self._create_memory(data)
+
+        mask_id = self.tokenizer['<mask>']
+        open_id = self.tokenizer['<expression>']
+        close_id = self.tokenizer['</expression>']
+        eos_id = self.tokenizer['<eos>']
+        # Never emitted: the absorbing token, and tokens that are never a denoising target.
+        banned = [mask_id] + [self.tokenizer[t] for t in ('<bos>', '<float>', '<expression>') if t in self.tokenizer]
+        prompt = torch.tensor(base_tokens, device=device, dtype=torch.long)
+
+        sequences: list[list[int]] = []
+        scores: list[float] = []
+        with torch.no_grad():
+            for start in tqdm(range(0, draws, batch_size), disable=not verbose, desc="Denoising", smoothing=0.0):
+                rows = min(batch_size, draws - start)
+                x = torch.full((rows, n_canvas), mask_id, device=device, dtype=torch.long)
+                x[:, :n_prompt] = prompt
+                input_num: torch.Tensor | None = None
+                if base_input_num is not None:
+                    input_num = torch.full((rows, n_canvas, 1), float('nan'), device=device, dtype=NUMERIC_DTYPE)
+                    input_num[:, :n_prompt, 0] = torch.tensor(base_input_num, device=device, dtype=NUMERIC_DTYPE)
+                numeric = self._numeric_embeddings(input_num)
+                free = torch.zeros(rows, n_canvas, dtype=torch.bool, device=device)
+                free[:, n_prompt:] = True
+                score = torch.zeros(rows, device=device, dtype=torch.float32)
+
+                def predict(where: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                    """Sample a token at every True position of ``where``; return (tokens, their log-probs)."""
+                    hidden = self.decoder(tokens=x, encoder_memory=memory, extra_parallel_embeddings=numeric)
+                    logits = self._logits(hidden[where]).float()
+                    logits[:, banned] = float('-inf')
+                    log_probs = torch.log_softmax(logits, dim=-1)
+                    probs = torch.softmax(logits / temperature, dim=-1) if temperature != 1.0 else log_probs.exp()
+                    tokens = torch.multinomial(probs, 1).squeeze(-1)
+                    return tokens, log_probs.gather(1, tokens.unsqueeze(-1)).squeeze(-1)
+
+                if order == "random":
+                    reveal_step = torch.randint(0, n_steps, (rows, n_free), device=device)
+                    for k in range(n_steps):
+                        due = torch.zeros_like(free)
+                        due[:, n_prompt:] = reveal_step == k
+                        if not bool(due.any()):
+                            continue
+                        tokens, token_log_probs = predict(due)
+                        x[due] = tokens
+                        score.index_add_(0, due.nonzero(as_tuple=True)[0], token_log_probs)
+                else:
+                    revealed = 0
+                    for k in range(n_steps):
+                        n_now = round(n_free * (k + 1) / n_steps) - revealed
+                        if n_now <= 0:
+                            continue
+                        tokens, token_log_probs = predict(free)
+                        tokens = tokens.view(rows, -1)
+                        token_log_probs = token_log_probs.view(rows, -1)
+                        # `free` holds the same number of masked positions in every row, so the views align.
+                        confidence = token_log_probs.clone()
+                        pick = torch.zeros_like(confidence, dtype=torch.bool)
+                        pick.scatter_(1, confidence.topk(n_now, dim=1).indices, True)
+                        positions = free.nonzero(as_tuple=True)[1].view(rows, -1)
+                        row_index = torch.arange(rows, device=device).unsqueeze(1).expand_as(positions)
+                        x[row_index[pick], positions[pick]] = tokens[pick]
+                        score += (token_log_probs * pick).sum(dim=1)
+                        free[row_index[pick], positions[pick]] = False
+                        revealed += n_now
+
+                for row, row_score in zip(x.tolist(), score.tolist()):
+                    try:
+                        close = row.index(close_id, row.index(open_id) + 1)
+                        row = row[:close + 1] + [eos_id]
+                    except ValueError:
+                        pass   # no closed expression: post-processing drops it
+                    sequences.append(row)
+                    scores.append(row_score)
+
+        if return_raw:
+            return sequences, scores
+        return self._postprocess_sampled(
+            sequences, scores, simplify=simplify, unique=unique, valid_only=valid_only,
+            eos_token=eos_id, verbose=verbose)
 
     def _postprocess_sampled(
         self,

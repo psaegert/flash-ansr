@@ -294,9 +294,13 @@ class TransformerDecoderBlock(nn.Module):
         ffn_norm_type: str = "rms",
         norm_position: str = "pre",
         use_cross_attention: bool = True,
+        causal_self_attn: bool = True,
     ):
         super().__init__()
         self.use_checkpointing = use_checkpointing
+        # The masked-diffusion decoder (experiment exp/mdm-decoder) attends in both directions: every
+        # canvas position reads every other, masked or not.
+        self.causal_self_attn = bool(causal_self_attn)
         # The prefix decoder (v26) reads the data from its own sequence: no cross-attention
         # sublayer at all, the block is self-attention + FFN.
         self.use_cross_attention = bool(use_cross_attention)
@@ -334,7 +338,7 @@ class TransformerDecoderBlock(nn.Module):
 
         if self.norm_position == "pre":
             normed_x = self.self_attn_norm(x)
-            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
+            sa_out = self.self_attention(normed_x, normed_x, rope_emb=rope_emb, is_causal=self.causal_self_attn, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
             if use_cache:
                 sa_out, sa_cache = sa_out
             x = x + sa_out
@@ -353,7 +357,7 @@ class TransformerDecoderBlock(nn.Module):
             x = x + self.ffn(self.ffn_norm(x))
         else:
             # Post-norm: x = norm(x + sublayer(x))
-            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=True, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
+            sa_out = self.self_attention(x, x, rope_emb=rope_emb, is_causal=self.causal_self_attn, past_key_value=sa_past, use_cache=use_cache, attn_mask=attn_mask)
             if use_cache:
                 sa_out, sa_cache = sa_out
             x = self.self_attn_norm(x + sa_out)

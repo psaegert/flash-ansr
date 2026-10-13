@@ -1,4 +1,5 @@
 import contextlib
+import math
 import datetime
 import unittest
 from typing import Any
@@ -143,3 +144,28 @@ def test_step_clears_gradients_for_the_next_cycle() -> None:
 
     for grad in _grads(trainer):
         assert torch.count_nonzero(grad) == 0, "gradients survived an optimizer step"
+
+
+@mock.patch('wandb.init')
+@mock.patch('wandb.log')
+def test_train_masked_diffusion(mock_log, mock_init, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Experiment exp/mdm-decoder: the test recipe with decoder_objective mdm trains and validates end to end."""
+    import shutil
+    config_dir = tmp_path / "test"
+    shutil.copytree(get_path('configs', 'test'), config_dir)
+    with open(config_dir / "model.yaml", "a") as f:
+        f.write("\ndecoder_objective: mdm\n")
+    trainer = Trainer.from_config(str(config_dir / "train.yaml"))
+    assert trainer.mdm and trainer.model.decoder.bidirectional
+    losses: list[float] = []
+    original = trainer._log_metrics
+
+    def capture(step, ce, loss, grad_norm, *args, **kwargs):  # type: ignore[no-untyped-def]
+        losses.append(float(loss))
+        return original(step, ce, loss, grad_norm, *args, **kwargs)
+
+    trainer._log_metrics = capture  # type: ignore[method-assign]
+    trainer.run(project_name='neural-symbolic-regression-test', entity='psaegert', name='pytest-mdm', verbose=False,
+                steps=2, device='cpu', preprocess=False, checkpoint_interval=None, checkpoint_directory=None,
+                wandb_mode="disabled", validate_size=10, validate_interval=1)
+    assert len(losses) == 2 and all(math.isfinite(v) and v > 0 for v in losses)

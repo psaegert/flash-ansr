@@ -705,7 +705,15 @@ def _producer_worker(
                         else:
                             n_skipped_task_blocks += 1
 
+                    # Experiment switch (exp/mdm-decoder): drop rather than suffix-pin the block on an
+                    # unconditioned instance. No extra draw unless the switch is set below 1.
+                    p_unconditioned_suffix = (float(predict_y_cfg.get("p_unconditioned_suffix", 1.0))
+                                              if predict_y_cfg is not None else 1.0)
+                    drop_unconditioned_predict_y = (
+                        condition_mask_value is False and p_unconditioned_suffix < 1.0
+                        and worker_rng.random() >= p_unconditioned_suffix)
                     if (predict_y_cfg is not None
+                            and not drop_unconditioned_predict_y
                             and x_support.shape[0] >= int(predict_y_cfg["min_n_support"])
                             and worker_rng.random() < float(predict_y_cfg["p_present"])):
                         n_dims = x_support.shape[1]

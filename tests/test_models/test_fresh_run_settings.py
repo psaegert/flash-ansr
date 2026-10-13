@@ -22,6 +22,7 @@ PLAIN_DEFAULTS = {
     "decoder_data_mode", "decoder_block_cross_attn_norm", "decoder_cross_attn_kv_norm", "decoder_use_rope_cross_attn",
     "decoder_use_xsa_self_attn", "decoder_block_norm_position", "encoder_block_norm_position", "optional_condition",
     "null_memory_init_seed", "outlier_head", "head_pre_logits_norm", "decoder_data_norm",
+    "decoder_objective",
 }
 T8_1_SIZES = ("3M", "20M", "120M")
 

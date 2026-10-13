@@ -33,7 +33,7 @@ class GenerationConfigBase(Mapping[str, Any]):
     """Common interface implemented by all generation configuration objects."""
 
     __slots__ = ('method',)
-    method: Literal['softmax_sampling', 'prior_sampling']
+    method: Literal['softmax_sampling', 'prior_sampling', 'masked_diffusion']
 
     def to_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments appropriate for the configured method."""
@@ -227,10 +227,82 @@ class PriorSamplingConfig(GenerationConfigBase):
         }
 
 
-GenerationConfig = SoftmaxSamplingConfig | PriorSamplingConfig
+class MaskedDiffusionConfig(GenerationConfigBase):
+    """Candidates denoised by a masked-diffusion decoder (experiment exp/mdm-decoder; a model trained with
+    ``decoder_objective: mdm``). See :meth:`FlashANSRModel.sample_masked_diffusion`.
+
+    ``draws`` and ``emission`` mean what they mean for softmax sampling. ``steps`` is the number of
+    denoising steps (``None``: one per masked position); ``order`` is ``'random'`` (the ancestral
+    sampler) or ``'confidence'`` (most probable positions first); ``canvas`` the number of positions
+    (``None``: the trained sequence length); ``batch_size`` the rows denoised at once.
+    """
+
+    __slots__ = ('draws', 'emission', 'steps', 'order', 'temperature', 'canvas', 'batch_size',
+                 'valid_only', 'simplify', 'unique')
+
+    method: Literal['masked_diffusion']
+    draws: int
+    emission: str
+    steps: int | None
+    order: str
+    temperature: float
+    canvas: int | None
+    batch_size: int
+    valid_only: bool
+    simplify: bool
+    unique: bool
+
+    def __init__(
+        self,
+        *,
+        draws: int = 1024,
+        emission: str = 'fittable',
+        steps: int | None = None,
+        order: str = 'random',
+        temperature: float = 1.0,
+        canvas: int | None = None,
+        batch_size: int = 256,
+        valid_only: bool = True,
+        simplify: bool = True,
+        unique: bool = True,
+    ) -> None:
+        if int(draws) < 1:
+            raise ValueError(f"masked_diffusion needs draws >= 1, got {draws!r}")
+        if emission not in EMISSION_MODES:
+            raise ValueError(f"emission must be one of {EMISSION_MODES}; got {emission!r}")
+        if order not in ('random', 'confidence'):
+            raise ValueError(f"order must be 'random' or 'confidence'; got {order!r}")
+        self.method = 'masked_diffusion'
+        self.draws = int(draws)
+        self.emission = str(emission)
+        self.steps = None if steps is None else int(steps)
+        self.order = str(order)
+        self.temperature = float(temperature)
+        self.canvas = None if canvas is None else int(canvas)
+        self.batch_size = int(batch_size)
+        self.valid_only = bool(valid_only)
+        self.simplify = validate_simplify(simplify)
+        self.unique = bool(unique)
+
+    def to_kwargs(self) -> dict[str, Any]:
+        return {
+            'draws': self.draws,
+            'emission': self.emission,
+            'steps': self.steps,
+            'order': self.order,
+            'temperature': self.temperature,
+            'canvas': self.canvas,
+            'batch_size': self.batch_size,
+            'valid_only': self.valid_only,
+            'simplify': self.simplify,
+            'unique': self.unique,
+        }
 
 
-def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampling'] = 'softmax_sampling',
+GenerationConfig = SoftmaxSamplingConfig | PriorSamplingConfig | MaskedDiffusionConfig
+
+
+def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampling', 'masked_diffusion'] = 'softmax_sampling',
                              **kwargs: Any) -> GenerationConfig:
     """Create a generation configuration for ``method``.
 
@@ -244,6 +316,8 @@ def create_generation_config(*, method: Literal['softmax_sampling', 'prior_sampl
         return SoftmaxSamplingConfig(**kwargs)
     if name == 'prior_sampling':
         return PriorSamplingConfig(**kwargs)
+    if name == 'masked_diffusion':
+        return MaskedDiffusionConfig(**kwargs)
     raise ValueError(
         f"Invalid generation method: {method}. Beam search and MCTS were retired; "
         f"'softmax_sampling' (the decoder) and 'prior_sampling' (the training prior) are the methods.")

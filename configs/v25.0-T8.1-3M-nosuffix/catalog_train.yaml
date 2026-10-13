@@ -1,0 +1,197 @@
+# v25.0-T7 catalog: the PLAIN sampler with two structural priors (owner design 2026-09-03, symbolic-data 0.18.0):
+# catalog operator weights, legacy leaf draw, no families/profiles; unary_mass 1/2 (shape dial), the depth prior
+# nesting_decay 1/4 with neg/inv transparent, and the width prior alternation_decay 1/2 (label mode). Measured as arm
+# L_w12_d12 (3,000 delivered skeletons, 42-draw sheets read): transcendental 73%, realization failures 18%, any f(g)
+# nesting 1.3%, six distinct variables in the median draw, backbone alt<=2 28% at 8-11 arithmetic operators.
+# Everything else as T6: support endpoints cauchy(0,10) UNCAPPED, literal_prior cauchy(0,5), n_support 1-1024,
+# max_tries 4, operator weights (pow/rootn 5, T5), holdout pools, typed-slot priors, cancellation rejection, canon.
+# Base: v25.0-T3, the corrected target canon. Identical to v25.0-T2 in every pin
+# except simplify_mode: targets canonicalize in the PERMISSIVE corpus tier, the
+# designed choice -- data generates FROM the simplified skeleton (target == data),
+# so the lossy tier is licensed and buys the denser canon (mean ratio 0.936 vs
+# 0.966, 36.9% of draws strictly shorter). T2 -> T3 isolates the canon; T1 -> T2
+# isolates the engine. Typed exponent slots for
+# pow/rootn; support oversampling retired (whole-box rejection shapes the prior;
+# support_oversampling_max defaults to 1 and is deliberately absent here).
+type: lample_charton
+simplipy_engine: 'acj-5-4-llm'
+# Lean engine profile (simplipy >= 0.14.2, symbolic-data >= 0.16.1): f64 is the always-eager
+# construction substrate; permissive carries BOTH the target canon (simplify_mode below) and
+# the holdout family key (HOLDOUT_SIMPLIFY_MODE). The real tier is never touched on this
+# arm's data path, and would lazily load on first use if it ever were -- the profile moves
+# worker memory (~100 MB each) and startup, never an output.
+simplipy_engine_modes: ['f64', 'permissive']
+# Validation is a fresh stream from THIS catalog (see dataset_val.yaml), not a frozen
+# artifact, so nothing beyond the benchmark pools below needs excluding.
+holdout_pools: [
+  # Every benchmark srbf may evaluate on. The training run must never see any of them, and
+  # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
+  # suite -- widening the benchmark later means retraining.
+  #
+  # Measured over 3,000 draws replayed against nested pools: widening from fastsrb
+  # alone to all 29 costs over-rejection but nothing in time -- `is_held_out` is a hash lookup,
+  # O(1) in pool size, and the per-draw cost is dominated by evaluating the candidate, which
+  # the one-catalog pool already paid.
+  #
+  # `fastsrb` resolves to v2 by default (fastsrb@2, the 2026-07-10 audit repair), so v2 is what this pool holds out.
+  # `srsd-dummy` is listed for provenance though it adds ZERO keys: it is the same law set with
+  # dummy variables, and the structure layer already generalizes over variable relabeling.
+  "fastsrb",
+  # classical SR suites
+  "feynman", "feynman-bonus", "nguyen", "keijzer", "korns", "koza", "livermore", "livermore2",
+  "vladislavleva", "jin", "neat", "pagie", "poly", "nonic", "sine", "meier", "r-rationals",
+  "constant", "grammarvae",
+  # physics / SRSD
+  "physo-astro", "physo-class", "srsd-dummy",
+  # SOOSE
+  "soose-fc", "soose-nc", "soose-wc",
+  # ERBench
+  "erbench-densities", "erbench-phybench", "erbench-syneq"]
+
+sample_strategy:
+  n_operator_distribution: "length_exponential"
+  min_operators: 0
+  max_operators: 17
+  power: 0.7
+  lambda: 1
+  max_length: 35
+  max_tries: 4
+  independent_dimensions: true
+
+allow_nan: false
+simplify: true
+simplify_mode: 'permissive'
+
+# Literals at constant leaves: cauchy(0, 5), the v23.8 prior (owner ruling 2026-08-31;
+# replaces the v24-era int/rounded mixture on this arm). Typed slots below keep their own
+# priors -- they belong to the typed-exponent redesign, not to the literal prior.
+literal_prior:
+  name: cauchy
+  kwargs:
+    loc: 0
+    scale: 5
+
+# Typed slots (owner ruling 2026-09-02: priors follow elegant, accurate ideas and are only
+# minimally shaped by the benchmark distribution). Three ideas, no fitted numbers:
+#   sign symmetry     -- the canonical spells a negative exponent / root index in its own way,
+#                        so the sign is a spelling choice the prior does not weight;
+#   quadratic decay   -- integers 2..5 and root indices 2..5 at 16 : 9 : 4 : 1 (0 and +-1 fold
+#                        to structure before delivery and are not drawn);
+#   description length-- dyadic rationals p/q at 1/(|p| q), the same cost the MDL measure
+#                        charges a literal; a 5% rounded-real tail keeps a non-rational
+#                        exponent representable.
+# Delivered (1,500 instances, same seed): exponent sites 85% integer / 2% decimal real /
+# 13% rational (T5: 65 / 21 / 14); root index 2 at 44% (T5: 24%). The T5 rounded(normal) half
+# put a multi-decimal real on one exponent site in five.
+typed_slots:
+  pow:
+    argument: 1
+    prior:
+    - weight: 0.65            # integers 2..5, sign-symmetric, quadratic decay in rank (16, 9, 4, 1)
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5]
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
+    - weight: 0.30            # dyadic rationals p/q, sign-symmetric, weight 1/(|p| q): description length
+      name: choice
+      kwargs:
+        values: [0.5, -0.5, 0.25, -0.25, 1.5, -1.5, 2.5, -2.5, 0.75, -0.75]
+        weights: [6, 6, 3, 3, 2, 2, 1.2, 1.2, 1, 1]
+    - weight: 0.05            # real tail (rounded normal), so a non-rational exponent stays representable
+      name: rounded
+      kwargs:
+        base:
+          name: normal
+          kwargs:
+            loc: 0
+            scale: 2
+  rootn:
+    argument: 1
+    prior:
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5]   # sign-symmetric, quadratic decay in rank (owner 2026-09-02)
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
+
+# Support prior restored to the v23.8 form (wandb run v238-1b-resync is the source of
+# truth): box endpoints are cauchy(0, 10) and the box is UNCAPPED -- no [-30, 30] clip.
+# The normal(0,10)+clip form T3 inherited descends from flash-ansr's v23.0/v23.1-era
+# config snapshot; research moved to cauchy-uncapped at v23.2 and ran it through v23.8,
+# but the change never crossed repos (1fc8528 then propagated the stale form into every
+# catalog). Owner ruling 2026-08-31: no caps, cauchy like 23.8.
+support_sampler:
+  support_prior:
+    name: "sampler"
+    kwargs:
+      base_dist_name: "uniform"
+      param_samplers:
+        low:
+          name: "cauchy"
+          kwargs: {loc: 0, scale: 10}
+        high:
+          name: "cauchy"
+          kwargs: {loc: 0, scale: 10}
+  n_support_prior:
+    name: "uniform"
+    kwargs:
+      low: 1
+      high: 1024
+      min_value: 1
+      max_value: 1024
+
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17']
+
+# v25.0-T5 operator prior (owner ruling 2026-09-02): pow/rootn 4 -> 5, everything else
+# unchanged -- a deliberately minimal, non-overfitting reweight. Measured on T4@750k
+# (prior_align.py): benchmark canonical laws carry transcendentals at x0.3-1.1 of the
+# training token frequency and pow at x2-4.4; configured draw shares move
+# transcendentals 22.6% -> 20.9%, pow+rootn 12.9% -> 14.9%. Delivered frequencies are
+# re-measured before launch (canonicalization and rejection reshape them).
+# Operator FAMILIES (owner ruling 2026-09-02, task #112): one independent coin per family,
+# drawn once per expression, so the number of families is fixed per expression whatever its
+# length (the per-node draw let every long expression collect every class: 89% of T4
+# skeletons carried a transcendental, 53% carried all four classes). The coins are
+# heuristics rounded to 5% -- powers less often than not, each transcendental family one in
+# five, hyperbolics one in ten -- not fitted to the benchmark. Every present family carries
+# the same total weight as the arithmetic base, uniform within the family. No operator is
+# dropped by omission: the sampler refuses a family list that leaves a weighted operator out.
+# Implied per-expression composition: pure arithmetic 40%, any transcendental 42%,
+# two or more optional families 18%, all four 0.1%.
+
+# Variables: the legacy draw (number of distinct leaf kinds uniform up to the leaf count, kinds
+# uniform over x1..x17 plus the constant slot) stays -- owner ruling 2026-09-02: it makes sense
+# on its own and a length-coupled replacement would have been shaped on the benchmark.
+
+operator_weights:
+  "+": 10
+  "-": 10
+  "*": 10
+  "/": 10
+  pow: 5
+  rootn: 5
+  abs: 1
+  inv: 1
+  neg: 1
+  sin: 1
+  cos: 1
+  tan: 1
+  asin: 1
+  acos: 1
+  atan: 1
+  sinh: 1
+  cosh: 1
+  tanh: 1
+  asinh: 1
+  acosh: 1
+  atanh: 1
+  exp: 1
+  log: 1
+
+# DEPTH-DECAYING UNARY PRIOR (owner design 2026-09-03): plain sampler, catalog weights, legacy leaves;
+# unary mass w1 = 0.5 at chain depth 0, times nesting_decay^depth below; neg/inv transparent.
+unary_mass: 0.5
+nesting_decay: 0.25
+nesting_transparent: [neg, inv]
+# WIDTH PRIOR (owner design 2026-09-03, width/WIDTH_PRIOR.md): class stickiness on the arithmetic backbone,
+# Markov rule (delta per switch), classes {+,-} / {*,/}, reset at counted unaries; mode label.
+alternation_decay: 0.5

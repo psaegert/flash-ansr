@@ -1945,6 +1945,29 @@ class FlashANSR(BaseEstimator):
 
                 rewards = [float('nan')] * len(acc_beams)
                 return acc_beams, acc_log_probs, acc_completed, rewards
+            case 'masked_diffusion':
+                # Experiment exp/mdm-decoder: a masked-diffusion decoder denoises whole canvases. Its
+                # scores are a ranking proxy, not log-likelihoods, so a ranking that weights them is refused.
+                if self.ranking.mode == 'weighted' and float(self.ranking.weights.get('neg_log_prob', 0.0)) != 0.0:
+                    raise RankingError(
+                        "masked_diffusion candidates carry no sequence log-probability, but the ranking "
+                        "weights 'neg_log_prob'; use ranking_mode='mdl' or weights without it.")
+                beams, log_probs, completed = self.flash_ansr_model.sample_masked_diffusion(
+                    data,
+                    draws=int(generation_kwargs.get('draws', 1)),
+                    steps=generation_kwargs.get('steps'),
+                    order=str(generation_kwargs.get('order', 'random')),
+                    temperature=float(generation_kwargs.get('temperature', 1.0)),
+                    canvas=generation_kwargs.get('canvas'),
+                    batch_size=int(generation_kwargs.get('batch_size', 256)),
+                    valid_only=bool(generation_kwargs.get('valid_only', True)),
+                    simplify=generation_kwargs.get('simplify', True),
+                    unique=bool(generation_kwargs.get('unique', True)),
+                    verbose=verbose,
+                    prompt_prefix=effective_prompt,
+                    memory=memory,
+                )
+                return beams, log_probs, completed, [float('nan')] * len(beams)
             case _:
                 raise ValueError(f"Invalid generation method: {self.generation_config.method}")
 

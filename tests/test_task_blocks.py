@@ -507,3 +507,16 @@ def test_predict_y_and_the_residual_never_query_the_same_point(tokenizer) -> Non
             assert list(y_draw["x"]) != list(r_draw["x"]), \
                 "predict_y's held-out point was handed to the residual block as well"
     assert both > 0, "vacuous: no instance carried both blocks"
+
+
+def test_predict_y_unconditioned_switch_drops_or_pins(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    # Experiment exp/mdm-decoder: p_unconditioned_suffix 0 drops the block of a condition-dropped
+    # instance instead of pinning it to the suffix; 1 (and absence) is the released behaviour.
+    drop = {**PREDICT_A, "p_unconditioned_suffix": 0.0}
+    for batch in _iterate(tokenizer, condition_dropout=1.0, predict_y_block=drop):
+        assert all(draw is None for draw in batch["predict_y"])
+    for block in ({**PREDICT_A, "p_unconditioned_suffix": 1.0}, PREDICT_A):
+        for batch in _iterate(tokenizer, condition_dropout=1.0, predict_y_block=block):
+            assert all(draw is not None and draw["conditional"] is True for draw in batch["predict_y"])
+    with pytest.raises(ValueError, match="predict_y_block"):
+        next(_iterate(tokenizer, predict_y_block={**PREDICT_A, "p_unknown": 0.0}))

@@ -52,6 +52,7 @@ class TransformerDecoder(nn.Module):
         data_mode: str = "cross_attention",
         memory_len: int | None = None,
         data_norm_type: str = "rms",
+        bidirectional: bool = False,
     ):
         """``max_seq_len`` counts the caller's tokens; in ``prefix`` mode the rotary table is sized
         for the tokens plus the inserted ``memory_len + 2`` prefix positions."""
@@ -59,6 +60,11 @@ class TransformerDecoder(nn.Module):
         if data_mode not in ("cross_attention", "prefix"):
             raise ValueError(f"data_mode must be 'cross_attention' or 'prefix', got {data_mode!r}")
         self.data_mode = data_mode
+        # Masked diffusion (experiment exp/mdm-decoder): self-attention without the causal mask, so the
+        # decoder denoises a whole canvas at once. Cross-attention only; there is no KV cache to grow.
+        if bidirectional and data_mode != "cross_attention":
+            raise ValueError("a bidirectional decoder needs data_mode='cross_attention'")
+        self.bidirectional = bool(bidirectional)
         head_dim = model_dim // n_heads
         self.tok_embeddings = nn.Embedding(vocab_size, model_dim)
 
@@ -109,6 +115,7 @@ class TransformerDecoder(nn.Module):
                 ffn_norm_type=block_ffn_norm_type,
                 norm_position=block_norm_position,
                 use_cross_attention=(data_mode == "cross_attention"),
+                causal_self_attn=not self.bidirectional,
             )
             for _ in range(n_layers)
         ])
@@ -147,6 +154,8 @@ class TransformerDecoder(nn.Module):
         past_key_values: list[LayerCache] | None = None,
         use_cache: bool = False,
     ) -> torch.Tensor | Tuple[torch.Tensor, list[LayerCache]]:
+        if self.bidirectional and (past_key_values is not None or use_cache):
+            raise ValueError("the bidirectional (masked-diffusion) decoder has no incremental decoding")
         seq_len = tokens.shape[1]
         h = self.tok_embeddings(tokens)
 
@@ -217,6 +226,8 @@ class TransformerDecoder(nn.Module):
         Cross-attn K/V must already be seeded (from a dynamic prefill) or are computed once here.
         In prefix mode ``position`` is the CACHE slot (the token's index plus ``prefix_len``); the
         prefix itself entered the cache with the dynamic prefill."""
+        if self.bidirectional:
+            raise ValueError("the bidirectional (masked-diffusion) decoder has no static decode")
         h = self.tok_embeddings(tokens)
         if extra_parallel_embeddings is not None:
             h = h + extra_parallel_embeddings

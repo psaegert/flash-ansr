@@ -48,22 +48,24 @@ from flash_ansr.utils.metrics import (
 
 def _validate_task_block(raw: "dict[str, Any] | None", *, name: str,
                          probability_keys: tuple[str, ...],
-                         int_keys: tuple[str, ...] = ()) -> "dict[str, Any] | None":
+                         int_keys: tuple[str, ...] = (),
+                         optional_probability_keys: tuple[str, ...] = ()) -> "dict[str, Any] | None":
     """Validate a v24 task-block config mapping: exact keys, probabilities in [0, 1].
 
     Priors are pinned explicitly, never defaulted -- a missing or unknown key is refused
-    loudly, like the noise-mixture spec on the symbolic-data side."""
+    loudly, like the noise-mixture spec on the symbolic-data side. An optional key is an
+    experiment switch whose absence means the released behaviour."""
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise ValueError(f"{name} must be a mapping, got {raw!r}")
     required = set(probability_keys) | set(int_keys)
-    if set(raw) != required:
+    if not required <= set(raw) <= required | set(optional_probability_keys):
         raise ValueError(
             f"{name} must carry exactly {sorted(required)} (got {sorted(raw)}); "
             f"priors are pinned explicitly, never defaulted")
     validated: dict[str, Any] = {}
-    for key in probability_keys:
+    for key in (*probability_keys, *(k for k in optional_probability_keys if k in raw)):
         probability = float(raw[key])
         if not 0.0 <= probability <= 1.0:
             raise ValueError(f"{name}.{key} must be a probability in [0, 1], got {raw[key]!r}")
@@ -184,9 +186,13 @@ class FlashANSRDataset:
             if self.complexity_block["p_hypothesize"] > 0.0 and HYPOTHESIS_TOKEN not in tokenizer:
                 raise ValueError(f"complexity_block.p_hypothesize > 0 requires the {HYPOTHESIS_TOKEN} "
                                  f"token in the tokenizer")
+        # p_unconditioned_suffix (experiment exp/mdm-decoder): on a condition-dropped instance the
+        # block is pinned to the suffix with this probability and dropped otherwise; absent = 1.0,
+        # the released behaviour. A masked-diffusion canvas cannot carry given tokens after the
+        # expression (they would mark where it ends), so the diffusion arms set it to 0.
         self.predict_y_block = _validate_task_block(
             predict_y_block, name="predict_y_block", probability_keys=("p_present", "p_conditional"),
-            int_keys=("min_n_support",))
+            int_keys=("min_n_support",), optional_probability_keys=("p_unconditioned_suffix",))
         # <predict_residual>: the observed-minus-predicted displacement at one point. It
         # needs a noise mixture to have a target at all -- without one the residual is
         # identically 0.0 and the block teaches only "emit eight zero bytes" -- so the
