@@ -18,13 +18,13 @@ If CUDA is unavailable, everything runs on CPU (slower, but functional).
 
 ### Constant refinement is using too many CPU cores
 
-Constant refinement runs a parallel worker pool. By default (`workers=None`) the pool uses every available CPU core, which oversubscribes shared machines. Cap it explicitly at load time through the compute config:
+Constant refinement runs a parallel worker pool. By default (`workers=None`) the pool uses every core the process may run on: all of the machine's, unless a SLURM allocation or `taskset` gives it fewer. On a shared machine without such a restriction that oversubscribes the CPUs. Cap it explicitly at load time through the compute config:
 
 ```python
 FlashANSR.load(..., compute={"workers": N, "persistent_pool": True})
 ```
 
-Pass an explicit integer to cap the pool size (`0` disables multiprocessing). This is the right knob on shared machines where the default (all cores) would oversubscribe the CPUs.
+Pass an explicit integer to cap the pool size (`0` disables multiprocessing). This is the right knob on shared machines where the default would oversubscribe the CPUs.
 
 ### How do I turn off the inference-speed defaults?
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import numbers
-import os
 from dataclasses import dataclass, field, fields
 from typing import Any, Literal, Mapping
 
@@ -19,6 +18,7 @@ from flash_ansr.refine import (RefineScope, TypedSpanPolicy, DEFAULT_REFINE_SCOP
                                TYPED_SPAN_POLICIES)
 from flash_ansr.scoring import RankingConfig, resolve_ranking
 from flash_ansr.spelling import ConstantLadderConfig
+from flash_ansr.utils.cpus import available_cores
 
 RefinerMethod = Literal['curve_fit_lm', 'minimize_bfgs', 'minimize_lbfgsb', 'minimize_neldermead',
                         'minimize_powell', 'least_squares_trf', 'least_squares_dogbox']
@@ -108,7 +108,7 @@ class RefineConfig:
 @dataclass(frozen=True)
 class ComputeConfig:
     """Where and how wide the estimator runs: the torch ``device`` of the transformer, the refiner's
-    worker pool (``workers``: ``None`` = every CPU core, ``0`` = no multiprocessing) and whether one
+    worker pool (``workers``: ``None`` = every core the process may run on, ``0`` = no multiprocessing) and whether one
     persistent pool is forked BEFORE any CUDA initialization and reused across calls
     (``persistent_pool``; the structural mitigation for the fork-after-CUDA deadlock family)."""
 
@@ -126,7 +126,7 @@ class ComputeConfig:
 
     @property
     def resolved_workers(self) -> int:
-        return max(1, os.cpu_count() or 1) if self.workers is None else self.workers
+        return available_cores() if self.workers is None else self.workers
 
     @classmethod
     def from_mapping(cls, payload: "ComputeConfig | Mapping[str, Any] | None") -> "ComputeConfig":
