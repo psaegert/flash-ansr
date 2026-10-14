@@ -1,7 +1,6 @@
 """Shared-memory streaming of procedurally generated training samples."""
 
 import multiprocessing as mp
-import os
 import signal
 import warnings
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from flash_ansr.data.serialization import (
     truncation_cuts_ieee754_span,
 )
 from flash_ansr.model.tokenizer import Tokenizer
+from flash_ansr.utils.cpus import available_cores
 from flash_ansr.utils.numeric import NUMERIC_DTYPE_NP
 from flash_ansr.preprocessing import FlashANSRPreprocessor
 from flash_ansr.utils.ieee754 import (
@@ -193,7 +193,7 @@ class SharedMemoryWorkerPool:
         self._init_signature = signature
 
         self.worker_preprocess_enabled = worker_preprocess
-        self._num_workers = os.cpu_count() or 1 if num_workers is None else num_workers
+        self._num_workers = available_cores() if num_workers is None else num_workers
         self.pool_size = self._num_workers * prefetch_factor
 
         if max_n_support is None:

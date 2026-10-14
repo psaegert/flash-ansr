@@ -6,6 +6,7 @@ from flash_ansr.utils.config_io import (
     traverse_dict,
     unfold_config,
 )
+from flash_ansr.utils.cpus import available_cores
 from flash_ansr.utils.generation import (
     GenerationConfig,
     GenerationConfigBase,

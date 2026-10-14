@@ -31,7 +31,7 @@ model = FlashANSR.load(
   generation_config=SoftmaxSamplingConfig(draws=1024),   # the search budget: expressions drawn per problem
   refine={"n_restarts": 8},                              # RefineConfig: the constant optimizer (defaults shown)
   ranking="mdl",                                         # the two-part code: (n/2) log2 FVU + description length in bits (default)
-  compute={"device": device, "workers": None},           # ComputeConfig: device and refiner workers (None = every core)
+  compute={"device": device, "workers": None},           # ComputeConfig: device and refiner workers (None = every core the process may run on)
 )
 
 # Define data

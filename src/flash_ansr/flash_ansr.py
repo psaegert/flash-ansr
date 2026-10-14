@@ -1293,7 +1293,7 @@ class FlashANSR(BaseEstimator):
             that mode's knobs as a mapping (``{'mode': 'mdl', 'mdl_strength': 1e-2}`` for the fixed
             pre-0.18 weight; the bare ``'mdl'`` is the two-part code).
         compute : ComputeConfig or mapping, optional
-            The torch ``device``, the refiner ``workers`` (``None`` = every core, ``0`` = serial) and
+            The torch ``device``, the refiner ``workers`` (``None`` = every core the process may run on, ``0`` = serial) and
             ``persistent_pool`` (one worker pool forked BEFORE any CUDA initialization and reused
             across calls: the structural mitigation for the fork-after-CUDA deadlock family; requires
             the ``fork`` start method and more than one worker, otherwise a no-op).
