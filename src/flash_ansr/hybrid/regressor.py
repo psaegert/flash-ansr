@@ -34,11 +34,18 @@ seeds (its timeout is a safety cap only), and the achieved times are recorded. T
 identically on any machine; the reference machine turns the pair into a time. ``rungs`` lists every
 (draws, niterations) pair of a ladder: one generation pass per problem serves every rung (iid draws
 compose), snapshotting the pool at each draws count in one increment per rung.
+
+Both stages overlap where they can (the knob mode and the estimator): Flash-ANSR's stage -- generation, refinement and
+the seeds -- runs on a worker thread while PySR, on the calling thread (Julia stays on one thread), checks its
+operators, builds its options and converts the data, then waits for the seeds and searches. The fit time is the wall
+clock of the whole call; nothing of PySR's per-problem setup is moved out of it, it only runs while Flash-ANSR
+generates. A rung with ``niterations = 0`` is Flash-ANSR alone (no PySR at all).
 """
 from __future__ import annotations
 
 import copy
 import math
+from concurrent.futures import ThreadPoolExecutor
 import pickle
 import time
 import warnings
@@ -54,7 +61,7 @@ from flash_ansr.hybrid.candidates import pick_prediction, pysr_candidates, refin
 from flash_ansr.inference import RESULT_FORMAT_VERSION, Candidate, CandidateLedger, FitResult
 from flash_ansr.scoring import RankingConfig
 from flash_ansr.hybrid.clock import ClockState
-from flash_ansr.hybrid.pysr_model import PySRSettings, run_pysr, warmup
+from flash_ansr.hybrid.pysr_model import PySRSettings, SeedFuture, define_operators, run_pysr, warmup
 
 __all__ = ["HybridConfig", "HybridRegressor"]
 
@@ -220,8 +227,11 @@ class HybridRegressor:
             generation.emission = self.config.emission
         cfg = self.config
         searches = int(cfg.niterations or 0) > 0 if cfg.mode == "knobs" else self.pysr_seconds(float(cfg.ratio or 0.0)) > 0
-        if searches and cfg.pysr.warmup:
-            warmup(cfg.pysr)
+        if searches:
+            if cfg.pysr.warmup:
+                warmup(cfg.pysr)      # Julia, the operator definitions and the compile, when the hybrid is created
+            else:
+                define_operators()
 
     # -- the budget split, by the clock ---------------------------------------------------------
     def generation_seconds(self, ratio: float, budget: float | None = None) -> float:
@@ -521,6 +531,9 @@ class HybridRegressor:
             "hybrid_mode": "knobs", "hybrid_draws": D, "hybrid_niterations": iters, "hybrid_k_seeds": cfg.k_seeds,
             "hybrid_choices": D, "prediction_success": False, "error": None,
         }
+        if D > 0 and iters > 0:
+            return self._fit_knobs_overlapped(values, X, y, Xv, names, problem_id=problem_id, complexity=complexity,
+                                              D=D, iters=iters)
         seeds: list[str] = []
         gen_wall = 0.0
         best: Mapping[str, Any] | None = None
@@ -556,6 +569,66 @@ class HybridRegressor:
                       equations=list(out.get("equations") or []), n_guesses=int(out.get("n_guesses") or 0),
                       niterations_used=int(out.get("niterations_used") or 0))
         self._pysr_answer(values, out, X, y, Xv, names)
+        self._pick(values, flash_candidates, X, y, Xv, names)
+        return values
+
+    def _record_flash(self, values: dict[str, Any], snap: Mapping[str, Any]) -> None:
+        """A rung's Flash-ANSR stage in the record."""
+        seeds = list(snap["seeds"])[: self.config.k_seeds]
+        values["hybrid_generation_calls"] = int(snap.get("calls") or 0)
+        values.update(hybrid_generation_s=float(snap["cum_wall"]), hybrid_pool_size=snap["pool_size"],
+                      hybrid_generation_time=snap["cum_generation"], hybrid_refinement_time=snap["cum_refinement"],
+                      hybrid_n_seeds=len(seeds), generation_time=snap["cum_generation"], refinement_time=snap["cum_refinement"])
+        if snap["best"] is not None:
+            values["hybrid_seed_best_expression"] = snap["best"].get("expression_infix")
+
+    def _fit_knobs_overlapped(self, values: dict[str, Any], X: np.ndarray, y: np.ndarray, Xv: np.ndarray, names: Sequence[str], *,
+                              problem_id: int | None, complexity: int | float | None, D: int, iters: int) -> dict[str, Any]:
+        """A rung with both stages, overlapped: Flash-ANSR's stage on a worker thread, PySR's setup on this one; PySR
+        waits for the seeds, searches, its hall of fame joins the pool and the ranking picks.
+
+        The fit time: without a generation cache (one rung, one live call -- the reference machine's timing) the wall
+        clock of this call. From a cached pass that serves a whole ladder, the stage this rung would have run live is
+        not timed by this call, so the record states what the live call costs: the two stages side by side until
+        PySR has the seeds (the longer of Flash-ANSR's stage and PySR's setup), then PySR's search, then the
+        ranking."""
+        cfg = self.config
+        seeds_future = SeedFuture()
+        live = self._snapshot_path(problem_id) is None
+
+        def flash_stage() -> Mapping[str, Any]:
+            try:
+                snap = self._snapshot(X, y, Xv, problem_id=problem_id, variables=names, complexity=complexity, up_to=D)[D]
+            except BaseException as exc:
+                seeds_future.fail(exc)
+                raise
+            seeds_future.set(list(snap["seeds"])[: cfg.k_seeds])
+            return snap
+
+        values["hybrid_gp_timeout_s"] = cfg.pysr_timeout_cap_s
+        t0 = time.time()
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hybrid-flash-ansr") as pool:
+            job = pool.submit(flash_stage)
+            out = run_pysr(X, y, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters,
+                           guesses=seeds_future, settings=cfg.pysr)
+            try:
+                snap = job.result()
+            except Exception as exc:  # noqa: BLE001
+                values["error"] = f"hybrid generation failed: {exc}"
+                return values
+        wall = time.time() - t0
+        self._record_flash(values, snap)
+        gen_wall = float(snap["cum_wall"])
+        setup = float(out.get("setup_s") or 0.0)
+        search = float(out.get("search_s") or 0.0)
+        values.update(hybrid_overlap=True, hybrid_generation_cached=not live, hybrid_wall_s=wall,
+                      hybrid_pysr_setup_s=setup, hybrid_pysr_wait_s=float(out.get("wait_s") or 0.0), hybrid_pysr_search_s=search,
+                      hybrid_gp_s=setup + search, gp_fit_time=setup + search,
+                      fit_time=wall if live else max(gen_wall, setup) + search,
+                      equations=list(out.get("equations") or []), n_guesses=int(out.get("n_guesses") or 0),
+                      niterations_used=int(out.get("niterations_used") or 0))
+        self._pysr_answer(values, out, X, y, Xv, names)
+        flash_candidates = list(snap.get("candidates") or ([snap["best"]] if snap["best"] is not None else []))
         self._pick(values, flash_candidates, X, y, Xv, names)
         return values
 
@@ -658,17 +731,37 @@ class HybridRegressor:
         Xn = np.asarray(X.values if hasattr(X, "values") else X, dtype=float)
         Xn = Xn.reshape(-1, 1) if Xn.ndim == 1 else Xn
         yn = np.asarray(y.values if hasattr(y, "values") else y, dtype=float).reshape(-1)
-        result = self.model.fit(X, y, variable_names=variable_names, draws=D, complexity=complexity, seed=seed)
         names = [f"x{i + 1}" for i in range(Xn.shape[1])]   # PySR's names: always valid identifiers
-        seeds: list[str] = []
-        if iters > 0 and cfg.k_seeds > 0:
-            top = [self._candidate_dict(c, result=result, X=Xn) for c in result.candidates[: cfg.k_seeds]]
-            seeds = self._seeds(top, dict(self.engine.operator_arity), names, Xn)
+
+        def flash_stage(seeds_future: SeedFuture | None = None) -> tuple[Any, list[str]]:
+            try:
+                result = self.model.fit(X, y, variable_names=variable_names, draws=D, complexity=complexity, seed=seed)
+                seeds: list[str] = []
+                if iters > 0 and cfg.k_seeds > 0:
+                    top = [self._candidate_dict(c, result=result, X=Xn) for c in result.candidates[: cfg.k_seeds]]
+                    seeds = self._seeds(top, dict(self.engine.operator_arity), names, Xn)
+            except BaseException as exc:
+                if seeds_future is not None:
+                    seeds_future.fail(exc)
+                raise
+            if seeds_future is not None:
+                seeds_future.set(seeds)
+            return result, seeds
+
         out: Mapping[str, Any] = {"equations": [], "wall_s": 0.0, "error": None}
         rows: list[dict[str, Any]] = []
         pricing = 0.0
+        if iters <= 0:
+            result, seeds = flash_stage()
+        else:
+            # both stages at once: Flash-ANSR on a worker thread, PySR's setup here (Julia stays on this thread)
+            seeds_future = SeedFuture()
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="hybrid-flash-ansr") as pool:
+                job = pool.submit(flash_stage, seeds_future)
+                out = run_pysr(Xn, yn, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters,
+                               guesses=seeds_future, settings=cfg.pysr)
+                result, seeds = job.result()        # a failed Flash-ANSR stage raises, as Flash-ANSR's fit does
         if iters > 0:
-            out = run_pysr(Xn, yn, names, timeout_in_seconds=cfg.pysr_timeout_cap_s, niterations=iters, guesses=seeds, settings=cfg.pysr)
             ranking = self.ranking_config()
             if ranking and out.get("equations"):
                 n_points = result.n_points if result.n_points is not None else int(np.isfinite(yn).sum())
@@ -692,7 +785,8 @@ class HybridRegressor:
             candidates=candidates, ledger=ledger, generation_time=result.generation_time, refinement_time=result.refinement_time,
             ranking=result.ranking, n_variables=result.n_variables, variable_mapping=dict(result.variable_mapping),
             draws=D, n_points=result.n_points, engine=result.engine, niterations=iters,
-            pysr_time=float(out.get("wall_s") or 0.0) + pricing, n_seeds=len(seeds),
+            pysr_time=(float(out["setup_s"]) + float(out["search_s"]) if "setup_s" in out else float(out.get("wall_s") or 0.0)) + pricing,
+            n_seeds=len(seeds),
             pysr_equations=[dict(e) for e in (out.get("equations") or [])], pysr_error=out.get("error"))
         return self.result_
 

@@ -43,3 +43,12 @@ def fake_model(seconds_per_candidate: float, call_overhead: float, engine=None, 
         refine_scope="fittable", constant_ladder=True,
     )
     return model
+
+
+def resolve_guesses(guesses):
+    """What a stand-in PySR receives as its guesses: a SeedFuture is waited for, as PySR waits for it at the point
+    where it reads its guesses; a list is a list."""
+    from flash_ansr.hybrid.pysr_model import SeedFuture
+    if isinstance(guesses, SeedFuture):
+        return guesses.wait()
+    return list(guesses or [])

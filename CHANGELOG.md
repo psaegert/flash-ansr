@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The hybrid no longer redefines `rootn` in every PySR fit.** PySR evaluated the inline definition again in every
+  fit; Julia then replaced the method and recompiled everything compiled against it. `rootn` is now defined in Julia
+  once (`flash_ansr.hybrid.pysr_model.define_operators`, at the creation-time warmup) and handed to PySR by name. A
+  deterministic search gives the same hall of fame either way (`test_rootn_defined_once_leaves_the_search_unchanged`).
+  The creation-time warmup now passes a seed, so the seeded path is compiled there too. PySR's own code runs as
+  shipped. Measured on valkyrie-light (T8-120M + PySR 2.4.0, live single-rung fits, 8 fastsrb problems, mean seconds
+  per problem): 1 draw : 1 iteration 9.27 -> 2.62, 64 : 1 13.16 -> 6.05, 512 : 32 43.38 -> 36.09; PySR's own cost
+  at one iteration 8.51 -> 1.71.
+- **The hybrid's two stages overlap.** In a rung with both stages (the knob mode's `solve` and the estimator's `fit`),
+  Flash-ANSR's stage -- generation, refinement and the seeds -- runs on a worker thread while PySR, on the calling
+  thread, sets itself up; PySR waits for the seeds at the point where it reads its guesses (`SeedFuture`). The fit
+  time is the wall clock of the whole call. PySR's setup (~0.9 s on valkyrie-light) holds Python's GIL while it
+  calls Julia, so it slows Flash-ANSR's stage while it runs and the overlap hides only part of it.
+  Records gain `hybrid_overlap`, `hybrid_wall_s`, `hybrid_pysr_setup_s`, `hybrid_pysr_wait_s`,
+  `hybrid_pysr_search_s` and `hybrid_generation_cached`; `hybrid_gp_s` is PySR's own work (setup + search, without
+  the wait). From a cached generation pass the fit time is what the live call costs: the longer of Flash-ANSR's
+  stage and PySR's setup, then the search and the ranking.
+
 ### Fixed
 - **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
   and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or
