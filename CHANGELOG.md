@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The hybrid's PySR stage costs about a tenth of what it did, with the same search.** Two per-fit costs of PySR's
+  Python wrapper are now paid once, when the hybrid is created:
+  - `rootn` is defined in Julia once (`flash_ansr.hybrid.pysr_model.define_operators`) and handed to PySR by name.
+    PySR evaluated the inline definition again in every fit; Julia then replaced the method and recompiled everything
+    compiled against it.
+  - PySR's per-operator check (`jl.seval("op -> op isa Function")(f)`, a new anonymous Julia function compiled on
+    every call, 23 calls per fit) is compiled once.
+  A deterministic search gives the same hall of fame either way (`test_rootn_defined_once_leaves_the_search_unchanged`).
+  The creation-time warmup now passes a seed, so the seeded path is compiled there too. Measured on valkyrie-light
+  (T8-120M + PySR 2.4.0, live single-rung fits, 8 fastsrb problems, mean seconds per problem): 1 draw : 1 iteration
+  9.27 -> 1.54, 64 : 1 13.16 -> 5.48, 512 : 32 43.38 -> 36.29; PySR's own cost at one iteration 8.51 -> 0.87.
+- **The hybrid's two stages overlap.** In a rung with both stages (the knob mode's `solve` and the estimator's `fit`),
+  Flash-ANSR's stage -- generation, refinement and the seeds -- runs on a worker thread while PySR, on the calling
+  thread, sets itself up; PySR waits for the seeds at the point where it reads its guesses (`SeedFuture`). The fit
+  time is the wall clock of the whole call. With the setup down to ~0.1 s, the overlap saves at most that much.
+  Records gain `hybrid_overlap`, `hybrid_wall_s`, `hybrid_pysr_setup_s`, `hybrid_pysr_wait_s`,
+  `hybrid_pysr_search_s` and `hybrid_generation_cached`; `hybrid_gp_s` is PySR's own work (setup + search, without
+  the wait). From a cached generation pass the fit time is what the live call costs: the longer of Flash-ANSR's
+  stage and PySR's setup, then the search and the ranking.
+
 ### Fixed
 - **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
   and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or

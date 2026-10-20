@@ -9,7 +9,7 @@ import pytest
 import flash_ansr.hybrid.regressor as regressor_module
 from flash_ansr.hybrid import HybridConfig, HybridRegressor
 
-from hybrid_fakes import fake_model, toy_problem
+from hybrid_fakes import fake_model, resolve_guesses, toy_problem
 
 
 class TestSnapshotCache:
@@ -286,11 +286,12 @@ class TestKnobMode:
         seen = {}
 
         def canned_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
-            seen.update(timeout=timeout_in_seconds, niterations=niterations, guesses=list(guesses or []), variables=list(variables))
+            seeds = resolve_guesses(guesses)
+            seen.update(timeout=timeout_in_seconds, niterations=niterations, guesses=seeds, variables=list(variables))
             return {"expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"},
                                                       {"complexity": 7, "loss": 0.0, "score": 1.0, "equation": "((1.5 * v1) - (0.5 * v2)) + 2.0"}],
-                    "n_guesses": len(guesses or []),
-                    "niterations_used": niterations, "error": None, "wall_s": 0.7}
+                    "n_guesses": len(seeds), "niterations_used": niterations, "error": None, "wall_s": 0.7,
+                    "setup_s": 0.1, "wait_s": 0.0, "search_s": 0.6}
 
         monkeypatch.setattr(regressor_module, "run_pysr", canned_run_pysr)
         reg = HybridRegressor(model, HybridConfig(draws=32, niterations=16, k_seeds=3, pysr_timeout_cap_s=900.0,
@@ -301,7 +302,10 @@ class TestKnobMode:
         assert out["hybrid_niterations"] == 16 and out["niterations_used"] == 16 and out["hybrid_gp_timeout_s"] == 900.0
         assert out["predicted_source"] == "pysr" and out["prediction_success"]
         np.testing.assert_allclose(out["y_pred_val"].reshape(-1), y_val, atol=1e-9)
-        assert out["fit_time"] == pytest.approx(out["hybrid_generation_s"] + 0.7 + out["hybrid_ranking_s"])
+        # from the cached pass: the live call's cost -- the stages side by side until the seeds, then the search
+        assert out["hybrid_overlap"] and out["hybrid_generation_cached"]
+        assert out["hybrid_pysr_setup_s"] == 0.1 and out["hybrid_pysr_search_s"] == 0.6 and out["hybrid_gp_s"] == pytest.approx(0.7)
+        assert out["fit_time"] == pytest.approx(max(out["hybrid_generation_s"], 0.1) + 0.6 + out["hybrid_ranking_s"])
         assert reg.clock.pysr_overhead.count == 1 and reg.clock.pricing_reserve.count == 1   # nothing observed
         assert not (tmp_path / "snapshots" / "clock_state.json").exists()                     # nothing persisted
 
@@ -323,3 +327,87 @@ class TestKnobMode:
         assert model.fit.counter == 64 and out["hybrid_generation_calls"] == 2 and out["hybrid_choices"] == 64   # 16 + 48, never 1024
         out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"], draws=16)
         assert model.fit.counter == 80 and out["hybrid_generation_calls"] == 1                                    # a fresh pass of 16
+
+
+class TestOverlap:
+    """A rung with both stages: Flash-ANSR's stage on a worker thread while PySR sets itself up on the calling
+    thread, PySR waits for the seeds at the point where it reads its guesses, and the fit time is the wall clock."""
+
+    @staticmethod
+    def _pysr_with_setup(setup_s, search_s, seen):
+        def run(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, settings=None):
+            import threading
+            import time
+            t0 = time.time()
+            seen["thread"] = threading.current_thread().name
+            time.sleep(setup_s)                       # PySR's own setup: operators, options, data
+            reached = time.time()
+            seeds = resolve_guesses(guesses)          # ... then it waits for the seeds
+            released = time.time()
+            seen["seeds"] = seeds
+            time.sleep(search_s)                      # ... and searches
+            t1 = time.time()
+            return {"expression": "v1", "equations": [{"complexity": 1, "loss": 1.0, "score": 0.0, "equation": "v1"}],
+                    "n_guesses": len(seeds), "niterations_used": niterations, "error": None, "wall_s": t1 - t0,
+                    "setup_s": reached - t0, "wait_s": released - reached, "search_s": t1 - released}
+        return run
+
+    def test_live_rung_overlaps_the_setup_with_generation(self, monkeypatch, engine):
+        # Flash-ANSR's stage ~0.3 s, PySR's setup 0.2 s, its search 0.1 s: sequential ~0.6 s, overlapped ~0.4 s
+        model = fake_model(seconds_per_candidate=0.004, call_overhead=0.05, engine=engine)
+        seen = {}
+        monkeypatch.setattr(regressor_module, "run_pysr", self._pysr_with_setup(0.2, 0.1, seen))
+        reg = HybridRegressor(model, HybridConfig(draws=64, niterations=4, k_seeds=3, pysr={"warmup": False}))
+        x, y, x_val, _ = toy_problem(0)
+        out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"])           # no cache: one live call
+        assert seen["thread"] == "MainThread" and len(seen["seeds"]) == 3   # PySR on the calling thread, seeds handed over
+        assert out["hybrid_overlap"] and not out["hybrid_generation_cached"] and out["n_guesses"] == 3
+        gen, setup, search = out["hybrid_generation_s"], out["hybrid_pysr_setup_s"], out["hybrid_pysr_search_s"]
+        assert gen > setup                                                  # PySR got there first and waited
+        assert out["hybrid_pysr_wait_s"] == pytest.approx(gen - setup, abs=0.05)
+        assert out["hybrid_wall_s"] == pytest.approx(gen + search, abs=0.05)  # the setup is hidden in the generation
+        assert out["hybrid_wall_s"] < gen + setup + search - 0.1
+        assert out["fit_time"] == pytest.approx(out["hybrid_wall_s"] + out["hybrid_ranking_s"])
+        assert out["hybrid_gp_s"] == pytest.approx(setup + search)          # PySR's own work, without the wait
+
+    def test_a_setup_longer_than_the_generation_is_not_hidden(self, monkeypatch, engine):
+        model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
+        seen = {}
+        monkeypatch.setattr(regressor_module, "run_pysr", self._pysr_with_setup(0.3, 0.05, seen))
+        reg = HybridRegressor(model, HybridConfig(draws=16, niterations=2, k_seeds=3, pysr={"warmup": False}))
+        x, y, x_val, _ = toy_problem(0)
+        out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"])
+        assert out["hybrid_pysr_wait_s"] == pytest.approx(0.0, abs=0.02)   # the seeds were ready before PySR was
+        assert out["hybrid_wall_s"] == pytest.approx(0.3 + 0.05, abs=0.05)
+
+    def test_a_failed_generation_ends_the_waiting_search(self, monkeypatch, engine):
+        model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005, engine=engine)
+        state = {}
+
+        def waiting_pysr(X, y, variables, *, guesses=None, **kw):
+            from flash_ansr.hybrid.pysr_model import SeedsUnavailable
+            with pytest.raises(SeedsUnavailable, match="CUDA out of memory"):
+                guesses.wait()
+            state["released"] = True
+            return {"expression": None, "equations": [], "error": "SeedsUnavailable", "wall_s": 0.0}
+
+        monkeypatch.setattr(regressor_module, "run_pysr", waiting_pysr)
+        reg = HybridRegressor(model, HybridConfig(draws=16, niterations=2, k_seeds=3, pysr={"warmup": False}))
+
+        def broken_stage(*a, **k):        # a failed chunk is absorbed by the pass; a failed stage is not
+            raise RuntimeError("CUDA out of memory")
+
+        monkeypatch.setattr(reg, "_snapshot", broken_stage)
+        x, y, x_val, _ = toy_problem(0)
+        out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"])
+        assert state["released"] and not out["prediction_success"]
+        assert out["error"].startswith("hybrid generation failed") and "CUDA out of memory" in out["error"]
+
+    def test_rungs_without_iterations_never_touch_pysr(self, monkeypatch):
+        model = fake_model(seconds_per_candidate=0.0002, call_overhead=0.005)
+        monkeypatch.setattr(regressor_module, "run_pysr", lambda *a, **k: pytest.fail("PySR must not run at D:0"))
+        reg = HybridRegressor(model, HybridConfig(draws=64, niterations=0, rungs=[[16, 0], [64, 0], [512, 32]], k_seeds=3))
+        reg.prepare()
+        x, y, x_val, _ = toy_problem(0)
+        out = reg.solve(x, y, X_val=x_val, variables=["v1", "v2"], draws=16, niterations=0)
+        assert out["predicted_source"] == "flash-ansr" and "hybrid_overlap" not in out

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import flash_ansr.hybrid.regressor as regressor_module
+from hybrid_fakes import resolve_guesses
 from flash_ansr.hybrid import HybridConfig, HybridFitResult, HybridRegressor, PySRSettings
 from flash_ansr.inference import Candidate, CandidateLedger, FitResult
 from flash_ansr.scoring import resolve_ranking
@@ -48,9 +49,10 @@ def pysr_calls(monkeypatch):
     calls = []
 
     def fake_run_pysr(X, y, variables, *, timeout_in_seconds, niterations, guesses=None, X_val=None, settings=None):
-        calls.append({"niterations": niterations, "guesses": list(guesses or []), "variables": list(variables)})
+        seeds = resolve_guesses(guesses)
+        calls.append({"niterations": niterations, "guesses": seeds, "variables": list(variables)})
         return {"expression": "x1 * x2", "equations": [{"complexity": 3, "loss": 0.0, "score": 1.0, "equation": "x1 * x2"}],
-                "y_pred": None, "y_pred_val": None, "wall_s": 0.01, "error": None, "n_guesses": len(guesses or []),
+                "y_pred": None, "y_pred_val": None, "wall_s": 0.01, "error": None, "n_guesses": len(seeds),
                 "niterations_used": niterations}
 
     monkeypatch.setattr(regressor_module, "run_pysr", fake_run_pysr)
