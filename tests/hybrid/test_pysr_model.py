@@ -208,15 +208,3 @@ def test_seeds_handed_over_late_leave_the_search_unchanged():
     late = pm.run_pysr(x, y, ["v1", "v2"], timeout_in_seconds=120, niterations=3, guesses=future, settings=_deterministic())
     assert early["error"] is None and late["error"] is None and late["n_guesses"] == 2 and late["wait_s"] > 0.5
     assert early["expression"] == late["expression"] and early["equations"] == late["equations"]
-
-
-@pytest.mark.skipif(os.environ.get("FLASH_ANSR_HYBRID_JULIA") != "1", reason="set FLASH_ANSR_HYBRID_JULIA=1 to run the Julia search")
-def test_the_operator_check_is_compiled_once_and_answers_the_same():
-    import pysr.sr as sr
-    from pysr import jl
-    pm.define_operators()
-    check = sr.jl_is_function
-    assert getattr(check, "_flash_ansr_compiled_once", False)
-    assert check(jl.seval("rootn")) is True and check(jl.seval("sin")) is True and check(jl.seval("1.5")) is False
-    pm.define_operators()
-    assert sr.jl_is_function is check                                    # installed once

@@ -1,7 +1,7 @@
 """The GP stage: PySRRegressor over flash-ansr's 23-operator vocabulary, in-process.
 
 The same regressor srbf's PySR baseline worker builds (srbf/worker/models/pysr_worker.py keeps its own
-copy: the two must not drift -- 17 unaries + {+, -, *, /, ^, rootn}, upstream defaults otherwise), with four
+copy: the two must not drift -- 17 unaries + {+, -, *, /, ^, rootn}, upstream defaults otherwise), with three
 differences outside the search:
 
 * the hybrid's PySR builds no sympy/numpy exports of its hall of fame (``pysr_spec.NoExportExpressionSpec``), because
@@ -9,9 +9,9 @@ differences outside the search:
 * ``rootn`` is defined in Julia ONCE (:func:`define_operators`) and handed to PySR by name. PySR evaluates an inline
   operator definition again in every fit; Julia then replaces the method and recompiles everything compiled against
   it, which cost ~6 s per fit on valkyrie-light (1 iteration: 7.8-9.1 s inline, 1.8-2.1 s defined once, 2026-10-20),
-  more than the search itself at small budgets. The definition is the same text, so the search is the same;
-* PySR's per-operator function check is compiled once instead of in every call (:func:`_install_function_check`,
-  ~1 s per fit);
+  more than the search itself at small budgets. The definition is the same text, so the search is the same. rootn is
+  srbf's addition to PySR's vocabulary; PySR's own code runs as shipped, as in srbf's PySR baseline (owner
+  2026-10-20: the hybrid's PySR must not be faster than that baseline's for reasons other than the seeds);
 * the seeds may arrive while PySR is being set up (:class:`SeedFuture`): PySR prepares everything that does not
   depend on them (its operator checks, options and data) and waits for them at the one point where it reads its
   guesses, so the hybrid can run that setup while Flash-ANSR is still generating.
@@ -88,33 +88,12 @@ def _seval(code: str) -> None:
 
 def define_operators() -> None:
     """Define the custom operators (``rootn``) in Julia, once per process: on the first call -- the warmup when the
-    hybrid is created, else the first fit -- and never again. The same call installs :func:`_install_function_check`."""
+    hybrid is created, else the first fit -- and never again."""
     global _OPERATORS_DEFINED
     with _OPERATORS_LOCK:
         if not _OPERATORS_DEFINED:
             _seval(ROOTN_JULIA)
-            _install_function_check()
             _OPERATORS_DEFINED = True
-
-
-def _install_function_check() -> None:
-    """PySR checks every operator with ``jl.seval("op -> op isa Function")(f)``: a new anonymous Julia function,
-    parsed and compiled again on every call (~40 ms; 23 calls, ~1 s per fit on valkyrie-light, 2026-10-20). The same
-    check, compiled once, answers the same; installed where PySR's fit looks it up (``pysr.sr``)."""
-    try:
-        import pysr.sr as sr
-        from pysr import jl
-    except ImportError:  # pragma: no cover - environment dependent (and the stand-ins of the tests)
-        return
-    if getattr(getattr(sr, "jl_is_function", None), "_flash_ansr_compiled_once", False):
-        return
-    is_function = jl.seval("op -> op isa Function")
-
-    def jl_is_function(f: Any) -> bool:
-        return bool(is_function(f))
-
-    jl_is_function._flash_ansr_compiled_once = True  # type: ignore[attr-defined]
-    sr.jl_is_function = jl_is_function
 
 
 class SeedsUnavailable(RuntimeError):
