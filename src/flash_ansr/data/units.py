@@ -48,9 +48,16 @@ from simplipy.utils import codify, safe_f
 EXACT_INTEGER_LIMIT = 2 ** 53
 #: Literal tokens that are pure numbers by name (kept symbolic by the tagged canonical).
 PURE_SPECIALS = frozenset({"np.pi", "np.e"})
-#: Operators whose argument must be dimensionless (``log`` included: conservative).
+#: Operators whose arguments must be dimensionless (``log`` included: conservative). SimpliPy 0.15 adds erf,
+#: harmonic, floor and ceil (``floor(1.5 m)`` is not ``floor(150 cm)``: rounding is no change of units) and besselj
+#: (order and argument both pure numbers).
 TRANSCENDENTAL = frozenset({"sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh",
-                            "atanh", "exp", "log"})
+                            "atanh", "exp", "log", "erf", "harmonic", "floor", "ceil", "besselj"})
+#: Binary operators whose two arguments share one dimension, which the result keeps (``mod(a, b) = a - b
+#: floor(a / b)``: the quotient inside the floor is a pure number).
+SAME_DIMENSION = frozenset({"max", "min", "mod"})
+#: Binary operators whose two arguments share one dimension and whose result is a pure number (an angle).
+ANGLE_OF = frozenset({"atan2"})
 #: Operators that pass their argument's dimension through unchanged.
 TRANSPARENT = frozenset({"neg", "abs"})
 #: Tagged-canonical bags: opener -> (closer, inverse-section marker).
@@ -309,16 +316,17 @@ def law_dimensions(engine: Any, tokens: Sequence[str], variables: Sequence[str])
             return add(form(kids[0]), form(kids[1]))
         if t == "/":
             return add(form(kids[0]), form(kids[1]), -1)
-        if t in ("+", "-"):
+        if t in ("+", "-") or t in SAME_DIMENSION or t in ANGLE_OF:
             f0, f1 = form(kids[0]), form(kids[1])
             r = add(f1, f0, -1)
             if r:
                 rows.append(r)
-            return f0
+            return {} if t in ANGLE_OF else f0
         if t in TRANSCENDENTAL:
-            r = form(kids[0])
-            if r:
-                rows.append(r)
+            for kid in kids:
+                r = form(kid)
+                if r:
+                    rows.append(r)
             return {}
         raise UnparsedLaw(f"operator {t!r} is outside the dimension rules")
 

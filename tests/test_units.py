@@ -209,6 +209,30 @@ def test_reproduces_rejects_intermediate_overflow(engine) -> None:  # type: igno
     assert not reproduces(engine, tokens, x, y * 1.001, VARIABLES)
 
 
+@pytest.mark.parametrize("law, x_movable, y_free_alone", [
+    ("erf x1", False, False),                               # SimpliPy 0.15's operators (rules checked by hand)
+    ("floor x1", False, False),
+    ("harmonic x1", False, False),
+    ("besselj 2 x1", False, False),
+    ("max x1 x2", True, False),                             # max of two lengths is a length
+    ("<mul> x3 min x1 x2 </mul>", True, False),
+    ("mod x1 x2", True, False),
+    ("atan2 x1 x2", True, False),                           # x1, x2 share a unit; the angle does not move
+    ("<mul> x3 atan2 x1 x2 </mul>", True, False),
+])
+def test_dimension_rules_of_the_simplipy_015_operators(engine, monkeypatch, law: str, x_movable: bool,
+                                                       y_free_alone: bool) -> None:  # type: ignore[no-untyped-def]
+    import flash_ansr.data.units as units
+
+    class _Engine:
+        operator_arity_compat = {**engine.operator_arity_compat, "erf": 1, "floor": 1, "ceil": 1, "harmonic": 1,
+                                 "max": 2, "min": 2, "mod": 2, "atan2": 2, "besselj": 2}
+
+    monkeypatch.setattr(units, "literal_slots", lambda _engine, _tokens: ([], []))
+    dims = law_dimensions(_Engine(), law.split(), VARIABLES)
+    assert (dims.x_movable, dims.y_free_alone) == (x_movable, y_free_alone)
+
+
 def test_operator_outside_the_rules_keeps_identity_units(engine, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """Every operator of the shipped engines is covered (checked when this was written); an operator added later
     must fall back to identity units, never guess a dimension."""
