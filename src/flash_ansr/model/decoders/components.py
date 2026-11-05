@@ -99,6 +99,7 @@ class Attention(nn.Module):
         dropout: float = 0.0,
         use_rope: bool = False,
         use_xsa: bool = False,
+        use_gate: bool = False,
     ):
         super().__init__()
         if dim % n_heads != 0:
@@ -114,6 +115,20 @@ class Attention(nn.Module):
         self.w_v = nn.Linear(dim, dim)
         self.w_o = nn.Linear(dim, dim)
         self.dropout = dropout
+        # Gated attention (Qiu et al. 2025, arXiv:2505.06708): an elementwise, head-specific sigmoid gate on
+        # the attention output, computed from the query stream, before the output projection. A head can then
+        # return ~0 by closing its gate instead of parking its softmax mass on a token that says nothing: the
+        # attention sink that T8-120M builds at position 0 (4 % of the self-attention mass in layer 0, 45 %
+        # in layer 9) together with massive activations in ~5 residual channels (300-740x the median),
+        # measured on its training stream 2026-11-03. Off by default: checkpoints without it load unchanged.
+        self.use_gate = use_gate
+        self.w_g: nn.Linear | None = nn.Linear(dim, dim) if use_gate else None
+
+    def _gated(self, attn_output: torch.Tensor, query: torch.Tensor) -> torch.Tensor:
+        """``attn_output`` (batch, len_q, dim), heads concatenated, times the query's gate when enabled."""
+        if self.w_g is None:
+            return attn_output
+        return attn_output * torch.sigmoid(self.w_g(query))
 
     def forward(
         self,
@@ -202,7 +217,7 @@ class Attention(nn.Module):
             attn_output = attn_output - (dot / denom) * own_v
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
-        output = self.w_o(attn_output)
+        output = self.w_o(self._gated(attn_output, query))
 
         if use_cache:
             return output, (k, v)
@@ -243,7 +258,7 @@ class Attention(nn.Module):
             denom = (own_v * own_v).sum(dim=-1, keepdim=True) + 1e-12
             attn_output = attn_output - (dot / denom) * own_v
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
-        return self.w_o(attn_output)
+        return self.w_o(self._gated(attn_output, query))
 
     def forward_static_cross(
         self,
@@ -273,7 +288,7 @@ class Attention(nn.Module):
             ca_holder[0] = (k, v)
         attn_output = F.scaled_dot_product_attention(q, k, v)
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
-        return self.w_o(attn_output)
+        return self.w_o(self._gated(attn_output, query))
 
 
 class TransformerDecoderBlock(nn.Module):
@@ -289,6 +304,8 @@ class TransformerDecoderBlock(nn.Module):
         use_rope_self_attn: bool = False,
         use_rope_cross_attn: bool = False,
         use_xsa_self_attn: bool = False,
+        gate_self_attn: bool = False,
+        gate_cross_attn: bool = False,
         self_attn_norm_type: str = "rms",
         cross_attn_norm_type: str = "rms",
         ffn_norm_type: str = "rms",
@@ -309,13 +326,15 @@ class TransformerDecoderBlock(nn.Module):
         self.self_attn_norm = get_norm_layer(self_attn_norm_type, dim)
         # XSA is applied to the decoder's causal SELF-attention only; cross-attention has
         # no "own value" (values come from the encoder memory) so it is left untouched.
-        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn, use_xsa=use_xsa_self_attn)
+        self.self_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_self_attn, use_xsa=use_xsa_self_attn,
+                                        use_gate=gate_self_attn)
 
         self.cross_attn_norm: nn.Module | None = None
         self.cross_attention: Attention | None = None
         if self.use_cross_attention:
             self.cross_attn_norm = get_norm_layer(cross_attn_norm_type, dim)
-            self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn)
+            self.cross_attention = Attention(dim=dim, n_heads=n_heads, dropout=dropout, use_rope=use_rope_cross_attn,
+                                             use_gate=gate_cross_attn)
 
         self.ffn_norm = get_norm_layer(ffn_norm_type, dim)
         self.ffn = FeedForward(dim=dim, hidden_dim=ffn_hidden_dim, dropout=dropout)
