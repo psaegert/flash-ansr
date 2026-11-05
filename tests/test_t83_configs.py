@@ -64,12 +64,14 @@ def test_every_catalog_operator_is_in_the_vocabulary():
     assert set(_load("catalog_train.yaml")["operator_weights"]) <= operators
 
 
-def test_the_holdouts_keep_t81s_and_refuse_to_load_until_the_new_catalogs_are_named():
+def test_the_holdouts_pin_srbfs_next_release_and_keep_t81s():
     pools = _load("catalog_train.yaml")["holdout_pools"]
     with open(get_path("configs", "v25.0-T8.1-120M", "catalog_train.yaml")) as f:
         previous = yaml.safe_load(f)["holdout_pools"]
-    assert set(previous) <= set(pools)
-    assert "PENDING-new-srbf-catalogs" in pools
+    assert set(previous) <= {pool.split("@")[0] for pool in pools}
+    # the release's 158 sets plus the five it retires, each at an exact version
+    assert len(pools) == len(set(pools)) == 158 + 5
+    assert all(pool.count("@") == 1 and pool.split("@")[1].isdigit() for pool in pools)
 
 
 @pytest.mark.parametrize("name", ["model.yaml", "train.yaml", "dataset_train.yaml", "dataset_val.yaml",
