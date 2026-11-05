@@ -311,7 +311,7 @@ class SpellingPricer:
             return cached
         from simplipy.engine import Mode
         try:
-            value = float(self.engine.complexity(list(key), certified=True, mode=Mode.f64, canon='default'))
+            value = float(self.engine.complexity(list(key), certified=True, mode=Mode.f64))
         except Exception:
             value = float('inf')
         if len(self._cache) < 65536:

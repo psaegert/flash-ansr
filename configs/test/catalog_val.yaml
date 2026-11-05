@@ -1,5 +1,5 @@
 type: lample_charton
-simplipy_engine: 'acj-4-3'
+simplipy_engine: 'acj2-4-llm'
 holdout_pools: []
 
 sample_strategy:

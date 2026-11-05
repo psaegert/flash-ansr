@@ -10,7 +10,7 @@ from flash_ansr.refine import Refiner
 
 @pytest.fixture(scope="module")
 def engine():
-    return SimpliPyEngine.load("acj-4-3", install=True)
+    return SimpliPyEngine.load("acj2-4-llm", install=True)
 
 
 def _fit(engine, expression, X, y, p0):
