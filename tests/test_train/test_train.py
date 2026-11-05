@@ -80,6 +80,7 @@ def _build_dummy_trainer() -> Trainer:
     trainer.outlier_loss_weight = 0.0
     trainer.outlier_pos_weight = 1.0
     trainer.z_loss_weight = 0.0
+    trainer.cross_entropy = 'softmax'
     trainer.residual_loss_weight = 0.0
     trainer.residual_scale = 'none'
     trainer.total_pflops = 0.0
