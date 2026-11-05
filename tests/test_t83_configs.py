@@ -11,7 +11,8 @@ from flash_ansr.data.units import validate_units_block
 from flash_ansr.model.flash_ansr_model import FRESH_RUN_SETTINGS
 from flash_ansr.train.train import FRESH_RUN_TRAIN_SETTINGS
 
-NEW_OPERATORS = {"floor", "ceil", "erf", "harmonic", "max", "min", "mod", "atan2", "besselj"}
+NEW_OPERATORS = {"floor", "ceil", "erf", "erfc", "harmonic", "max", "min", "mod", "atan2", "besselj", "bessely",
+                 "besseli", "besselk"}
 
 
 def _load(name: str, size: str = "120M") -> dict:
@@ -50,7 +51,8 @@ def test_the_catalog_has_the_new_operators_and_the_coherence_prior():
     assert len(placed) == len(set(placed))
     # The function nodes of the depth prior: the unary operators and the binary ones with a literal slot, except the
     # transparent neg/inv. Each must sit in exactly one family or be independent (symbolic-data refuses otherwise).
-    binary = {"+", "-", "*", "/", "pow", "rootn", "max", "min", "mod", "atan2", "besselj"}
+    binary = {"+", "-", "*", "/", "pow", "rootn", "max", "min", "mod", "atan2", "besselj", "bessely", "besseli",
+              "besselk"}
     slotted = set(catalog["typed_slots"])
     functions = {op for op, w in weights.items() if w > 0 and (op not in binary or op in slotted)} - {"neg", "inv"}
     assert set(placed) == functions

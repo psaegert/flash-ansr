@@ -48,11 +48,12 @@ from simplipy.utils import codify, safe_f
 EXACT_INTEGER_LIMIT = 2 ** 53
 #: Literal tokens that are pure numbers by name (kept symbolic by the tagged canonical).
 PURE_SPECIALS = frozenset({"np.pi", "np.e"})
-#: Operators whose arguments must be dimensionless (``log`` included: conservative). SimpliPy 0.15 adds erf,
-#: harmonic, floor and ceil (``floor(1.5 m)`` is not ``floor(150 cm)``: rounding is no change of units) and besselj
-#: (order and argument both pure numbers).
+#: Operators whose arguments must be dimensionless (``log`` included: conservative). SimpliPy 0.15 adds erf, erfc,
+#: harmonic, floor and ceil (``floor(1.5 m)`` is not ``floor(150 cm)``: rounding is no change of units) and the
+#: Bessel functions besselj, bessely, besseli, besselk (order and argument both pure numbers).
 TRANSCENDENTAL = frozenset({"sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "asinh", "acosh",
-                            "atanh", "exp", "log", "erf", "harmonic", "floor", "ceil", "besselj"})
+                            "atanh", "exp", "log", "erf", "erfc", "harmonic", "floor", "ceil", "besselj", "bessely",
+                            "besseli", "besselk"})
 #: Binary operators whose two arguments share one dimension, which the result keeps (``mod(a, b) = a - b
 #: floor(a / b)``: the quotient inside the floor is a pure number).
 SAME_DIMENSION = frozenset({"max", "min", "mod"})

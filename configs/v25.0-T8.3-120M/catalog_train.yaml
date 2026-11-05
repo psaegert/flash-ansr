@@ -1,8 +1,11 @@
 # v25.0-T8.3: T8.1's catalog with three changes (owner 2026-11-03):
-#   1. SimpliPy 0.15's engine and its nine new operators: floor, ceil, erf, harmonic (unary) and max, min, mod,
-#      atan2, besselj (binary), weight 1 each like every function. besselj's order and mod's divisor are literal
-#      slots (typed_slots below): every benchmark use has an integer order 0..4 and a small integer divisor, and a
-#      free subtree there mostly draws NaN (a non-integer order at x < 0) or a near-zero divisor.
+#   1. SimpliPy 0.15's engine and its 13 new operators: floor, ceil, erf, erfc, harmonic (unary) and max, min, mod,
+#      atan2, besselj, bessely, besseli, besselk (binary), weight 1 each like every function. The Bessel orders and
+#      mod's divisor are literal slots (typed_slots below): every benchmark use has an integer order 0..4 and a
+#      small integer divisor, and a free subtree there mostly draws NaN (a non-integer order at x < 0) or a
+#      near-zero divisor. bessely and besselk have no finite value at x <= 0 (NaN below 0, infinite at 0) and
+#      besseli overflows at |x| >= 714 (measured on SimpliPy 0.15's realizations): the per-point rejection keeps
+#      the valid rows.
 #   2. The coherence prior (family_affinity, symbolic-data feat/family-affinity): one expression speaks one family
 #      of functions. Alpha 0.35 (owner), the maximum-likelihood value over 11,668 real formulas (Wikidata and
 #      Wikipedia science articles, no benchmark sets; 0.36, bootstrap 0.26-0.45); powers stay independent.
@@ -136,6 +139,27 @@ typed_slots:
       kwargs:
         values: [0, 1, 2, 3, 4]
         weights: [5, 4, 3, 2, 1]
+  bessely:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  besseli:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  besselk:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
   # SimpliPy 0.15: mod(a, b)'s divisor is a small integer (the benchmarks use 2, 3, 4, 5); linear decay.
   mod:
     argument: 1
@@ -222,12 +246,16 @@ operator_weights:
   floor: 1
   ceil: 1
   erf: 1
+  erfc: 1
   harmonic: 1
   max: 1
   min: 1
   mod: 1
   atan2: 1
   besselj: 1
+  bessely: 1
+  besseli: 1
+  besselk: 1
 
 # DEPTH-DECAYING UNARY PRIOR (owner design 2026-09-03): plain sampler, catalog weights, legacy leaves;
 # unary mass w1 = 0.5 at chain depth 0, times nesting_decay^depth below; neg/inv transparent.
@@ -242,7 +270,7 @@ alternation_decay: 0.5
 # decide inside a family. Real formulas: two function nodes share a family 87 % of the time against 29 % for
 # independent labels (11,668 formulas); T8's independent draw gave 17 %. The families exclude each other in real
 # formulas (trig|exp, trig|log, exp|log log odds ratio about -3) while powers and roots travel with all of them,
-# so pow and rootn stay outside the urn. besselj and mod are function nodes here through their literal slots.
+# so pow and rootn stay outside the urn. The Bessel functions and mod are function nodes here through their literal slots.
 family_affinity:
   concentration: 0.35
   families:
@@ -253,8 +281,8 @@ family_affinity:
     exp: [exp]
     log: [log]
     abs: [abs]
-    erf: [erf]
+    erf: [erf, erfc]
     integer: [floor, ceil, mod]
     harmonic: [harmonic]
-    bessel: [besselj]
+    bessel: [besselj, bessely, besseli, besselk]
   independent: [pow, rootn]

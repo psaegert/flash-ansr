@@ -214,6 +214,8 @@ def test_reproduces_rejects_intermediate_overflow(engine) -> None:  # type: igno
     ("floor x1", False, False),
     ("harmonic x1", False, False),
     ("besselj 2 x1", False, False),
+    ("erfc x1", False, False),
+    ("besselk 1 x1", False, False),
     ("max x1 x2", True, False),                             # max of two lengths is a length
     ("<mul> x3 min x1 x2 </mul>", True, False),
     ("mod x1 x2", True, False),
@@ -225,8 +227,9 @@ def test_dimension_rules_of_the_simplipy_015_operators(engine, monkeypatch, law:
     import flash_ansr.data.units as units
 
     class _Engine:
-        operator_arity_compat = {**engine.operator_arity_compat, "erf": 1, "floor": 1, "ceil": 1, "harmonic": 1,
-                                 "max": 2, "min": 2, "mod": 2, "atan2": 2, "besselj": 2}
+        operator_arity_compat = {**engine.operator_arity_compat, "erf": 1, "erfc": 1, "floor": 1, "ceil": 1,
+                                 "harmonic": 1, "max": 2, "min": 2, "mod": 2, "atan2": 2, "besselj": 2, "bessely": 2,
+                                 "besseli": 2, "besselk": 2}
 
     monkeypatch.setattr(units, "literal_slots", lambda _engine, _tokens: ([], []))
     dims = law_dimensions(_Engine(), law.split(), VARIABLES)

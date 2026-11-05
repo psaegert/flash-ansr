@@ -2,7 +2,8 @@
 #   - gated self-attention in the decoder (decoder_self_attn_gate; Qiu et al. 2025, arXiv:2505.06708). T8-120M parks
 #     4 % (layer 0) to 45 % (layer 9) of its self-attention on <bos>, which carries massive activations (9-35x the
 #     median row norm in the same five channels); the gate lets a head return ~0 instead. Self-attention only (owner);
-#   - SimpliPy 0.15's engine with its nine new operators (floor, ceil, erf, harmonic, max, min, mod, atan2, besselj);
+#   - SimpliPy 0.15's engine with its 13 new operators (floor, ceil, erf, erfc, harmonic, max, min, mod, atan2,
+#     besselj, bessely, besseli, besselk);
 #   - the training data and loss changes live in dataset_train.yaml, catalog_train.yaml and train.yaml.
 # Everything else is T8.1-120M's; its header follows.
 #

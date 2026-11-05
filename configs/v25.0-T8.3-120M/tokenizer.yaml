@@ -383,12 +383,16 @@ operators:
   - floor
   - ceil
   - erf
+  - erfc
   - harmonic
   - max
   - min
   - mod
   - atan2
   - besselj
+  - bessely
+  - besseli
+  - besselk
 
 variables:
   - x1
