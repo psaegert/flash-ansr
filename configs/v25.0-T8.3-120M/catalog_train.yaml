@@ -39,33 +39,187 @@ simplipy_engine: 'acj2-5-4-llm'  # SimpliPy 0.15 (confirm the engine name at rel
 simplipy_engine_modes: ['f64', 'permissive']
 # Validation is a fresh stream from THIS catalog (see dataset_val.yaml), not a frozen
 # artifact, so nothing beyond the benchmark pools below needs excluding.
-holdout_pools: [
+holdout_pools:
   # Every benchmark srbf may evaluate on. The training run must never see any of them, and
   # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
   # suite -- widening the benchmark later means retraining.
   #
-  # Measured over 3,000 draws replayed against nested pools: widening from fastsrb
-  # alone to all 29 costs over-rejection but nothing in time -- `is_held_out` is a hash lookup,
-  # O(1) in pool size, and the per-draw cost is dominated by evaluating the candidate, which
-  # the one-catalog pool already paid.
+  # srbf's next release, every problem set at its release version: 158 sets, 14,060 problems (owner 2026-10-13: T8.3
+  # holds them out too). The list is flash-ansr-research handoff/srbf_benchmark_decisions/next_release_catalogs.json
+  # @ 159c7c81, built from symbolic-data c9727ca. Most of these versions are not published yet, so the catalog
+  # refuses to load until the release publishes them.
   #
-  # `fastsrb` resolves to v2 by default (fastsrb@2, the 2026-07-10 audit repair), so v2 is what this pool holds out.
-  # `srsd-dummy` is listed for provenance though it adds ZERO keys: it is the same law set with
-  # dummy variables, and the structure layer already generalizes over variable relabeling.
-  "fastsrb",
-  # classical SR suites
-  "feynman", "feynman-bonus", "nguyen", "keijzer", "korns", "koza", "livermore", "livermore2",
-  "vladislavleva", "jin", "neat", "pagie", "poly", "nonic", "sine", "meier", "r-rationals",
-  "constant", "grammarvae",
-  # physics / SRSD
-  "physo-astro", "physo-class", "srsd-dummy",
-  # SOOSE
-  "soose-fc", "soose-nc", "soose-wc",
-  # ERBench
-  "erbench-densities", "erbench-phybench", "erbench-syneq",
-  # The new srbf catalogs (owner 2026-10-13: T8.3 holds them out too). REPLACE this placeholder with their published
-  # names before training; it resolves to nothing, so the catalog refuses to load until then.
-  "PENDING-new-srbf-catalogs"]
+  # Cost: T8.1's 29 pools were measured over 3,000 draws replayed against nested pools. Widening from fastsrb alone
+  # to all 29 cost over-rejection but nothing in time: `is_held_out` is a hash lookup, O(1) in pool size, and the
+  # per-draw cost is dominated by evaluating the candidate. The over-rejection at this size is re-measured on
+  # SimpliPy 0.15's released rules.
+  #
+  # `srsd-dummy` adds ZERO keys: it is fastsrb's law set with dummy variables, and the structure layer already
+  # generalizes over variable relabeling. It is listed for provenance.
+  - ai-descartes-real-data@1
+  - ai-feynman-2-0-modular-equations@1
+  - ai-feynman-database-100-main-equations@1
+  - ai-hilbert-problem-set@1
+  - ai-hilbert-real-data@1
+  - autora-synthetic-behavioural-science-models-points@1
+  - black-hole-spiral-plane@1
+  - bms-synthetic-prior-expression-and-bessel-functions@1
+  - bms-synthetic-prior-expression-and-bessel-functions-points@1
+  - breiman-i@1
+  - chen-luo-jiang-block-building-test-cases@1
+  - coevolved-fitness-predictors-test-problems-points@1
+  - constant@2
+  - cp3-bench@1
+  - cp3-bench-standard-tuning-datasets-points@1
+  - cvgp-trigonometric-control-variable-datasets@1
+  - ddrsr-simple-test-and-complex-test@1
+  - decomposable-nsr-synthetic-e1-e13@1
+  - dgsr-additional-feynman@1
+  - dgsr-feynman-d-2-d-5-subsets@1
+  - dgsr-synthetic-d-12@1
+  - dso-benchmark-registry@1
+  - dso-benchmark-registry-points@1
+  - e2e-in-domain-synthetic-validation-set@1
+  - eql-cart-pendulum@1
+  - eql-formulas-f-1-f-4-and-division-formula@1
+  - eql-pendulum-vector-field@1
+  - eql-robotic-arm-forward-kinematics@1
+  - erbench-densities@2
+  - erbench-eponymous@2
+  - erbench-oeis@2
+  - erbench-phybench@2
+  - erbench-public-legacy-formulas@1
+  - erbench-syneq@2
+  - errless-synthetic-posterior-set@1
+  - esr-cosmology@1
+  - esr-cosmology-datasets@1
+  - evogp-uci@1
+  - evomo-sr-random-expression-datasets-p1-p4@1
+  - falling-balls@1
+  - fastsrb@3
+  - feynman@2
+  - feynman-bonus@2
+  - friedman-functions@1
+  - friedman-random-function-generator-instances@1
+  - gecco-2013-2017-real@1
+  - gecco-2022-covid-ny@1
+  - gecco-2022-exact-rediscovery@1
+  - gecco-2022-extrapolation@1
+  - gecco-2022-feature-selection@1
+  - gecco-2022-local-optima@1
+  - gecco-2022-noise@1
+  - gecco-2023-performance@1
+  - geobench@1
+  - gfn-sr-noisy-near-twin-set@1
+  - gp-benchmarks-sr-table@1
+  - gp-benchmarks-sr-table-points@1
+  - gp-gomea-real-world@1
+  - gplearn-diabetes@1
+  - gplearn-documentation-examples@1
+  - gpu-lm-inner-constant-recovery-problems@1
+  - grammarvae-points@1
+  - gsgp-real-world@1
+  - gsr-symset@1
+  - hep-llm-sr-angular-distribution-problems@1
+  - heuristiclab-physics-instances@1
+  - heuristiclab-regression-instance-providers@1
+  - heuristiclab-regression-instance-providers-points@1
+  - hierbosss-single-atom@1
+  - hierbosss-single-atom-catalysis-and-synthetic-polynomial@1
+  - jin@2
+  - kan-feynman-no-units-subset@1
+  - kan-toy-functions@1
+  - keijzer@2
+  - keijzer-points@1
+  - kim-et-al-eql-benchmark-functions@1
+  - knowledge-integration-newtonian-cases@1
+  - korns@2
+  - koza@2
+  - langlaw-perovskites@1
+  - lasr-bigbench@1
+  - lasr-noisy-feynman-with-distractors@1
+  - lasr-synthetic-equations@1
+  - livermore@2
+  - livermore2@2
+  - llm-lex-random-mathematica-functions@1
+  - llm-lex-random-mathematica-functions-points@1
+  - llm-pysr-battery@1
+  - llm-sr-bactgrow@1
+  - llm-sr-stress-strain@1
+  - mcdermott-predictive-modelling@1
+  - mcdermott-table-1-predictive-modelling-sets-points@1
+  - meier@2
+  - multi-view-sr-synthetic-benchmarks@1
+  - multi-view-sr-synthetic-benchmarks-points@1
+  - neat@2
+  - neat-points@1
+  - newtonbench@1
+  - nguyen@2
+  - nguyen-c-points@1
+  - nikuradse@1
+  - nonic-points@1
+  - nsrwh-only-five-variables-nc@1
+  - nsrwh-only-five-variables-wc@1
+  - nsrwh-train-nc@1
+  - nsrwh-train-wc@1
+  - nuclear-misr@1
+  - occamnet-analytic-and-non-analytic-suites@1
+  - pagie-points@1
+  - phye2e-llm-generated-synthetic-formulas@1
+  - phye2e-space-physics@1
+  - physo-astro@2
+  - physo-astrophysical-case-studies@1
+  - physo-class@2
+  - physo-milky-way-streams@1
+  - poly@2
+  - pse-high-dimensional-distractor-set@1
+  - pysr-empiricalbench@1
+  - pysr-empiricalbench-formulas@1
+  - r-rationals-points@1
+  - reproduction-bias-not-included-test-sets@1
+  - rils-rols-random-instances@1
+  - rsrm-constant-optimization-benchmark@1
+  - rsrm-gaussian-cdf-extrapolation-test-points@1
+  - scilaws-real@1
+  - scilaws-real-share-alike@1
+  - scimed-settling-sphere-configurations@1
+  - scrbenchmark@1
+  - shape-constrained-real-world@1
+  - shape-constrained-sr-synthetic@1
+  - sine-points@1
+  - sisso-octet-binaries@1
+  - soose-fc@2
+  - soose-nc@2
+  - soose-wc@2
+  - spl-noise-data-scarcity-grid@1
+  - srbench-2.0-blackbox@1
+  - srbench-2.0-first-principles@1
+  - srbench-2021-blackbox@1
+  - srbench-2021-strogatz@1
+  - srsd-dummy@2
+  - superconductor-tc@1
+  - surfacebench-explicit-surfaces@1
+  - sym-q-ai-feynman-with-drift-terms@1
+  - symantic-synthetic-set@1
+  - symbolfit-lhc-spectra@1
+  - symbolicgpt-bivariate-set@1
+  - symbolicgpt-test-sets@1
+  - symbolicregression-com-toy-test-suite-1@1
+  - symformer-in-domain-synthetic-evaluation@1
+  - symtree-benchmark-functions@1
+  - tisr-air-density@1
+  - torchsisso-specific-energy@1
+  - torchsisso-synthetic-expressions@1
+  - treloar-rubber@1
+  - vladislavleva@2
+  - vladislavleva-points@1
+  - white-et-al-2013-proposed-sr-set-points@1
+  # Retired in the release (their `-points` successors are above). Kept because T8.1 held them out.
+  - grammarvae@1
+  - nonic@1
+  - pagie@1
+  - r-rationals@1
+  - sine@1
 
 sample_strategy:
   n_operator_distribution: "length_exponential"
