@@ -127,7 +127,7 @@ DEFAULT_TYPED_SPAN_POLICY: TypedSpanPolicy = 'freeze_then_free'
 
 #: The roles simplipy's ``mask_fittable`` KEEPS. Named once so the freeze/thaw pair and the
 #: masking policy cannot drift apart: a role added to one is added to the other.
-TYPED_ROLES = (masking.Role.EXPONENT, masking.Role.ROOT_INDEX)
+TYPED_ROLES = (masking.Role.EXPONENT, masking.Role.ROOT_INDEX, masking.Role.ORDER)  # SimpliPy 0.15 adds the Bessel order
 
 #: Symbolic in the tagged canonical dialect (contract A3) -- not predicted numbers, so the
 #: freeze/thaw pair leaves them alone in EITHER direction.
@@ -285,7 +285,7 @@ class Refiner:
         # Abstract exactly the scoped slots, then let simplipy's MECHANICAL helper name them
         # (its deprecated digit-only conversion is what used to free `2` in `pow x1 2`).
         abstracted = [('<constant>' if i in set(self.slot_indices) else tok) for i, tok in enumerate(self.input_expression)]
-        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(abstracted, convert_numbers_to_constant=False)
+        self.prefix_expression_with_constants, self.constants_symbols = identify_constants(abstracted)
         self.code_string = self.simplipy_engine.prefix_to_infix(self.prefix_expression_with_constants, realization=True)
 
         self.expression_code = codify(

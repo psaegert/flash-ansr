@@ -304,6 +304,7 @@ operators:
   - inv
   - neg
   - pow
+  - rootn
   - pow2
   - pow3
   - pow4
@@ -326,6 +327,20 @@ operators:
   - atanh
   - exp
   - log
+  # SimpliPy 0.15's operators: simplification can produce any engine operator, so the vocabulary covers them all
+  - floor
+  - ceil
+  - erf
+  - erfc
+  - harmonic
+  - max
+  - min
+  - mod
+  - atan2
+  - besselj
+  - bessely
+  - besseli
+  - besselk
   - mult2
   - mult3
   - mult4

@@ -21,7 +21,7 @@ def _flash(engine, prefix, x, y, x_val, weights):
     """A Flash-ANSR candidate dict as a snapshot stores it, scored the way the refine worker scores."""
     yp, ypv = evaluate_prefix(engine, list(prefix), ["x1", "x2"], x, x_val)
     f = prediction_fvu(y, np.asarray(yp).reshape(-1))
-    mdl = float(engine.complexity(list(prefix), certified=True, mode=Mode.f64, canon="default"))
+    mdl = float(engine.complexity(list(prefix), certified=True, mode=Mode.f64))
     return {"expression_prefix": list(prefix), "skeleton_prefix": list(prefix), "expression_infix": " ".join(prefix),
             "constants": [], "fvu": f, "mdl": mdl, "n_nodes": len(prefix), "log_prob": -1.0, "pareto_rank": -1,
             "score": score_row({"fvu": f, "expression": prefix, "constant_count": count_constants(prefix), "log_prob": -1.0, "mdl": mdl}, weights),

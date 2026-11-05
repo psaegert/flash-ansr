@@ -89,7 +89,10 @@ class TestSetParser:
             raise _TooManyVariables(mapping)
 
         prefix_expression_w_num = simplipy_engine.operators_to_realizations(prefix_expression)
-        prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True, convert_numbers_to_constant=True)
+        # SimpliPy 0.15's helper only renames placeholders; it no longer turns digit-only numerals into constants. The
+        # conversion is spelled out here, unchanged: a digit-only token (the 2 of pow x1 2) is a fitted constant.
+        prefix_expression_w_num = ['<constant>' if token.isnumeric() else token for token in prefix_expression_w_num]
+        prefix_expression_w_constants, constants = identify_constants(prefix_expression_w_num, inplace=True)
         code_string = simplipy_engine.prefix_to_infix(prefix_expression_w_constants, realization=True)
         code = codify(code_string, base_catalog.variables + constants)
         return tuple(prefix_expression), (code, constants)
