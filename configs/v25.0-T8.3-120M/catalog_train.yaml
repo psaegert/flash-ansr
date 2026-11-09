@@ -44,11 +44,11 @@ holdout_pools:
   # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
   # suite -- widening the benchmark later means retraining.
   #
-  # srbf's next release, every problem set at its release version: 191 sets, 14,860 problems (owner 2026-10-13: T8.3
+  # srbf's next release, every problem set at its release version: 192 sets, 15,229 problems (owner 2026-10-13: T8.3
   # holds them out too). The list is flash-ansr-research handoff/srbf_benchmark_decisions/next_release_catalogs.json
-  # @ e8eadc01 (symbolic-data integration/0.19 with the owner's 2026-11-09 republication rulings). Sets in the
-  # share-alike and restricted repos carry their repo (`user/repo:name@version`); a bare name resolves from the main
-  # repo only. Most of these versions are not published yet, so the catalog refuses to load until the release
+  # @ ded6b744 (symbolic-data integration/0.19 with the owner's 2026-11-09 republication rulings and LLM-SRBench*). Sets
+  # in the share-alike and restricted repos carry their repo (`user/repo:name@version`); a bare name resolves from the
+  # main repo only. Most of these versions are not published yet, so the catalog refuses to load until the release
   # publishes them.
   #
   # Cost: T8.1's 29 pools were measured over 3,000 draws replayed against nested pools. Widening from fastsrb alone
@@ -165,6 +165,7 @@ holdout_pools:
   - llm-pysr-battery@1
   - llm-sr-bactgrow@1
   - llm-sr-stress-strain@1
+  - psaegert/symbolic-data-assets-restricted:llm-srbench@1
   - psaegert/symbolic-data-assets-restricted:materials-laws-multi-agent@1
   - psaegert/symbolic-data-assets-restricted:mcdermott-predictive-modelling-restricted@1
   - mcdermott-predictive-modelling@1
