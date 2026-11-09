@@ -69,14 +69,15 @@ def test_the_holdouts_pin_srbfs_next_release_and_keep_t81s():
     with open(get_path("configs", "v25.0-T8.1-120M", "catalog_train.yaml")) as f:
         previous = yaml.safe_load(f)["holdout_pools"]
     assert set(previous) <= {pool.split(":")[-1].split("@")[0] for pool in pools}
-    # the release's 191 sets plus the five it retires, each at an exact version
-    assert len(pools) == len(set(pools)) == 191 + 5
+    # the release's 192 sets plus the five it retires, each at an exact version
+    assert len(pools) == len(set(pools)) == 192 + 5
     assert all(pool.count("@") == 1 and pool.split("@")[1].isdigit() for pool in pools)
     # a bare name resolves from the main repo only: sets in the share-alike and restricted repos name their repo
     repos = {pool.split(":")[0] for pool in pools if ":" in pool}
     assert repos == {"psaegert/symbolic-data-assets-sa", "psaegert/symbolic-data-assets-restricted"}
     assert {"psaegert/symbolic-data-assets-sa:erbench-oeis@2", "psaegert/symbolic-data-assets-sa:erbench-eponymous@2",
-            "psaegert/symbolic-data-assets-restricted:srbench-2021-blackbox-restricted@1"} <= set(pools)
+            "psaegert/symbolic-data-assets-restricted:srbench-2021-blackbox-restricted@1",
+            "psaegert/symbolic-data-assets-restricted:llm-srbench@1"} <= set(pools)
 
 
 @pytest.mark.parametrize("name", ["model.yaml", "train.yaml", "dataset_train.yaml", "dataset_val.yaml",
