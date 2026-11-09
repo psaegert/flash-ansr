@@ -93,6 +93,14 @@ def _enable_tf32_precision() -> None:
 _enable_tf32_precision()
 
 
+# The trainer's counterpart of FRESH_RUN_SETTINGS: train.yaml keys whose default reproduces old runs, and the
+# value a run started from now on must carry (Trainer._check_fresh_run_settings; override per key under
+# legacy_train_settings, with the reason).
+FRESH_RUN_TRAIN_SETTINGS: dict[str, Any] = {
+    # Exact target gradients at any margin (margin_cross_entropy; owner request 2026-11-03 for T8.3).
+    "cross_entropy": "margin",
+}
+
 TASK_SEGMENT_NAMES = {0: "expression", 1: "complexity", 2: "predict_y", 3: "predict_constants",
                       4: "predict_residual"}
 
@@ -313,6 +321,34 @@ def _z_loss(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> torch.Tens
     return (log_z * log_z * valid).sum() / valid.sum().clamp_min(1.0)
 
 
+def margin_cross_entropy(flat_logits: torch.Tensor, flat_labels: torch.Tensor, ignore_index: int) -> torch.Tensor:
+    """Per-position hard-target cross-entropy in the margin form of Barron, Gnanapragasam & Tschannen
+    (2026, arXiv:2610.31642), in fp32, 0 at ``ignore_index``.
+
+    The value is the usual ``log(1 + sum_{k != t} exp(z_k - z_t))``, but it is computed from the margins
+    ``z_k - z_t`` and never through ``softmax(z)_t``. The fused log-softmax rounds ``softmax(z)_t`` to exactly
+    1 once the target leads every rival by more than ~16.6 (fp32), and the target logit's gradient
+    ``softmax(z)_t - 1`` becomes exactly 0 while the rivals keep theirs ("Softmax Collapse"): the gradient no
+    longer sums to zero, and what is left pushes the shared logit offset down. On T8-3M's own training
+    stream (2026-11-03) that was 3.8 % of the supervised tokens, mostly closing tags and ``<eos>``, with the
+    margin tail at log(1/eps) = 18.4 for Adam's eps 1e-8, as the paper predicts. Here the target's
+    gradient is ``-sum_{k != t} softmax(z)_k``, exact at any margin.
+    """
+    with torch.autocast(device_type=flat_logits.device.type, enabled=False):
+        z = flat_logits.float()
+        valid = flat_labels != ignore_index
+        target = torch.where(valid, flat_labels, torch.zeros_like(flat_labels)).unsqueeze(-1)
+        is_target = torch.zeros_like(z, dtype=torch.bool).scatter_(-1, target, True)
+        shifted = (z - z.gather(-1, target)).masked_fill(is_target, 0.0)
+        # The largest rival margin, floored at the target's own 0. The loss does not depend on it, so it is
+        # held constant: no gradient through the max.
+        b = shifted.amax(dim=-1, keepdim=True).detach()
+        rivals = torch.exp(shifted - b).masked_fill(is_target, 0.0).sum(dim=-1)
+        b = b.squeeze(-1)
+        loss = b + torch.log1p(rivals + torch.expm1(-b))
+        return torch.where(valid, loss, torch.zeros_like(loss))
+
+
 def _logit_scale(flat_logits: torch.Tensor, valid_labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """(sum of log Z, sum of the per-position mean |logit|, position count) over the supervised
     positions, in fp32 and without gradient, as 0-d tensors on the logits' device (the caller
@@ -425,6 +461,12 @@ class Trainer:
         # restoring force on the loss-flat shared logit offset (see _z_loss); the T8 recipe runs
         # PaLM's 1e-4 (owner ruling 2026-09-07).
         self.z_loss_weight = float(self.config.get('z_loss_weight', 0.0))
+        # The cross-entropy's form: "softmax" (PyTorch's fused log-softmax, the legacy default every run before
+        # T8.3 trained with) or "margin" (margin_cross_entropy, exact target gradients at any margin). A fresh
+        # run must use "margin" (FRESH_RUN_TRAIN_SETTINGS). Validation metrics stay on the fused form.
+        self.cross_entropy = str(self.config.get('cross_entropy', 'softmax'))
+        if self.cross_entropy not in ('softmax', 'margin'):
+            raise ValueError(f"cross_entropy must be 'softmax' or 'margin', got {self.cross_entropy!r}")
         if self.z_loss_weight < 0.0:
             raise ValueError(f"z_loss_weight must be non-negative, got {self.z_loss_weight}")
         if self.outlier_metrics_interval < 1:
@@ -1016,9 +1058,12 @@ class Trainer:
                 valid_labels = torch.ne(flat_labels, self.metrics_ignore_index)
                 # The mean over the supervised positions, 0 when there are none: the sum form of
                 # nn.CrossEntropyLoss(ignore_index=...) with a clamped count, so no `.any()` sync.
-                ce_loss = nn.functional.cross_entropy(
-                    flat_logits, flat_labels, ignore_index=self.metrics_ignore_index, reduction="sum"
-                ) / valid_labels.sum().clamp_min(1)
+                if self.cross_entropy == 'margin':
+                    ce_sum = margin_cross_entropy(flat_logits, flat_labels, self.metrics_ignore_index).sum()
+                else:
+                    ce_sum = nn.functional.cross_entropy(
+                        flat_logits, flat_labels, ignore_index=self.metrics_ignore_index, reduction="sum")
+                ce_loss = ce_sum / valid_labels.sum().clamp_min(1)
 
                 # wandb.watch on gradients wants every parameter in the graph; touch them all only
                 # then (one reduction per parameter per step, wasted otherwise).
@@ -1338,6 +1383,22 @@ class Trainer:
                 "in the trainer config with the reason.")
         for key, reason in allowed.items():
             print(f"legacy_model_settings: {key} kept at its legacy value ({reason})")
+        allowed_train = (self.config.get("legacy_train_settings") if isinstance(self.config, dict) else None) or {}
+        if not isinstance(allowed_train, dict):
+            raise ValueError(f"legacy_train_settings maps each key to its reason, got {allowed_train!r}")
+        unexplained = [key for key, reason in allowed_train.items() if not str(reason or "").strip()]
+        if unexplained:
+            raise ValueError(f"legacy_train_settings needs a reason for every key; none given for {unexplained}")
+        train_deviations = {key: (getattr(self, key), wanted) for key, wanted in FRESH_RUN_TRAIN_SETTINGS.items()
+                            if getattr(self, key) != wanted and key not in allowed_train}
+        if train_deviations:
+            listed = "\n".join(f"  {key}: {wanted!r}   (the trainer is set to {built!r})" for key, (built, wanted) in train_deviations.items())
+            raise ValueError(
+                "A fresh training run must not inherit a legacy default. Set in train.yaml:\n" + listed + "\n"
+                "or, to reproduce the legacy behaviour on purpose, name the key under legacy_train_settings "
+                "with the reason.")
+        for key, reason in allowed_train.items():
+            print(f"legacy_train_settings: {key} kept at its legacy value ({reason})")
 
     def _infer_resume_step(self, checkpoint_directory: str) -> int | None:
         """Infer the resume step from the checkpoint directory name."""

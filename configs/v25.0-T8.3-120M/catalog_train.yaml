@@ -1,0 +1,478 @@
+# v25.0-T8.3: T8.1's catalog with three changes (owner 2026-11-03):
+#   1. SimpliPy 0.15's engine and its 13 new operators: floor, ceil, erf, erfc, harmonic (unary) and max, min, mod,
+#      atan2, besselj, bessely, besseli, besselk (binary), weight 1 each like every function. The Bessel orders and
+#      mod's divisor are literal slots (typed_slots below): every benchmark use has an integer order 0..4 and a
+#      small integer divisor, and a free subtree there mostly draws NaN (a non-integer order at x < 0) or a
+#      near-zero divisor. bessely and besselk have no finite value at x <= 0 (NaN below 0, infinite at 0) and
+#      besseli overflows at |x| >= 714 (measured on SimpliPy 0.15's realizations): the per-point rejection keeps
+#      the valid rows.
+#   2. The coherence prior (family_affinity, symbolic-data feat/family-affinity): one expression speaks one family
+#      of functions. Alpha 0.35 (owner), the maximum-likelihood value over 11,668 real formulas (Wikidata and
+#      Wikipedia science articles, no benchmark sets; 0.36, bootstrap 0.26-0.45); powers stay independent.
+#   3. The holdout pools also cover the new srbf catalogs (owner 2026-10-13). Their names are not published yet:
+#      the placeholder pool below fails closed, so this catalog cannot load until the list is filled in.
+# The operator weights of the existing operators are unchanged (owner: the family marginals stay as they are).
+# T8.1's header follows.
+#
+# v25.0-T7 catalog: the PLAIN sampler with two structural priors (owner design 2026-09-03, symbolic-data 0.18.0):
+# catalog operator weights, legacy leaf draw, no families/profiles; unary_mass 1/2 (shape dial), the depth prior
+# nesting_decay 1/4 with neg/inv transparent, and the width prior alternation_decay 1/2 (label mode). Measured as arm
+# L_w12_d12 (3,000 delivered skeletons, 42-draw sheets read): transcendental 73%, realization failures 18%, any f(g)
+# nesting 1.3%, six distinct variables in the median draw, backbone alt<=2 28% at 8-11 arithmetic operators.
+# Everything else as T6: support endpoints cauchy(0,10) UNCAPPED, literal_prior cauchy(0,5), n_support 1-1024,
+# max_tries 4, operator weights (pow/rootn 5, T5), holdout pools, typed-slot priors, cancellation rejection, canon.
+# Base: v25.0-T3, the corrected target canon. Identical to v25.0-T2 in every pin
+# except simplify_mode: targets canonicalize in the PERMISSIVE corpus tier, the
+# designed choice -- data generates FROM the simplified skeleton (target == data),
+# so the lossy tier is licensed and buys the denser canon (mean ratio 0.936 vs
+# 0.966, 36.9% of draws strictly shorter). T2 -> T3 isolates the canon; T1 -> T2
+# isolates the engine. Typed exponent slots for
+# pow/rootn; support oversampling retired (whole-box rejection shapes the prior;
+# support_oversampling_max defaults to 1 and is deliberately absent here).
+type: lample_charton
+simplipy_engine: 'acj2-5-4-llm'  # SimpliPy 0.15 (confirm the engine name at release)
+# Lean engine profile (simplipy >= 0.14.2, symbolic-data >= 0.16.1): f64 is the always-eager
+# construction substrate; permissive carries BOTH the target canon (simplify_mode below) and
+# the holdout family key (HOLDOUT_SIMPLIFY_MODE). The real tier is never touched on this
+# arm's data path, and would lazily load on first use if it ever were -- the profile moves
+# worker memory (~100 MB each) and startup, never an output.
+simplipy_engine_modes: ['f64', 'permissive']
+# Validation is a fresh stream from THIS catalog (see dataset_val.yaml), not a frozen
+# artifact, so nothing beyond the benchmark pools below needs excluding.
+holdout_pools:
+  # Every benchmark srbf may evaluate on. The training run must never see any of them, and
+  # `holdout_pools` is baked into the corpus, so this list IS the commitment to an evaluation
+  # suite -- widening the benchmark later means retraining.
+  #
+  # srbf's next release, every problem set at its release version: 192 sets, 15,229 problems (owner 2026-10-13: T8.3
+  # holds them out too). The list is flash-ansr-research handoff/srbf_benchmark_decisions/next_release_catalogs.json
+  # @ ded6b744 (symbolic-data integration/0.19 with the owner's 2026-11-09 republication rulings and LLM-SRBench*). Sets
+  # in the share-alike and restricted repos carry their repo (`user/repo:name@version`); a bare name resolves from the
+  # main repo only. Most of these versions are not published yet, so the catalog refuses to load until the release
+  # publishes them.
+  #
+  # Cost: T8.1's 29 pools were measured over 3,000 draws replayed against nested pools. Widening from fastsrb alone
+  # to all 29 cost over-rejection but nothing in time: `is_held_out` is a hash lookup, O(1) in pool size, and the
+  # per-draw cost is dominated by evaluating the candidate. The over-rejection at this size is re-measured on
+  # SimpliPy 0.15's released rules.
+  #
+  # `srsd-dummy` adds ZERO keys: it is fastsrb's law set with dummy variables, and the structure layer already
+  # generalizes over variable relabeling. It is listed for provenance.
+  - ai-descartes-real-data@1
+  - ai-feynman-2-0-modular-equations@1
+  - ai-feynman-database-100-main-equations@1
+  - ai-hilbert-problem-set@1
+  - ai-hilbert-real-data@1
+  - autora-synthetic-behavioural-science-models-points@1
+  - black-hole-spiral-plane@1
+  - psaegert/symbolic-data-assets-restricted:bms-real-data@1
+  - bms-synthetic-prior-expression-and-bessel-functions-points@1
+  - bms-synthetic-prior-expression-and-bessel-functions@1
+  - breiman-i@1
+  - chen-luo-jiang-block-building-test-cases@1
+  - coevolved-fitness-predictors-test-problems-points@1
+  - constant@2
+  - cp3-bench-standard-tuning-datasets-points@1
+  - cp3-bench@1
+  - cvgp-trigonometric-control-variable-datasets@1
+  - ddrsr-simple-test-and-complex-test@1
+  - decomposable-nsr-synthetic-e1-e13@1
+  - dgsr-additional-feynman@1
+  - dgsr-feynman-d-2-d-5-subsets@1
+  - dgsr-synthetic-d-12@1
+  - psaegert/symbolic-data-assets-sa:dimensionless-learning@1
+  - psaegert/symbolic-data-assets-restricted:dow-chemical-evostar-2010@1
+  - psaegert/symbolic-data-assets-restricted:dow-distillation-tower@1
+  - psaegert/symbolic-data-assets-restricted:dow-emulator@1
+  - psaegert/symbolic-data-assets-restricted:drsr-debcat@1
+  - dso-benchmark-registry-points@1
+  - dso-benchmark-registry@1
+  - e2e-in-domain-synthetic-validation-set@1
+  - eql-cart-pendulum@1
+  - psaegert/symbolic-data-assets-restricted:eql-double-pendulum@1
+  - eql-formulas-f-1-f-4-and-division-formula@1
+  - eql-pendulum-vector-field@1
+  - eql-robotic-arm-forward-kinematics@1
+  - erbench-densities@2
+  - psaegert/symbolic-data-assets-sa:erbench-eponymous@2
+  - psaegert/symbolic-data-assets-sa:erbench-oeis@2
+  - erbench-phybench@2
+  - erbench-public-legacy-formulas@1
+  - erbench-syneq@2
+  - errless-synthetic-posterior-set@1
+  - esr-cosmology-datasets@1
+  - esr-cosmology@1
+  - evogp-uci@1
+  - evomo-sr-random-expression-datasets-p1-p4@1
+  - falling-balls@1
+  - fastsrb@3
+  - feynman-bonus@2
+  - feynman@2
+  - psaegert/symbolic-data-assets-restricted:ffx-cmos-ota@1
+  - psaegert/symbolic-data-assets-restricted:ffx-high-dimensional-circuits@1
+  - friedman-functions@1
+  - friedman-random-function-generator-instances@1
+  - psaegert/symbolic-data-assets-restricted:gecco-2013-2017-real-restricted@1
+  - psaegert/symbolic-data-assets-sa:gecco-2013-2017-real-share-alike@1
+  - gecco-2013-2017-real@1
+  - gecco-2022-covid-ny@1
+  - gecco-2022-exact-rediscovery@1
+  - gecco-2022-extrapolation@1
+  - gecco-2022-feature-selection@1
+  - gecco-2022-local-optima@1
+  - gecco-2022-noise@1
+  - gecco-2023-performance@1
+  - geobench@1
+  - gfn-sr-noisy-near-twin-set@1
+  - gp-benchmarks-sr-table-points@1
+  - gp-benchmarks-sr-table@1
+  - psaegert/symbolic-data-assets-restricted:gp-challenge-protein@1
+  - psaegert/symbolic-data-assets-restricted:gp-gomea-real-world-restricted@1
+  - gp-gomea-real-world@1
+  - psaegert/symbolic-data-assets-restricted:gplearn-diabetes@1
+  - gplearn-documentation-examples@1
+  - gpu-lm-inner-constant-recovery-problems@1
+  - grammarvae-points@1
+  - gsgp-real-world@1
+  - gsr-symset@1
+  - hep-llm-sr-angular-distribution-problems@1
+  - heuristiclab-physics-instances@1
+  - psaegert/symbolic-data-assets-restricted:heuristiclab-real-world@1
+  - heuristiclab-regression-instance-providers-points@1
+  - heuristiclab-regression-instance-providers@1
+  - hierbosss-single-atom-catalysis-and-synthetic-polynomial@1
+  - hierbosss-single-atom@1
+  - psaegert/symbolic-data-assets-restricted:ideasearch-pdf@1
+  - psaegert/symbolic-data-assets-restricted:implied-volatility-slices@1
+  - jin@2
+  - kan-feynman-no-units-subset@1
+  - kan-toy-functions@1
+  - keijzer-points@1
+  - keijzer@2
+  - kim-et-al-eql-benchmark-functions@1
+  - knowledge-integration-newtonian-cases@1
+  - korns@2
+  - koza@2
+  - psaegert/symbolic-data-assets-restricted:langlaw-perovskites-restricted@1
+  - langlaw-perovskites@1
+  - lasr-bigbench@1
+  - lasr-noisy-feynman-with-distractors@1
+  - lasr-synthetic-equations@1
+  - livermore2@2
+  - livermore@2
+  - llm-lex-random-mathematica-functions-points@1
+  - llm-lex-random-mathematica-functions@1
+  - llm-pysr-battery@1
+  - llm-sr-bactgrow@1
+  - llm-sr-stress-strain@1
+  - psaegert/symbolic-data-assets-restricted:llm-srbench@1
+  - psaegert/symbolic-data-assets-restricted:materials-laws-multi-agent@1
+  - psaegert/symbolic-data-assets-restricted:mcdermott-predictive-modelling-restricted@1
+  - mcdermott-predictive-modelling@1
+  - mcdermott-table-1-predictive-modelling-sets-points@1
+  - meier@2
+  - multi-view-sr-synthetic-benchmarks-points@1
+  - multi-view-sr-synthetic-benchmarks@1
+  - psaegert/symbolic-data-assets-restricted:mvsr-2024@1
+  - psaegert/symbolic-data-assets-restricted:mvsr-2025@1
+  - neat-points@1
+  - neat@2
+  - newtonbench@1
+  - nguyen-c-points@1
+  - nguyen@2
+  - nikuradse@1
+  - nonic-points@1
+  - nsrwh-only-five-variables-nc@1
+  - nsrwh-only-five-variables-wc@1
+  - nsrwh-train-nc@1
+  - nsrwh-train-wc@1
+  - psaegert/symbolic-data-assets-restricted:nuclear-misr-restricted@1
+  - nuclear-misr@1
+  - occamnet-analytic-and-non-analytic-suites@1
+  - psaegert/symbolic-data-assets-restricted:oxygen-ion-conductors@1
+  - pagie-points@1
+  - phye2e-llm-generated-synthetic-formulas@1
+  - psaegert/symbolic-data-assets-restricted:phye2e-space-physics-restricted@1
+  - phye2e-space-physics@1
+  - physo-astro@2
+  - physo-astrophysical-case-studies@1
+  - physo-class@2
+  - physo-milky-way-streams@1
+  - poly@2
+  - pse-high-dimensional-distractor-set@1
+  - pysr-empiricalbench-formulas@1
+  - pysr-empiricalbench@1
+  - r-rationals-points@1
+  - reproduction-bias-not-included-test-sets@1
+  - rils-rols-random-instances@1
+  - rsrm-constant-optimization-benchmark@1
+  - rsrm-gaussian-cdf-extrapolation-test-points@1
+  - psaegert/symbolic-data-assets-restricted:scilaws-real-restricted@1
+  - psaegert/symbolic-data-assets-sa:scilaws-real-share-alike@1
+  - scilaws-real@1
+  - scimed-settling-sphere-configurations@1
+  - scrbenchmark@1
+  - psaegert/symbolic-data-assets-restricted:shadow-economies@1
+  - psaegert/symbolic-data-assets-restricted:shape-constrained-real-world-restricted@1
+  - shape-constrained-real-world@1
+  - shape-constrained-sr-synthetic@1
+  - sine-points@1
+  - sisso-octet-binaries@1
+  - psaegert/symbolic-data-assets-restricted:sldbench@1
+  - soose-fc@2
+  - soose-nc@2
+  - soose-wc@2
+  - psaegert/symbolic-data-assets-restricted:sparc-radial-acceleration@1
+  - spl-noise-data-scarcity-grid@1
+  - psaegert/symbolic-data-assets-restricted:srbench-2.0-blackbox-restricted@1
+  - srbench-2.0-blackbox@1
+  - psaegert/symbolic-data-assets-restricted:srbench-2.0-first-principles-restricted@1
+  - srbench-2.0-first-principles@1
+  - psaegert/symbolic-data-assets-restricted:srbench-2021-blackbox-restricted@1
+  - srbench-2021-blackbox@1
+  - srbench-2021-strogatz@1
+  - srsd-dummy@2
+  - superconductor-tc@1
+  - surfacebench-explicit-surfaces@1
+  - sym-q-ai-feynman-with-drift-terms@1
+  - symantic-synthetic-set@1
+  - symbolfit-lhc-spectra@1
+  - symbolicgpt-bivariate-set@1
+  - symbolicgpt-test-sets@1
+  - symbolicregression-com-toy-test-suite-1@1
+  - symformer-in-domain-synthetic-evaluation@1
+  - symtree-benchmark-functions@1
+  - tisr-air-density@1
+  - torchsisso-specific-energy@1
+  - torchsisso-synthetic-expressions@1
+  - treloar-rubber@1
+  - vladislavleva-points@1
+  - vladislavleva@2
+  - psaegert/symbolic-data-assets-restricted:white-2013-proposed@1
+  - white-et-al-2013-proposed-sr-set-points@1
+  # Retired in the release (their `-points` successors are above). Kept because T8.1 held them out.
+  - grammarvae@1
+  - nonic@1
+  - pagie@1
+  - r-rationals@1
+  - sine@1
+
+sample_strategy:
+  n_operator_distribution: "length_exponential"
+  min_operators: 0
+  max_operators: 17
+  power: 0.7
+  lambda: 1
+  max_length: 35
+  max_tries: 4
+  independent_dimensions: true
+
+allow_nan: false
+simplify: true
+simplify_mode: 'permissive'
+
+# Literals at constant leaves: cauchy(0, 5), the v23.8 prior (owner ruling 2026-08-31;
+# replaces the v24-era int/rounded mixture on this arm). Typed slots below keep their own
+# priors -- they belong to the typed-exponent redesign, not to the literal prior.
+literal_prior:
+  name: cauchy
+  kwargs:
+    loc: 0
+    scale: 5
+
+# Typed slots (owner ruling 2026-09-02: priors follow elegant, accurate ideas and are only
+# minimally shaped by the benchmark distribution). Three ideas, no fitted numbers:
+#   sign symmetry     -- the canonical spells a negative exponent / root index in its own way,
+#                        so the sign is a spelling choice the prior does not weight;
+#   quadratic decay   -- integers 2..5 and root indices 2..5 at 16 : 9 : 4 : 1 (0 and +-1 fold
+#                        to structure before delivery and are not drawn);
+#   description length-- dyadic rationals p/q at 1/(|p| q), the same cost the MDL measure
+#                        charges a literal; a 5% rounded-real tail keeps a non-rational
+#                        exponent representable.
+# Delivered (1,500 instances, same seed): exponent sites 85% integer / 2% decimal real /
+# 13% rational (T5: 65 / 21 / 14); root index 2 at 44% (T5: 24%). The T5 rounded(normal) half
+# put a multi-decimal real on one exponent site in five.
+typed_slots:
+  pow:
+    argument: 1
+    prior:
+    - weight: 0.65            # integers 2..5, sign-symmetric, quadratic decay in rank (16, 9, 4, 1)
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5]
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
+    - weight: 0.30            # dyadic rationals p/q, sign-symmetric, weight 1/(|p| q): description length
+      name: choice
+      kwargs:
+        values: [0.5, -0.5, 0.25, -0.25, 1.5, -1.5, 2.5, -2.5, 0.75, -0.75]
+        weights: [6, 6, 3, 3, 2, 2, 1.2, 1.2, 1, 1]
+    - weight: 0.05            # real tail (rounded normal), so a non-rational exponent stays representable
+      name: rounded
+      kwargs:
+        base:
+          name: normal
+          kwargs:
+            loc: 0
+            scale: 2
+  rootn:
+    argument: 1
+    prior:
+      name: choice
+      kwargs:
+        values: [2, -2, 3, -3, 4, -4, 5, -5]   # sign-symmetric, quadratic decay in rank (owner 2026-09-02)
+        weights: [16, 16, 9, 9, 4, 4, 1, 1]
+  # SimpliPy 0.15: the order of besselj(nu, x) is a pure integer (the benchmarks use 0..4); linear decay in nu.
+  besselj:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  bessely:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  besseli:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  besselk:
+    argument: 0
+    prior:
+      name: choice
+      kwargs:
+        values: [0, 1, 2, 3, 4]
+        weights: [5, 4, 3, 2, 1]
+  # SimpliPy 0.15: mod(a, b)'s divisor is a small integer (the benchmarks use 2, 3, 4, 5); linear decay.
+  mod:
+    argument: 1
+    prior:
+      name: choice
+      kwargs:
+        values: [2, 3, 4, 5]
+        weights: [4, 3, 2, 1]
+
+# Support prior restored to the v23.8 form (wandb run v238-1b-resync is the source of
+# truth): box endpoints are cauchy(0, 10) and the box is UNCAPPED -- no [-30, 30] clip.
+# The normal(0,10)+clip form T3 inherited descends from flash-ansr's v23.0/v23.1-era
+# config snapshot; research moved to cauchy-uncapped at v23.2 and ran it through v23.8,
+# but the change never crossed repos (1fc8528 then propagated the stale form into every
+# catalog). Owner ruling 2026-08-31: no caps, cauchy like 23.8.
+support_sampler:
+  support_prior:
+    name: "sampler"
+    kwargs:
+      base_dist_name: "uniform"
+      param_samplers:
+        low:
+          name: "cauchy"
+          kwargs: {loc: 0, scale: 10}
+        high:
+          name: "cauchy"
+          kwargs: {loc: 0, scale: 10}
+  n_support_prior:
+    name: "uniform"
+    kwargs:
+      low: 1
+      high: 1024
+      min_value: 1
+      max_value: 1024
+
+variables: ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17']
+
+# v25.0-T5 operator prior (owner ruling 2026-09-02): pow/rootn 4 -> 5, everything else
+# unchanged -- a deliberately minimal, non-overfitting reweight. Measured on T4@750k
+# (prior_align.py): benchmark canonical laws carry transcendentals at x0.3-1.1 of the
+# training token frequency and pow at x2-4.4; configured draw shares move
+# transcendentals 22.6% -> 20.9%, pow+rootn 12.9% -> 14.9%. Delivered frequencies are
+# re-measured before launch (canonicalization and rejection reshape them).
+# Operator FAMILIES (owner ruling 2026-09-02, task #112): one independent coin per family,
+# drawn once per expression, so the number of families is fixed per expression whatever its
+# length (the per-node draw let every long expression collect every class: 89% of T4
+# skeletons carried a transcendental, 53% carried all four classes). The coins are
+# heuristics rounded to 5% -- powers less often than not, each transcendental family one in
+# five, hyperbolics one in ten -- not fitted to the benchmark. Every present family carries
+# the same total weight as the arithmetic base, uniform within the family. No operator is
+# dropped by omission: the sampler refuses a family list that leaves a weighted operator out.
+# Implied per-expression composition: pure arithmetic 40%, any transcendental 42%,
+# two or more optional families 18%, all four 0.1%.
+
+# Variables: the legacy draw (number of distinct leaf kinds uniform up to the leaf count, kinds
+# uniform over x1..x17 plus the constant slot) stays -- owner ruling 2026-09-02: it makes sense
+# on its own and a length-coupled replacement would have been shaped on the benchmark.
+
+operator_weights:
+  "+": 10
+  "-": 10
+  "*": 10
+  "/": 10
+  pow: 5
+  rootn: 5
+  abs: 1
+  inv: 1
+  neg: 1
+  sin: 1
+  cos: 1
+  tan: 1
+  asin: 1
+  acos: 1
+  atan: 1
+  sinh: 1
+  cosh: 1
+  tanh: 1
+  asinh: 1
+  acosh: 1
+  atanh: 1
+  exp: 1
+  log: 1
+  # SimpliPy 0.15's operators, weight 1 each like every function.
+  floor: 1
+  ceil: 1
+  erf: 1
+  erfc: 1
+  harmonic: 1
+  max: 1
+  min: 1
+  mod: 1
+  atan2: 1
+  besselj: 1
+  bessely: 1
+  besseli: 1
+  besselk: 1
+
+# DEPTH-DECAYING UNARY PRIOR (owner design 2026-09-03): plain sampler, catalog weights, legacy leaves;
+# unary mass w1 = 0.5 at chain depth 0, times nesting_decay^depth below; neg/inv transparent.
+unary_mass: 0.5
+nesting_decay: 0.25
+nesting_transparent: [neg, inv]
+# WIDTH PRIOR (owner design 2026-09-03, width/WIDTH_PRIOR.md): class stickiness on the arithmetic backbone,
+# Markov rule (delta per switch), classes {+,-} / {*,/}, reset at counted unaries; mode label.
+alternation_decay: 0.5
+# COHERENCE PRIOR (owner 2026-11-03, alpha 0.35): the function nodes of one expression draw their family from a
+# Dirichlet-multinomial urn around the families' weight shares (symbolic-data family_affinity); the operator weights
+# decide inside a family. Real formulas: two function nodes share a family 87 % of the time against 29 % for
+# independent labels (11,668 formulas); T8's independent draw gave 17 %. The families exclude each other in real
+# formulas (trig|exp, trig|log, exp|log log odds ratio about -3) while powers and roots travel with all of them,
+# so pow and rootn stay outside the urn. The Bessel functions and mod are function nodes here through their literal slots.
+family_affinity:
+  concentration: 0.35
+  families:
+    trig: [sin, cos, tan]
+    inverse_trig: [asin, acos, atan]
+    hyperbolic: [sinh, cosh, tanh]
+    inverse_hyperbolic: [asinh, acosh, atanh]
+    exp: [exp]
+    log: [log]
+    abs: [abs]
+    erf: [erf, erfc]
+    integer: [floor, ceil, mod]
+    harmonic: [harmonic]
+    bessel: [besselj, bessely, besseli, besselk]
+  independent: [pow, rootn]
