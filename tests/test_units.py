@@ -33,7 +33,7 @@ CFG = {"p_identity": 0.0, "log2_scale_max": 100, "log2_literal_max": 100, "max_r
 def engine():  # type: ignore[no-untyped-def]
     from simplipy import SimpliPyEngine
 
-    return SimpliPyEngine.load("acj-4-3", install=True)
+    return SimpliPyEngine.load("acj2-4-llm", install=True)
 
 
 def _dims(engine, law: str):  # type: ignore[no-untyped-def]

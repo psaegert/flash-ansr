@@ -244,11 +244,11 @@ _FIXTURE = os.path.join(os.path.dirname(__file__), "data", "emitted_skeletons_t7
 
 @pytest.fixture(scope="module")
 def engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load("acj-4-3", install=True)
+    return SimpliPyEngine.load("acj2-4-llm", install=True)
 
 
 def _mu(engine: SimpliPyEngine, tokens: list[str]) -> float:
-    return float(engine.complexity(tokens, certified=True, mode=Mode.f64, canon='default'))
+    return float(engine.complexity(tokens, certified=True, mode=Mode.f64))
 
 
 class TestModeOneVersusModeTwo:

@@ -17,7 +17,7 @@ def _payload(seed):
     X = np.linspace(1.0, 5.0, 32).reshape(-1, 1)
     y = (2.5 * X[:, 0]).reshape(-1, 1)
     return {
-        'simplipy_engine': SimpliPyEngine.load('acj-4-3', install=True),
+        'simplipy_engine': SimpliPyEngine.load('acj2-4-llm', install=True),
         'expression': ['*', '<constant>', 'x1'],
         'n_variables': 1,
         'X': X,

@@ -19,7 +19,7 @@ from flash_ansr.utils.tensor_ops import pad_input_set
 
 @pytest.fixture(scope="module")
 def simplipy_engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load("acj-4", install=True)
+    return SimpliPyEngine.load("acj2-4-llm", install=True)
 
 
 class TestPadInputSetAcceptsWhatTheSignaturePromises:

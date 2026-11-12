@@ -230,7 +230,7 @@ def price_realized(simplipy_engine: Any, refiner: Refiner, expression_tokens: Se
         if any(tok == '<constant>' for tok in realized_tokens):
             raise ValueError("realized expression still carries a <constant> placeholder")
         return float(simplipy_engine.complexity(
-            realized_tokens, certified=True, mode=Mode.f64, canon='default'))
+            realized_tokens, certified=True, mode=Mode.f64))
     except Exception:
         return None
 

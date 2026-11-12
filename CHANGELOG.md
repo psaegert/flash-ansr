@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (SimpliPy 0.15)
+
+- **Requires SimpliPy 0.15 and symbolic-data 0.19.** SimpliPy 0.15 refuses every pre-0.15 rule file: the test
+  configs and fixtures move to `acj2-4-llm` (from `acj-4` / `acj-4-3`) and `acj2-5-4-llm` (from `acj-5-4-llm`); the
+  rule-free `base` engine still loads. The historical run configs keep the engines their models were trained with.
+- **The description length** is `complexity(e, certified=True, mode=Mode.f64)`: 0.15 dropped `canon=`, and f64 prices
+  in its own canonical reading (the old default canon). The values move with 0.15's prices; the ranking's currency is
+  not comparable across the bump.
+- **The Bessel order is a typed literal** (`TYPED_ROLES` adds `masking.Role.ORDER`, as SimpliPy 0.15 types it).
+- **A training vocabulary must cover every engine operator** (and, in the tagged dialect, the `<max>`/`<min>` bags of
+  an engine with max/min): simplification can produce an operator the catalog never samples, and an unknown target
+  token used to kill a data worker mid-stream. `FlashANSRDataset` refuses such a tokenizer at construction, by name.
+  The test tokenizer gains SimpliPy 0.15's 13 operators and `rootn`; T8.3's gains the `<max>`/`<min>` delimiters.
+- `explicit_constant_placeholders` lost `convert_numbers_to_constant=`: refinement drops the keyword (no change), and
+  `convert_data` spells out the digit-only conversion it relied on.
+- Two 0.14-migration specimens are a strict xfail until re-pinned on 0.15's canonical form.
+
+
 ### Fixed
 - **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
   and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or

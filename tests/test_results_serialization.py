@@ -15,7 +15,7 @@ from flash_ansr.results import (
 @pytest.fixture(scope="module")
 def simplipy_engine() -> SimpliPyEngine:
     # The generation-2 engine released simplipy (>= 0.12) can actually load.
-    return SimpliPyEngine.load("acj-4-3", install=True)
+    return SimpliPyEngine.load("acj2-4-llm", install=True)
 
 
 def _make_result_entry(expr: list[str]) -> dict:

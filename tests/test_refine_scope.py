@@ -12,7 +12,7 @@ from flash_ansr.refine import Refiner, refinement_slots, literal_value, DEFAULT_
 
 @pytest.fixture(scope="module")
 def engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load('acj-4-3', install=True)
+    return SimpliPyEngine.load('acj2-4-llm', install=True)
 
 
 def test_default_scope_is_fittable() -> None:

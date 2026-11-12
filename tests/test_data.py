@@ -101,3 +101,23 @@ class TestFlashANSRDataset(unittest.TestCase):
                 print(batch['x_tensors'][0, :10, :10])
                 for i in range(batch['x_tensors'].shape[-1]):
                     assert (batch['x_tensors'][0, :, i] != 0).sum() in [0, 3]  # 3 support rows
+
+
+def test_a_tokenizer_without_an_engine_operator_is_refused(tmp_path):
+    """Simplification can put any engine operator into a target; a vocabulary without one is refused at
+    construction, by name, instead of killing a data worker mid-stream."""
+    import shutil
+
+    import pytest
+    import yaml
+
+    from flash_ansr import FlashANSRDataset, get_path
+
+    cfg_dir = tmp_path / "cfg"
+    shutil.copytree(get_path("configs", "test"), cfg_dir)
+    tokenizer_yaml = cfg_dir / "tokenizer.yaml"
+    tokenizer_cfg = yaml.safe_load(tokenizer_yaml.read_text())
+    tokenizer_cfg["operators"] = [op for op in tokenizer_cfg["operators"] if op != "tan"]
+    tokenizer_yaml.write_text(yaml.safe_dump(tokenizer_cfg))
+    with pytest.raises(ValueError, match=r"no token for \['tan'\]"):
+        FlashANSRDataset.from_config(str(cfg_dir / "dataset_train.yaml"))
