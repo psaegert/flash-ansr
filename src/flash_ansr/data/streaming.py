@@ -1,5 +1,6 @@
 """Shared-memory streaming of procedurally generated training samples."""
 
+import math
 import multiprocessing as mp
 import signal
 import warnings
@@ -7,8 +8,6 @@ from dataclasses import dataclass
 from multiprocessing import shared_memory
 from multiprocessing.process import BaseProcess
 from typing import Any, Callable, Literal
-
-import math
 
 import numpy as np
 
@@ -747,10 +746,24 @@ def _producer_worker(
                             # PROMPTED: the caller states the complexity, so it is compact and
                             # entirely harness-owned. The bytes spelling belongs to the
                             # hypothesis circumstance alone (owner ruling 2026-08-27).
-                            block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
-                            block_numeric = [float("nan"), float(mu), float("nan")]
-                            block_masked = [True, True, True]
-                            variant = "float"
+                            spread_cfg = complexity_cfg.get("spread")
+                            if spread_cfg is None:
+                                block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPLEXITY_END_TOKEN]
+                                block_numeric = [float("nan"), float(mu), float("nan")]
+                                block_masked = [True, True, True]
+                                variant = "float"
+                            else:
+                                # A mean and a spread (owner rulings 2026-11-13): the caller states roughly
+                                # where the complexity lies, sigma log-normal in complexity units, the stated
+                                # mean mu + sigma * eps. sigma -> 0 is the exact statement.
+                                complexity_sigma = float(spread_cfg["median"]) * math.exp(
+                                    float(spread_cfg["log_sd"]) * float(worker_rng.standard_normal()))
+                                complexity_stated = float(mu) + complexity_sigma * float(worker_rng.standard_normal())
+                                block_tokens = [COMPLEXITY_START_TOKEN, COMPACT_CONSTANT_TOKEN, COMPACT_CONSTANT_TOKEN,
+                                                COMPLEXITY_END_TOKEN]
+                                block_numeric = [float("nan"), complexity_stated, complexity_sigma, float("nan")]
+                                block_masked = [True, True, True, True]
+                                variant = "spread"
                         # +1 for the standalone <hypothesize> boundary this variant needs.
                         need = len(block_tokens) + (1 if variant == "hypothesis" else 0)
                         if need <= budget:
@@ -762,6 +775,8 @@ def _producer_worker(
                             else:
                                 prefix_elements.append(element)
                             complexity_draw = {"mu": mu, "variant": variant}
+                            if variant == "spread":
+                                complexity_draw.update(stated=complexity_stated, sigma=complexity_sigma)
                         else:
                             n_skipped_task_blocks += 1
 
@@ -1023,6 +1038,9 @@ def _producer_worker(
                 if complexity_cfg is not None:
                     metadata["complexity_mu"] = None if complexity_draw is None else complexity_draw["mu"]
                     metadata["complexity_variant"] = None if complexity_draw is None else complexity_draw["variant"]
+                    if complexity_cfg.get("spread") is not None:
+                        metadata["complexity_stated"] = None if complexity_draw is None else complexity_draw.get("stated")
+                        metadata["complexity_sigma"] = None if complexity_draw is None else complexity_draw.get("sigma")
                 if predict_y_cfg is not None:
                     metadata["predict_y"] = predict_y_draw
                 if residual_cfg is not None:

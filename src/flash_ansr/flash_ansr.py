@@ -83,7 +83,7 @@ class Result(TypedDict):
     function: Callable
     fits: list[tuple[np.ndarray, np.ndarray, float]]
     score: float
-    requested_complexity: int | float | None
+    requested_complexity: int | float | tuple[float, float] | None
     fvu: float
     pruned_variant: bool
     #: simplipy mu of the REALIZED expression in milli-bits, or None when the candidate could not be
@@ -1627,7 +1627,7 @@ class FlashANSR(BaseEstimator):
         data: torch.Tensor,
         *,
         prompt_prefix: PromptPrefix | None = None,
-        complexity: int | float | None = None,
+        complexity: int | float | tuple[float, float] | None = None,
         verbose: bool = False,
         memory: torch.Tensor | None = None,
         n_active_variables: int | None = None,
@@ -1968,7 +1968,7 @@ class FlashANSR(BaseEstimator):
     def _prepare_prompt_prefix(
             self,
             *,
-            complexity: int | float | None,
+            complexity: int | float | tuple[float, float] | None,
             emission: str = 'fittable') -> PromptPrefix | None:
         preprocessor = getattr(self.flash_ansr_model, 'preprocessor', None)
         prompt_prefix = prepare_prompt_prefix(preprocessor, complexity=complexity)
@@ -2087,7 +2087,7 @@ class FlashANSR(BaseEstimator):
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             *,
             draws: int | None = None,
-            complexity: int | float | None = None,
+            complexity: int | float | tuple[float, float] | None = None,
             seed: int | None = None,
             on_empty: Literal['return', 'raise'] = 'return',
             verbose: bool = False) -> FitResult:
@@ -2222,7 +2222,7 @@ class FlashANSR(BaseEstimator):
             variable_names: list[str] | dict[str, str] | Literal['auto'] | None = 'auto',
             *,
             draws: int | None = None,
-            complexity: int | float | None = None,
+            complexity: int | float | tuple[float, float] | None = None,
             seed: int | None = None,
             verbose: bool = False) -> "Generation":
         """The generation phase alone: read ``(X, y)``, draw candidates, return a :class:`Generation`.
@@ -2288,8 +2288,12 @@ class FlashANSR(BaseEstimator):
                 # column i -> column name
                 variable_mapping = {f"x{i + 1}": name for i, name in enumerate(X.columns)}
 
-        if complexity is not None and not isinstance(complexity, numbers.Real):
-            raise TypeError("complexity must be a real scalar when provided")
+        if complexity is not None and not (
+                isinstance(complexity, numbers.Real)
+                or (isinstance(complexity, (tuple, list)) and len(complexity) == 2
+                    and all(isinstance(value, numbers.Real) for value in complexity))):
+            raise TypeError("complexity must be a real scalar, or a (mu, sigma) pair of reals for a model trained "
+                            "with a complexity spread, when provided")
 
         with torch.no_grad():
             # Convert the input data to a tensor

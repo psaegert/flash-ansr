@@ -71,3 +71,28 @@ def test_stage_2_is_stage_1_plus_units_and_distractors(name: str):
         assert _without(stage, "units_block", "distractor_block") == base
     else:
         assert stage == base
+
+
+SPREAD = {"median": 20000, "log_sd": 1.0}
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_stage_3_is_stage_2_plus_coherence_and_the_complexity_spread(name: str):
+    base, stage = _load("v25.0-T8.3-S2-120M", name), _load("v25.0-T8.3-S3-120M", name)
+    if name == "catalog_train.yaml":
+        # T8.3's coherence prior restricted to SimpliPy 0.14's operators: same alpha, same 0.14 families
+        t83 = _load("v25.0-T8.3-120M", name)["family_affinity"]
+        affinity = stage["family_affinity"]
+        assert affinity["concentration"] == t83["concentration"] == 0.35
+        assert affinity["independent"] == t83["independent"]
+        assert affinity["families"] == {family: ops for family, ops in t83["families"].items()
+                                        if family not in ("erf", "integer", "harmonic", "bessel")}
+        placed = {op for ops in affinity["families"].values() for op in ops} | set(affinity["independent"])
+        assert placed == {op for op, weight in stage["operator_weights"].items()
+                          if weight > 0 and op not in ("+", "-", "*", "/", "neg", "inv")}
+        assert _without(stage, "family_affinity") == base
+    elif name in ("dataset_train.yaml", "dataset_val.yaml"):
+        assert stage["complexity_block"] == {**base["complexity_block"], "spread": SPREAD}
+        assert _without(stage, "complexity_block") == _without(base, "complexity_block")
+    else:
+        assert stage == base

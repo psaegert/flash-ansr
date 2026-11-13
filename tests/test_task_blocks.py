@@ -507,3 +507,50 @@ def test_predict_y_and_the_residual_never_query_the_same_point(tokenizer) -> Non
             assert list(y_draw["x"]) != list(r_draw["x"]), \
                 "predict_y's held-out point was handed to the residual block as well"
     assert both > 0, "vacuous: no instance carried both blocks"
+
+
+# A mean and a spread for the stated complexity (owner rulings 2026-11-13): sigma log-normal in mu units.
+COMPLEXITY_SPREAD = {"p_present": 1.0, "p_hypothesize": 0.0, "spread": {"median": 20000.0, "log_sd": 1.0}}
+
+
+def test_a_stated_complexity_can_carry_a_spread(tokenizer) -> None:  # type: ignore[no-untyped-def]
+    log_ratios, standardized = [], []
+    for batch in _iterate(tokenizer, steps=4, batch_size=16, complexity_block=COMPLEXITY_SPREAD):
+        for row, tokens in _rows(batch, tokenizer):
+            assert tokens[1:5] == ["<complexity>", "<float>", "<float>", "</complexity>"]
+            assert batch["complexity_variant"][row] == "spread"
+            stated, sigma = float(batch["input_num"][row, 2, 0]), float(batch["input_num"][row, 3, 0])
+            assert stated == batch["complexity_stated"][row] and sigma == batch["complexity_sigma"][row]
+            assert sigma > 0
+            assert all(batch["task_mask"][row][1:5].tolist()), "a stated block is pure context"
+            log_ratios.append(np.log(sigma / 20000.0))
+            standardized.append((stated - float(batch["complexity_mu"][row])) / sigma)
+    # 64 draws: log(sigma / median) ~ N(0, 1) and (stated - mu) / sigma ~ N(0, 1)
+    for values in (np.asarray(log_ratios), np.asarray(standardized)):
+        assert abs(values.mean()) < 0.4 and 0.65 < values.std() < 1.35
+
+
+@pytest.mark.parametrize("spread", [{"median": 20000.0}, {"median": -1.0, "log_sd": 1.0},
+                                    {"median": 20000.0, "log_sd": 1.0, "max": 1e6}])
+def test_the_spread_prior_is_pinned_explicitly(tokenizer, spread) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ValueError, match="spread"):
+        FlashANSRDataset(source=_source(), tokenizer=tokenizer, padding="zero", target_dialect="tagged",
+                         complexity_block={"p_present": 1.0, "p_hypothesize": 0.0, "spread": spread})
+
+
+def test_generation_prompts_state_a_spread(tokenizer, engine) -> None:  # type: ignore[no-untyped-def]
+    from flash_ansr.model.flash_ansr_model import FlashANSRModel
+    from flash_ansr.preprocessing.prompt_serialization import PromptSerializer
+    cfg = load_config(get_path("configs", "test", "model.yaml"))
+    kwargs = {k: v for k, v in cfg.items() if k not in ("simplipy_engine", "tokenizer")}
+    model = FlashANSRModel(simplipy_engine=engine, tokenizer=tokenizer, **kwargs)
+    tokens, numeric = model.complexity_prefix(150000, sigma=20000)
+    assert [tokenizer.vocab[i] for i in tokens] == [
+        "<bos>", "<complexity>", "<float>", "<float>", "</complexity>", "<expression>"]
+    assert numeric[2:4] == [150000.0, 20000.0]
+    with pytest.raises(ValueError, match="mu as well"):
+        model.complexity_prefix(sigma=20000)
+    serialized = PromptSerializer(tokenizer).serialize_prompt_prefix(complexity=(150000, 20000))
+    assert [tokenizer.vocab[i] for i in serialized["input_ids"]] == [
+        "<bos>", "<complexity>", "<float>", "<float>", "</complexity>", "<expression>"]
+    assert list(serialized["input_num"][2:4]) == [150000.0, 20000.0]

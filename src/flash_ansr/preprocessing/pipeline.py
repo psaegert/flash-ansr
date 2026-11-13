@@ -121,13 +121,14 @@ class FlashANSRPreprocessor:
 
         return batch
 
-    def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
+    def serialize_prompt_prefix(self, *, complexity: float | int | tuple[float, float] | None = None) -> dict[str, Any]:
         """Serialize the decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
 
         Parameters
         ----------
         complexity : float or int, optional
-            Target complexity in **simplipy mu** (roughly 1e3-1e6, NOT a token count), or ``None``.
+            Target complexity in **simplipy mu** (roughly 1e3-1e6, NOT a token count), or ``None``;
+            a pair ``(mu, sigma)`` states a mean and a spread (models trained with a complexity spread).
 
         Returns
         -------

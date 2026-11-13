@@ -19,7 +19,7 @@ class PromptSerializer:
     def __init__(self, tokenizer: Tokenizer) -> None:
         self.tokenizer = tokenizer
 
-    def serialize_prompt_prefix(self, *, complexity: float | int | None = None) -> dict[str, Any]:
+    def serialize_prompt_prefix(self, *, complexity: float | int | tuple[float, float] | None = None) -> dict[str, Any]:
         """Serialize a decoding prompt prefix: ``<bos>``, an optional complexity block, ``<expression>``.
 
 Training emits the complexity block BARE, as a prefix element -- ``<complexity>``,
@@ -28,9 +28,11 @@ Training emits the complexity block BARE, as a prefix element -- ``<complexity>`
 
         Parameters
         ----------
-        complexity : float or int, optional
+        complexity : float or int or (float, float), optional
             Target complexity in **simplipy mu** (roughly 1e3-1e6, NOT a token count), or ``None``
-            to omit the block.
+            to omit the block. A pair ``(mu, sigma)`` states a mean and a spread, both in mu units,
+            for models trained with ``complexity_block.spread``: the block then carries two
+            ``<float>`` tokens, as those models were trained.
 
         Returns
         -------
@@ -51,9 +53,15 @@ Training emits the complexity block BARE, as a prefix element -- ``<complexity>`
         if complexity is not None and all(
                 token in self.tokenizer for token in ("<complexity>", "<float>", "</complexity>")):
             emit_complexity = True
-            tokens.extend(["<complexity>", "<float>", "</complexity>"])
-            numeric_values.extend([np.nan, float(complexity), np.nan])
-            prompt_mask.extend([True, True, True])
+            if isinstance(complexity, (tuple, list)):
+                mu, sigma = (float(value) for value in complexity)
+                tokens.extend(["<complexity>", "<float>", "<float>", "</complexity>"])
+                numeric_values.extend([np.nan, mu, sigma, np.nan])
+                prompt_mask.extend([True, True, True, True])
+            else:
+                tokens.extend(["<complexity>", "<float>", "</complexity>"])
+                numeric_values.extend([np.nan, float(complexity), np.nan])
+                prompt_mask.extend([True, True, True])
 
         missing_tokens: list[str] = []
         if "<bos>" not in self.tokenizer:
@@ -157,7 +165,7 @@ def apply_emission_flag(prefix: PromptPrefix, emission: str, tokenizer: Any) -> 
 def prepare_prompt_prefix(
         preprocessor: PromptSerializer | None,
         *,
-        complexity: int | float | None) -> PromptPrefix | None:
+        complexity: int | float | tuple[float, float] | None) -> PromptPrefix | None:
     """Serialize the prompt prefix into tokens usable by the transformer."""
     if preprocessor is None:
         return None

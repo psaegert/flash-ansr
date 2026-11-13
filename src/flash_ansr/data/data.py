@@ -5,6 +5,7 @@ pre-generated symbolic-regression problems can be tokenized, preprocessed and co
 padded tensor batches consumed during training.
 """
 import copy
+import math
 import os
 import time
 import warnings
@@ -76,6 +77,17 @@ def _validate_task_block(raw: "dict[str, Any] | None", *, name: str,
             raise ValueError(f"{name}.{key} must be a positive integer, got {raw[key]!r}")
         validated[key] = value
     return validated
+
+
+def _validate_complexity_spread(raw: Any) -> dict[str, float]:
+    """``complexity_block.spread``: the log-normal prior of the stated spread sigma, in simplipy complexity units --
+    exactly ``median`` and ``log_sd``, both positive (no bounds on sigma itself; owner 2026-11-13)."""
+    if not isinstance(raw, dict) or set(raw) != {"median", "log_sd"}:
+        raise ValueError(f"complexity_block.spread must carry exactly ['log_sd', 'median'], got {raw!r}")
+    out = {key: float(raw[key]) for key in ("median", "log_sd")}
+    if not all(math.isfinite(value) and value > 0 for value in out.values()):
+        raise ValueError(f"complexity_block.spread: median and log_sd must be positive and finite, got {raw!r}")
+    return out
 
 
 class FlashANSRDataset:
@@ -178,9 +190,17 @@ class FlashANSRDataset:
         # <predict_y> auxiliary block, requiring the expression wrappers and their block
         # tokens up front. A PROMPTED complexity is compact, a HYPOTHESIZED one is spelled
         # in bits, and no instance carries both (owner ruling 2026-08-27).
+        # An optional `spread` (owner rulings 2026-11-13) turns the stated complexity into a mean and a spread:
+        # the block carries (mu + sigma * eps, sigma), sigma log-normal in complexity units, eps standard normal.
+        spread_raw = None
+        if isinstance(complexity_block, dict) and "spread" in complexity_block:
+            complexity_block = dict(complexity_block)
+            spread_raw = complexity_block.pop("spread")
         self.complexity_block = _validate_task_block(
             complexity_block, name="complexity_block",
             probability_keys=("p_present", "p_hypothesize"))
+        if self.complexity_block is not None and spread_raw is not None:
+            self.complexity_block["spread"] = _validate_complexity_spread(spread_raw)
         if self.complexity_block is not None:
             if self.complexity_block["p_present"] + self.complexity_block["p_hypothesize"] > 1.0:
                 raise ValueError("complexity_block: p_present + p_hypothesize must not exceed 1.0 "

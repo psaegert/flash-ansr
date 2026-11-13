@@ -765,6 +765,7 @@ class FlashANSRModel(nn.Module):
         return self._logits(decoder_output)
 
     def complexity_prefix(self, mu: "float | int | None" = None, *,
+                          sigma: "float | None" = None,
                           hypothesize: bool = False,
                           mask: "str | None" = None) -> tuple[list[int], list[float]]:
         """The generation prompt, up to the point where the model takes over.
@@ -784,6 +785,9 @@ class FlashANSRModel(nn.Module):
         for an accuracy-complexity front from one model. ``mu`` is simplipy's integer
         measure of the MASKED target (``engine.complexity``), exactly as trained.
 
+        ``sigma`` adds a spread to the stated ``mu`` (both in mu units) for a model trained with
+        ``complexity_block.spread``: the block then carries two ``<float>`` tokens, mean then spread.
+
         ``mu`` and ``hypothesize`` COMPOSE: state what you know, let the model hypothesize
         the rest. What you stated may not be hypothesized again -- the decode grammar bans
         re-opening a block already in the prefix, so the two never contradict each other.
@@ -797,6 +801,8 @@ class FlashANSRModel(nn.Module):
 
         Returns ``(initial_tokens, input_num)`` for generation.
         """
+        if sigma is not None and mu is None:
+            raise ValueError("sigma is the spread of a stated complexity: give mu as well")
         if mu is None and not hypothesize and mask is None:
             raise ValueError("give at least one of mu=<value> (condition on a stated "
                              "complexity), hypothesize=True (let the model author property "
@@ -825,10 +831,17 @@ class FlashANSRModel(nn.Module):
             tokens.append(self.tokenizer[MASK_MODE_TOKENS[mask]])
             numeric.append(float("nan"))
         if mu is not None:
-            tokens += [self.tokenizer[COMPLEXITY_START_TOKEN],
-                       self.tokenizer[COMPACT_CONSTANT_TOKEN],
-                       self.tokenizer[COMPLEXITY_END_TOKEN]]
-            numeric += [float("nan"), float(mu), float("nan")]
+            if sigma is None:
+                tokens += [self.tokenizer[COMPLEXITY_START_TOKEN],
+                           self.tokenizer[COMPACT_CONSTANT_TOKEN],
+                           self.tokenizer[COMPLEXITY_END_TOKEN]]
+                numeric += [float("nan"), float(mu), float("nan")]
+            else:
+                tokens += [self.tokenizer[COMPLEXITY_START_TOKEN],
+                           self.tokenizer[COMPACT_CONSTANT_TOKEN],
+                           self.tokenizer[COMPACT_CONSTANT_TOKEN],
+                           self.tokenizer[COMPLEXITY_END_TOKEN]]
+                numeric += [float("nan"), float(mu), float(sigma), float("nan")]
         if hypothesize:
             # The boundary. The model was never trained to utter it -- only the harness may
             # hand over the pen -- and everything after it carries loss.
