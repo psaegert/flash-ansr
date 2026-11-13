@@ -50,6 +50,7 @@ from flash_ansr.utils.ieee754 import (
 from flash_ansr.utils.skeleton import (
     NonFiniteExpressionError, fittable_slots, mask_literals_positional)
 from flash_ansr.utils.tensor_ops import mask_unused_variable_columns
+from flash_ansr.data.distractors import draw_distractors
 from flash_ansr.data.units import UNITS_STATUSES, apply_units
 
 
@@ -105,6 +106,7 @@ class WorkerConfig:
     residual_block: dict[str, Any] | None = None
     mask_block: dict[str, Any] | None = None
     units_block: dict[str, Any] | None = None
+    distractor_block: dict[str, Any] | None = None
 
 
 #: Workers are SPAWNed, not forked. A trainer has CUDA initialised in the parent by the
@@ -131,6 +133,7 @@ class SharedMemoryWorkerPool:
         residual_block: dict[str, Any] | None = None,
         mask_block: dict[str, Any] | None = None,
         units_block: dict[str, Any] | None = None,
+        distractor_block: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -141,6 +144,7 @@ class SharedMemoryWorkerPool:
         self.residual_block = residual_block
         self.mask_block = mask_block
         self.units_block = units_block
+        self.distractor_block = distractor_block
 
         self._shms: dict[str, shared_memory.SharedMemory] = {}
         self.buffers: dict[str, np.ndarray] = {}
@@ -288,6 +292,7 @@ class SharedMemoryWorkerPool:
             residual_block=self.residual_block,
             mask_block=self.mask_block,
             units_block=self.units_block,
+            distractor_block=self.distractor_block,
         )
 
         self._workers = []
@@ -446,6 +451,10 @@ def _producer_worker(
     # outliers included) and before unused columns are zeroed; the target's tokens never change. A re-valued
     # target is re-checked against the catalog's holdout pools (see flash_ansr.data.units).
     units_cfg = worker_config.units_block
+    # Distractors (owner rulings 2026-11-13; flash_ansr.data.distractors): some unused columns keep their drawn
+    # values instead of being zeroed; on a unit-changed instance each borrows a used variable's power of two.
+    distractor_cfg = worker_config.distractor_block if worker_config.padding == "zero" else None
+    variable_set = set(variables)
     held_out_fn: Callable[[list[str]], bool] | None = None
     if units_cfg is not None and hasattr(catalog, "is_held_out"):
         def _held_out(tokens: list[str]) -> bool:
@@ -513,6 +522,8 @@ def _producer_worker(
             n_skipped_task_blocks = 0
             units_counts = {status: 0 for status in UNITS_STATUSES}
             units_redraws = 0
+            distractor_counts = {"n_distractor_instances": 0, "n_distractor_columns": 0,
+                                 "n_distractor_scale_fallbacks": 0}
 
             i = 0
             while i < batch_size:
@@ -576,11 +587,26 @@ def _producer_worker(
                         # The concrete expression must describe the data it is stored with.
                         expression = list(simplipy_engine.to_prefix(list(units_result.revalued_tokens or [])))
 
+                distractor_meta: dict[str, Any] | None = None
+                kept: list[str] = []
+                if distractor_cfg is not None:
+                    used_variables = {token for token in skeleton if token in variable_set}
+                    distractors = draw_distractors(
+                        x_support=x_support, variables=variables, used=used_variables, rng=worker_rng,
+                        cfg=distractor_cfg, unit_z=None if units_meta is None else units_meta["z"])
+                    kept = distractors.columns
+                    if kept:
+                        distractor_counts["n_distractor_instances"] += 1
+                        distractor_counts["n_distractor_columns"] += len(kept)
+                        distractor_counts["n_distractor_scale_fallbacks"] += distractors.scale_fallbacks
+                        distractor_meta = {"columns": list(kept), "scales": dict(distractors.scales)}
+
                 mask_unused_variable_columns(
                     arrays=(x_support,),
                     variables=variables,
                     skeleton_tokens=skeleton,
                     padding=padding,
+                    keep=kept,
                 )
 
                 # Drawn BEFORE the task blocks: an unconditioned (condition-dropout) instance
@@ -972,6 +998,9 @@ def _producer_worker(
                     # Present on EVERY instance of a units run (the batch's metadata fields are read
                     # from the first instance's keys): None = identity units.
                     metadata["units"] = units_meta
+                if distractor_cfg is not None:
+                    # Present on every instance of a distractor run: None = every unused column zeroed.
+                    metadata["distractors"] = distractor_meta
                 # First-class optional condition (CFG): ONLY when enabled (prob > 0), mark this
                 # example conditioned (True, prob 1 - unconditional_prob) or unconditioned (False).
                 # The key is emitted iff the feature is active, so condition_mask present <=> feature
@@ -1062,6 +1091,8 @@ def _producer_worker(
                 for status, count in units_counts.items():
                     payload[f"n_units_{status}"] = count
                 payload["n_units_redraws"] = units_redraws
+            if distractor_cfg is not None:
+                payload.update(distractor_counts)
             if tagged_targets:
                 # Instances whose tagged canonicalization folded a degenerate sub-expression
                 # to a non-finite spelling while filling THIS batch (tagged targets only).

@@ -9,6 +9,8 @@ import pytest
 import yaml
 
 from flash_ansr import get_path
+from flash_ansr.data.distractors import validate_distractor_block
+from flash_ansr.data.units import validate_units_block
 from flash_ansr.model.flash_ansr_model import FRESH_RUN_SETTINGS
 from flash_ansr.train.train import FRESH_RUN_TRAIN_SETTINGS
 
@@ -57,3 +59,15 @@ def test_stage_1_is_a_valid_fresh_run_on_simplipy_014():
         t8 = yaml.safe_load(f)
     for key in ("steps", "batch_size", "lr_schedule", "optimizer", "z_loss_weight"):
         assert train.get(key) == t8.get(key), key
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_stage_2_is_stage_1_plus_units_and_distractors(name: str):
+    base, stage = _load("v25.0-T8.3-S1-120M", name), _load("v25.0-T8.3-S2-120M", name)
+    if name == "dataset_train.yaml":
+        # arm Uh exactly as T8.3 carries it, and the distractor prior the owner ruled on 2026-11-13
+        assert validate_units_block(stage["units_block"]) == _load("v25.0-T8.3-120M", name)["units_block"]
+        assert validate_distractor_block(stage["distractor_block"]) == {"p_instance": 0.2, "p_continue": 0.5}
+        assert _without(stage, "units_block", "distractor_block") == base
+    else:
+        assert stage == base

@@ -32,6 +32,7 @@ from flash_ansr.data.serialization import (
     TARGET_DIALECTS,
 )
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
+from flash_ansr.data.distractors import DISTRACTOR_COUNTER_KEYS, validate_distractor_block
 from flash_ansr.data.units import UNITS_COUNTER_KEYS, validate_units_block
 from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
 from flash_ansr.utils.numeric import NUMERIC_DTYPE
@@ -121,6 +122,7 @@ class FlashANSRDataset:
         residual_block: "dict[str, Any] | None" = None,
         mask_block: "dict[str, Any] | None" = None,
         units_block: "dict[str, Any] | None" = None,
+        distractor_block: "dict[str, Any] | None" = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -229,6 +231,11 @@ class FlashANSRDataset:
         if self.units_block is not None and target_dialect != TARGET_DIALECT_TAGGED:
             raise ValueError("units_block requires target_dialect='tagged': the law's dimensions are inferred "
                              "on the tagged canonical target.")
+        # Distractors (owner rulings 2026-11-13; flash_ansr.data.distractors): some unused input columns keep their
+        # drawn values. They only exist where unused columns are zeroed at all.
+        self.distractor_block = validate_distractor_block(distractor_block)
+        if self.distractor_block is not None and padding != "zero":
+            raise ValueError("distractor_block requires padding='zero': with any other padding no column is zeroed.")
         if (self.complexity_block is not None or self.predict_y_block is not None
                 or self.mask_block is not None or self.residual_block is not None):
             missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
@@ -261,6 +268,7 @@ class FlashANSRDataset:
             residual_block=self.residual_block,
             mask_block=self.mask_block,
             units_block=self.units_block,
+            distractor_block=self.distractor_block,
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -390,6 +398,7 @@ class FlashANSRDataset:
             residual_block=config_.get("residual_block"),
             mask_block=config_.get("mask_block"),
             units_block=config_.get("units_block"),
+            distractor_block=config_.get("distractor_block"),
         )
 
     def save(
@@ -811,7 +820,7 @@ class FlashANSRDataset:
                 # over the run, logged by the trainer.
                 for counter_key in ("n_skipped_task_blocks",
                                     "n_dropped_nonfinite", "n_dropped_truncation",
-                                    *UNITS_COUNTER_KEYS):
+                                    *UNITS_COUNTER_KEYS, *DISTRACTOR_COUNTER_KEYS):
                     value = metadata_and_constants.get(counter_key)
                     if value is not None:
                         self.stream_counters[counter_key] = (

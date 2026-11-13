@@ -1,5 +1,5 @@
 """Tensor helpers used across the project."""
-from typing import Any, Iterable, Sequence
+from typing import Any, Collection, Iterable, Sequence
 
 import numpy as np
 import torch
@@ -37,8 +37,13 @@ def mask_unused_variable_columns(
     variables: Sequence[str] | None,
     skeleton_tokens: Sequence[str] | None,
     padding: str | None,
+    keep: Collection[str] | None = None,
 ) -> None:
-    """Zero unused variable columns when padding is configured for zero masking."""
+    """Zero unused variable columns when padding is configured for zero masking.
+
+    ``keep`` names unused columns to leave as they are: the training stream's distractors
+    (:mod:`flash_ansr.data.distractors`).
+    """
 
     if padding != "zero":
         return
@@ -59,7 +64,8 @@ def mask_unused_variable_columns(
     if len(used_variables) == len(variable_to_index):
         return
 
-    unused_indices = [variable_to_index[var] for var in variables if var not in used_variables]
+    kept = set(keep or ())
+    unused_indices = [variable_to_index[var] for var in variables if var not in used_variables and var not in kept]
     if not unused_indices:
         return
 
