@@ -96,3 +96,27 @@ def test_stage_3_is_stage_2_plus_coherence_and_the_complexity_spread(name: str):
         assert _without(stage, "complexity_block") == _without(base, "complexity_block")
     else:
         assert stage == base
+
+
+# Ablations of stage 1 (owner 2026-11-14): (self-attention gate, margin cross-entropy) per run, 200k steps each.
+ABLATIONS = {"ctrl": (False, False), "margin": (False, True), "gate": (True, False)}
+
+
+@pytest.mark.parametrize("run", sorted(ABLATIONS))
+@pytest.mark.parametrize("name", FILES)
+def test_the_stage_1_ablations_change_one_thing_each(run: str, name: str):
+    gate, margin = ABLATIONS[run]
+    base, ablation = _load("v25.0-T8.3-S1-120M", name), _load(f"v25.0-T8.3-{run}-120M", name)
+    if name == "model.yaml":
+        assert ablation.get("decoder_self_attn_gate", False) is gate
+        assert ablation.get("decoder_cross_attn_gate", False) is False
+        assert _without(ablation, "decoder_self_attn_gate", "decoder_cross_attn_gate") == \
+            _without(base, "decoder_self_attn_gate", "decoder_cross_attn_gate")
+    elif name == "train.yaml":
+        assert ablation["steps"] == 200_000
+        assert ablation.get("cross_entropy", "softmax") == ("margin" if margin else "softmax")
+        assert set(ablation.get("legacy_train_settings") or {}) == (set() if margin else {"cross_entropy"})
+        assert _without(ablation, "steps", "cross_entropy", "legacy_train_settings") == \
+            _without(base, "steps", "cross_entropy")
+    else:
+        assert ablation == base
