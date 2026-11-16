@@ -120,3 +120,23 @@ def test_the_stage_1_ablations_change_one_thing_each(run: str, name: str):
             _without(base, "steps", "cross_entropy")
     else:
         assert ablation == base
+
+
+@pytest.mark.parametrize("name", FILES)
+def test_ctrl2_reruns_ctrl_and_t8cfg_drops_only_t81s_flags(name: str):
+    ctrl = _load("v25.0-T8.3-ctrl-120M", name)
+    assert _load("v25.0-T8.3-ctrl2-120M", name) == ctrl
+    t8cfg = _load("v25.0-T8.3-t8cfg-120M", name)
+    if name == "model.yaml":
+        flags = ("encoder_mask_query_norms", "sanitize_input_num")
+        assert all(ctrl[key] is True and t8cfg[key] is False for key in flags)
+        assert _without(t8cfg, *flags) == _without(ctrl, *flags)
+        # T8-120M's own model config, which predates the two keys (absent = False)
+        with open(get_path("configs", "v25.0-T8-120M", "model.yaml")) as f:
+            t8 = yaml.safe_load(f)
+        assert _without(t8cfg, *flags) == t8 and not any(t8.get(key, False) for key in flags)
+    elif name == "train.yaml":
+        assert set(t8cfg["legacy_model_settings"]) == {"encoder_mask_query_norms", "sanitize_input_num"}
+        assert _without(t8cfg, "legacy_model_settings") == ctrl
+    else:
+        assert t8cfg == ctrl
