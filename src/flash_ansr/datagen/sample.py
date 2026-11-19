@@ -60,9 +60,11 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
     pre_num = None if numeric is None else numeric[:L0].view(1, L0, 1).expand(G, -1, -1).contiguous()
     logits_pre, cache = m.forward(prefix, None, input_num=pre_num, memory=memory, use_cache=True)
     block0 = m.decoder.layers[0]
+    # The cache takes the dtype the layers produce K/V in (bf16 under autocast), not the logits' dtype: the output head
+    # returns fp32 logits even under autocast, and an fp32 buffer would store the same bf16 values at twice the memory.
     sc = StaticKVCache(n_layers=len(m.decoder.layers), batch=B, n_heads=block0.self_attention.n_heads,
                        head_dim=block0.self_attention.head_dim, max_len=max_len + m.decoder.prefix_len,
-                       device=device, dtype=logits_pre.dtype)
+                       device=device, dtype=cache[0][0][0].dtype)
     for i, ((sk, sv), (ck, cv)) in enumerate(cache):
         n = sk.shape[2]
         sc.sa_k[i][:, :, :n] = sk.repeat_interleave(rows, dim=0)
@@ -207,7 +209,7 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     if str(device).startswith("cuda") and chunk_rows > 0:
         # cap rows per decode by free memory: the static self-attention cache dominates (fp32 K and V per layer)
         blk = m.decoder.layers[0].self_attention
-        elem = 2 if amp == "bf16" else 4                    # the cache takes the logits' dtype (bf16 under autocast)
+        elem = 2 if amp == "bf16" else 4                    # the cache takes the K/V dtype (bf16 under autocast)
         per_row = len(m.decoder.layers) * 2 * blk.n_heads * blk.head_dim * (max_len + m.decoder.prefix_len) * elem
         fit_rows = int(0.6 * torch.cuda.mem_get_info()[0] // per_row) // chunk_rows * chunk_rows
         if fit_rows < rows_target:
