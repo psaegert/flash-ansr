@@ -140,12 +140,26 @@ equal-K packing, no compaction.
   - draws: ~23 bytes each, compressed;
   - fitted (then still with a data copy): 72.6 KB.
 
+## Helix smoke run, final configuration (jobs 15975229-31, 2026-11-19)
+64 problems x 512 draws, the release sampler, theta0's prior files, 16 problems per shard.
+- **GPU (A100-SXM4-40GB):**
+  - Rows per decode were capped at 3,792 by free memory (6.2 MiB of cache per row).
+  - Verified pack: max |score - teacher-forced log p| = 9.3e-3 nats (TF32).
+  - Throughput was 402 draws/s cumulative, including model loading and warm-up. The later shards ran several
+    times faster, so the pilot measures the steady rate.
+- **CPU:** 43.3 core-s per problem (91 ms per distinct draw; 478 distinct of 512 after post-processing).
+- **Yield:**
+  - Every problem kept a candidate.
+  - With a front: 64/64 at K = 512, 63/64 under uniform K.
+  - Median |front|: 7 at K = 512, 6 at K 257-512 under uniform K.
+- **Storage:** 114 KB per problem (raw + fitted + both target builds).
+
 ## Cost projection, 1.16M problems x 512 draws (pilot = first 148k)
 | resource | full run | pilot |
 |---|---|---|
 | GPU, before compaction (A40 rate) | ~470 A40-hours | ~60 A40-hours |
-| CPU (37 core-s per problem) | ~190 node-hours | ~24 node-hours |
-| storage (raw 79 KB + fitted ~28 KB + targets ~2 KB per spec, per problem) | ~130 GB | ~16 GB |
+| CPU (43 core-s per problem, Helix smoke run) | ~220 node-hours | ~28 node-hours |
+| storage (114 KB per problem, Helix smoke run) | ~132 GB | ~17 GB |
 - Compaction should cut the GPU time by roughly a third; the pilot measures it, and the A100/H200 rates too.
 - Training reads the raw shards (problem data) and the target shards, so the raw shards stay. The fitted shards are
   only needed to rebuild targets.
