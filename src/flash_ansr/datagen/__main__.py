@@ -3,6 +3,7 @@
     python -m flash_ansr.datagen sample --model-dir M --out RAW --n-problems N --seed S [--k-spec log2uniform:1:512]
                                         [--max-len 128] [--rows 4096] [--amp tf32|bf16|fp32] [--verify-every 0]
     python -m flash_ansr.datagen fit --model-dir M --raw RAW --out FIT [--workers W] [--part i/n] [--restarts R]
+    python -m flash_ansr.datagen targets --raw RAW --fit FIT --out TGT [--workers W] [--part i/n]
 """
 import argparse
 
@@ -28,15 +29,25 @@ def main() -> None:
     f.add_argument("--workers", type=int, default=None)
     f.add_argument("--part", default="0/1")
     f.add_argument("--restarts", type=int, default=None)
+    t = sub.add_parser("targets", help="stage 3 (CPU): front-member and control targets from fitted shards")
+    t.add_argument("--raw", required=True)
+    t.add_argument("--fit", required=True)
+    t.add_argument("--out", required=True)
+    t.add_argument("--workers", type=int, default=None)
+    t.add_argument("--part", default="0/1")
     a = ap.parse_args()
     if a.cmd == "sample":
         from flash_ansr.datagen import sample
         sample.run(a.model_dir, a.out, n_problems=a.n_problems, seed=a.seed, k_spec=a.k_spec, max_len=a.max_len,
                    shard_problems=a.shard_problems, rows_target=a.rows, amp=a.amp, verify_every=a.verify_every)
-    else:
+    elif a.cmd == "fit":
         from flash_ansr.datagen import fit
         i, n = (int(v) for v in a.part.split("/"))
         fit.run(a.raw, a.out, a.model_dir, workers=a.workers, n_restarts=a.restarts, part=(i, n))
+    else:
+        from flash_ansr.datagen import targets
+        i, n = (int(v) for v in a.part.split("/"))
+        targets.run(a.raw, a.fit, a.out, workers=a.workers, part=(i, n))
 
 
 if __name__ == "__main__":

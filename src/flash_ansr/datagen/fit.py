@@ -3,11 +3,17 @@
 Per problem: the deployed post-processing (extract, simplify, deduplicate; :meth:`FlashANSRModel._postprocess_sampled`,
 the same call the chunked sampler makes), then :meth:`FlashANSR._fit_refine` (refit with the configured restarts,
 constant ladder) and :meth:`FlashANSR._build_result` (two-part ranking). Every fitted ledger row is scored on the
-problem's clean validation rows (fresh-point FVU). Rows whose fresh FVU is not below 1 are dropped: the constant
-model dominates them, so they can never be front members. Each kept row records the token sequence of its family's
-root as the ledger holds it, i.e. AFTER the deployed post-processing (simplified, deduplicated, re-encoded), not the
-raw emission; ladder variants share their root's sequence. The raw draws stay in the raw shard (no raw-draw -> family
-map is stored yet).
+problem's clean validation rows (fresh-point FVU). Rows whose fresh FVU is not below 1 are dropped (worse than the
+mean on fresh points). A FAMILY is the set of ledger rows of one deduplicated draw: its fit, its constant-ladder
+variants (``parent`` set) and its typed-thaw re-fits (same beam, no parent); they share the draw's log-prob, which is
+the family key, exactly as the offline oracle (flash-ansr-rl ``target_check_v2``) groups them. Each kept row records
+its beam, the raw emission of the first draw of its dedup class (post-processing deduplicates on the simplified
+expression but hands on the sequence the model emitted).
+
+Every raw draw is traced to its family exactly as the evaluation probe does (``trace_draws``): its status, its
+ACTION (the index of its distinct raw expression within the problem; the unit of the front-member target) and the
+kept family it collapsed into. These per-draw arrays are aligned with the raw shard's draws, so the training target
+of a front member is read back from the raw shard as the model emitted it.
 
 One estimator per worker process with a serial refiner (``ComputeConfig(workers=0)``): parallelism is across
 problems, never nested.
@@ -25,6 +31,10 @@ import numpy as np
 from flash_ansr.datagen import shards
 
 _W: dict[str, Any] = {}
+
+# per-draw status codes (fitted shard key ``draw_status``)
+DRAW_OK, NO_EXPRESSION, MALFORMED_SPAN, INVALID, NONFINITE, NOT_IN_LEDGER = range(6)
+STATUS_NAMES = ("ok", "no_expression", "malformed_span", "invalid", "nonfinite", "not_in_ledger")
 
 
 def _init_worker(model_dir: str, n_restarts: int | None) -> None:
@@ -44,17 +54,60 @@ def _fresh_fvu(pred: np.ndarray, y_val: np.ndarray) -> float:
     return float(np.mean((pred - y_val) ** 2) / var) if var > 0 else float("inf")
 
 
+def trace_draws(m: Any, seqs: list[list[int]]) -> tuple[list[tuple[int, tuple | None, tuple | None, tuple | None]],
+                                                        dict[tuple, list]]:
+    """Per raw draw ``(status, raw expression, dedup key, expression body)``, computed exactly as
+    :meth:`FlashANSRModel._postprocess_sampled` computes them (same extraction, span realization, validity test and
+    simplification), plus the ``simplify_map`` that lets ``_postprocess_sampled`` reuse these simplifications (its
+    output is byte-identical with the map). Each distinct raw expression is simplified once."""
+    from flash_ansr.utils.skeleton import NonFiniteExpressionError, simplify_realized
+    tok, engine = m.tokenizer, m.simplipy_engine
+    cache: dict[tuple, tuple | None] = {}
+    out: list[tuple[int, tuple | None, tuple | None, tuple | None]] = []
+    for seq in seqs:
+        try:
+            enc, _before, _after = tok.extract_expression_from_beam(list(seq))
+        except (ValueError, IndexError):
+            out.append((NO_EXPRESSION, None, None, None))
+            continue
+        realized = m._realize_ieee754_spans(list(enc))
+        if realized is None:
+            out.append((MALFORMED_SPAN, None, None, None))
+            continue
+        expression = tok.constantify_expression(realized, exact=True)
+        if not (engine.is_valid(expression) and len(expression) > 1):
+            out.append((INVALID, None, None, None))
+            continue
+        raw = tuple(expression)
+        if raw not in cache:
+            try:
+                cache[raw] = tuple(simplify_realized(engine, list(expression)))
+            except NonFiniteExpressionError:
+                cache[raw] = None
+        key = cache[raw]
+        out.append((NONFINITE, raw, None, None) if key is None else (DRAW_OK, raw, key, tuple(enc)))
+    return out, {k: list(v) for k, v in cache.items() if v is not None}
+
+
 def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
-    """Fit one raw-shard problem record -> kept candidates and counts (see :mod:`flash_ansr.datagen.shards`)."""
+    """Fit one raw-shard problem record -> kept candidates, the per-draw map and counts (see
+    :mod:`flash_ansr.datagen.shards`)."""
     from flash_ansr.flash_ansr import Generation
     from flash_ansr.utils.tensor_ops import pad_input_set
     w = w if w is not None else _W["w"]
     prompt_prefix = prompt_prefix if prompt_prefix is not None else _W["pp"]
     m = w.flash_ansr_model
     t0 = time.time()
+    trace, smap = trace_draws(m, rec["tokens"])
     seqs, scores, _valid = m._postprocess_sampled(rec["tokens"], rec["log_prob"], simplify=True, unique=True,
-                                                  valid_only=True)
-    out: dict[str, Any] = dict(n_raw=len(rec["tokens"]), n_distinct=len(seqs), n_fitted=0, cand=[], t_post=time.time() - t0)
+                                                  valid_only=True, simplify_map=smap)
+    n_raw = len(rec["tokens"])
+    status = np.array([t[0] for t in trace], np.int8)
+    act_of_raw: dict[tuple, int] = {}
+    draw_act = np.array([act_of_raw.setdefault(t[1], len(act_of_raw)) if t[1] is not None else -1 for t in trace],
+                        np.int32)
+    out: dict[str, Any] = dict(n_raw=n_raw, n_distinct=len(seqs), n_fitted=0, cand=[], t_post=time.time() - t0,
+                               draw_status=status, draw_act=draw_act, draw_fam=np.full(n_raw, -1, np.int32))
     if not seqs:
         return out
     y = np.asarray(rec["y_noisy"], float).reshape(-1, 1)
@@ -76,13 +129,7 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
     L = result.ledger
     parent = list(L.parent) if len(L.parent) == len(L) else [-1] * len(L)
     x_val, y_val = np.asarray(rec["x_val"], float), np.asarray(rec["y_val"], float).reshape(-1)
-    root_of = {}
-    for i in range(len(L)):
-        j = i
-        while parent[j] >= 0:
-            j = parent[j]
-        root_of[i] = j
-    fam_ids: dict[int, int] = {}
+    fam_ids: dict[float, int] = {}                                  # family key: the draw's log-prob
     for i in range(len(L)):
         ri = L.result_index[i] if len(L.result_index) == len(L) else -1
         if ri is None or ri < 0:
@@ -95,13 +142,29 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
             fv = float("inf")
         if not (np.isfinite(fv) and fv < 1.0):
             continue
-        root = root_of[i]
-        fam = fam_ids.setdefault(root, len(fam_ids))
-        out["cand"].append(dict(fam=fam, tokens=list(map(int, L.token_lists[root])), fvu=float(L.fvu[i]), fvu_val=fv,
+        fam = fam_ids.setdefault(float(L.log_prob[i]), len(fam_ids))
+        out["cand"].append(dict(fam=fam, tokens=list(map(int, L.token_lists[i])), fvu=float(L.fvu[i]), fvu_val=fv,
                                 mdl=float(L.mdl[i]) if len(L.mdl) == len(L) else float("nan"),
                                 score=float(L.score[i]) if len(L.score) == len(L) else float("nan"),
                                 n_constants=int(L.n_constants[i]) if len(L.n_constants) == len(L) else -1,
-                                is_variant=bool(parent[i] >= 0), log_prob=float(L.log_prob[root])))
+                                is_variant=bool(parent[i] >= 0), log_prob=float(L.log_prob[i])))
+    # raw draw -> its dedup class's representative (first draw with the key) -> the draw's ledger row (the first
+    # parentless row with that body) -> its family (log-prob)
+    tok = m.tokenizer
+    row_of_body: dict[tuple, int] = {}
+    for j in range(len(L)):
+        if parent[j] < 0:
+            row_of_body.setdefault(tuple(tok.extract_expression_from_beam(list(L.token_lists[j]))[0]), j)
+    first_of_key: dict[tuple, tuple] = {}
+    for d, (st, _raw, key, body) in enumerate(trace):
+        if st != DRAW_OK:
+            continue
+        rep = first_of_key.setdefault(key, body)                    # type: ignore[arg-type]
+        row = row_of_body.get(rep, -1)                              # type: ignore[arg-type]
+        if row < 0:
+            status[d] = NOT_IN_LEDGER
+            continue
+        out["draw_fam"][d] = fam_ids.get(float(L.log_prob[row]), -1)
     out["t_total"] = time.time() - t0
     return out
 
@@ -119,8 +182,9 @@ def _fit_shard(args: tuple[str, str]) -> tuple[str, int, int, float]:
     cand_off[1:] = np.cumsum([len(f["cand"]) for f in fits])
     raw = shards.load(raw_path)
     keep = {k: raw[k] for k in ("problem_id", "k", "skeleton", "noise_level", "x", "x_off", "x_cols", "y_noisy", "y",
-                                "y_off", "x_val", "x_val_off", "x_val_cols", "y_val", "y_val_off")}
+                                "y_off", "x_val", "x_val_off", "x_val_cols", "y_val", "y_val_off", "draw_off")}
     col = lambda key, dt: np.array([c[key] for c in cand], dt)  # noqa: E731
+    cat = lambda key, dt: (np.concatenate([f[key] for f in fits]).astype(dt) if fits else np.zeros(0, dt))  # noqa: E731
     shards.save(out_path, **keep, n_raw=np.array([f["n_raw"] for f in fits], np.int32),
                 n_distinct=np.array([f["n_distinct"] for f in fits], np.int32),
                 n_fitted=np.array([f["n_fitted"] for f in fits], np.int32),
@@ -129,6 +193,8 @@ def _fit_shard(args: tuple[str, str]) -> tuple[str, int, int, float]:
                 fvu_val=col("fvu_val", np.float64), mdl=col("mdl", np.float64), score=col("score", np.float64),
                 n_constants=col("n_constants", np.int16), is_variant=col("is_variant", bool),
                 log_prob_draw=col("log_prob", np.float32),
+                draw_status=cat("draw_status", np.int8), draw_act=cat("draw_act", np.int32),
+                draw_fam=cat("draw_fam", np.int32),
                 t_refine=np.array([f.get("t_refine", 0.0) for f in fits], np.float32),
                 t_post=np.array([f.get("t_post", 0.0) for f in fits], np.float32))
     return out_path, len(recs), len(cand), time.time() - t0
@@ -141,7 +207,8 @@ def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = Non
     from multiprocessing import get_context
     from flash_ansr.utils.cpus import available_cores
     os.makedirs(out_dir, exist_ok=True)
-    raws = sorted(glob.glob(os.path.join(raw_dir, "*.npz")))[part[0]::part[1]]
+    raws = sorted(p for p in glob.glob(os.path.join(raw_dir, "*.npz")) if not p.endswith(".part.npz"))
+    raws = raws[part[0]::part[1]]                                 # a .part.npz is a shard still being written
     jobs = [(r, os.path.join(out_dir, os.path.basename(r))) for r in raws]
     jobs = [j for j in jobs if not os.path.exists(j[1])]
     workers = workers or available_cores()

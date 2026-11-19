@@ -79,6 +79,7 @@ def test_fit_stage_matches_deployed_fit(tmp_path):
     from flash_ansr import FlashANSR, SoftmaxSamplingConfig
     from flash_ansr.datagen import fit as FIT
     from flash_ansr.datagen import sample as S
+    torch.manual_seed(0)
     probs = list(itertools.islice(PR.problem_stream(MODEL, seed=5, k_spec="fixed:24"), 2))
     w = FlashANSR.load(directory=MODEL, compute={"device": "cpu", "workers": 0})
     m = w.flash_ansr_model.eval()
@@ -109,3 +110,113 @@ def test_fit_stage_matches_deployed_fit(tmp_path):
         kept = sorted(round(L.fvu[i], 9) for i in fitted
                       if FIT._fresh_fvu(res.predict(rec["x_val"], rank=L.result_index[i]), np.asarray(rec["y_val"])) < 1)
         assert kept == sorted(round(c["fvu"], 9) for c in ours["cand"])
+
+
+@needs_model
+def test_draw_map_traces_every_draw_to_its_family():
+    """The per-draw map of the fitting stage: post-processing with the trace's simplify_map is byte-identical to the
+    plain call; every valid draw lands in the family whose beam is its dedup class's first draw; draws of one raw
+    expression share their action and family; a draw has a kept family iff some row of its draw (fit, ladder variant
+    or typed-thaw re-fit, all sharing its log-prob) is kept. 12 problems at K = 48 reliably include typed-thaw rows."""
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import fit as FIT
+    from flash_ansr.datagen import sample as S
+    torch.manual_seed(0)
+    probs = list(itertools.islice(PR.problem_stream(MODEL, seed=7, k_spec="fixed:48"), 12))
+    w = FlashANSR.load(directory=MODEL, compute={"device": "cpu", "workers": 0})
+    m = w.flash_ansr_model.eval()
+    pp = w._prepare_prompt_prefix(emission="fittable", complexity=None)
+    eos, pad = int(m.tokenizer["<eos>"]), int(m.tokenizer["<pad>"])
+    tok = m.tokenizer
+    for p in probs:
+        with torch.no_grad():
+            mem = m._create_memory(S.data_tensor(w, p.x, p.y_noisy, "cpu"))
+            seqs, sc = S.decode_pack(m, mem, p.k, pp, 128)
+        rec = dict(problem_id=p.problem_id, k=p.k, x=p.x, y_noisy=p.y_noisy, x_val=p.x_val, y_val=p.y_val,
+                   tokens=[S.trim(r, eos, pad) for r in seqs.tolist()], log_prob=sc.tolist())
+        trace, smap = FIT.trace_draws(m, rec["tokens"])
+        plain = m._postprocess_sampled(rec["tokens"], rec["log_prob"], simplify=True, unique=True, valid_only=True)
+        mapped = m._postprocess_sampled(rec["tokens"], rec["log_prob"], simplify=True, unique=True, valid_only=True,
+                                        simplify_map=smap)
+        assert plain == mapped
+        ours = FIT.fit_problem(rec, w=w, prompt_prefix=pp)
+        st, act, fam = ours["draw_status"], ours["draw_act"], ours["draw_fam"]
+        assert len(st) == len(act) == len(fam) == p.k
+        assert not (st == FIT.NOT_IN_LEDGER).any()
+        assert ((st == FIT.DRAW_OK).sum() == sum(t[0] == FIT.DRAW_OK for t in trace))
+        body = lambda s: tuple(tok.extract_expression_from_beam(list(s))[0])  # noqa: E731
+        root_body = {c["fam"]: body(c["tokens"]) for c in ours["cand"]}
+        for f in root_body:                                             # a family is one draw: one beam, one log-prob
+            assert len({body(c["tokens"]) for c in ours["cand"] if c["fam"] == f}) == 1
+            assert len({c["log_prob"] for c in ours["cand"] if c["fam"] == f}) == 1
+        first_body: dict = {}
+        for d, (s, raw, key, b) in enumerate(trace):
+            if s != FIT.DRAW_OK:
+                assert fam[d] == -1
+                continue
+            first_body.setdefault(key, b)
+            if fam[d] >= 0:
+                assert root_body[fam[d]] == first_body[key]
+        kept_bodies = set(root_body.values())
+        for d, (s, raw, key, b) in enumerate(trace):
+            if s == FIT.DRAW_OK:
+                assert (fam[d] >= 0) == (first_body[key] in kept_bodies)
+        for a in set(act[act >= 0].tolist()):
+            assert len(set(fam[act == a].tolist())) == 1
+            assert len({trace[d][1] for d in np.flatnonzero(act == a)}) == 1
+
+
+def test_pool_front_definition():
+    """Members are distinct raw expressions; dominance is family-wise; the constant model (8 bits, 0) removes an
+    action it dominates entirely; an action without rows is never a member."""
+    from flash_ansr.datagen import targets as TG
+    # rows (bits, y): family 0 = {(10, -3)}, family 1 = {(20, -5), (12, -2)}, family 2 = {(30, -4)}, family 3 = {(9, 0.5)}
+    cand_fam = np.array([0, 1, 1, 2, 3])
+    b = np.array([10.0, 20.0, 12.0, 30.0, 9.0])
+    y = np.array([-3.0, -5.0, -2.0, -4.0, 0.5])
+    # draws: actions 0 and 1 are two raw forms of family 0; action 2 -> family 1; 3 -> family 2; 4 -> family 3;
+    # action 5 has no fitted family; -1 = invalid draw
+    draw_act = np.array([0, 1, 1, 2, 3, 4, 5, -1])
+    draw_fam = np.array([0, 0, 0, 1, 2, 3, -1, -1])
+    acts, afam, front = TG.pool_front(draw_act, draw_fam, cand_fam, b, y)
+    assert acts.tolist() == [0, 1, 2, 3, 4, 5]
+    # family 2 (30, -4) is dominated by family 1's (20, -5); family 3 (9, 0.5) is dominated by the constant model;
+    # family 1 is not dominated: its row (20, -5) is dominated by nobody
+    assert front.tolist() == [True, True, True, False, False, False]
+    assert TG.y_floor(0.0) == -7.0 and TG.y_floor(0.1) == pytest.approx(-4.0) and TG.y_floor(1e-6) == -9.0
+
+
+@needs_model
+def test_target_shards_end_to_end(tmp_path):
+    """sample -> fit -> targets on a few problems: front weights sum to 1 per problem, every target sequence is one of
+    the problem's raw draws, and the control has as many members as the front (or all kept actions)."""
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import fit as FIT
+    from flash_ansr.datagen import sample as S
+    from flash_ansr.datagen import targets as TG
+    raw_dir, fit_dir, tgt_dir = (str(tmp_path / d) for d in ("raw", "fit", "tgt"))
+    S.run(MODEL, raw_dir, n_problems=4, seed=11, k_spec="fixed:24", shard_problems=4, device="cpu", amp="fp32")
+    w = FlashANSR.load(directory=MODEL, compute={"device": "cpu", "workers": 0})
+    FIT._W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None))
+    (raw_path,) = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir)]
+    fit_path = os.path.join(fit_dir, os.path.basename(raw_path))
+    os.makedirs(fit_dir)
+    os.makedirs(tgt_dir)
+    FIT._fit_shard((raw_path, fit_path))
+    tgt_path = os.path.join(tgt_dir, os.path.basename(raw_path))
+    _, n_in, n_out, _ = TG._targets_shard((raw_path, fit_path, tgt_path))
+    assert n_in == 4 and 1 <= n_out <= 4
+    raw, t = shards.load(raw_path), shards.load(tgt_path)
+    pid_raw = list(raw["problem_id"])
+    for i, pid in enumerate(t["problem_id"]):
+        p = pid_raw.index(pid)
+        draws = {tuple(raw["tok"][raw["tok_off"][j]:raw["tok_off"][j + 1]].tolist())
+                 for j in range(raw["draw_off"][p], raw["draw_off"][p + 1])}
+        for name in ("front", "ctrl"):
+            s0, s1 = int(t[f"{name}_off"][i]), int(t[f"{name}_off"][i + 1])
+            assert s1 > s0
+            assert t[f"{name}_w"][s0:s1].sum() == pytest.approx(1.0)
+            for j in range(s0, s1):
+                assert tuple(t[f"{name}_tok"][t[f"{name}_tok_off"][j]:t[f"{name}_tok_off"][j + 1]].tolist()) in draws
+        np.testing.assert_array_equal(shards.unpack(t["y_noisy"], t["y_off"], i), shards.unpack(raw["y_noisy"], raw["y_off"], p))
+        assert t["n_front"][i] >= 1 and t["n_kept_actions"][i] >= 1
