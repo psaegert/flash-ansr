@@ -1404,7 +1404,9 @@ class FlashANSRModel(nn.Module):
 
                 static_cache = StaticKVCache(
                     n_layers=n_layers, batch=bsz, n_heads=n_heads, head_dim=head_dim,
-                    max_len=max_len + self.decoder.prefix_len, device=device, dtype=logits_pre.dtype)
+                    # the K/V's own dtype, not the logits': the head runs in fp32 (head_fp32) while the
+                    # layers write bf16 K/V under autocast, which an fp32 buffer would store at twice the memory
+                    max_len=max_len + self.decoder.prefix_len, device=device, dtype=prefill_cache[0][0][0].dtype)
                 static_cache.seed_from_dynamic(prefill_cache)
                 del prefill_cache
 
