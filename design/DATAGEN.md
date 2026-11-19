@@ -13,8 +13,8 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
     new sampling.
 - **The problem data are stored once, in the raw shard.** Fitted and target shards hold identifiers, and the
   problems line up by position.
-- **No numerical shortcuts.** TF32 sampling, verified against teacher forcing; the deployed post-processing, refit
-  and ladder, unchanged.
+- **No numerical shortcuts.** Sampling runs under bf16 autocast, the model's own training numerics, and was checked
+  at the distribution level (below). The deployed post-processing, refit and ladder are unchanged.
 - **The optimizations remove waste only:**
   - finished row groups are dropped from the decode;
   - CPU fitting runs per problem, not per shard;
@@ -23,7 +23,7 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
 
 ## Stages
 1. **Sample (GPU nodes)**: `datagen/sample.py`, `python -m flash_ansr.datagen sample` (defaults `--k-spec fixed:512
-   --chunk-rows 8`).
+   --chunk-rows 8`; production `--amp bf16 --rows 8192`).
    - Problems come from the model's training prior (`datagen/problems.py`: the bundle's catalog, noise and
      support-size prior, unused columns zeroed, plus 512 clean validation rows).
    - Raw decode only; there is no simplification on the GPU node.
@@ -36,8 +36,8 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
        cache is ever allocated.
      - In a 3M test this removed a third of the decode row-steps (30,720 -> 20,480), with every score still equal to
        its teacher-forced log-likelihood.
-   - **Memory:** rows per decode are capped at 60% of free GPU memory. The fp32 self-attention cache is ~10 MiB per
-     row on 120M at max_len 128.
+   - **Memory:** rows per decode are capped at 60% of free GPU memory. The self-attention cache is 6.2 MiB per row on
+     120M at max_len 128 in fp32, and 3.1 MiB under bf16.
    - **Two opt-in model paths** make packing fit in memory; the deployed decode paths are unchanged:
      - grouped cross-attention (`Attention.forward_static_cross`: a group's rows are folded into its query axis, with
        no per-row copy of the memory K/V);
@@ -165,7 +165,15 @@ equal-K packing, no compaction.
   only needed to rebuild targets.
 
 ## Choices
-- Numerics: TF32.
+- **Numerics: bf16 autocast** (owner 2026-11-19; the model was trained under bf16 autocast). Checked against fp32 on
+  the released 120M, 1,024 sampled sequences (flash-ansr-rl `runs/datagen/dg_bf16_check.py`, run on the local RTX
+  2070):
+  - KL(p_fp32 || p_bf16) is 1.9e-5 nats per token (p99 3e-4) and 1.0e-3 nats per sequence (p99 4.3e-3).
+  - The per-sequence log-prob noise is mean 0.03 nats (p99 0.16), with a signed mean of +-1e-3, so it nearly cancels.
+  - The deployed ranking gives log-probs zero weight. Downstream they are only family keys and ordering.
+  - The earlier "0.04-0.16 nats" was this per-sequence noise, not a distribution shift.
+  - The bf16 throughput on Ampere is measured by Helix job 15977177 and the pilot logs. The A40 benchmark before
+    compaction was 1.2x TF32, and bf16 also halves the cache, which doubles the rows per decode.
 - K: uniform on 1..512 for T, T-noK and B (owner); every K gets the same share of training problems
   (P(K <= 8) = 1.6%). `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
 - Seeds: problem streams use `SeedSequence([seed, 0])` with run seeds from 1000 up. The evaluation sets were drawn
