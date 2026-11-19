@@ -172,8 +172,13 @@ equal-K packing, no compaction.
   - The per-sequence log-prob noise is mean 0.03 nats (p99 0.16), with a signed mean of +-1e-3, so it nearly cancels.
   - The deployed ranking gives log-probs zero weight. Downstream they are only family keys and ordering.
   - The earlier "0.04-0.16 nats" was this per-sequence noise, not a distribution shift.
-  - The bf16 throughput on Ampere is measured by Helix job 15977177 and the pilot logs. The A40 benchmark before
-    compaction was 1.2x TF32, and bf16 also halves the cache, which doubles the rows per decode.
+  - A100-80GB, production packing (Helix job 15977177): TF32 1,329 draws/s, bf16 1,502 (1.13x). The fidelity on
+    the A100 matches: KL 1.3e-3 nats per sequence under bf16, against 1.3e-5 under TF32.
+  - Cache dtype (fixed 2026-11-19, commit 2ef5535): the output head returns fp32 logits even under autocast. A cache
+    created in the logits' dtype therefore kept the bf16 K/V in fp32 buffers, twice the memory, and the bf16 memory cap
+    undercounted by 2x. 13 of 16 pilot sampling tasks ran out of memory on 40-48 GB GPUs before the fix.
+  - The cache now takes the K/V dtype: identical draws, bitwise, at half the memory. A rerun of the speed check with
+    the fixed cache is queued; the deployed static decoder (`flash_ansr_model.py`) has the same logits-dtype cache.
 - K: uniform on 1..512 for T, T-noK and B (owner); every K gets the same share of training problems
   (P(K <= 8) = 1.6%). `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
 - Seeds: problem streams use `SeedSequence([seed, 0])` with run seeds from 1000 up. The evaluation sets were drawn
