@@ -207,7 +207,8 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     if str(device).startswith("cuda") and chunk_rows > 0:
         # cap rows per decode by free memory: the static self-attention cache dominates (fp32 K and V per layer)
         blk = m.decoder.layers[0].self_attention
-        per_row = len(m.decoder.layers) * 2 * blk.n_heads * blk.head_dim * (max_len + m.decoder.prefix_len) * 4
+        elem = 2 if amp == "bf16" else 4                    # the cache takes the logits' dtype (bf16 under autocast)
+        per_row = len(m.decoder.layers) * 2 * blk.n_heads * blk.head_dim * (max_len + m.decoder.prefix_len) * elem
         fit_rows = int(0.6 * torch.cuda.mem_get_info()[0] // per_row) // chunk_rows * chunk_rows
         if fit_rows < rows_target:
             print(f"[sample] rows per decode capped {rows_target} -> {fit_rows} by free GPU memory "
@@ -243,8 +244,8 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
                     seqs, sc = decode_pack(m, mem, rows, pp, max_len, generator=gen)
                 if verify_every and (s // shard_problems) % verify_every == 0 and j == 0:
                     err = verify(m, mem, seqs, sc, rows, pp)
-                    print(f"[sample] verify R={rows} G={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats",
-                          flush=True)
+                    print(f"[sample] verify R={rows} G={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats "
+                          f"(sampled under {amp}, teacher-forced under TF32)", flush=True)
                 S, C = seqs.cpu().tolist(), sc.cpu().tolist()
                 for g, (i, used) in enumerate(grp):
                     toks[i].extend(trim(S[r], eos, pad) for r in range(g * rows, g * rows + used))
