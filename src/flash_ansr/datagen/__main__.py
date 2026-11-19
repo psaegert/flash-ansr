@@ -18,6 +18,8 @@ def main() -> None:
     s.add_argument("--n-problems", type=int, required=True)
     s.add_argument("--seed", type=int, required=True)
     s.add_argument("--k-spec", default="fixed:512")
+    s.add_argument("--prior-dir", default=None, help="bundle holding catalog_train.yaml / dataset_train.yaml "
+                   "(default: --model-dir)")
     s.add_argument("--max-len", type=int, default=128)
     s.add_argument("--shard-problems", type=int, default=256)
     s.add_argument("--rows", type=int, default=4096, help="target rows per packed decode")
@@ -43,7 +45,7 @@ def main() -> None:
         from flash_ansr.datagen import sample
         sample.run(a.model_dir, a.out, n_problems=a.n_problems, seed=a.seed, k_spec=a.k_spec, max_len=a.max_len,
                    shard_problems=a.shard_problems, rows_target=a.rows, chunk_rows=a.chunk_rows, amp=a.amp,
-                   verify_every=a.verify_every)
+                   verify_every=a.verify_every, prior_dir=a.prior_dir)
     elif a.cmd == "fit":
         from flash_ansr.datagen import fit
         i, n = (int(v) for v in a.part.split("/"))

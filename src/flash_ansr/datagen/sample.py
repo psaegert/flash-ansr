@@ -183,9 +183,13 @@ def _chunks(ks: list[int], chunk_rows: int) -> list[tuple[int, int]]:
 
 def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "fixed:512",
         max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 8,
-        device: str = "cuda", amp: str = "tf32", verify_every: int = 0) -> None:
+        device: str = "cuda", amp: str = "tf32", verify_every: int = 0, prior_dir: str | None = None) -> None:
     """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed in groups of ``chunk_rows`` rows (0:
     equal-K packing), write raw shards to ``out_dir``.
+
+    ``prior_dir``: the bundle whose training prior (``catalog_train.yaml``, ``dataset_train.yaml``) the problems come
+    from; default ``model_dir``. A released bundle ships without those files, so the sampler and the prior can come
+    from different directories of the same run.
 
     Resumable at shard granularity: shards already on disk are skipped (the problem stream is replayed)."""
     from flash_ansr import FlashANSR
@@ -209,7 +213,7 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
             print(f"[sample] rows per decode capped {rows_target} -> {fit_rows} by free GPU memory "
                   f"({per_row / 2 ** 20:.1f} MiB of cache per row)", flush=True)
             rows_target = max(chunk_rows, fit_rows)
-    stream = PR.problem_stream(model_dir, seed, k_spec=k_spec)
+    stream = PR.problem_stream(prior_dir or model_dir, seed, k_spec=k_spec)
     t0, done, n_rows, n_used = time.time(), 0, 0, 0
     for s in range(0, n_problems, shard_problems):
         path = os.path.join(out_dir, f"raw_s{seed}_{s // shard_problems:06d}.npz")
