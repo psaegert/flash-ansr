@@ -220,3 +220,29 @@ def test_target_shards_end_to_end(tmp_path):
                 assert tuple(t[f"{name}_tok"][t[f"{name}_tok_off"][j]:t[f"{name}_tok_off"][j + 1]].tolist()) in draws
         np.testing.assert_array_equal(shards.unpack(t["y_noisy"], t["y_off"], i), shards.unpack(raw["y_noisy"], raw["y_off"], p))
         assert t["n_front"][i] >= 1 and t["n_kept_actions"][i] >= 1
+
+
+@needs_model
+def test_chunked_packing_any_k(tmp_path):
+    """Chunked packing (groups of R rows, problems of any K mixed in one decode): every problem gets exactly K draws,
+    and every draw's score equals its teacher-forced log-likelihood under ITS problem's memory."""
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import sample as S
+    torch.manual_seed(0)
+    S.run(MODEL, str(tmp_path), n_problems=6, seed=21, k_spec="uniform:1:40", shard_problems=6, rows_target=64,
+          chunk_rows=8, device="cpu", amp="fp32")
+    (path,) = [os.path.join(tmp_path, f) for f in os.listdir(tmp_path)]
+    recs = list(shards.iter_raw_shard(path))
+    probs = list(itertools.islice(PR.problem_stream(MODEL, seed=21, k_spec="uniform:1:40"), 6))
+    assert [r["k"] for r in recs] == [p.k for p in probs]
+    assert len({r["k"] for r in recs}) > 1 and any(r["k"] % 8 for r in recs)
+    w = FlashANSR.load(directory=MODEL)
+    m = w.flash_ansr_model.eval()
+    pp = w._prepare_prompt_prefix(emission="fittable", complexity=None)
+    tokens0, num0 = m._resolve_generation_prefix(prompt_prefix=pp, initial_tokens=None, input_num=None)
+    with torch.no_grad():
+        for r, p in zip(recs, probs):
+            assert len(r["tokens"]) == len(r["log_prob"]) == r["k"]
+            mem = m._create_memory(S.data_tensor(w, p.x, p.y_noisy, "cpu"))
+            tf = S._teacher_forced(m, mem, r["tokens"], len(tokens0), num0)
+            np.testing.assert_allclose(tf, r["log_prob"], atol=1e-3)

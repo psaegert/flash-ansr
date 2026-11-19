@@ -9,10 +9,16 @@ LEARNINGS T23). Production job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg
 1. **Sample (GPU nodes)**: `datagen/sample.py`.
    - Problems come from the model's training prior (`datagen/problems.py`: the bundle's catalog, noise and
      support-size prior, unused columns zeroed, plus 512 clean validation rows).
-   - Pool size K per problem: `log2uniform:1:512` (K a power of two, log2 K uniform, mean 102.3).
+   - Pool size K per problem: `uniform:1:512` (owner 2026-11-19; mean 256.5). `loguniform:1:512` is the fallback
+     if resources allow a second round.
    - Raw decode only; there is no simplification on the GPU node.
-   - Packing: equal-K problems are decoded together, P x K rows per call. The encoder runs once per problem, and the
-     prefix is prefilled once per problem and expanded.
+   - Packing (`chunk_rows` R = 32): one decode holds groups of R rows. A problem fills ceil(K / R) groups and keeps
+     the first K rows; the rest of its last group is sampled and discarded. Rows are i.i.d., so the K draws stay
+     exact, and the waste is ~6% of rows for uniform K. Groups of any problems pack together.
+   - `chunk_rows=0` keeps the older equal-K packing (R = K, no waste), which packs only when K values repeat.
+   - Rows per decode are capped by free GPU memory: the fp32 self-attention cache is ~10 MiB per row on 120M at
+     max_len 128.
+   - The encoder runs once per problem, and the prefix is prefilled once per group and expanded.
    - Two opt-in model paths make packing fit in memory, and the deployed decode paths are unchanged:
      - cross-attention goes through a grouped path (`Attention.forward_static_cross`: the rows of one problem are
        folded into its query axis, with no per-row copy of the memory K/V);
@@ -67,7 +73,9 @@ LEARNINGS T23). Production job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg
   - Grouped cross-attention == per-row expanded cross-attention.
   - The front definition holds on a hand-made pool.
   - sample -> fit -> targets end to end: weights sum to 1, and every target is one of the problem's raw draws.
-  - `tests/test_datagen.py`: 8 passed. Existing model / inference / ladder tests: 182 passed, 6 skipped (the skips
+  - Chunked packing with mixed K: every problem gets exactly K draws, and every draw's score equals its
+    teacher-forced log-likelihood under its own problem's memory.
+  - `tests/test_datagen.py`: 9 passed. Existing model / inference / ladder tests: 182 passed, 6 skipped (the skips
     need a v24 checkpoint).
 
 ## Measurements (2026-11-19)
@@ -102,16 +110,23 @@ GPU, A100-40GB, theta0-120m, 512 draws of one problem per call (Helix jobs 15959
 - **Storage:** ~70 KB per problem raw, ~71 KB fitted.
 
 ## Cost projection, 1M problems with a front (~1.16M sampled at the measured 14% loss)
-- CPU: 1.16M x 8.2 core-s = ~2,650 core-hours = ~41 node-hours (64 cores), ~2 h on 20 nodes.
-- GPU: 1.16M / 3.2 per s = ~100 A40-hours in TF32 (~13 h on 8 GPUs). A100/H200 are faster (to measure).
+The measurements above are at mean K 109. Uniform K (mean 256.5) needs ~2.4x the draws, plus ~6% of chunk waste on
+the GPU.
+- CPU: ~75 ms per distinct draw -> ~19 core-s per problem; 1.16M problems = ~6,200 core-hours = ~100 node-hours
+  (64 cores), ~6 h on 16 nodes.
+- GPU: ~330 useful draws/s per A40 -> 1.16M x 256.5 draws = ~250 A40-hours in TF32 (~8 h on 32 GPUs). A100/H200 are
+  faster (to measure in the pilot).
+- Pilot (first 148k problems, 8 tasks): ~32 A40-hours and ~12 node-hours.
   - Next lever: row compaction. Finished rows are still computed every step, about half of all row-steps, so
     skipping them is worth ~1.5x.
-- Storage: ~80 GB raw + ~85 GB fitted + target shards (input data plus a few sequences per problem). The target stage
-  reads the raw shards, so they are kept until training ends.
+- Storage: ~2.4x the log2-prior measurement, i.e. ~200 GB raw + ~200 GB fitted + target shards (input data plus a
+  few sequences per problem). The target stage reads the raw shards, so they are kept until training ends.
 
 ## Choices
 - Numerics: TF32 (bf16 is only 1.2x faster on an A40 and shifts sequence log-probs by up to 0.16 nats).
-- K: log2-uniform on 1..512 (powers of two, so equal-K problems pack together).
+- K: uniform on 1..512 (owner). Every K gets the same share of training problems, so the deployed high-K
+  conditionals get most of the signal (P(K <= 8) = 1.6%), at 2.5x the draws of log2-uniform.
+  `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
 - Seeds: problem streams use `SeedSequence([seed, 0])` with run seeds from 1000 up. The evaluation sets were drawn
   with `default_rng(20261116...20261199)` and a fixed 512-point support, so the problems are disjoint by
   construction; skeletons repeat, as in pretraining.

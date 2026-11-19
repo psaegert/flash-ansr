@@ -1,10 +1,14 @@
 """Stage 1 (GPU nodes): raw draws for many problems at once.
 
-Packing: problems with the same pool size K are decoded together, ``P`` problems x ``K`` rows in one batch. The
-encoder runs once per problem; the prefix is prefilled once per problem (batch ``P``) and expanded to the rows; the
-cross-attention reads each problem's own memory through the grouped path of
-:meth:`MultiHeadAttention.forward_static_cross` (no per-row copy of the memory K/V); self-attention reads only the
-written slots (``StaticKVCache.live_slice``). Sampling is plain softmax sampling at temperature 1 (the deployed
+Packing: one decode holds ``G`` groups of ``R`` rows each (``R`` = ``chunk_rows``). A problem with pool size K fills
+ceil(K / R) groups: its K draws are the first K rows of those groups, and the unused rows of its last group are
+sampled and discarded (rows are i.i.d., so dropping them leaves the K draws exact; the waste is under R rows per
+problem, ~6% of rows at R = 32 for K uniform on 1..512). Groups of different problems pack together, so any K
+distribution fills the GPU. With ``chunk_rows=0`` the older mode applies: equal-K problems only, R = K (no waste, but
+packs only when K values repeat, e.g. powers of two). The encoder runs once per problem; the prefix is prefilled once
+per group and expanded to its rows; the cross-attention reads each group's memory through the grouped path of
+:meth:`Attention.forward_static_cross` (no per-row copy of the memory K/V); self-attention reads only the written
+slots (``StaticKVCache.live_slice``). Sampling is plain softmax sampling at temperature 1 (the deployed
 ``top_k=0, top_p=1``), scored with the raw log-softmax, exactly as the static sampler scores. No simplification here:
 raw sequences go to the CPU stage (:mod:`flash_ansr.datagen.fit`).
 
@@ -134,10 +138,16 @@ def max_rows_for(k: int, bytes_free: float, per_row: float, per_problem: float) 
     return max(1, p) * k
 
 
-def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "log2uniform:1:512",
-        max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, device: str = "cuda",
-        amp: str = "tf32", verify_every: int = 0) -> None:
-    """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed by K, write raw shards to ``out_dir``.
+def _chunks(ks: list[int], chunk_rows: int) -> list[tuple[int, int]]:
+    """``(problem index, used rows)`` per group: problem i with pool size k fills ceil(k / R) groups of R rows."""
+    return [(i, min(chunk_rows, k - c * chunk_rows)) for i, k in enumerate(ks) for c in range(-(-k // chunk_rows))]
+
+
+def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "uniform:1:512",
+        max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 32,
+        device: str = "cuda", amp: str = "tf32", verify_every: int = 0) -> None:
+    """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed in groups of ``chunk_rows`` rows (0:
+    equal-K packing), write raw shards to ``out_dir``.
 
     Resumable at shard granularity: shards already on disk are skipped (the problem stream is replayed)."""
     from flash_ansr import FlashANSR
@@ -152,33 +162,57 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     gen = torch.Generator(device=device)
     gen.manual_seed(int(seed))
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if amp == "bf16" else nullcontext()
+    if str(device).startswith("cuda") and chunk_rows > 0:
+        # cap rows per decode by free memory: the static self-attention cache dominates (fp32 K and V per layer)
+        blk = m.decoder.layers[0].self_attention
+        per_row = len(m.decoder.layers) * 2 * blk.n_heads * blk.head_dim * (max_len + m.decoder.prefix_len) * 4
+        fit_rows = int(0.6 * torch.cuda.mem_get_info()[0] // per_row) // chunk_rows * chunk_rows
+        if fit_rows < rows_target:
+            print(f"[sample] rows per decode capped {rows_target} -> {fit_rows} by free GPU memory "
+                  f"({per_row / 2 ** 20:.1f} MiB of cache per row)", flush=True)
+            rows_target = max(chunk_rows, fit_rows)
     stream = PR.problem_stream(model_dir, seed, k_spec=k_spec)
-    t0, done = time.time(), 0
+    t0, done, n_rows, n_used = time.time(), 0, 0, 0
     for s in range(0, n_problems, shard_problems):
         path = os.path.join(out_dir, f"raw_s{seed}_{s // shard_problems:06d}.npz")
         batch = [next(stream) for _ in range(min(shard_problems, n_problems - s))]
         if os.path.exists(path):
             continue
-        draws: dict[int, tuple[list, list]] = {}
-        by_k: dict[int, list[int]] = {}
-        for i, p in enumerate(batch):
-            by_k.setdefault(p.k, []).append(i)
-        for k, idx in by_k.items():
-            per_pack = max(1, rows_target // k)
-            for j in range(0, len(idx), per_pack):
-                grp = idx[j:j + per_pack]
+        toks: list[list[list[int]]] = [[] for _ in batch]
+        lps: list[list[float]] = [[] for _ in batch]
+        if chunk_rows > 0:
+            with torch.no_grad(), autocast:
+                mems = [m._create_memory(data_tensor(w, p.x, p.y_noisy, device)) for p in batch]
+            plan = [(_chunks([p.k for p in batch], chunk_rows), chunk_rows)]
+        else:
+            by_k: dict[int, list[int]] = {}
+            for i, p in enumerate(batch):
+                by_k.setdefault(p.k, []).append(i)
+            mems = None
+            plan = [([(i, k) for i in idx], k) for k, idx in by_k.items()]
+        for groups, rows in plan:
+            per_pack = max(1, rows_target // rows)
+            for j in range(0, len(groups), per_pack):
+                grp = groups[j:j + per_pack]
                 with torch.no_grad(), autocast:
-                    mem = torch.cat([m._create_memory(data_tensor(w, batch[i].x, batch[i].y_noisy, device)) for i in grp], 0)
-                    seqs, sc = decode_pack(m, mem, k, pp, max_len, generator=gen)
+                    mem = torch.cat([mems[i] if mems is not None else
+                                     m._create_memory(data_tensor(w, batch[i].x, batch[i].y_noisy, device))
+                                     for i, _ in grp], 0)
+                    seqs, sc = decode_pack(m, mem, rows, pp, max_len, generator=gen)
                 if verify_every and (s // shard_problems) % verify_every == 0 and j == 0:
-                    err = verify(m, mem, seqs, sc, k, pp)
-                    print(f"[sample] verify K={k} P={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats", flush=True)
+                    err = verify(m, mem, seqs, sc, rows, pp)
+                    print(f"[sample] verify R={rows} G={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats",
+                          flush=True)
                 S, C = seqs.cpu().tolist(), sc.cpu().tolist()
-                for g, i in enumerate(grp):
-                    rr = range(g * k, (g + 1) * k)
-                    draws[i] = ([trim(S[r], eos, pad) for r in rr], [C[r] for r in rr])
-        shards.write_raw_shard(path, batch, [draws[i] for i in range(len(batch))])
+                for g, (i, used) in enumerate(grp):
+                    toks[i].extend(trim(S[r], eos, pad) for r in range(g * rows, g * rows + used))
+                    lps[i].extend(C[r] for r in range(g * rows, g * rows + used))
+                n_rows += len(grp) * rows
+                n_used += sum(u for _, u in grp)
+        assert all(len(t) == p.k for t, p in zip(toks, batch))
+        shards.write_raw_shard(path, batch, list(zip(toks, lps)))
         done += len(batch)
         el = time.time() - t0
-        print(f"[sample] {os.path.basename(path)}: {len(batch)} problems, {sum(len(d[0]) for d in draws.values())} draws | "
-              f"{done} in {el / 60:.1f} min = {done / max(el, 1e-9):.2f} problems/s", flush=True)
+        print(f"[sample] {os.path.basename(path)}: {len(batch)} problems, {sum(len(t) for t in toks)} draws | "
+              f"{done} in {el / 60:.1f} min = {done / max(el, 1e-9):.2f} problems/s, "
+              f"{n_used / max(el, 1e-9):.0f} draws/s, row use {n_used / max(n_rows, 1):.1%}", flush=True)
