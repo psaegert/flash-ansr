@@ -1681,6 +1681,11 @@ class FlashANSR(BaseEstimator):
         """
 
         generation_kwargs = self.generation_config.to_kwargs()
+        if generation_kwargs.get('max_len') is None:
+            # The default: decode up to the model's own limit. Both decoders stop once every row has ended,
+            # so this costs only the time the genuinely long draws take; a fixed 64 truncated about a fifth of
+            # T8-120M's draws (lengths incl. the prompt: median 50, 99.9% 105 tokens).
+            generation_kwargs['max_len'] = int(self.flash_ansr_model.decoder_max_seq_len)
         if draws is not None:
             generation_kwargs['draws'] = int(draws)
         generation_kwargs.pop('emission', None)   # a prompt-prefix matter, resolved by `generate`

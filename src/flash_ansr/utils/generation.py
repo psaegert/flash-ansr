@@ -71,7 +71,8 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     constant left as a placeholder for the refiner), ``'skeleton'`` (placeholders only) or
     ``'constants'`` (the unflagged training format, constants spelled as ieee754 spans);
     ``temperature`` / ``top_k`` / ``top_p`` / ``max_len`` / ``unique`` / ``valid_only`` /
-    ``simplify`` shape the draw; ``guidance_weight`` (optional-condition models) combines the
+    ``simplify`` shape the draw (``max_len=None``, the default, decodes up to the model's own
+    ``decoder_max_seq_len``; a smaller value truncates longer draws, which then fail validity); ``guidance_weight`` (optional-condition models) combines the
     conditioned and the unconditioned next-token logits, ``0.0`` being the pure unconditioned decode
     from the learned null memory (the prior-decode control) and ``None`` / ``1.0`` the plain
     conditioned decode; ``batch_size`` / ``use_cache`` / ``static_decode`` are the compute group,
@@ -100,7 +101,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
     emission: str
     top_k: int
     top_p: float
-    max_len: int
+    max_len: int | None
     batch_size: int | str
     temperature: float
     valid_only: bool
@@ -118,7 +119,7 @@ class SoftmaxSamplingConfig(GenerationConfigBase):
         emission: str = 'fittable',
         top_k: int = 0,
         top_p: float = 1.0,
-        max_len: int = 64,
+        max_len: int | None = None,   # None = the model's decoder_max_seq_len (no truncation below the model's limit)
         batch_size: int | str = 'auto',   # c-adaptive chunk size (suggest_batch_size); int overrides
         temperature: float = 1.0,
         valid_only: bool = True,
