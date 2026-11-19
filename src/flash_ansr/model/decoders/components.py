@@ -217,7 +217,7 @@ class Attention(nn.Module):
         k_buf: torch.Tensor,
         v_buf: torch.Tensor,
         position: int,
-        attn_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,   # None: k_buf/v_buf are the live slice (StaticKVCache.live_slice)
     ) -> torch.Tensor:
         """Position-indexed self-attention for a single new token (seq_len_q == 1). Writes the new
         K/V into the preallocated buffers at ``position`` (replacing the dynamic ``torch.cat`` grow),
@@ -265,6 +265,23 @@ class Attention(nn.Module):
             ca_holder[0] = cached
         k, v = cached
         q = self.w_q(query).view(batch_size_q, seq_len_q, self.n_heads, self.head_dim).transpose(1, 2)
+        n_groups = k.shape[0]
+        if 1 < n_groups < batch_size_q:
+            # GROUPED memory (packed decoding, flash_ansr.datagen): rows are problem-major, R = B / P rows
+            # per memory. Cross-attention has no mask and every query attends independently, so the rows of
+            # one problem are folded into that problem's query axis: q (B, H, Lq, D) -> (P, H, R*Lq, D)
+            # against its own K/V (P, H, S, D). Exact (the same per-query softmax), and no per-row copy of
+            # the memory's K/V.
+            if batch_size_q % n_groups:
+                raise ValueError(f"grouped cross-attention: {batch_size_q} query rows do not split into {n_groups} groups")
+            rows = batch_size_q // n_groups
+            qg = q.reshape(n_groups, rows, self.n_heads, seq_len_q, self.head_dim).permute(0, 2, 1, 3, 4)
+            qg = qg.reshape(n_groups, self.n_heads, rows * seq_len_q, self.head_dim)
+            out = F.scaled_dot_product_attention(qg, k, v)
+            out = out.reshape(n_groups, self.n_heads, rows, seq_len_q, self.head_dim).permute(0, 2, 1, 3, 4)
+            attn_output = out.reshape(batch_size_q, self.n_heads, seq_len_q, self.head_dim)
+            attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size_q, seq_len_q, -1)
+            return self.w_o(attn_output)
         # Ensure K/V batch dim matches Q (handles encoder memory broadcast); a stride-0 view, so
         # satisfying the shape contract costs no copy. Cached so the expand runs once per decode.
         if k.shape[0] != batch_size_q:
@@ -415,7 +432,7 @@ class TransformerDecoderBlock(nn.Module):
         sa_buf: Tuple[torch.Tensor, torch.Tensor],
         ca_holder: list,
         position: int,
-        attn_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,   # None: k_buf/v_buf are the live slice (StaticKVCache.live_slice)
     ) -> torch.Tensor:
         """Pre-norm static decode step (pre-norm, RoPE-self only; XSA supported;
         the caller capability-gates the rest). Mirrors the pre-norm branch of ``_forward`` but with

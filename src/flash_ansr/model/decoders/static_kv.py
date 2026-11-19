@@ -45,6 +45,10 @@ class StaticKVCache:
         self.n_heads = n_heads
         self.head_dim = head_dim
         self.max_len = max_len
+        # live_slice: attend over the written slots [0:position+1] only (a sliced view, no mask) instead of the
+        # full buffer under a mask. Not graph-capturable (the key length changes every step); the packed
+        # sampler of flash_ansr.datagen sets it, every other caller keeps the masked full-buffer read.
+        self.live_slice = False
         self.device = device
         self.dtype = dtype
         self.sa_k = [torch.zeros(batch, n_heads, max_len, head_dim, device=device, dtype=dtype) for _ in range(n_layers)]

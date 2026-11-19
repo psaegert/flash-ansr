@@ -234,12 +234,15 @@ class TransformerDecoder(nn.Module):
             encoder_memory = self.cross_attn_kv_proj(encoder_memory)
             encoder_memory = self.cross_attn_kv_norm(encoder_memory)
 
-        attn_mask = static_cache.attend_mask(position)
+        live = bool(getattr(static_cache, "live_slice", False))
+        attn_mask = None if live else static_cache.attend_mask(position)
         for i, layer in enumerate(self.layers):
             block = cast(TransformerDecoderBlock, layer)  # nn.ModuleList yields Module; narrow for forward_static
+            sa_buf = ((static_cache.sa_k[i][:, :, :position + 1], static_cache.sa_v[i][:, :, :position + 1]) if live
+                      else (static_cache.sa_k[i], static_cache.sa_v[i]))
             h = block.forward_static(
                 h, encoder_memory, rope_emb,
-                (static_cache.sa_k[i], static_cache.sa_v[i]),
+                sa_buf,
                 static_cache.ca[i], position, attn_mask,
             )
         return self.output_norm(h)

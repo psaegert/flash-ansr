@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Opt-in decode paths for packed sampling.** `Attention.forward_static_cross` accepts a memory with one entry per
+  group of query rows (the rows of a group share it; no per-row copy of the cross K/V), and `StaticKVCache.live_slice`
+  makes the static decoder read only the written self-attention slots (a sliced view instead of the masked full
+  buffer). Both are off by default; the deployed decode paths are unchanged.
+
 ### Fixed
 - **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
   and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or
