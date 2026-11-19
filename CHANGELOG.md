@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`SoftmaxSamplingConfig.max_len` defaults to the model's own limit.** The default was 64 tokens (prompt
+  included), and a draw that had not ended by then was cut off and failed validity. On T8-120M (its step-1.2M
+  checkpoint, 4,096 draws on 8 training-prior problems) 21 % of the draws are longer than 64 tokens (median 50, 99.9 %
+  105, none above 128), so the default silently discarded about a fifth of them. `max_len=None` (the new default)
+  decodes up to `decoder_max_seq_len` (256 for the T8 models); both decoders stop once every row has ended, so the
+  cost is the time the genuinely long draws take. Pass an integer to keep a fixed cap.
+
 ### Fixed
 - **A one-token fraction is read as its nearest float.** The literal values of a training target (its ieee754 spans)
   and the refinement seeds read an exact rational `p/q` as `float(p) / float(q)`, three roundings that land an ulp or
