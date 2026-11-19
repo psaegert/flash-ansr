@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`flash_ansr.datagen`: a split pipeline that produces fitted candidate pools at scale.** Stage 1 on GPU nodes
+  (`python -m flash_ansr.datagen sample`) draws problems from a bundle's training prior, with 512 clean validation
+  rows and a pool size K per problem, and samples K raw draws per problem. Problems with equal K are decoded together:
+  the encoder and the prompt prefill run once per problem. Stage 2 on CPU nodes (`... fit`) runs the deployed
+  post-processing, refit and constant ladder with one serial refiner per process, scores every candidate on the
+  validation rows and keeps those with fresh FVU below 1. Checked: stage 2 reproduces `FlashANSR.fit` on the same
+  draws, and every packed row's score equals its teacher-forced log-likelihood. Design, measurements and the cost
+  projection are in `design/DATAGEN.md`.
 - **Opt-in decode paths for packed sampling.** `Attention.forward_static_cross` accepts a memory with one entry per
   group of query rows (the rows of a group share it; no per-row copy of the cross K/V), and `StaticKVCache.live_slice`
   makes the static decoder read only the written self-attention slots (a sliced view instead of the masked full
