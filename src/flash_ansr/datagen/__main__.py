@@ -1,10 +1,10 @@
 """CLI of the split pipeline.
 
-    python -m flash_ansr.datagen sample --model-dir M --out RAW --n-problems N --seed S [--k-spec uniform:1:512]
-                                        [--max-len 128] [--rows 4096] [--chunk-rows 32] [--amp tf32|bf16|fp32]
+    python -m flash_ansr.datagen sample --model-dir M --out RAW --n-problems N --seed S [--k-spec fixed:512]
+                                        [--max-len 128] [--rows 4096] [--chunk-rows 8] [--amp tf32|bf16|fp32]
                                         [--verify-every 0]
     python -m flash_ansr.datagen fit --model-dir M --raw RAW --out FIT [--workers W] [--part i/n] [--restarts R]
-    python -m flash_ansr.datagen targets --raw RAW --fit FIT --out TGT [--workers W] [--part i/n]
+    python -m flash_ansr.datagen targets --raw RAW --fit FIT --out TGT --k-spec SPEC [--workers W] [--part i/n]
 """
 import argparse
 
@@ -17,11 +17,11 @@ def main() -> None:
     s.add_argument("--out", required=True)
     s.add_argument("--n-problems", type=int, required=True)
     s.add_argument("--seed", type=int, required=True)
-    s.add_argument("--k-spec", default="uniform:1:512")
+    s.add_argument("--k-spec", default="fixed:512")
     s.add_argument("--max-len", type=int, default=128)
     s.add_argument("--shard-problems", type=int, default=256)
     s.add_argument("--rows", type=int, default=4096, help="target rows per packed decode")
-    s.add_argument("--chunk-rows", type=int, default=32, help="rows per group (0: equal-K packing, rows = K)")
+    s.add_argument("--chunk-rows", type=int, default=8, help="rows per group (0: equal-K packing, rows = K)")
     s.add_argument("--amp", default="tf32", choices=["fp32", "tf32", "bf16"])
     s.add_argument("--verify-every", type=int, default=0, help="verify the first pack of every n-th shard (0: never)")
     f = sub.add_parser("fit", help="stage 2 (CPU): post-process, refit, ladder, rank, fresh FVU")
@@ -35,6 +35,7 @@ def main() -> None:
     t.add_argument("--raw", required=True)
     t.add_argument("--fit", required=True)
     t.add_argument("--out", required=True)
+    t.add_argument("--k-spec", required=True, help="training pool size per problem, e.g. uniform:1:512, fixed:512")
     t.add_argument("--workers", type=int, default=None)
     t.add_argument("--part", default="0/1")
     a = ap.parse_args()
@@ -50,7 +51,7 @@ def main() -> None:
     else:
         from flash_ansr.datagen import targets
         i, n = (int(v) for v in a.part.split("/"))
-        targets.run(a.raw, a.fit, a.out, workers=a.workers, part=(i, n))
+        targets.run(a.raw, a.fit, a.out, k_spec=a.k_spec, workers=a.workers, part=(i, n))
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ import glob
 import os
 import time
 import zlib
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -37,7 +37,18 @@ DRAW_OK, NO_EXPRESSION, MALFORMED_SPAN, INVALID, NONFINITE, NOT_IN_LEDGER = rang
 STATUS_NAMES = ("ok", "no_expression", "malformed_span", "invalid", "nonfinite", "not_in_ledger")
 
 
+def _dump_stacks_later() -> None:
+    """``DG_FAULTHANDLER=<seconds>``: dump every thread's stack to stderr every that many seconds (hang diagnosis
+    without ptrace)."""
+    secs = os.environ.get("DG_FAULTHANDLER")
+    if secs:
+        import faulthandler
+        import sys
+        faulthandler.dump_traceback_later(int(secs), repeat=True, file=sys.stderr)
+
+
 def _init_worker(model_dir: str, n_restarts: int | None) -> None:
+    _dump_stacks_later()
     import torch
     torch.set_num_threads(1)
     from flash_ansr import FlashANSR
@@ -169,20 +180,15 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
     return out
 
 
-def _fit_shard(args: tuple[str, str]) -> tuple[str, int, int, float]:
-    raw_path, out_path = args
-    if os.path.exists(out_path):
-        return out_path, -1, 0, 0.0
-    t0 = time.time()
-    recs = list(shards.iter_raw_shard(raw_path))
-    fits = [fit_problem(r) for r in recs]
+def _write_fitted(raw_path: str, out_path: str, fits: list[dict]) -> int:
+    """Write one fitted shard from the per-problem fits (problem order of the raw shard). The problem data stay in
+    the raw shard (aligned by position and ``draw_off``); only identifiers are repeated here."""
     cand = [c for f in fits for c in f["cand"]]
     fam_tok, fam_tok_off = shards.pack([np.asarray(c["tokens"], np.uint16) for c in cand], np.uint16)
-    cand_off = np.zeros(len(recs) + 1, np.int64)
+    cand_off = np.zeros(len(fits) + 1, np.int64)
     cand_off[1:] = np.cumsum([len(f["cand"]) for f in fits])
     raw = shards.load(raw_path)
-    keep = {k: raw[k] for k in ("problem_id", "k", "skeleton", "noise_level", "x", "x_off", "x_cols", "y_noisy", "y",
-                                "y_off", "x_val", "x_val_off", "x_val_cols", "y_val", "y_val_off", "draw_off")}
+    keep = {k: raw[k] for k in ("problem_id", "k", "skeleton", "noise_level", "draw_off")}
     col = lambda key, dt: np.array([c[key] for c in cand], dt)  # noqa: E731
     cat = lambda key, dt: (np.concatenate([f[key] for f in fits]).astype(dt) if fits else np.zeros(0, dt))  # noqa: E731
     shards.save(out_path, **keep, n_raw=np.array([f["n_raw"] for f in fits], np.int32),
@@ -197,13 +203,33 @@ def _fit_shard(args: tuple[str, str]) -> tuple[str, int, int, float]:
                 draw_fam=cat("draw_fam", np.int32),
                 t_refine=np.array([f.get("t_refine", 0.0) for f in fits], np.float32),
                 t_post=np.array([f.get("t_post", 0.0) for f in fits], np.float32))
-    return out_path, len(recs), len(cand), time.time() - t0
+    return len(cand)
+
+
+def _fit_shard(args: tuple[str, str]) -> tuple[str, int, int, float]:
+    """Fit one raw shard serially in this process (tests, small runs)."""
+    raw_path, out_path = args
+    if os.path.exists(out_path):
+        return out_path, -1, 0, 0.0
+    t0 = time.time()
+    fits = [fit_problem(r) for r in shards.iter_raw_shard(raw_path)]
+    n_cand = _write_fitted(raw_path, out_path, fits)
+    return out_path, len(fits), n_cand, time.time() - t0
+
+
+def _fit_task(task: tuple[tuple[int, int], dict]) -> tuple[tuple[int, int], dict]:
+    key, rec = task
+    return key, fit_problem(rec)
 
 
 def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = None, n_restarts: int | None = None,
-        part: tuple[int, int] = (0, 1)) -> None:
+        part: tuple[int, int] = (0, 1), shards_in_flight: int = 4) -> None:
     """Fit every raw shard in ``raw_dir`` not yet fitted in ``out_dir``; ``part = (i, n)`` takes every n-th shard
-    starting at i (one SLURM array task per part). Resumable: finished shards are skipped."""
+    starting at i (one SLURM array task per part). Resumable: finished shards are skipped.
+
+    Parallel over PROBLEMS (not shards), so a node never idles on a last, partial wave of shards; at most
+    ``shards_in_flight`` shards are loaded at once, and a shard is written as soon as its last problem returns."""
+    import threading
     from multiprocessing import get_context
     from flash_ansr.utils.cpus import available_cores
     os.makedirs(out_dir, exist_ok=True)
@@ -212,12 +238,47 @@ def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = Non
     jobs = [(r, os.path.join(out_dir, os.path.basename(r))) for r in raws]
     jobs = [j for j in jobs if not os.path.exists(j[1])]
     workers = workers or available_cores()
-    print(f"[fit] {len(jobs)} shards to fit with {workers} workers (part {part})", flush=True)
-    t0, n_prob, n_cand = time.time(), 0, 0
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(var, "1")     # one core per worker; inherited by the spawned workers before numpy loads
+    _dump_stacks_later()
+    print(f"[fit] {len(jobs)} shards to fit with {workers} workers, problem-level (part {part})", flush=True)
+    slots = threading.BoundedSemaphore(max(1, shards_in_flight))
+    stop = threading.Event()               # set on any exit, so the feeder never blocks Pool.terminate()
+    n_of: dict[int, int] = {}
+
+    def tasks() -> Iterator[tuple[tuple[int, int], dict]]:     # runs in the pool's feeder thread
+        for si, (raw_path, _) in enumerate(jobs):
+            while not slots.acquire(timeout=1.0):
+                if stop.is_set():
+                    return
+            recs = list(shards.iter_raw_shard(raw_path))
+            n_of[si] = len(recs)
+            if not recs:                                          # nothing will come back for an empty shard
+                _write_fitted(*jobs[si], [])
+                slots.release()
+                continue
+            for p, rec in enumerate(recs):
+                yield (si, p), rec
+
+    t0, n_prob, n_cand, done = time.time(), 0, 0, 0
+    pending: dict[int, dict[int, dict]] = {}
     with get_context("spawn").Pool(workers, initializer=_init_worker, initargs=(model_dir, n_restarts)) as pool:
-        for k, (path, n, c, dt) in enumerate(pool.imap_unordered(_fit_shard, jobs)):
-            if n > 0:
-                n_prob, n_cand = n_prob + n, n_cand + c
-            el = time.time() - t0
-            print(f"[fit] {k + 1}/{len(jobs)} {os.path.basename(path)}: {n} problems, {c} kept, {dt:.0f} s | "
-                  f"total {n_prob} problems in {el / 60:.1f} min = {n_prob / max(el, 1e-9):.2f} problems/s", flush=True)
+        try:
+            for (si, p), res in pool.imap_unordered(_fit_task, tasks(), chunksize=1):
+                pending.setdefault(si, {})[p] = res
+                if len(pending[si]) == n_of[si]:
+                    got = pending.pop(si)
+                    fits = [got[q] for q in range(n_of[si])]
+                    c = _write_fitted(*jobs[si], fits)
+                    slots.release()
+                    done, n_prob, n_cand = done + 1, n_prob + len(fits), n_cand + c
+                    el = time.time() - t0
+                    print(f"[fit] {done}/{len(jobs)} {os.path.basename(jobs[si][1])}: {len(fits)} problems, {c} kept | "
+                          f"total {n_prob} problems in {el / 60:.1f} min = {n_prob / max(el, 1e-9):.2f} problems/s",
+                          flush=True)
+        except BaseException:
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            stop.set()

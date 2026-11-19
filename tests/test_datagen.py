@@ -188,38 +188,55 @@ def test_pool_front_definition():
 
 @needs_model
 def test_target_shards_end_to_end(tmp_path):
-    """sample -> fit -> targets on a few problems: front weights sum to 1 per problem, every target sequence is one of
-    the problem's raw draws, and the control has as many members as the front (or all kept actions)."""
+    """sample (one pool of 24 draws per problem) -> fit -> targets under two K specs: every problem is recorded, its K
+    is deterministic and within the pool, front weights sum to 1 where there is a front, every target is one of the
+    problem's first K raw draws, and the full-pool spec gives the front of all draws."""
     from flash_ansr import FlashANSR
     from flash_ansr.datagen import fit as FIT
     from flash_ansr.datagen import sample as S
     from flash_ansr.datagen import targets as TG
-    raw_dir, fit_dir, tgt_dir = (str(tmp_path / d) for d in ("raw", "fit", "tgt"))
+    torch.manual_seed(0)
+    raw_dir, fit_dir = str(tmp_path / "raw"), str(tmp_path / "fit")
     S.run(MODEL, raw_dir, n_problems=4, seed=11, k_spec="fixed:24", shard_problems=4, device="cpu", amp="fp32")
     w = FlashANSR.load(directory=MODEL, compute={"device": "cpu", "workers": 0})
     FIT._W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None))
     (raw_path,) = [os.path.join(raw_dir, f) for f in os.listdir(raw_dir)]
-    fit_path = os.path.join(fit_dir, os.path.basename(raw_path))
     os.makedirs(fit_dir)
-    os.makedirs(tgt_dir)
+    fit_path = os.path.join(fit_dir, os.path.basename(raw_path))
     FIT._fit_shard((raw_path, fit_path))
-    tgt_path = os.path.join(tgt_dir, os.path.basename(raw_path))
-    _, n_in, n_out, _ = TG._targets_shard((raw_path, fit_path, tgt_path))
-    assert n_in == 4 and 1 <= n_out <= 4
-    raw, t = shards.load(raw_path), shards.load(tgt_path)
-    pid_raw = list(raw["problem_id"])
-    for i, pid in enumerate(t["problem_id"]):
-        p = pid_raw.index(pid)
-        draws = {tuple(raw["tok"][raw["tok_off"][j]:raw["tok_off"][j + 1]].tolist())
-                 for j in range(raw["draw_off"][p], raw["draw_off"][p + 1])}
-        for name in ("front", "ctrl"):
-            s0, s1 = int(t[f"{name}_off"][i]), int(t[f"{name}_off"][i + 1])
-            assert s1 > s0
-            assert t[f"{name}_w"][s0:s1].sum() == pytest.approx(1.0)
-            for j in range(s0, s1):
-                assert tuple(t[f"{name}_tok"][t[f"{name}_tok_off"][j]:t[f"{name}_tok_off"][j + 1]].tolist()) in draws
-        np.testing.assert_array_equal(shards.unpack(t["y_noisy"], t["y_off"], i), shards.unpack(raw["y_noisy"], raw["y_off"], p))
-        assert t["n_front"][i] >= 1 and t["n_kept_actions"][i] >= 1
+    fz = shards.load(fit_path)
+    assert "x" not in fz and "x_val" not in fz                         # the problem data stay in the raw shard
+    raw = shards.load(raw_path)
+    for spec in ("uniform:1:24", "fixed:24"):
+        tgt_dir = str(tmp_path / spec.replace(":", "_"))
+        os.makedirs(tgt_dir)
+        tgt_path = os.path.join(tgt_dir, os.path.basename(raw_path))
+        _, n_in, n_out, _ = TG._targets_shard((raw_path, fit_path, tgt_path, spec))
+        t = shards.load(tgt_path)
+        assert n_in == 4 and len(t["problem_id"]) == 4 and str(t["k_spec"]) == spec and "x" not in t
+        for p, pid in enumerate(t["problem_id"]):
+            k = int(t["k"][p])
+            assert k == TG.assign_k(str(pid), spec) and 1 <= k <= 24
+            draws = {tuple(raw["tok"][raw["tok_off"][j]:raw["tok_off"][j + 1]].tolist())
+                     for j in range(raw["draw_off"][p], raw["draw_off"][p] + k)}
+            for name in ("front", "ctrl"):
+                s0, s1 = int(t[f"{name}_off"][p]), int(t[f"{name}_off"][p + 1])
+                assert (s1 > s0) == (t["n_front"][p] > 0)
+                if s1 > s0:
+                    assert t[f"{name}_w"][s0:s1].sum() == pytest.approx(1.0)
+                for j in range(s0, s1):
+                    assert tuple(t[f"{name}_tok"][t[f"{name}_tok_off"][j]:t[f"{name}_tok_off"][j + 1]].tolist()) in draws
+        if spec == "fixed:24":
+            assert (t["k"] == 24).all() and n_out >= 1
+
+
+def test_assign_k_is_deterministic_and_spec_specific():
+    from flash_ansr.datagen import targets as TG
+    ks = [TG.assign_k(f"p{i}", "uniform:1:512") for i in range(2000)]
+    assert ks == [TG.assign_k(f"p{i}", "uniform:1:512") for i in range(2000)]
+    assert min(ks) >= 1 and max(ks) <= 512 and 200 < np.mean(ks) < 310
+    assert ks[:50] != [TG.assign_k(f"p{i}", "loguniform:1:512") for i in range(50)]
+    assert all(TG.assign_k(f"p{i}", "fixed:512") == 512 for i in range(10))
 
 
 @needs_model
@@ -246,3 +263,27 @@ def test_chunked_packing_any_k(tmp_path):
             mem = m._create_memory(S.data_tensor(w, p.x, p.y_noisy, "cpu"))
             tf = S._teacher_forced(m, mem, r["tokens"], len(tokens0), num0)
             np.testing.assert_allclose(tf, r["log_prob"], atol=1e-3)
+
+
+@needs_model
+def test_parallel_fit_equals_serial(tmp_path):
+    """fit.run (problem-level pool, shards written as they complete) writes the same fitted shards as the serial
+    in-process path, and returns instead of hanging (an exception in the loop must not block Pool.terminate)."""
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import fit as FIT
+    from flash_ansr.datagen import sample as S
+    torch.manual_seed(0)
+    raw = str(tmp_path / "raw")
+    S.run(MODEL, raw, n_problems=4, seed=31, k_spec="fixed:8", shard_problems=2, device="cpu", amp="fp32")
+    FIT.run(raw, str(tmp_path / "par"), MODEL, workers=2, n_restarts=2, shards_in_flight=1)
+    w = FlashANSR.load(directory=MODEL, refine={"n_restarts": 2}, compute={"device": "cpu", "workers": 0})
+    FIT._W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None))
+    os.makedirs(tmp_path / "ser")
+    for f in sorted(os.listdir(raw)):
+        FIT._fit_shard((os.path.join(raw, f), str(tmp_path / "ser" / f)))
+        a, b = shards.load(str(tmp_path / "par" / f)), shards.load(str(tmp_path / "ser" / f))
+        assert set(a) == set(b)
+        for k in a:
+            if k in ("t_refine", "t_post"):
+                continue
+            np.testing.assert_array_equal(a[k], b[k], err_msg=k)

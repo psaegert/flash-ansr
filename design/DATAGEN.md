@@ -1,41 +1,66 @@
 # Split data generation for front-directed fine-tunes (`flash_ansr.datagen`)
 
-Branch `datagen/split-pipeline`. Purpose: produce ~1M training-prior problems from a 120M checkpoint (theta0-120m =
-v25.0-T8-120M step 1.2M), each with a fitted pool of K draws and its front-member training targets, at maximum
-throughput. It serves the pool-size-conditioned front-member fine-tune (flash-ansr-rl `runs/t23_120m/PLAN.md`,
-LEARNINGS T23). Production job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stages).
+Branch `datagen/split-pipeline`. It produces ~1.16M training-prior problems for the pool-size-conditioned
+front-member fine-tune (flash-ansr-rl `runs/t23_120m/PLAN.md`, LEARNINGS T23). Each problem gets one fitted pool of
+512 draws from the sampler, the released and decayed T8-120M, plus training targets for any pool size K. Production
+job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stages; `dg_report.py` summarises a run).
+
+## Design
+- **One pool of 512 draws per problem.** The training pool size K is assigned afterwards, in the target stage.
+  - Draws within a pool are i.i.d., so the first K draws are an exact K-draw pool for every K.
+  - One dataset serves every arm and every K prior, with paired comparisons on identical draws.
+  - Builds: T, T-noK and B use `uniform:1:512`; T-512 uses `fixed:512`; a later `loguniform:1:512` round needs no
+    new sampling.
+- **The problem data are stored once, in the raw shard.** Fitted and target shards hold identifiers, and the
+  problems line up by position.
+- **No numerical shortcuts.** TF32 sampling, verified against teacher forcing; the deployed post-processing, refit
+  and ladder, unchanged.
+- **The optimizations remove waste only:**
+  - finished row groups are dropped from the decode;
+  - CPU fitting runs per problem, not per shard;
+  - rows per decode are capped by free GPU memory;
+  - the problem data are never duplicated.
 
 ## Stages
-1. **Sample (GPU nodes)**: `datagen/sample.py`.
+1. **Sample (GPU nodes)**: `datagen/sample.py`, `python -m flash_ansr.datagen sample` (defaults `--k-spec fixed:512
+   --chunk-rows 8`).
    - Problems come from the model's training prior (`datagen/problems.py`: the bundle's catalog, noise and
      support-size prior, unused columns zeroed, plus 512 clean validation rows).
-   - Pool size K per problem: `uniform:1:512` (owner 2026-11-19; mean 256.5). `loguniform:1:512` is the fallback
-     if resources allow a second round.
    - Raw decode only; there is no simplification on the GPU node.
-   - Packing (`chunk_rows` R = 32): one decode holds groups of R rows. A problem fills ceil(K / R) groups and keeps
-     the first K rows; the rest of its last group is sampled and discarded. Rows are i.i.d., so the K draws stay
-     exact, and the waste is ~6% of rows for uniform K. Groups of any problems pack together.
-   - `chunk_rows=0` keeps the older equal-K packing (R = K, no waste), which packs only when K values repeat.
-   - Rows per decode are capped by free GPU memory: the fp32 self-attention cache is ~10 MiB per row on 120M at
-     max_len 128.
-   - The encoder runs once per problem, and the prefix is prefilled once per group and expanded.
-   - Two opt-in model paths make packing fit in memory, and the deployed decode paths are unchanged:
-     - cross-attention goes through a grouped path (`Attention.forward_static_cross`: the rows of one problem are
-       folded into its query axis, with no per-row copy of the memory K/V);
-     - self-attention reads only the written slots (`StaticKVCache.live_slice`).
-   - Output: raw shards (`datagen/shards.py`).
+   - **Packing:** one decode holds groups of R = 8 rows. A problem fills ceil(K / R) groups, so a 512-draw problem
+     fills 64. Groups of any problems pack together, about 4,096 rows per decode (8 problems).
+   - The encoder runs once per problem, and the prefix is prefilled once per group.
+   - **Compaction:** every 8 steps, once a quarter of the active groups have ended every row, those groups are written
+     out and dropped.
+     - The kept rows move to the front of the existing cache buffers in place, one layer at a time, so no second
+       cache is ever allocated.
+     - In a 3M test this removed a third of the decode row-steps (30,720 -> 20,480), with every score still equal to
+       its teacher-forced log-likelihood.
+   - **Memory:** rows per decode are capped at 60% of free GPU memory. The fp32 self-attention cache is ~10 MiB per
+     row on 120M at max_len 128.
+   - **Two opt-in model paths** make packing fit in memory; the deployed decode paths are unchanged:
+     - grouped cross-attention (`Attention.forward_static_cross`: a group's rows are folded into its query axis, with
+       no per-row copy of the memory K/V);
+     - a live-slice self-attention read (`StaticKVCache.live_slice`).
+   - Output: raw shards (problem data, 512 raw token sequences and their log-probs per problem).
 2. **Fit (CPU nodes)**: `datagen/fit.py`.
-   - The deployed post-processing (`_postprocess_sampled`), then the unchanged `_fit_refine` + `_build_result`, with
-     one serial refiner per process.
-   - Each ledger row gets a fresh-point FVU on the clean validation rows. Rows with fresh FVU >= 1 are dropped (worse
-     than the mean on fresh points).
-   - Every raw draw is traced to its family, aligned with the raw shard: its status, its action (distinct raw
-     expression) and its kept family. Output: fitted shards.
-3. **Targets (CPU nodes)**: `datagen/targets.py`.
-   - The front of each pool, as the offline oracle defines it (flash-ansr-rl `kfront_check.py`; see Definitions).
-   - Every front member gets 1/|front|, read from the raw shard as the model emitted it.
-   - The control has the same number of members, drawn uniformly from the kept actions.
-   - Output: target shards (the model input data plus both target sets). The trainer reads only these.
+   - The deployed `_postprocess_sampled`, then the unchanged `_fit_refine` + `_build_result`, with one serial refiner
+     per worker.
+   - **Parallelism is per problem.** At most 4 shards are loaded at once, and a shard is written when its last
+     problem returns, so a node never idles on a last, partial wave of shards.
+   - Each ledger row gets a fresh-point FVU on the clean validation rows. Rows with fresh FVU >= 1 are dropped.
+   - Every raw draw is traced to its status, its action (distinct raw expression) and its kept family.
+   - Workers default to one BLAS thread each.
+   - `DG_FAULTHANDLER=<s>` dumps every thread's stack every s seconds, to diagnose a hang without ptrace.
+   - Output: fitted shards (identifiers, kept candidates, the per-draw map).
+3. **Targets (CPU nodes)**: `datagen/targets.py`, `python -m flash_ansr.datagen targets --k-spec SPEC`.
+   - Per problem, K is drawn deterministically from (problem id, spec), and the pool is its first K draws.
+   - The pool's front follows the offline oracle's definition (see Definitions).
+   - FRONT targets: every member at 1/|front|, read from the raw shard as the model emitted it.
+   - CONTROL: |front| uniformly drawn kept actions at 1/|front|.
+   - Every problem is recorded; one with an empty front has `n_front = 0` and no target.
+   - Output: one target directory per spec (`tgt_uniform_1_512`, `tgt_fixed_512`, ...), with sequences, weights and
+     K only. The trainer reads the problem data from the raw shard of the same name.
 
 ## Definitions (as the offline oracle, so the oracle's numbers apply to these targets)
 - **Family:** the ledger rows of one deduplicated draw: its fit, its constant-ladder variants (`parent` set) and its
@@ -48,35 +73,46 @@ LEARNINGS T23). Production job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg
   - An action is dominated by another action when every one of its rows is dominated by some row of the other.
   - The constant model (8 bits, y = 0) removes an action whose every row it dominates.
   - An action without rows is never a member.
+- **Target:** t_K(x | D) = E[1{x in F} / |F| given |F| > 0], with each pool carrying total mass 1.
+  - t_1 is the sampler conditioned on survival (valid, fitted, fresh FVU < 1, not dominated by the constant model).
+  - The problems with a target depend on K, because small pools have an empty front more often. `dg_report.py`
+    measures this per K octave.
 - **Deviation from the oracle:** dropping rows with fresh FVU >= 1 removes trivial members, i.e. cheap expressions
-  worse than the mean on fresh points. Measured on the theta0-120m evaluation pools, it changes the front of 46% of
-  FastSRB pools (Jaccard 0.85 to the oracle's front), 15% of training pools (0.96), 13% of noisy training pools
-  (0.97) and 28% of black-box pools (0.93).
+  worse than the mean on fresh points. On the theta0-120m evaluation pools it changes the front of:
 
-## Gates (all passed, 2026-11-19)
-- **Stage 1 == the model's distribution:** every packed row's accumulated score equals its teacher-forced
-  log-likelihood under the plain dynamic forward. Max deviation 2.3e-5 nats on T8-3M and 1.5e-5 on 120M (fp32), and
-  3e-3 to 7e-3 nats under TF32 on 120M.
+  | set | pools changed | Jaccard to the oracle's front |
+  |---|---|---|
+  | FastSRB | 46% | 0.85 |
+  | training | 15% | 0.96 |
+  | noisy training | 13% | 0.97 |
+  | black-box | 28% | 0.93 |
+
+## Gates (all passed, 2026-11-19; `tests/test_datagen.py`: 11 passed)
+- **Stage 1 == the model's distribution:** every row's accumulated score equals its teacher-forced log-likelihood
+  under the plain dynamic forward and its own problem's memory. This holds for equal-K packing, chunked mixed-K
+  packing and compaction.
+  - Max deviation: 2.3e-5 nats on T8-3M and 1.5e-5 on 120M in fp32; 3e-3 to 7e-3 nats on 120M under TF32.
 - **Stage 2 == the deployed `FlashANSR.fit`** on the same raw draws (sampler monkeypatched to return them): identical
   fitted-row count and kept-row support FVUs.
+- **Problem-parallel fitting == serial fitting:** every array of every fitted shard is identical except the timings.
+  Two bugs were found on the way: a double `pop`, and a semaphore-blocked feeder that turned the resulting exception
+  into a silent hang in `Pool.terminate()`.
 - **Draw map:**
   - Post-processing with the trace's `simplify_map` is byte-identical to the plain call.
   - Every valid draw lands in the family whose beam is its dedup class's first draw.
   - A draw has a kept family iff some row of its draw is kept.
   - Draws of one raw expression share their action and family.
-  - Tested on 12 problems at K = 48, which include typed-thaw rows. The first family definition (parent chain) split
-    those rows off and failed here.
-- **Front == the oracle's (G0 of the plan):** the shared front code, fed the evaluation pools' draws and ledgers, gives
-  the identical front on all 1,146 theta0-120m problem pools (4 sets x 3 seeds;
-  flash-ansr-rl `runs/t23_120m/g0_front_check.py`).
-- **Unit tests:**
-  - Grouped cross-attention == per-row expanded cross-attention.
-  - The front definition holds on a hand-made pool.
-  - sample -> fit -> targets end to end: weights sum to 1, and every target is one of the problem's raw draws.
-  - Chunked packing with mixed K: every problem gets exactly K draws, and every draw's score equals its
-    teacher-forced log-likelihood under its own problem's memory.
-  - `tests/test_datagen.py`: 9 passed. Existing model / inference / ladder tests: 182 passed, 6 skipped (the skips
-    need a v24 checkpoint).
+  - Tested on 12 problems at K = 48, which include typed-thaw rows. Grouping by parent chain split those rows off and
+    failed this test.
+- **Front == the oracle's (G0 of the plan):** the shared front code gives the identical front on all 1,146
+  theta0-120m problem pools (4 sets x 3 seeds; flash-ansr-rl `runs/t23_120m/g0_front_check.py`).
+- **Targets end to end:**
+  - K is deterministic and within the pool, and differs between specs.
+  - Weights sum to 1 where there is a front.
+  - Every target is one of the problem's first K raw draws.
+  - The target shards carry no problem data.
+- **Existing tests:** the model / inference / ladder suites gave 182 passed, 6 skipped (the skips need a v24
+  checkpoint) after the decoder changes.
 
 ## Measurements (2026-11-19)
 GPU, A100-40GB, theta0-120m, 512 draws of one problem per call (Helix jobs 15959813, 15959919):
@@ -87,46 +123,37 @@ GPU, A100-40GB, theta0-120m, 512 draws of one problem per call (Helix jobs 15959
 | static, TF32 | 96 | 1.35 |
 | static, TF32 | 64 | 0.76 |
 | dynamic + KV cache, TF32 | 160 / 96 | 1.6 / 1.55 |
-- Draw lengths (EOS position incl. 3 prompt tokens): median 50, 90% 72, 99% 92, 99.9% 105, none > 128. 21% of draws
-  exceed 64 tokens. The library's old default `max_len=64` truncated them; since PR #74 it decodes up to the model's
-  limit. The sampler uses 128.
-- Static decode allocates self-KV for decoder_max_seq_len = 256 (~24 MB per row in fp32), so at most ~1,400 rows fit
-  on a 40 GB card. Packing several problems per call ran out of memory before the grouped cross-attention path.
+- Draw lengths (EOS position incl. 3 prompt tokens): median 50, 90% 72, 99% 92, 99.9% 105, none > 128.
+  - 21% of draws exceed 64 tokens. The library's old default `max_len=64` truncated them; since PR #74 it decodes up
+    to the model's limit. The sampler uses 128.
+- Packing several problems per call ran out of memory before the grouped cross-attention path existed.
 - Encoder: ~8 ms per problem. CPU post-processing (simplify + dedup): ~1.7 s per 512 draws (done in stage 2).
 
-## Benchmark of the split pipeline (Helix jobs 15960301 GPU, 15960302 CPU; 2026-11-19)
-1,024 training-prior problems, K log2-uniform on 1..512 (mean 109 draws), max_len 128, 512 problems per shard.
-- **GPU stage (packed), on an A40** (the job did not get an A100):
-  - TF32: ~3.2 problems/s steady (~350 draws/s). bf16: ~3.7 problems/s (1.2x).
-  - Verified packs: max |score - teacher-forced log p| is 3e-3 to 7e-3 nats under TF32, but 0.04 to 0.16 nats per
-    sequence under bf16 (bf16 sampling is a measurably different distribution).
-  - The unpacked path on an A100 did ~320 draws/s. The A40 has about half the A100's TF32 throughput and memory
-    bandwidth, so packing is roughly 2x on equal hardware (to confirm on A100/H200).
-- **CPU stage:** 8.2 core-s per problem (refit 8.1 s, post-processing 0.09 s); 37 s at K = 512, ~75 ms per distinct
-  draw including its ladder variants.
-  - 14% of problems keep no candidate (every fit has FVU >= 1).
-  - Parallelism is per shard, and the benchmark had only 2 shards, so it used 2 of 64 cores. Production needs at
-    least 64 shards per node; at 256 problems per shard the pilot has ~580.
-- **Storage:** ~70 KB per problem raw, ~71 KB fitted.
+Split-pipeline benchmark (Helix jobs 15960301 GPU, 15960302 CPU): 1,024 problems, K log2-uniform (mean 109),
+equal-K packing, no compaction.
+- **GPU, A40:** TF32 ~350 draws/s. bf16 is 1.2x faster but shifts sequence log-probs by 0.04 to 0.16 nats.
+- **CPU:** 8.2 core-s per problem, ~75 ms per distinct draw including its ladder variants; 37 s at K = 512. 14% of
+  problems keep no candidate.
+- **Storage per problem:**
+  - raw: 69.6 KB, of which 96% is the problem data (support x 27.8 KB, validation x 27.6 KB, the y vectors
+    11.7 KB);
+  - draws: ~23 bytes each, compressed;
+  - fitted (then still with a data copy): 72.6 KB.
 
-## Cost projection, 1M problems with a front (~1.16M sampled at the measured 14% loss)
-The measurements above are at mean K 109. Uniform K (mean 256.5) needs ~2.4x the draws, plus ~6% of chunk waste on
-the GPU.
-- CPU: ~75 ms per distinct draw -> ~19 core-s per problem; 1.16M problems = ~6,200 core-hours = ~100 node-hours
-  (64 cores), ~6 h on 16 nodes.
-- GPU: ~330 useful draws/s per A40 -> 1.16M x 256.5 draws = ~250 A40-hours in TF32 (~8 h on 32 GPUs). A100/H200 are
-  faster (to measure in the pilot).
-- Pilot (first 148k problems, 8 tasks): ~32 A40-hours and ~12 node-hours.
-  - Next lever: row compaction. Finished rows are still computed every step, about half of all row-steps, so
-    skipping them is worth ~1.5x.
-- Storage: ~2.4x the log2-prior measurement, i.e. ~200 GB raw + ~200 GB fitted + target shards (input data plus a
-  few sequences per problem). The target stage reads the raw shards, so they are kept until training ends.
+## Cost projection, 1.16M problems x 512 draws (pilot = first 148k)
+| resource | full run | pilot |
+|---|---|---|
+| GPU, before compaction (A40 rate) | ~470 A40-hours | ~60 A40-hours |
+| CPU (37 core-s per problem) | ~190 node-hours | ~24 node-hours |
+| storage (raw 79 KB + fitted ~28 KB + targets ~2 KB per spec, per problem) | ~130 GB | ~16 GB |
+- Compaction should cut the GPU time by roughly a third; the pilot measures it, and the A100/H200 rates too.
+- Training reads the raw shards (problem data) and the target shards, so the raw shards stay. The fitted shards are
+  only needed to rebuild targets.
 
 ## Choices
-- Numerics: TF32 (bf16 is only 1.2x faster on an A40 and shifts sequence log-probs by up to 0.16 nats).
-- K: uniform on 1..512 (owner). Every K gets the same share of training problems, so the deployed high-K
-  conditionals get most of the signal (P(K <= 8) = 1.6%), at 2.5x the draws of log2-uniform.
-  `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
+- Numerics: TF32.
+- K: uniform on 1..512 for T, T-noK and B (owner); every K gets the same share of training problems
+  (P(K <= 8) = 1.6%). `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
 - Seeds: problem streams use `SeedSequence([seed, 0])` with run seeds from 1000 up. The evaluation sets were drawn
   with `default_rng(20261116...20261199)` and a fixed 512-point support, so the problems are disjoint by
   construction; skeletons repeat, as in pretraining.

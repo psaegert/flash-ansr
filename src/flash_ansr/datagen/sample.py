@@ -4,7 +4,9 @@ Packing: one decode holds ``G`` groups of ``R`` rows each (``R`` = ``chunk_rows`
 ceil(K / R) groups: its K draws are the first K rows of those groups, and the unused rows of its last group are
 sampled and discarded (rows are i.i.d., so dropping them leaves the K draws exact; the waste is under R rows per
 problem, ~6% of rows at R = 32 for K uniform on 1..512). Groups of different problems pack together, so any K
-distribution fills the GPU. With ``chunk_rows=0`` the older mode applies: equal-K problems only, R = K (no waste, but
+distribution fills the GPU. For the T23 data every problem gets K = 512 (the training K is assigned later, as the
+first K draws, in :mod:`flash_ansr.datagen.targets`), so groups are always full; small groups (R = 8) finish early
+and are dropped by ``decode_pack``'s compaction. With ``chunk_rows=0`` the older mode applies: equal-K problems only, R = K (no waste, but
 packs only when K values repeat, e.g. powers of two). The encoder runs once per problem; the prefix is prefilled once
 per group and expanded to its rows; the cross-attention reads each group's memory through the grouped path of
 :meth:`Attention.forward_static_cross` (no per-row copy of the memory K/V); self-attention reads only the written
@@ -31,16 +33,22 @@ from flash_ansr.datagen import shards
 
 @torch.no_grad()
 def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max_len: int,
-                generator: torch.Generator | None = None, check_every: int = 8) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample ``rows`` sequences for each of the ``P = memory.shape[0]`` problems.
+                generator: torch.Generator | None = None, check_every: int = 8, compact: bool = True,
+                compact_frac: float = 0.25) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample ``rows`` sequences for each of the ``G = memory.shape[0]`` groups (one memory per group).
 
-    Returns ``(sequences (P*rows, max_len) long, scores (P*rows,) float)``; rows are problem-major. Rows after
-    ``<eos>`` hold ``<pad>``."""
+    Returns ``(sequences (G*rows, max_len) long, scores (G*rows,) float)``; rows are group-major. Rows after
+    ``<eos>`` hold ``<pad>``.
+
+    Compaction (``compact``): every ``check_every`` steps, once at least ``compact_frac`` of the active groups have
+    finished every row, those groups are written out and dropped. The kept rows move to the front of the existing
+    cache buffers (in place, one layer's temporary at a time), so later steps compute only unfinished groups. A
+    group is the unit because the grouped cross-attention needs equal rows per group."""
     from flash_ansr.model.decoders.static_kv import StaticKVCache
     from flash_ansr.model.flash_ansr_model import NUMERIC_DTYPE
     device = memory.device
-    P = int(memory.shape[0])
-    B = P * rows
+    G = int(memory.shape[0])
+    B = G * rows
     tokens0, num0 = m._resolve_generation_prefix(prompt_prefix=prompt_prefix, initial_tokens=None, input_num=None)
     L0 = len(tokens0)
     pad, eos = int(m.tokenizer["<pad>"]), int(m.tokenizer["<eos>"])
@@ -48,8 +56,8 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
     if num0 is not None:
         numeric = torch.full((max_len,), float("nan"), device=device, dtype=NUMERIC_DTYPE)
         numeric[:len(num0)] = torch.tensor(num0, device=device, dtype=NUMERIC_DTYPE)
-    prefix = torch.tensor(tokens0, device=device, dtype=torch.long).unsqueeze(0).expand(P, -1).contiguous()
-    pre_num = None if numeric is None else numeric[:L0].view(1, L0, 1).expand(P, -1, -1).contiguous()
+    prefix = torch.tensor(tokens0, device=device, dtype=torch.long).unsqueeze(0).expand(G, -1).contiguous()
+    pre_num = None if numeric is None else numeric[:L0].view(1, L0, 1).expand(G, -1, -1).contiguous()
     logits_pre, cache = m.forward(prefix, None, input_num=pre_num, memory=memory, use_cache=True)
     block0 = m.decoder.layers[0]
     sc = StaticKVCache(n_layers=len(m.decoder.layers), batch=B, n_heads=block0.self_attention.n_heads,
@@ -59,14 +67,17 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
         n = sk.shape[2]
         sc.sa_k[i][:, :, :n] = sk.repeat_interleave(rows, dim=0)
         sc.sa_v[i][:, :, :n] = sv.repeat_interleave(rows, dim=0)
-        sc.ca[i][0] = (ck, cv)                      # grouped: one K/V per problem
+        sc.ca[i][0] = (ck, cv)                      # grouped: one K/V per group
     sc.position = cache[0][0][0].shape[2]
     sc.live_slice = True
     del cache
+    out_seqs = torch.full((B, max_len), pad, device=device, dtype=torch.long)
+    out_scores = torch.zeros(B, device=device, dtype=torch.float32)
     seqs = torch.full((B, max_len), pad, device=device, dtype=torch.long)
     seqs[:, :L0] = prefix[0]
     scores = torch.zeros(B, device=device, dtype=torch.float32)
     finished = torch.zeros(B, device=device, dtype=torch.bool)
+    row_id = torch.arange(B, device=device)          # original row of each active row
     next_logits = logits_pre[:, -1, :].float().repeat_interleave(rows, dim=0)
     for t in range(L0, max_len):
         logp = torch.log_softmax(next_logits.float(), dim=-1)
@@ -75,11 +86,38 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
         seqs[:, t] = sampled
         scores += torch.where(finished, torch.zeros_like(scores), logp.gather(1, sampled.unsqueeze(-1)).squeeze(-1))
         finished |= sampled == eos
-        if t == max_len - 1 or ((t - L0) % check_every == 0 and bool(finished.all())):
+        if t == max_len - 1:
             break
-        num_step = None if numeric is None else numeric[t].expand(B).reshape(B, 1, 1)
+        if (t - L0) % check_every == 0:
+            if bool(finished.all()):
+                break
+            if compact:
+                gdone = finished.view(-1, rows).all(1)
+                n_done = int(gdone.sum())
+                if n_done and n_done >= compact_frac * gdone.numel():
+                    done_rows = gdone.repeat_interleave(rows)
+                    out_seqs[row_id[done_rows]] = seqs[done_rows]
+                    out_scores[row_id[done_rows]] = scores[done_rows]
+                    kg = (~gdone).nonzero().squeeze(1)
+                    kr = (~done_rows).nonzero().squeeze(1)
+                    nb = int(kr.numel())
+                    w = t + m.decoder.prefix_len + 1                # slots written so far (data prefix in front)
+                    for i in range(len(sc.sa_k)):
+                        sc.sa_k[i][:nb, :, :w] = sc.sa_k[i][kr, :, :w]
+                        sc.sa_v[i][:nb, :, :w] = sc.sa_v[i][kr, :, :w]
+                        sc.sa_k[i], sc.sa_v[i] = sc.sa_k[i][:nb], sc.sa_v[i][:nb]
+                        ck, cv = sc.ca[i][0]
+                        if ck.shape[0] > 1:
+                            sc.ca[i][0] = (ck[kg], cv[kg])
+                    if memory.shape[0] > 1:
+                        memory = memory[kg]
+                    seqs, scores, finished, row_id = seqs[kr], scores[kr], finished[kr], row_id[kr]
+        b = int(seqs.shape[0])
+        num_step = None if numeric is None else numeric[t].expand(b).reshape(b, 1, 1)
         next_logits = m.forward_static(seqs[:, t:t + 1], num_step, memory, sc, position=t)[:, -1, :]
-    return seqs, scores
+    out_seqs[row_id] = seqs
+    out_scores[row_id] = scores
+    return out_seqs, out_scores
 
 
 def trim(row: list[int], eos: int, pad: int) -> list[int]:
@@ -143,8 +181,8 @@ def _chunks(ks: list[int], chunk_rows: int) -> list[tuple[int, int]]:
     return [(i, min(chunk_rows, k - c * chunk_rows)) for i, k in enumerate(ks) for c in range(-(-k // chunk_rows))]
 
 
-def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "uniform:1:512",
-        max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 32,
+def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "fixed:512",
+        max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 8,
         device: str = "cuda", amp: str = "tf32", verify_every: int = 0) -> None:
     """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed in groups of ``chunk_rows`` rows (0:
     equal-K packing), write raw shards to ``out_dir``.

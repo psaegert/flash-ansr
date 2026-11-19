@@ -12,8 +12,8 @@ Raw shard (stage 1 -> stage 2), keys:
     tok, tok_off              raw token sequences (uint16, prompt prefix included, trimmed after <eos>)
     log_prob [n_draws]        summed token log-likelihood of each draw (float32)
 
-Fitted shard (stage 2 -> targets) keeps the raw shard's problem keys and ``draw_off`` and adds, per problem, the
-kept candidates (fresh-point FVU < 1):
+Fitted shard (stage 2 -> targets): the raw shard's identifiers (problem_id, k, skeleton, noise_level, draw_off; the
+problem data stay in the raw shard, aligned by position) and, per problem, the kept candidates (fresh-point FVU < 1):
     n_raw [P], n_distinct [P], n_fitted [P], n_kept [P], cand_off [P + 1]
     fam_tok, fam_tok_off      per kept candidate: its beam, i.e. the raw emission of the first draw of its dedup
                               class, prompt prefix included
@@ -26,6 +26,8 @@ and, per raw draw (aligned with the raw shard's draws through ``draw_off``):
                               5 representative not in the ledger (``fit.STATUS_NAMES``)
     draw_act                  index of the draw's distinct raw expression within the problem (-1: none)
     draw_fam                  the kept family the draw collapsed into (-1: none kept)
+
+Target shard (stage 3 -> training): see :mod:`flash_ansr.datagen.targets`; no problem data either.
 """
 from __future__ import annotations
 
