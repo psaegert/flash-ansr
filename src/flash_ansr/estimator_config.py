@@ -105,16 +105,38 @@ class RefineConfig:
         return out
 
 
+PRECISIONS = ('auto', 'bf16', 'fp32')
+
+
+def native_bf16(device: str) -> bool:
+    """Whether ``device`` is a CUDA device with native bf16 arithmetic (compute capability >= 8.0:
+    A100, H100/H200, RTX 30xx/40xx). Older cards emulate bf16, slower than fp32, so 'auto' keeps fp32 there."""
+    import torch
+    dev = torch.device(device)
+    if dev.type != 'cuda' or not torch.cuda.is_available():
+        return False
+    major, _ = torch.cuda.get_device_capability(dev)
+    return major >= 8
+
+
 @dataclass(frozen=True)
 class ComputeConfig:
     """Where and how wide the estimator runs: the torch ``device`` of the transformer, the refiner's
     worker pool (``workers``: ``None`` = every core the process may run on, ``0`` = no multiprocessing) and whether one
     persistent pool is forked BEFORE any CUDA initialization and reused across calls
-    (``persistent_pool``; the structural mitigation for the fork-after-CUDA deadlock family)."""
+    (``persistent_pool``; the structural mitigation for the fork-after-CUDA deadlock family).
+
+    ``precision`` is the transformer's arithmetic at inference (encoder, sampler, rescoring):
+    ``'auto'`` (default) = bf16 autocast on a CUDA device with native bf16 (compute capability >= 8.0),
+    else fp32; ``'bf16'`` demands it (an error where it is not native); ``'fp32'`` keeps full
+    precision, e.g. to reproduce results drawn before 0.20. The model is trained under bf16 autocast,
+    so bf16 is its training numerics (owner 2026-11-19: "Inference should run in bf16"). Pools drawn
+    in different precisions are different protocols and must not be mixed in one comparison."""
 
     device: str = 'cpu'
     workers: int | None = None
     persistent_pool: bool = False
+    precision: str = 'auto'
 
     def __post_init__(self) -> None:
         workers: Any = self.workers   # typed Any: mypy does not know int is a numbers.Integral
@@ -123,10 +145,21 @@ class ComputeConfig:
         object.__setattr__(self, 'device', str(self.device))
         object.__setattr__(self, 'workers', None if workers is None else int(workers))
         object.__setattr__(self, 'persistent_pool', bool(self.persistent_pool))
+        if self.precision not in PRECISIONS:
+            raise ValueError(f"ComputeConfig.precision must be one of {PRECISIONS}; got {self.precision!r}")
 
     @property
     def resolved_workers(self) -> int:
         return available_cores() if self.workers is None else self.workers
+
+    @property
+    def resolved_precision(self) -> str:
+        """``'bf16'`` or ``'fp32'``: what inference actually runs in on this device."""
+        native = native_bf16(self.device)
+        if self.precision == 'bf16' and not native:
+            raise ValueError(f"precision='bf16' needs a CUDA device with native bf16 (compute capability >= 8.0); "
+                             f"{self.device!r} has none. Use precision='auto' or 'fp32'.")
+        return 'bf16' if (self.precision == 'bf16' or (self.precision == 'auto' and native)) else 'fp32'
 
     @classmethod
     def from_mapping(cls, payload: "ComputeConfig | Mapping[str, Any] | None") -> "ComputeConfig":
@@ -157,4 +190,4 @@ def ranking_from(payload: "RankingConfig | Mapping[str, Any] | str | None") -> R
     return RankingConfig.from_dict(payload)
 
 
-__all__ = ['RefineConfig', 'ComputeConfig', 'RankingConfig', 'ranking_from', 'REFINER_METHODS']
+__all__ = ['RefineConfig', 'ComputeConfig', 'RankingConfig', 'ranking_from', 'REFINER_METHODS', 'PRECISIONS', 'native_bf16']

@@ -126,6 +126,8 @@ class FlashANSRModel(nn.Module):
         decoder_use_rope_self_attn: bool = False,
         decoder_use_rope_cross_attn: bool = False,
         decoder_use_xsa_self_attn: bool = False,
+        decoder_self_attn_gate: bool = False,
+        decoder_cross_attn_gate: bool = False,
 
         decoder_block_norm_position: str = "pre",
         encoder_block_norm_position: str = "pre",
@@ -220,6 +222,8 @@ class FlashANSRModel(nn.Module):
             use_rope_self_attn=decoder_use_rope_self_attn,
             use_rope_cross_attn=decoder_use_rope_cross_attn,
             use_xsa_self_attn=decoder_use_xsa_self_attn,
+            gate_self_attn=decoder_self_attn_gate,
+            gate_cross_attn=decoder_cross_attn_gate,
             block_norm_position=decoder_block_norm_position,
             use_checkpointing=use_checkpointing,
             data_mode=decoder_data_mode,
@@ -517,6 +521,8 @@ class FlashANSRModel(nn.Module):
             decoder_use_rope_self_attn=config_["decoder_use_rope_self_attn"],
             decoder_use_rope_cross_attn=config_.get("decoder_use_rope_cross_attn", False),
             decoder_use_xsa_self_attn=config_.get("decoder_use_xsa_self_attn", False),
+            decoder_self_attn_gate=config_.get("decoder_self_attn_gate", False),
+            decoder_cross_attn_gate=config_.get("decoder_cross_attn_gate", False),
 
             decoder_block_norm_position=config_.get("decoder_block_norm_position", "pre"),
             encoder_block_norm_position=config_.get("encoder_block_norm_position", "pre"),
@@ -1398,7 +1404,9 @@ class FlashANSRModel(nn.Module):
 
                 static_cache = StaticKVCache(
                     n_layers=n_layers, batch=bsz, n_heads=n_heads, head_dim=head_dim,
-                    max_len=max_len + self.decoder.prefix_len, device=device, dtype=logits_pre.dtype)
+                    # the K/V's own dtype, not the logits': the head runs in fp32 (head_fp32) while the
+                    # layers write bf16 K/V under autocast, which an fp32 buffer would store at twice the memory
+                    max_len=max_len + self.decoder.prefix_len, device=device, dtype=prefill_cache[0][0][0].dtype)
                 static_cache.seed_from_dynamic(prefill_cache)
                 del prefill_cache
 
