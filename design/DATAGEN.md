@@ -154,13 +154,26 @@ equal-K packing, no compaction.
   - Median |front|: 7 at K = 512, 6 at K 257-512 under uniform K.
 - **Storage:** 114 KB per problem (raw + fitted + both target builds).
 
-## Cost projection, 1.16M problems x 512 draws (pilot = first 148k)
-| resource | full run | pilot |
+## Data pilot (G1), jobs 15977726-28, 2026-11-19/20
+148,000 problems (16 sampling tasks x 9,250, seeds 1000-1015) x 512 draws, bf16 with the fixed cache, groups of 8
+rows with compaction; 8 fitting tasks of 64 cores. Passed G1 (report: `$DG/t23/report.txt`).
+- **Yield:** a front on 97.7% of problems at K = 512 and 96.7% under uniform K (gate: >= 80% in each build). Under
+  uniform K the share rises with K: 67% at K = 1, 88% at K 3-4, 95% at K 33-64, 97% at K 257-512. Median |front|
+  is 1 up to K = 4, 4 at K 33-128 and 6 at K 257-512; 98% of problems keep at least one candidate.
+- **GPU, steady rate per task (draws/s):** H200 ~3,160, A100-80GB ~1,740, A100-40GB ~1,690, A40 ~1,130; row use
+  100%. The 16 tasks took 12.5 GPU-hours (4 of each type), against the projected ~60 A40-hours. Compaction's own share
+  of the speed-up was not isolated.
+- **CPU:** 48.3 core-s per problem (101 ms per distinct draw; 477 distinct of 512), 11% above the smoke run;
+  32 node-hours.
+- **Storage:** 111 KB per problem: raw 11.7 GB, fitted 4.6 GB, the two target builds 0.04 GB each.
+- **Queueing, not compute, set the wall time:** the fitting array waited 4-5 hours for CPU nodes (Helix fair-share).
+
+## Cost projection, 1.16M problems x 512 draws (pilot = first 148k, measured)
+| resource | full run | remaining 1.01M |
 |---|---|---|
-| GPU, before compaction (A40 rate) | ~470 A40-hours | ~60 A40-hours |
-| CPU (43 core-s per problem, Helix smoke run) | ~220 node-hours | ~28 node-hours |
-| storage (114 KB per problem, Helix smoke run) | ~132 GB | ~17 GB |
-- Compaction should cut the GPU time by roughly a third; the pilot measures it, and the A100/H200 rates too.
+| GPU (pilot rates; Helix bills every GPU type alike) | ~52 H200-h / ~96 A100-h / ~146 A40-h | ~46 / ~84 / ~127 |
+| CPU (48.3 core-s per problem) | ~245 node-hours | ~212 node-hours |
+| storage (111 KB per problem) | ~129 GB | ~112 GB |
 - Training reads the raw shards (problem data) and the target shards, so the raw shards stay. The fitted shards are
   only needed to rebuild targets.
 
@@ -172,13 +185,14 @@ equal-K packing, no compaction.
   - The per-sequence log-prob noise is mean 0.03 nats (p99 0.16), with a signed mean of +-1e-3, so it nearly cancels.
   - The deployed ranking gives log-probs zero weight. Downstream they are only family keys and ordering.
   - The earlier "0.04-0.16 nats" was this per-sequence noise, not a distribution shift.
-  - A100-80GB, production packing (Helix job 15977177): TF32 1,329 draws/s, bf16 1,502 (1.13x). The fidelity on
-    the A100 matches: KL 1.3e-3 nats per sequence under bf16, against 1.3e-5 under TF32.
+  - A100-80GB, production packing, fixed cache (Helix job 15977725): TF32 1,340 draws/s, bf16 1,948 (1.45x); 8,192
+    rows per decode instead of 4,096 add nothing. The fidelity on the A100 matches: KL 1.35e-3 nats per sequence
+    under bf16, against 1.3e-5 under TF32. (Before the cache fix, job 15977177: bf16 1,502 draws/s.)
   - Cache dtype (fixed 2026-11-19, commit 2ef5535): the output head returns fp32 logits even under autocast. A cache
     created in the logits' dtype therefore kept the bf16 K/V in fp32 buffers, twice the memory, and the bf16 memory cap
     undercounted by 2x. 13 of 16 pilot sampling tasks ran out of memory on 40-48 GB GPUs before the fix.
-  - The cache now takes the K/V dtype: identical draws, bitwise, at half the memory. A rerun of the speed check with
-    the fixed cache is queued; the deployed static decoder (`flash_ansr_model.py`) has the same logits-dtype cache.
+  - The cache now takes the K/V dtype: identical draws, bitwise, at half the memory. The deployed static decoder
+    (`flash_ansr_model.py`) has the same logits-dtype cache.
 - K: uniform on 1..512 for T, T-noK and B (owner); every K gets the same share of training problems
   (P(K <= 8) = 1.6%). `runs/t23_120m/fig/k_distribution.png` in flash-ansr-rl compares the priors.
 - Seeds: problem streams use `SeedSequence([seed, 0])` with run seeds from 1000 up. The evaluation sets were drawn
