@@ -15,6 +15,7 @@ import numbers
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import TracebackType
@@ -994,7 +995,7 @@ class FlashANSR(BaseEstimator):
                     [float(value) for value in _base_num], device=device, dtype=NUMERIC_DTYPE)
                 input_num[:, :prefix_numeric.shape[0]] = prefix_numeric
 
-        with torch.no_grad():
+        with torch.no_grad(), self._inference_autocast():   # the numerics the candidates were drawn in
             logits = self.flash_ansr_model.forward(input_tokens=input_tokens, data=None, input_num=input_num, memory=memory)
             log_probs = torch.log_softmax(logits, dim=-1)
 
@@ -1499,6 +1500,19 @@ class FlashANSR(BaseEstimator):
         return self.compute.resolved_workers
 
     @property
+    def precision(self) -> str:
+        """``'bf16'`` or ``'fp32'``: the arithmetic inference runs in on the model's device (``compute.precision``
+        resolved; see :class:`ComputeConfig`)."""
+        return ComputeConfig(device=str(self.flash_ansr_model.device), precision=self.compute.precision).resolved_precision
+
+    def _inference_autocast(self) -> Any:
+        """The context every inference forward runs in: bf16 autocast on the model's CUDA device when
+        :attr:`precision` is ``'bf16'``, else a no-op. The output head stays fp32 inside it (``head_fp32``)."""
+        if self.precision == 'bf16':
+            return torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+        return contextlib.nullcontext()
+
+    @property
     def results(self) -> pd.DataFrame:
         """The last fit's refined candidates as a DataFrame (``result_.to_dataframe()``)."""
         return self._require_result().to_dataframe()
@@ -1759,7 +1773,8 @@ class FlashANSR(BaseEstimator):
                             n_heads=_d.layers[0].self_attention.n_heads,
                             head_dim=_d.layers[0].self_attention.head_dim,
                             max_len=self.flash_ansr_model.decoder_max_seq_len,
-                            static_decode=True, free_bytes=_free)
+                            static_decode=True, free_bytes=_free,
+                            dtype_bytes=2 if self.precision == 'bf16' else 4)
 
                 _static = self.flash_ansr_model._resolve_static_decode(
                     _static_kwarg, draws=choices_target, static_batch=_static_batch)
@@ -2353,41 +2368,45 @@ class FlashANSR(BaseEstimator):
             # Concatenate x and y along the feature dimension
             data_tensor = torch.cat([X, y], dim=-1)
 
-            guidance_weight = getattr(self.generation_config, 'guidance_weight', None)
-            if guidance_weight is not None and float(guidance_weight) == 0.0:
-                # The trained UNCONDITIONED mode (condition_dropout): the learned null_memory
-                # replaces the encoder's, so candidates come from the model's PRIOR over
-                # expressions rather than from this data set. The data is still used downstream --
-                # refinement fits the constants and scores the fits -- which makes this the
-                # "propose from the prior, fit to the data" arm, not a blind decode. One problem,
-                # so batch 1: the sampler broadcasts a batch-1 memory over its candidates.
-                memory_for_scoring = self.flash_ansr_model.null_memory.detach().to(device=data_tensor.device)
-            else:
-                memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
+            with self._inference_autocast():   # encoder + sampler in the inference precision (bf16 where native)
+                guidance_weight = getattr(self.generation_config, 'guidance_weight', None)
+                if guidance_weight is not None and float(guidance_weight) == 0.0:
+                    # The trained UNCONDITIONED mode (condition_dropout): the learned null_memory
+                    # replaces the encoder's, so candidates come from the model's PRIOR over
+                    # expressions rather than from this data set. The data is still used downstream --
+                    # refinement fits the constants and scores the fits -- which makes this the
+                    # "propose from the prior, fit to the data" arm, not a blind decode. One problem,
+                    # so batch 1: the sampler broadcasts a batch-1 memory over its candidates.
+                    memory_for_scoring = self.flash_ansr_model.null_memory.detach().to(device=data_tensor.device)
+                else:
+                    memory_for_scoring = self.flash_ansr_model._create_memory(data_tensor)
 
-            generation_method = getattr(self.generation_config, 'method', None)
-            is_prior = generation_method == 'prior_sampling'
-            # no decoder reads a prompt when the candidates come from elsewhere (the prior, the ground truth)
-            emission = ('constants' if generation_method in ('prior_sampling', 'oracle')
-                        else str(getattr(self.generation_config, 'emission', 'fittable')))
-            prompt_prefix = self._prepare_prompt_prefix(
-                emission=emission,
-                complexity=complexity,
-            )
-
-            resolved_draws = int(draws) if draws is not None else int(getattr(self.generation_config, 'draws', 1))
-            _t_gen = time.time()
-            with _seeded_generation(seed, prior_sampler=(self._prior_sampler() if is_prior else None)):
-                raw_beams, log_probs, _completed_flags, _rewards = self._sample(
-                    data_tensor,
-                    prompt_prefix=prompt_prefix,
+                generation_method = getattr(self.generation_config, 'method', None)
+                is_prior = generation_method == 'prior_sampling'
+                # no decoder reads a prompt when the candidates come from elsewhere (the prior, the ground truth)
+                emission = ('constants' if generation_method in ('prior_sampling', 'oracle')
+                            else str(getattr(self.generation_config, 'emission', 'fittable')))
+                prompt_prefix = self._prepare_prompt_prefix(
+                    emission=emission,
                     complexity=complexity,
-                    verbose=verbose,
-                    memory=memory_for_scoring,
-                    n_active_variables=n_input_columns,
-                    draws=resolved_draws,
                 )
-            generation_time = time.time() - _t_gen
+
+                resolved_draws = int(draws) if draws is not None else int(getattr(self.generation_config, 'draws', 1))
+                _t_gen = time.time()
+                with _seeded_generation(seed, prior_sampler=(self._prior_sampler() if is_prior else None)):
+                    raw_beams, log_probs, _completed_flags, _rewards = self._sample(
+                        data_tensor,
+                        prompt_prefix=prompt_prefix,
+                        complexity=complexity,
+                        verbose=verbose,
+                        memory=memory_for_scoring,
+                        n_active_variables=n_input_columns,
+                        draws=resolved_draws,
+                    )
+                generation_time = time.time() - _t_gen
+            if memory_for_scoring.dtype == torch.bfloat16:
+                # bf16 -> fp32 is exact; consumers that forward outside the autocast context keep working
+                memory_for_scoring = memory_for_scoring.float()
 
             X_np = X.cpu().numpy()
             y_np = y.cpu().numpy()
