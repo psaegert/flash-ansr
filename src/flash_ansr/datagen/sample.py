@@ -19,8 +19,12 @@ teacher-forced log-likelihood of the same row under :meth:`FlashANSRModel.forwar
 """
 from __future__ import annotations
 
+import multiprocessing as mp
 import os
+import queue
 import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from typing import Any
 
@@ -183,9 +187,60 @@ def _chunks(ks: list[int], chunk_rows: int) -> list[tuple[int, int]]:
     return [(i, min(chunk_rows, k - c * chunk_rows)) for i, k in enumerate(ks) for c in range(-(-k // chunk_rows))]
 
 
+def _produce(prior_dir: str, seed: int, k_spec: str, n_problems: int, shard_problems: int, q: Any) -> None:
+    """Problem producer (a spawned process, no CUDA): the serial path's problem stream, in shard-sized batches."""
+    try:
+        stream = PR.problem_stream(prior_dir, seed, k_spec=k_spec)
+        for s in range(0, n_problems, shard_problems):
+            q.put([next(stream) for _ in range(min(shard_problems, n_problems - s))])
+    except BaseException:
+        q.put(traceback.format_exc())
+        raise
+
+
+class _Batches:
+    """Shard-sized problem batches in stream order. ``overlap``: a spawned producer process runs ``prefetch`` batches
+    ahead of the GPU (a process, not a thread: the decode loop is Python-bound and would contend for the GIL).
+    Otherwise inline. Both give identical problems: the same stream, consumed in the same order."""
+
+    def __init__(self, prior_dir: str, seed: int, k_spec: str, n_problems: int, shard_problems: int, overlap: bool,
+                 prefetch: int = 2):
+        self.proc = None
+        if overlap:
+            ctx = mp.get_context("spawn")
+            self.q = ctx.Queue(maxsize=prefetch)
+            self.proc = ctx.Process(target=_produce, args=(prior_dir, seed, k_spec, n_problems, shard_problems, self.q),
+                                    daemon=True)
+            self.proc.start()
+        else:
+            self.stream = PR.problem_stream(prior_dir, seed, k_spec=k_spec)
+
+    def next(self, size: int) -> list:
+        if self.proc is None:
+            return [next(self.stream) for _ in range(size)]
+        while True:
+            try:
+                b = self.q.get(timeout=60)
+            except queue.Empty:
+                if not self.proc.is_alive():
+                    raise RuntimeError(f"problem producer died (exit code {self.proc.exitcode})")
+                continue
+            if isinstance(b, str):
+                raise RuntimeError(f"problem producer failed:\n{b}")
+            assert len(b) == size, (len(b), size)
+            return b
+
+    def close(self) -> None:
+        if self.proc is not None:
+            self.proc.join(timeout=60)
+            if self.proc.is_alive():
+                self.proc.terminate()
+
+
 def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "fixed:512",
         max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 8,
-        device: str = "cuda", amp: str = "tf32", verify_every: int = 0, prior_dir: str | None = None) -> None:
+        device: str = "cuda", amp: str = "tf32", verify_every: int = 0, prior_dir: str | None = None,
+        overlap: bool = True) -> None:
     """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed in groups of ``chunk_rows`` rows (0:
     equal-K packing), write raw shards to ``out_dir``.
 
@@ -193,9 +248,18 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     from; default ``model_dir``. A released bundle ships without those files, so the sampler and the prior can come
     from different directories of the same run.
 
-    Resumable at shard granularity: shards already on disk are skipped (the problem stream is replayed)."""
+    ``overlap``: keep the GPU busy while the CPU works: the next shards' problems are generated in a separate process,
+    and each finished shard is packed and written in a background thread while the next one decodes. The output is
+    identical to the serial path's (same problems, same draws, same files).
+
+    Resumable at shard granularity: shards already on disk are skipped (the problem stream is replayed). Each shard
+    samples with its own generator, seeded from (``seed``, shard index), so a resumed run writes the same shards as an
+    uninterrupted one. (Until 2026-11-21 one generator served the whole run; a resumed run then reused the random
+    numbers of the shards it skipped: valid draws, not reproducible ones.)"""
     from flash_ansr import FlashANSR
     os.makedirs(out_dir, exist_ok=True)
+    # started first: the producer's start-up (imports, catalog, first problems; ~50 s on Helix) overlaps model loading
+    batches = _Batches(prior_dir or model_dir, seed, k_spec, n_problems, shard_problems, overlap)
     if amp in ("tf32", "bf16"):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -204,7 +268,6 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     pp = w._prepare_prompt_prefix(emission="fittable", complexity=None)
     eos, pad = int(m.tokenizer["<eos>"]), int(m.tokenizer["<pad>"])
     gen = torch.Generator(device=device)
-    gen.manual_seed(int(seed))
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if amp == "bf16" else nullcontext()
     if str(device).startswith("cuda") and chunk_rows > 0:
         # cap rows per decode by free memory: the static self-attention cache dominates (fp32 K and V per layer)
@@ -216,18 +279,27 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
             print(f"[sample] rows per decode capped {rows_target} -> {fit_rows} by free GPU memory "
                   f"({per_row / 2 ** 20:.1f} MiB of cache per row)", flush=True)
             rows_target = max(chunk_rows, fit_rows)
-    stream = PR.problem_stream(prior_dir or model_dir, seed, k_spec=k_spec)
+    writer = ThreadPoolExecutor(max_workers=1) if overlap else None
+    pending = None
+    sync = torch.cuda.synchronize if str(device).startswith("cuda") else (lambda: None)
     t0, done, n_rows, n_used = time.time(), 0, 0, 0
     for s in range(0, n_problems, shard_problems):
         path = os.path.join(out_dir, f"raw_s{seed}_{s // shard_problems:06d}.npz")
-        batch = [next(stream) for _ in range(min(shard_problems, n_problems - s))]
+        ph = dict.fromkeys(("problems", "encode", "decode", "host", "write"), 0.0)   # seconds the GPU loop spends
+        tp = time.time()
+        batch = batches.next(min(shard_problems, n_problems - s))
+        ph["problems"] = time.time() - tp
         if os.path.exists(path):
             continue
+        gen.manual_seed(int(np.random.SeedSequence([int(seed), s // shard_problems]).generate_state(1, np.uint64)[0]))
         toks: list[list[list[int]]] = [[] for _ in batch]
         lps: list[list[float]] = [[] for _ in batch]
         if chunk_rows > 0:
+            tp = time.time()
             with torch.no_grad(), autocast:
                 mems = [m._create_memory(data_tensor(w, p.x, p.y_noisy, device)) for p in batch]
+            sync()
+            ph["encode"] = time.time() - tp
             plan = [(_chunks([p.k for p in batch], chunk_rows), chunk_rows)]
         else:
             by_k: dict[int, list[int]] = {}
@@ -239,6 +311,7 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
             per_pack = max(1, rows_target // rows)
             for j in range(0, len(groups), per_pack):
                 grp = groups[j:j + per_pack]
+                tp = time.time()
                 with torch.no_grad(), autocast:
                     mem = torch.cat([mems[i] if mems is not None else
                                      m._create_memory(data_tensor(w, batch[i].x, batch[i].y_noisy, device))
@@ -248,16 +321,33 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
                     err = verify(m, mem, seqs, sc, rows, pp)
                     print(f"[sample] verify R={rows} G={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats "
                           f"(sampled under {amp}, teacher-forced under TF32)", flush=True)
-                S, C = seqs.cpu().tolist(), sc.cpu().tolist()
+                seqs, sc = seqs.cpu(), sc.cpu()
+                ph["decode"] += time.time() - tp
+                tp = time.time()
+                S, C = seqs.tolist(), sc.tolist()
                 for g, (i, used) in enumerate(grp):
                     toks[i].extend(trim(S[r], eos, pad) for r in range(g * rows, g * rows + used))
                     lps[i].extend(C[r] for r in range(g * rows, g * rows + used))
+                ph["host"] += time.time() - tp
                 n_rows += len(grp) * rows
                 n_used += sum(u for _, u in grp)
         assert all(len(t) == p.k for t, p in zip(toks, batch))
-        shards.write_raw_shard(path, batch, list(zip(toks, lps)))
+        tp = time.time()
+        if writer is None:
+            shards.write_raw_shard(path, batch, list(zip(toks, lps)))
+        else:                                       # at most one shard in flight; its errors surface here
+            if pending is not None:
+                pending.result()
+            pending = writer.submit(shards.write_raw_shard, path, batch, list(zip(toks, lps)))
+        ph["write"] = time.time() - tp
         done += len(batch)
         el = time.time() - t0
         print(f"[sample] {os.path.basename(path)}: {len(batch)} problems, {sum(len(t) for t in toks)} draws | "
               f"{done} in {el / 60:.1f} min = {done / max(el, 1e-9):.2f} problems/s, "
-              f"{n_used / max(el, 1e-9):.0f} draws/s, row use {n_used / max(n_rows, 1):.1%}", flush=True)
+              f"{n_used / max(el, 1e-9):.0f} draws/s, row use {n_used / max(n_rows, 1):.1%} | GPU loop s: "
+              + ", ".join(f"{k} {v:.1f}" for k, v in ph.items()), flush=True)
+    if pending is not None:
+        pending.result()
+    if writer is not None:
+        writer.shutdown()
+    batches.close()

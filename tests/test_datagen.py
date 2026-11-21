@@ -1,5 +1,6 @@
 """flash_ansr.datagen: shard round trip, K samplers, grouped cross-attention, the packed sampler against teacher
-forcing, and the fitting stage against the deployed FlashANSR.fit on the same raw draws."""
+forcing, the overlapped sampler against the serial one, and the fitting stage against the deployed FlashANSR.fit on
+the same raw draws."""
 import itertools
 import os
 import zlib
@@ -287,3 +288,29 @@ def test_parallel_fit_equals_serial(tmp_path):
             if k in ("t_refine", "t_post"):
                 continue
             np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@needs_model
+def test_overlapped_sampler_equals_serial(tmp_path):
+    """The overlapped sampler (problems from a spawned producer process, shards written by a background thread)
+    writes byte-for-byte the same raw shards as the serial path; a resumed run skips the shards on disk."""
+    from flash_ansr.datagen import sample as S
+    kw = dict(n_problems=5, seed=41, k_spec="uniform:1:24", shard_problems=2, rows_target=32, chunk_rows=8,
+              device="cpu", amp="fp32")
+    S.run(MODEL, str(tmp_path / "ser"), overlap=False, **kw)
+    S.run(MODEL, str(tmp_path / "ovl"), overlap=True, **kw)
+    names = sorted(os.listdir(tmp_path / "ser"))
+    assert len(names) == 3 and names == sorted(os.listdir(tmp_path / "ovl"))
+    for f in names:
+        a, b = shards.load(str(tmp_path / "ser" / f)), shards.load(str(tmp_path / "ovl" / f))
+        assert set(a) == set(b)
+        for k in a:
+            np.testing.assert_array_equal(a[k], b[k], err_msg=f"{f}: {k}")
+    # resume: delete the middle shard; a rerun rewrites exactly it, the others are skipped and stay untouched
+    os.remove(tmp_path / "ovl" / names[1])
+    t_other = os.path.getmtime(tmp_path / "ovl" / names[0])
+    S.run(MODEL, str(tmp_path / "ovl"), overlap=True, **kw)
+    assert os.path.getmtime(tmp_path / "ovl" / names[0]) == t_other
+    a, b = shards.load(str(tmp_path / "ser" / names[1])), shards.load(str(tmp_path / "ovl" / names[1]))
+    for k in a:
+        np.testing.assert_array_equal(a[k], b[k], err_msg=f"resumed {names[1]}: {k}")

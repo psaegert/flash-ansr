@@ -2,7 +2,7 @@
 
     python -m flash_ansr.datagen sample --model-dir M --out RAW --n-problems N --seed S [--k-spec fixed:512]
                                         [--max-len 128] [--rows 4096] [--chunk-rows 8] [--amp tf32|bf16|fp32]
-                                        [--verify-every 0]
+                                        [--verify-every 0] [--serial]
     python -m flash_ansr.datagen fit --model-dir M --raw RAW --out FIT [--workers W] [--part i/n] [--restarts R]
     python -m flash_ansr.datagen targets --raw RAW --fit FIT --out TGT --k-spec SPEC [--workers W] [--part i/n]
 """
@@ -26,6 +26,7 @@ def main() -> None:
     s.add_argument("--chunk-rows", type=int, default=8, help="rows per group (0: equal-K packing, rows = K)")
     s.add_argument("--amp", default="tf32", choices=["fp32", "tf32", "bf16"])
     s.add_argument("--verify-every", type=int, default=0, help="verify the first pack of every n-th shard (0: never)")
+    s.add_argument("--serial", action="store_true", help="no CPU/GPU overlap (same output; for checks)")
     f = sub.add_parser("fit", help="stage 2 (CPU): post-process, refit, ladder, rank, fresh FVU")
     f.add_argument("--model-dir", required=True)
     f.add_argument("--raw", required=True)
@@ -45,7 +46,7 @@ def main() -> None:
         from flash_ansr.datagen import sample
         sample.run(a.model_dir, a.out, n_problems=a.n_problems, seed=a.seed, k_spec=a.k_spec, max_len=a.max_len,
                    shard_problems=a.shard_problems, rows_target=a.rows, chunk_rows=a.chunk_rows, amp=a.amp,
-                   verify_every=a.verify_every, prior_dir=a.prior_dir)
+                   verify_every=a.verify_every, prior_dir=a.prior_dir, overlap=not a.serial)
     elif a.cmd == "fit":
         from flash_ansr.datagen import fit
         i, n = (int(v) for v in a.part.split("/"))

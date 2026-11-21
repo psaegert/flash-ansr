@@ -42,6 +42,21 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
      - grouped cross-attention (`Attention.forward_static_cross`: a group's rows are folded into its query axis, with
        no per-row copy of the memory K/V);
      - a live-slice self-attention read (`StaticKVCache.live_slice`).
+   - **CPU/GPU overlap (default; `--serial` turns it off):** the next shards' problems are generated in a spawned
+     producer process, and each finished shard is packed and written by a background thread while the next one
+     decodes. The output is byte-identical to the serial path. The pilot's H200s were busy 78-82% of the time against
+     95-98% for A100s and A40s, because the serial CPU steps (problem generation, writing) take a larger share of a
+     faster GPU's shard. Each `[sample]` line reports where the GPU loop's time went.
+     - Helix devel A40, production settings, 3 shards of 256 problems (job 16009872): problem generation (5.8 s per
+       shard) and writing (1.8 s) left the GPU loop (0.1 s and 0 s); 110 s instead of 117 s per shard; the shards are
+       byte-identical. What stays on the loop: decoding (~105 s on the A40), the per-problem encoder calls (2.3 s) and
+       trimming (0.7 s).
+     - On an H200 (decoding ~32 s per shard) that is ~42 -> ~35 s per shard, about 3,800 draws/s instead of 3,160.
+   - **Generator per shard:** each shard samples with a generator seeded from (run seed, shard index), so a resumed
+     run writes the same shards as an uninterrupted one. Until 2026-11-21 one generator served a whole run; a resumed
+     run then reused the random numbers of the shards it skipped (pilot tasks 0, 3 and 8: valid draws from the
+     model's distribution, correlated in their random numbers with earlier shards of the same task, not
+     reproducible).
    - Output: raw shards (problem data, 512 raw token sequences and their log-probs per problem).
 2. **Fit (CPU nodes)**: `datagen/fit.py`.
    - The deployed `_postprocess_sampled`, then the unchanged `_fit_refine` + `_build_result`, with one serial refiner
@@ -87,13 +102,15 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
   | noisy training | 13% | 0.97 |
   | black-box | 28% | 0.93 |
 
-## Gates (all passed, 2026-11-19; `tests/test_datagen.py`: 11 passed)
+## Gates (all passed, 2026-11-19 and 2026-11-21; `tests/test_datagen.py`: 12 passed)
 - **Stage 1 == the model's distribution:** every row's accumulated score equals its teacher-forced log-likelihood
   under the plain dynamic forward and its own problem's memory. This holds for equal-K packing, chunked mixed-K
   packing and compaction.
   - Max deviation: 2.3e-5 nats on T8-3M and 1.5e-5 on 120M in fp32; 3e-3 to 7e-3 nats on 120M under TF32.
 - **Stage 2 == the deployed `FlashANSR.fit`** on the same raw draws (sampler monkeypatched to return them): identical
   fitted-row count and kept-row support FVUs.
+- **Overlapped sampling == serial sampling:** byte-identical raw shards; a run resumed after deleting a shard
+  rewrites exactly that shard, identically.
 - **Problem-parallel fitting == serial fitting:** every array of every fitted shard is identical except the timings.
   Two bugs were found on the way: a double `pop`, and a semaphore-blocked feeder that turned the resulting exception
   into a silent hang in `Pool.terminate()`.
