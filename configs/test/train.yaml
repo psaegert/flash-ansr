@@ -25,4 +25,7 @@ wandb_watch_log: null
 wandb_watch_log_freq: 1000
 
 steps: 2
+
+# Exact target gradients at any margin (FRESH_RUN_TRAIN_SETTINGS).
+cross_entropy: margin
 device: cpu

@@ -32,6 +32,7 @@ from flash_ansr.data.serialization import (
     TARGET_DIALECTS,
 )
 from flash_ansr.data.streaming import SharedMemoryWorkerPool
+from flash_ansr.data.units import UNITS_COUNTER_KEYS, validate_units_block
 from flash_ansr.utils.ieee754 import IEEE754_SPECIAL_TOKENS
 from flash_ansr.utils.numeric import NUMERIC_DTYPE
 from symbolic_data import LampleChartonCatalog, ProblemSource
@@ -119,6 +120,7 @@ class FlashANSRDataset:
         predict_y_block: "dict[str, Any] | None" = None,
         residual_block: "dict[str, Any] | None" = None,
         mask_block: "dict[str, Any] | None" = None,
+        units_block: "dict[str, Any] | None" = None,
     ) -> None:
         self.source = source
         self.tokenizer = tokenizer
@@ -221,6 +223,12 @@ class FlashANSRDataset:
                     "mask_block requires target_dialect='tagged': the per-slot site walk "
                     "is defined on the tagged canonical (the explicit path's site filters "
                     "diverge on np.pi/np.e and would break slot alignment).")
+        # Units augmentation (owner rulings 2026-10-08/09; flash_ansr.data.units): a change of units along
+        # the law's own dimensional symmetry. The dimension inference reads the TAGGED canonical target.
+        self.units_block = validate_units_block(units_block)
+        if self.units_block is not None and target_dialect != TARGET_DIALECT_TAGGED:
+            raise ValueError("units_block requires target_dialect='tagged': the law's dimensions are inferred "
+                             "on the tagged canonical target.")
         if (self.complexity_block is not None or self.predict_y_block is not None
                 or self.mask_block is not None or self.residual_block is not None):
             missing_wrappers = [t for t in ("<expression>", "</expression>") if t not in tokenizer]
@@ -252,6 +260,7 @@ class FlashANSRDataset:
             predict_y_block=self.predict_y_block,
             residual_block=self.residual_block,
             mask_block=self.mask_block,
+            units_block=self.units_block,
         )
         self._preprocessor_prompt_config = (
             copy.deepcopy(preprocessor.prompt_config) if preprocessor is not None else None
@@ -380,6 +389,7 @@ class FlashANSRDataset:
             predict_y_block=config_.get("predict_y_block"),
             residual_block=config_.get("residual_block"),
             mask_block=config_.get("mask_block"),
+            units_block=config_.get("units_block"),
         )
 
     def save(
@@ -800,7 +810,8 @@ class FlashANSRDataset:
                 # they were shipped in the payload and read by nobody). Monotone sums
                 # over the run, logged by the trainer.
                 for counter_key in ("n_skipped_task_blocks",
-                                    "n_dropped_nonfinite", "n_dropped_truncation"):
+                                    "n_dropped_nonfinite", "n_dropped_truncation",
+                                    *UNITS_COUNTER_KEYS):
                     value = metadata_and_constants.get(counter_key)
                     if value is not None:
                         self.stream_counters[counter_key] = (
