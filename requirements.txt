@@ -6,8 +6,8 @@ pyyaml
 safetensors
 scikit-learn>=1.0
 scipy>=1.7
-simplipy>=0.14.6,<0.15
-symbolic-data>=0.18,<0.19
+simplipy>=0.15,<0.16
+symbolic-data>=0.19,<0.20
 torch>=2.0
 torch_optimizer
 tqdm

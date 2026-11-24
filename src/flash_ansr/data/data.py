@@ -171,6 +171,25 @@ class FlashANSRDataset:
                     f"{list(TAGGED_DELIMITER_TOKENS)}, but the tokenizer is missing "
                     f"{missing_delimiters}."
                 )
+        # Every operator the catalog's engine knows must be in the vocabulary, and in the tagged dialect the bags of its
+        # max and min as well (SimpliPy 0.15 spells them <max> ... </max>, <min> ... </min>): simplification can produce
+        # an operator the catalog never samples -- on SimpliPy 0.15, 1 in 300 test-catalog draws carried an atan2
+        # nobody drew -- and an unknown target token kills the data worker mid-stream, where it surfaced only as a
+        # missing 'metadata' key. Refused here instead, by name.
+        engine = getattr(getattr(source, "catalog", None), "simplipy_engine", None)
+        if engine is not None:
+            engine_tokens = set(engine.operator_arity)
+            if target_dialect == TARGET_DIALECT_TAGGED:
+                for operator, bag in (("max", ("<max>", "</max>")), ("min", ("<min>", "</min>"))):
+                    if operator in engine_tokens:
+                        engine_tokens.update(bag)
+            missing_engine_tokens = sorted(token for token in engine_tokens if token not in tokenizer)
+            if missing_engine_tokens:
+                raise ValueError(
+                    f"The tokenizer has no token for {missing_engine_tokens}, which the catalog's engine can put into a "
+                    "target (simplification may produce any engine operator, sampled or not). Add them to the "
+                    "tokenizer's operators."
+                )
         self.target_dialect = target_dialect
         # v24 task blocks (owner ruling 2026-08-24): the optional <complexity> block and the
         # <predict_y> auxiliary block, requiring the expression wrappers and their block

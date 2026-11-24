@@ -277,8 +277,9 @@ class TestMdlEndToEnd:
         transform_at = source.index("refiner.transform(")
         price_at = source.index("simplipy_engine.complexity(")
         assert transform_at < price_at, "the pricer must see the realized tokens, not the emitted ones"
-        assert "mode=Mode.f64" in source and "canon='default'" in source, (
-            "mode and canon are written out, never inherited -- mode moves mu"
+        # SimpliPy 0.15 removed canon=: a mode prices in its own canonical reading (f64's is the old default canon).
+        assert "mode=Mode.f64" in source and "certified=True" in source, (
+            "mode is written out, never inherited -- mode moves mu"
         )
 
 
@@ -415,12 +416,11 @@ class TestUnpriceable:
         """
         from simplipy import Mode, SimpliPyEngine
 
-        engine = SimpliPyEngine.load("acj-5-4-llm", install=True)
+        engine = SimpliPyEngine.load("acj2-5-4-llm", install=True)
         with pytest.raises(Exception):
-            engine.complexity(["*", bad, "x1"], certified=True, mode=Mode.f64, canon="default")
+            engine.complexity(["*", bad, "x1"], certified=True, mode=Mode.f64)
         # a finite extreme is NOT a failure -- the guard must not be read as "big numbers break it"
-        assert engine.complexity(["*", "1e308", "x1"], certified=True, mode=Mode.f64,
-                                 canon="default") > 0
+        assert engine.complexity(["*", "1e308", "x1"], certified=True, mode=Mode.f64) > 0
 
     def test_a_leftover_placeholder_is_refused_not_priced(self) -> None:
         """The dangerous case: a partial substitution prices at 67,000 WITHOUT raising.

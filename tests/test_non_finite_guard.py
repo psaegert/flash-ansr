@@ -58,7 +58,7 @@ LITERAL_FREE_NAN = ['/', '-', 'x1', 'x1', '-', 'x2', 'x2']   # -> ['float("nan")
 
 
 def _engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load('acj-4-3', install=True)
+    return SimpliPyEngine.load('acj2-4-llm', install=True)
 
 
 def _model() -> FlashANSRModel:

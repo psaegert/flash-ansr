@@ -48,7 +48,7 @@ def test_every_defaulted_model_key_is_classified():
     assert set(FRESH_RUN_SETTINGS) <= keys, "every registered fix is read by from_config"
 
 
-def _model(config_dir: str, engine: str = "acj-4-3") -> FlashANSRModel:
+def _model(config_dir: str, engine: str = "acj2-4-llm") -> FlashANSRModel:
     # The engine is irrelevant to what is checked here; the suite's small one keeps the test fast.
     config = load_config(get_path("configs", config_dir, "model.yaml"))
     config["simplipy_engine"] = engine

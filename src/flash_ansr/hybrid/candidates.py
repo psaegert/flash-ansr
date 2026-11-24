@@ -245,7 +245,7 @@ def pysr_candidates(
         else:
             # no fittable literal (or no converged fit): the expression as PySR spelled it
             try:
-                mdl: float | None = float(engine.complexity(prefix, certified=True, mode=Mode.f64, canon="default"))
+                mdl: float | None = float(engine.complexity(prefix, certified=True, mode=Mode.f64))
             except Exception:  # noqa: BLE001 - unpriceable: the scorer decides (+inf under a live mdl weight)
                 mdl = None
             if mdl is not None and not np.isfinite(mdl):

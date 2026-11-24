@@ -21,7 +21,7 @@ N_VARIABLES = 4
 
 @pytest.fixture(scope="module")
 def engine() -> SimpliPyEngine:
-    return SimpliPyEngine.load('acj-4-3', install=True)
+    return SimpliPyEngine.load('acj2-4-llm', install=True)
 
 
 def test_the_default_freezes_and_offers_the_duplicate() -> None:

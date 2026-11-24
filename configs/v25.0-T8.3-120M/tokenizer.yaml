@@ -352,6 +352,12 @@ operators:
   - "<mul>"
   - "</mul>"
   - "<div>"
+  # SimpliPy 0.15: max and min are lattice bags in the tagged dialect (max(x1, x2) is <max> x1 x2 </max>; no inverse
+  # section), so a T8.3 target with either spells them with these delimiters.
+  - "<max>"
+  - "</max>"
+  - "<min>"
+  - "</min>"
   # --- the generation-2 operator set, engine order ---
   # '+', '-', '*' and '/' never appear in a tagged target (the delimiters above carry
   # them); they remain the engine's operator set for the explicit-dialect conversion and
