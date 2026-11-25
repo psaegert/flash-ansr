@@ -159,24 +159,36 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None, keep_all_ro
     parent = list(L.parent) if len(L.parent) == len(L) else [-1] * len(L)
     x_val, y_val = np.asarray(rec["x_val"], float), np.asarray(rec["y_val"], float).reshape(-1)
     fam_ids: dict[float, int] = {}                                  # family key: the draw's log-prob
+
+    def col(name: str, i: int, default: Any) -> Any:
+        c = getattr(L, name, None)
+        return c[i] if c is not None and len(c) == len(L) else default
     for i in range(len(L)):
         ri = L.result_index[i] if len(L.result_index) == len(L) else -1
-        if ri is None or ri < 0:
+        fitted = ri is not None and ri >= 0
+        if not fitted and not keep_all:                             # keep-all also stores failed / invalid rows
             continue
-        out["n_fitted"] += 1
-        try:
-            with np.errstate(all="ignore"):
-                fv = _fresh_fvu(result.predict(x_val, rank=int(ri)), y_val)
-        except Exception:  # noqa: BLE001  (a candidate that cannot be evaluated on fresh points is not kept)
-            fv = float("inf")
-        if not (np.isfinite(fv) and fv < 1.0) and not keep_all:
-            continue
+        fv = float("nan")
+        if fitted:
+            out["n_fitted"] += 1
+            try:
+                with np.errstate(all="ignore"):
+                    fv = _fresh_fvu(result.predict(x_val, rank=int(ri)), y_val)
+            except Exception:  # noqa: BLE001  (a candidate that cannot be evaluated on fresh points is not kept)
+                fv = float("inf")
+            if not (np.isfinite(fv) and fv < 1.0) and not keep_all:
+                continue
         fam = fam_ids.setdefault(float(L.log_prob[i]), len(fam_ids))
-        out["cand"].append(dict(fam=fam, tokens=list(map(int, L.token_lists[i])), fvu=float(L.fvu[i]), fvu_val=fv,
-                                mdl=float(L.mdl[i]) if len(L.mdl) == len(L) else float("nan"),
-                                score=float(L.score[i]) if len(L.score) == len(L) else float("nan"),
-                                n_constants=int(L.n_constants[i]) if len(L.n_constants) == len(L) else -1,
-                                is_variant=bool(parent[i] >= 0), log_prob=float(L.log_prob[i])))
+        row = dict(fam=fam, tokens=list(map(int, L.token_lists[i])), fvu=float(L.fvu[i]) if fitted else float("nan"),
+                   fvu_val=fv, mdl=float(col("mdl", i, float("nan"))), score=float(col("score", i, float("nan"))),
+                   n_constants=int(col("n_constants", i, -1)), is_variant=bool(parent[i] >= 0),
+                   log_prob=float(L.log_prob[i]))
+        if keep_all:   # what a refit would be needed for (owner 2026-11-26: not what is easily recomputed)
+            realized = " ".join(map(str, result.candidates[int(ri)].expression_prefix)) if fitted else ""
+            row.update(ledger_row=i, parent_row=int(parent[i]), fit_status=int(col("fit_status", i, -1)),
+                       constants=[float(c) for c in (col("constants", i, None) or [])], realized=realized,
+                       spelling=str(col("spelling", i, "") or ""))
+        out["cand"].append(row)
     # raw draw -> its dedup class's representative (first draw with the key) -> the draw's ledger row (the first
     # parentless row with that body) -> its family (log-prob)
     tok = m.tokenizer
@@ -203,6 +215,18 @@ def _write_fitted(raw_path: str, out_path: str, fits: list[dict]) -> int:
     the raw shard (aligned by position and ``draw_off``); only identifiers are repeated here."""
     cand = [c for f in fits for c in f["cand"]]
     fam_tok, fam_tok_off = shards.pack([np.asarray(c["tokens"], np.uint16) for c in cand], np.uint16)
+    full: dict[str, np.ndarray] = {}
+    if fits and all(f.get("rows_all", False) for f in fits):        # keep-all: the rest of every ledger row
+        parent_cand = []
+        for f in fits:                                              # the parent's index among the problem's stored rows
+            at = {c["ledger_row"]: j for j, c in enumerate(f["cand"])}
+            parent_cand.extend(at.get(c["parent_row"], -1) if c["parent_row"] >= 0 else -1 for c in f["cand"])
+        const, const_off = shards.pack([np.asarray(c["constants"], np.float64) for c in cand], np.float64)
+        spell, spell_off = shards.pack([np.frombuffer(c["spelling"].encode(), np.uint8) for c in cand], np.uint8)
+        real, real_off = shards.pack([np.frombuffer(c["realized"].encode(), np.uint8) for c in cand], np.uint8)
+        full = dict(fit_status=np.array([c["fit_status"] for c in cand], np.int8),
+                    parent_cand=np.array(parent_cand, np.int32), const=const, const_off=const_off,
+                    realized=real, realized_off=real_off, spelling=spell, spelling_off=spell_off)
     cand_off = np.zeros(len(fits) + 1, np.int64)
     cand_off[1:] = np.cumsum([len(f["cand"]) for f in fits])
     raw = shards.load(raw_path)
@@ -222,7 +246,7 @@ def _write_fitted(raw_path: str, out_path: str, fits: list[dict]) -> int:
                 draw_status=cat("draw_status", np.int8), draw_act=cat("draw_act", np.int32),
                 draw_fam=cat("draw_fam", np.int32), draw_gt=cat("draw_gt", bool),
                 t_refine=np.array([f.get("t_refine", 0.0) for f in fits], np.float32),
-                t_post=np.array([f.get("t_post", 0.0) for f in fits], np.float32))
+                t_post=np.array([f.get("t_post", 0.0) for f in fits], np.float32), **full)
     return len(cand)
 
 

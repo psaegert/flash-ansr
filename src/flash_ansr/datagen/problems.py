@@ -36,8 +36,12 @@ def log_uniform_k(rng: np.random.Generator, k_min: int = 1, k_max: int = 512) ->
 
 def k_sampler(spec: str) -> Callable[[np.random.Generator], int]:
     """``'log2uniform:1:512'`` (K a power of two, log2 K uniform: the packed sampler decodes equal-K problems
-    together), ``'loguniform:1:512'``, ``'uniform:1:512'`` or ``'fixed:512'`` -> callable(rng) -> int."""
-    kind, *args = spec.split(":")
+    together), ``'loguniform:1:512'``, ``'uniform:1:512'`` or ``'fixed:512'`` -> callable(rng) -> int.
+
+    A suffix ``@tag`` (e.g. ``uniform:1:512@e2``) leaves the distribution unchanged; it only changes the spec string
+    that :func:`flash_ansr.datagen.targets.assign_k` hashes, so the same problems get independent K (a second epoch
+    over the same draws with fresh K-pools and fronts)."""
+    kind, *args = spec.split("@")[0].split(":")
     if kind == "fixed":
         k = int(args[0])
         return lambda rng: k

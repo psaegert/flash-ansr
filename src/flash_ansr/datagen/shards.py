@@ -11,6 +11,11 @@ Raw shard (stage 1 -> stage 2), keys:
     draw_off [P + 1]          problem p's draws are draws draw_off[p]:draw_off[p+1]
     tok, tok_off              raw token sequences (uint16, prompt prefix included, trimmed after <eos>)
     log_prob [n_draws]        summed token log-likelihood of each draw (float32)
+  and, from 2026-11-26 (save-everything round):
+    noise [P]                 the problem's full noise draw as JSON ('' when clean)
+    meta (0-d)                the run's metadata as JSON (configuration, model sha256, code hash, versions, GPU, host)
+    tok_lp, tok_lp_off        with ``sample --token-logp``: each draw's per-token log-probs after the prompt prefix
+                              (float16; draw j has tok_lp[tok_lp_off[j]:tok_lp_off[j+1]], one per generated token)
 
 Fitted shard (stage 2 -> targets): the raw shard's identifiers (problem_id, k, skeleton, noise_level, draw_off; the
 problem data stay in the raw shard, aligned by position) and, per problem, the stored candidates: those with fresh
@@ -23,6 +28,14 @@ FVU < 1 (the kept rows), and with ``rows_all`` (``fit --keep-all-rows``) also th
                               ladder variants and typed-thaw re-fits)
     fvu, fvu_val, mdl, score  support FVU, fresh FVU (clean validation rows), price (milli-bits), ranking score
     n_constants, is_variant, log_prob_draw
+with ``rows_all`` also what a refit would be needed for, including rows that did not fit (fvu / fvu_val / mdl NaN;
+owner 2026-11-26: nothing that is easily recomputed, e.g. node counts, ranks or per-token log-probs):
+    fit_status [n_cand]       the ledger's status (FIT_OK / FIT_FAILED / INVALID codes of flash_ansr.inference)
+    realized, realized_off    the fitted candidate, constants substituted, prefix tokens space-joined (utf-8 bytes;
+                              empty without a fit): flash_ansr.inference.evaluate_prefix reproduces its predictions
+    const, const_off          the best fit's constants of the fitted (simplified) expression's slots (float64)
+    parent_cand [n_cand]      a ladder variant's parent as an index among the problem's stored rows (-1: none)
+    spelling, spelling_off    the constant-ladder spelling (utf-8 bytes; empty for a fitted draw)
 and, per raw draw (aligned with the raw shard's draws through ``draw_off``):
     draw_status               0 ok, 1 no expression, 2 malformed span, 3 invalid, 4 non-finite simplification,
                               5 representative not in the ledger (``fit.STATUS_NAMES``)
@@ -36,6 +49,7 @@ Target shard (stage 3 -> training): see :mod:`flash_ansr.datagen.targets`; no pr
 """
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterator, Sequence
 
@@ -80,8 +94,24 @@ def load(path: str, keys: tuple[str, ...] | None = None) -> dict[str, np.ndarray
         return {k: z[k] for k in (z.files if keys is None else keys)}
 
 
-def write_raw_shard(path: str, problems: list, draws: list[tuple[list[list[int]], list[float]]]) -> None:
-    """``problems``: :class:`flash_ansr.datagen.problems.Problem`; ``draws[p]``: (token lists, log-probs)."""
+def _json(value: Any) -> str:
+    """JSON with numpy scalars and arrays converted ('' for None)."""
+    if value is None:
+        return ""
+
+    def conv(v: Any) -> Any:
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if isinstance(v, np.generic):
+            return v.item()
+        return str(v)
+    return json.dumps(value, default=conv)
+
+
+def write_raw_shard(path: str, problems: list, draws: list[tuple[list[list[int]], list[float]]],
+                    meta: str | None = None, token_logp: list[list[np.ndarray]] | None = None) -> None:
+    """``problems``: :class:`flash_ansr.datagen.problems.Problem`; ``draws[p]``: (token lists, log-probs);
+    ``token_logp[p]``: per draw, its per-token log-probs after the prompt prefix; ``meta``: the run's JSON."""
     x, x_off, x_cols = pack2d([p.x for p in problems])
     x_val, x_val_off, x_val_cols = pack2d([p.x_val for p in problems])
     y_noisy, y_off = pack([p.y_noisy for p in problems], np.float64)
@@ -92,12 +122,19 @@ def write_raw_shard(path: str, problems: list, draws: list[tuple[list[list[int]]
     log_prob = np.concatenate([np.asarray(lp, np.float32) for _, lp in draws]) if seqs else np.zeros(0, np.float32)
     draw_off = np.zeros(len(problems) + 1, np.int64)
     draw_off[1:] = np.cumsum([len(toks) for toks, _ in draws])
+    extra: dict[str, np.ndarray] = dict(noise=np.array([_json(p.noise) for p in problems]))
+    if meta is not None:
+        extra["meta"] = np.array(meta)
+    if token_logp is not None:
+        assert [len(t) for t in token_logp] == [len(toks) for toks, _ in draws]
+        extra["tok_lp"], extra["tok_lp_off"] = pack([np.asarray(a, np.float16) for t in token_logp for a in t],
+                                                    np.float16)
     save(path, problem_id=np.array([p.problem_id for p in problems]), k=np.array([p.k for p in problems], np.int32),
          skeleton=np.array([" ".join(p.skeleton) for p in problems]),
          noise_level=np.array([float((p.noise or {}).get("level", 0.0) or 0.0) for p in problems]),
          x=x, x_off=x_off, x_cols=x_cols, y_noisy=y_noisy, y=y, y_off=y_off,
          x_val=x_val, x_val_off=x_val_off, x_val_cols=x_val_cols, y_val=y_val, y_val_off=y_val_off,
-         draw_off=draw_off, tok=tok, tok_off=tok_off, log_prob=log_prob)
+         draw_off=draw_off, tok=tok, tok_off=tok_off, log_prob=log_prob, **extra)
 
 
 def iter_raw_shard(path: str) -> Iterator[dict[str, Any]]:
@@ -111,4 +148,7 @@ def iter_raw_shard(path: str) -> Iterator[dict[str, Any]]:
                    y=unpack(z["y"], z["y_off"], p), x_val=unpack2d(z["x_val"], z["x_val_off"], z["x_val_cols"], p),
                    y_val=unpack(z["y_val"], z["y_val_off"], p),
                    tokens=[z["tok"][z["tok_off"][j]:z["tok_off"][j + 1]].astype(np.int64).tolist() for j in range(d0, d1)],
-                   log_prob=z["log_prob"][d0:d1].astype(float).tolist())
+                   log_prob=z["log_prob"][d0:d1].astype(float).tolist(),
+                   noise=str(z["noise"][p]) if "noise" in z else "",
+                   token_logp=([z["tok_lp"][z["tok_lp_off"][j]:z["tok_lp_off"][j + 1]] for j in range(d0, d1)]
+                               if "tok_lp" in z else None))

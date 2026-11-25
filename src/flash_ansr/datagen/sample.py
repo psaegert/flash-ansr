@@ -38,11 +38,12 @@ from flash_ansr.datagen import shards
 @torch.no_grad()
 def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max_len: int,
                 generator: torch.Generator | None = None, check_every: int = 8, compact: bool = True,
-                compact_frac: float = 0.25) -> tuple[torch.Tensor, torch.Tensor]:
+                compact_frac: float = 0.25, token_logp: bool = False) -> tuple[torch.Tensor, ...]:
     """Sample ``rows`` sequences for each of the ``G = memory.shape[0]`` groups (one memory per group).
 
     Returns ``(sequences (G*rows, max_len) long, scores (G*rows,) float)``; rows are group-major. Rows after
-    ``<eos>`` hold ``<pad>``.
+    ``<eos>`` hold ``<pad>``. ``token_logp``: also the log-prob of every sampled token, ``(G*rows, max_len)`` float32
+    (0 at the prompt and after ``<eos>``; a row's sum is its score).
 
     Compaction (``compact``): every ``check_every`` steps, once at least ``compact_frac`` of the active groups have
     finished every row, those groups are written out and dropped. The kept rows move to the front of the existing
@@ -82,6 +83,8 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
     seqs = torch.full((B, max_len), pad, device=device, dtype=torch.long)
     seqs[:, :L0] = prefix[0]
     scores = torch.zeros(B, device=device, dtype=torch.float32)
+    tlp = torch.zeros((B, max_len), device=device, dtype=torch.float32) if token_logp else None
+    out_tlp = torch.zeros((B, max_len), device=device, dtype=torch.float32) if token_logp else None
     finished = torch.zeros(B, device=device, dtype=torch.bool)
     row_id = torch.arange(B, device=device)          # original row of each active row
     next_logits = logits_pre[:, -1, :].float().repeat_interleave(rows, dim=0)
@@ -90,7 +93,10 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
         sampled = torch.multinomial(logp.exp(), 1, generator=generator).squeeze(-1)
         sampled = torch.where(finished, torch.full_like(sampled, pad), sampled)
         seqs[:, t] = sampled
-        scores += torch.where(finished, torch.zeros_like(scores), logp.gather(1, sampled.unsqueeze(-1)).squeeze(-1))
+        step = torch.where(finished, torch.zeros_like(scores), logp.gather(1, sampled.unsqueeze(-1)).squeeze(-1))
+        scores += step
+        if tlp is not None:
+            tlp[:, t] = step
         finished |= sampled == eos
         if t == max_len - 1:
             break
@@ -104,6 +110,8 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
                     done_rows = gdone.repeat_interleave(rows)
                     out_seqs[row_id[done_rows]] = seqs[done_rows]
                     out_scores[row_id[done_rows]] = scores[done_rows]
+                    if tlp is not None:
+                        out_tlp[row_id[done_rows]] = tlp[done_rows]
                     kg = (~gdone).nonzero().squeeze(1)
                     kr = (~done_rows).nonzero().squeeze(1)
                     nb = int(kr.numel())
@@ -118,11 +126,16 @@ def decode_pack(m: Any, memory: torch.Tensor, rows: int, prompt_prefix: Any, max
                     if memory.shape[0] > 1:
                         memory = memory[kg]
                     seqs, scores, finished, row_id = seqs[kr], scores[kr], finished[kr], row_id[kr]
+                    if tlp is not None:
+                        tlp = tlp[kr]
         b = int(seqs.shape[0])
         num_step = None if numeric is None else numeric[t].expand(b).reshape(b, 1, 1)
         next_logits = m.forward_static(seqs[:, t:t + 1], num_step, memory, sc, position=t)[:, -1, :]
     out_seqs[row_id] = seqs
     out_scores[row_id] = scores
+    if tlp is not None:
+        out_tlp[row_id] = tlp
+        return out_seqs, out_scores, out_tlp
     return out_seqs, out_scores
 
 
@@ -187,6 +200,41 @@ def _chunks(ks: list[int], chunk_rows: int) -> list[tuple[int, int]]:
     return [(i, min(chunk_rows, k - c * chunk_rows)) for i, k in enumerate(ks) for c in range(-(-k // chunk_rows))]
 
 
+def run_meta(**config: Any) -> str:
+    """JSON of a run's configuration plus what is needed to reproduce or audit it: the model's sha256, a hash of this
+    package's source (the Helix copy has no git), the library versions, the GPU and the host."""
+    import hashlib
+    import json
+    import platform
+    import socket
+
+    def sha(path: str) -> str | None:
+        if not os.path.exists(path):
+            return None
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                h.update(block)
+        return h.hexdigest()
+    here = os.path.dirname(os.path.abspath(__file__))
+    code = hashlib.sha256()
+    for name in sorted(os.listdir(here)):
+        if name.endswith(".py"):
+            code.update(name.encode())
+            code.update(open(os.path.join(here, name), "rb").read())
+    versions = {}
+    for mod in ("flash_ansr", "torch", "numpy", "simplipy", "symbolic_data"):
+        try:
+            versions[mod] = getattr(__import__(mod), "__version__", "?")
+        except Exception:  # noqa: BLE001
+            versions[mod] = None
+    meta = dict(config, model_sha256=sha(os.path.join(config.get("model_dir", ""), "model.safetensors")),
+                datagen_code_sha256=code.hexdigest(), versions=versions, python=platform.python_version(),
+                gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, host=socket.gethostname(),
+                started=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    return json.dumps(meta, default=str)
+
+
 def _produce(prior_dir: str, seed: int, k_spec: str, n_problems: int, shard_problems: int, q: Any) -> None:
     """Problem producer (a spawned process, no CUDA): the serial path's problem stream, in shard-sized batches."""
     try:
@@ -243,7 +291,7 @@ class _Batches:
 def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str = "fixed:512",
         max_len: int = 128, shard_problems: int = 256, rows_target: int = 4096, chunk_rows: int = 8,
         device: str = "cuda", amp: str = "tf32", verify_every: int = 0, prior_dir: str | None = None,
-        overlap: bool = True) -> None:
+        overlap: bool = True, token_logp: bool = False) -> None:
     """Draw ``n_problems`` problems (seed ``seed``), sample their pools packed in groups of ``chunk_rows`` rows (0:
     equal-K packing), write raw shards to ``out_dir``.
 
@@ -254,6 +302,10 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     ``overlap``: keep the GPU busy while the CPU works: the next shards' problems are generated in a separate process,
     and each finished shard is packed and written in a background thread while the next one decodes. The output is
     identical to the serial path's (same problems, same draws, same files).
+
+    ``token_logp``: also store every sampled token's log-prob (float16, ``tok_lp``; a draw's sum is its log-prob up to
+    float16 rounding). Every shard carries the run's metadata (``meta``, JSON: configuration, model sha256, a hash of
+    this package's code, versions, GPU, host).
 
     Resumable at shard granularity: shards already on disk are skipped (the problem stream is replayed). Each shard
     samples with its own generator, seeded from (``seed``, shard index), so a resumed run writes the same shards as an
@@ -270,6 +322,7 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
     m = w.flash_ansr_model.eval()
     pp = w._prepare_prompt_prefix(emission="fittable", complexity=None)
     eos, pad = int(m.tokenizer["<eos>"]), int(m.tokenizer["<pad>"])
+    L0 = len(m._resolve_generation_prefix(prompt_prefix=pp, initial_tokens=None, input_num=None)[0])
     gen = torch.Generator(device=device)
     autocast = torch.autocast("cuda", dtype=torch.bfloat16) if amp == "bf16" else nullcontext()
     if str(device).startswith("cuda") and chunk_rows > 0:
@@ -282,6 +335,9 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
             print(f"[sample] rows per decode capped {rows_target} -> {fit_rows} by free GPU memory "
                   f"({per_row / 2 ** 20:.1f} MiB of cache per row)", flush=True)
             rows_target = max(chunk_rows, fit_rows)
+    meta = run_meta(model_dir=model_dir, prior_dir=prior_dir or model_dir, seed=int(seed), k_spec=k_spec,
+                    max_len=max_len, shard_problems=shard_problems, rows_target=rows_target, chunk_rows=chunk_rows,
+                    amp=amp, token_logp=bool(token_logp), device=str(device))
     writer = ThreadPoolExecutor(max_workers=1) if overlap else None
     pending = None
     sync = torch.cuda.synchronize if str(device).startswith("cuda") else (lambda: None)
@@ -297,6 +353,7 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
         gen.manual_seed(int(np.random.SeedSequence([int(seed), s // shard_problems]).generate_state(1, np.uint64)[0]))
         toks: list[list[list[int]]] = [[] for _ in batch]
         lps: list[list[float]] = [[] for _ in batch]
+        tlps: list[list[np.ndarray]] = [[] for _ in batch]
         if chunk_rows > 0:
             tp = time.time()
             with torch.no_grad(), autocast:
@@ -319,29 +376,35 @@ def run(model_dir: str, out_dir: str, *, n_problems: int, seed: int, k_spec: str
                     mem = torch.cat([mems[i] if mems is not None else
                                      m._create_memory(data_tensor(w, batch[i].x, batch[i].y_noisy, device))
                                      for i, _ in grp], 0)
-                    seqs, sc = decode_pack(m, mem, rows, pp, max_len, generator=gen)
+                    res = decode_pack(m, mem, rows, pp, max_len, generator=gen, token_logp=token_logp)
+                    seqs, sc = res[0], res[1]
                 if verify_every and (s // shard_problems) % verify_every == 0 and j == 0:
                     err = verify(m, mem, seqs, sc, rows, pp)
                     print(f"[sample] verify R={rows} G={len(grp)}: max |score - teacher-forced log p| = {err:.2e} nats "
                           f"(sampled under {amp}, teacher-forced under TF32)", flush=True)
                 seqs, sc = seqs.cpu(), sc.cpu()
+                Tl = res[2].cpu().numpy() if token_logp else None
                 ph["decode"] += time.time() - tp
                 tp = time.time()
                 S, C = seqs.tolist(), sc.tolist()
                 for g, (i, used) in enumerate(grp):
-                    toks[i].extend(trim(S[r], eos, pad) for r in range(g * rows, g * rows + used))
+                    rr = [trim(S[r], eos, pad) for r in range(g * rows, g * rows + used)]
+                    toks[i].extend(rr)
                     lps[i].extend(C[r] for r in range(g * rows, g * rows + used))
+                    if Tl is not None:
+                        tlps[i].extend(Tl[g * rows + q, L0:len(x)].astype(np.float16) for q, x in enumerate(rr))
                 ph["host"] += time.time() - tp
                 n_rows += len(grp) * rows
                 n_used += sum(u for _, u in grp)
         assert all(len(t) == p.k for t, p in zip(toks, batch))
         tp = time.time()
+        extra = dict(meta=meta, token_logp=tlps if token_logp else None)
         if writer is None:
-            shards.write_raw_shard(path, batch, list(zip(toks, lps)))
+            shards.write_raw_shard(path, batch, list(zip(toks, lps)), **extra)
         else:                                       # at most one shard in flight; its errors surface here
             if pending is not None:
                 pending.result()
-            pending = writer.submit(shards.write_raw_shard, path, batch, list(zip(toks, lps)))
+            pending = writer.submit(shards.write_raw_shard, path, batch, list(zip(toks, lps)), **extra)
         ph["write"] = time.time() - tp
         done += len(batch)
         el = time.time() - t0

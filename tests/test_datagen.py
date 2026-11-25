@@ -301,19 +301,26 @@ def test_overlapped_sampler_equals_serial(tmp_path):
     S.run(MODEL, str(tmp_path / "ovl"), overlap=True, **kw)
     names = sorted(os.listdir(tmp_path / "ser"))
     assert len(names) == 3 and names == sorted(os.listdir(tmp_path / "ovl"))
-    for f in names:
-        a, b = shards.load(str(tmp_path / "ser" / f)), shards.load(str(tmp_path / "ovl" / f))
+    import json
+
+    def same(a, b, what):
         assert set(a) == set(b)
         for k in a:
-            np.testing.assert_array_equal(a[k], b[k], err_msg=f"{f}: {k}")
+            if k == "meta":      # provenance: identical except when the run started
+                ma, mb = json.loads(str(a[k])), json.loads(str(b[k]))
+                ma.pop("started"), mb.pop("started")
+                assert ma == mb, what
+            else:
+                np.testing.assert_array_equal(a[k], b[k], err_msg=f"{what}: {k}")
+    for f in names:
+        same(shards.load(str(tmp_path / "ser" / f)), shards.load(str(tmp_path / "ovl" / f)), f)
     # resume: delete the middle shard; a rerun rewrites exactly it, the others are skipped and stay untouched
     os.remove(tmp_path / "ovl" / names[1])
     t_other = os.path.getmtime(tmp_path / "ovl" / names[0])
     S.run(MODEL, str(tmp_path / "ovl"), overlap=True, **kw)
     assert os.path.getmtime(tmp_path / "ovl" / names[0]) == t_other
-    a, b = shards.load(str(tmp_path / "ser" / names[1])), shards.load(str(tmp_path / "ovl" / names[1]))
-    for k in a:
-        np.testing.assert_array_equal(a[k], b[k], err_msg=f"resumed {names[1]}: {k}")
+    same(shards.load(str(tmp_path / "ser" / names[1])), shards.load(str(tmp_path / "ovl" / names[1])),
+         f"resumed {names[1]}")
 
 
 def test_negatives_dominance_layers_and_V():
@@ -409,3 +416,87 @@ def test_keep_all_rows_refit_and_negatives(tmp_path):
             assert pos in drawn and neg in drawn and pos != neg
             assert ng["pos_dom_b"][i] <= ng["neg_b"][i] + 1e-6 and ng["pos_dom_y"][i] <= ng["neg_y"][i] + 1e-6
             assert ng["layer"][i] >= 2
+
+
+@needs_model
+def test_save_everything_fields(tmp_path):
+    """The save-everything round: per-token log-probs sum to each draw's score (decoder and shard), every shard carries
+    the run's metadata and the noise draw, and a keep-all fit stores the rest of each ledger row consistently."""
+    import json
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import fit as FIT
+    from flash_ansr.datagen import sample as S
+    torch.manual_seed(0)
+    # decoder: per-token log-probs, compaction included
+    w = FlashANSR.load(directory=MODEL)
+    m = w.flash_ansr_model.eval()
+    pp = w._prepare_prompt_prefix(emission="fittable", complexity=None)
+    probs = list(itertools.islice(PR.problem_stream(MODEL, seed=71, k_spec="fixed:16"), 3))
+    with torch.no_grad():
+        mem = torch.cat([m._create_memory(S.data_tensor(w, p.x, p.y_noisy, "cpu")) for p in probs])
+        g = torch.Generator().manual_seed(0)
+        seqs, sc, tlp = S.decode_pack(m, mem, 8, pp, 64, generator=g, token_logp=True, check_every=2)
+        g = torch.Generator().manual_seed(0)
+        seqs2, sc2 = S.decode_pack(m, mem, 8, pp, 64, generator=g, check_every=2)
+    assert torch.equal(seqs, seqs2) and torch.equal(sc, sc2)            # the option changes nothing else
+    np.testing.assert_allclose(tlp.sum(1).numpy(), sc.numpy(), rtol=1e-5, atol=1e-4)
+    # shards
+    raw = str(tmp_path / "raw")
+    S.run(MODEL, raw, n_problems=3, seed=71, k_spec="fixed:16", shard_problems=3, device="cpu", amp="fp32",
+          token_logp=True, overlap=False)
+    (name,) = os.listdir(raw)
+    z = shards.load(os.path.join(raw, name))
+    meta = json.loads(str(z["meta"]))
+    assert meta["seed"] == 71 and meta["token_logp"] and len(meta["datagen_code_sha256"]) == 64
+    assert len(z["noise"]) == 3
+    L0 = len(m._resolve_generation_prefix(prompt_prefix=pp, initial_tokens=None, input_num=None)[0])
+    for j in range(len(z["log_prob"])):
+        a = z["tok_lp"][z["tok_lp_off"][j]:z["tok_lp_off"][j + 1]].astype(np.float64)
+        assert len(a) == z["tok_off"][j + 1] - z["tok_off"][j] - L0
+        assert abs(a.sum() - z["log_prob"][j]) <= 2e-3 * len(a) + 1e-3      # float16 per token
+    # keep-all fit: the rest of the ledger rows
+    w2 = FlashANSR.load(directory=MODEL, refine={"n_restarts": 2}, compute={"device": "cpu", "workers": 0})
+    FIT._W.update(w=w2, pp=w2._prepare_prompt_prefix(emission="fittable", complexity=None), keep_all=True)
+    try:
+        FIT._fit_shard((os.path.join(raw, name), str(tmp_path / "fit.npz")))
+    finally:
+        FIT._W["keep_all"] = False
+    f = shards.load(str(tmp_path / "fit.npz"))
+    n = len(f["mdl"])
+    for k in ("fit_status", "parent_cand"):
+        assert len(f[k]) == n, k
+    for k in ("const_off", "spelling_off", "realized_off"):
+        assert len(f[k]) == n + 1, k
+    assert (f["n_rows"].sum() == n) and (f["n_kept"] <= f["n_rows"]).all()
+    # a stored fitted row is re-evaluable without a refit: its realized expression reproduces the fresh FVU exactly
+    from flash_ansr.inference import evaluate_prefix
+    rw = shards.load(os.path.join(raw, name))
+    checked = 0
+    for p in range(len(f["problem_id"])):
+        xv = shards.unpack2d(rw["x_val"], rw["x_val_off"], rw["x_val_cols"], p)
+        yv = shards.unpack(rw["y_val"], rw["y_val_off"], p)
+        for j in range(int(f["cand_off"][p]), int(f["cand_off"][p + 1])):
+            expr = bytes(f["realized"][f["realized_off"][j]:f["realized_off"][j + 1]]).decode()
+            if not np.isfinite(f["fvu_val"][j]):
+                continue
+            pred = evaluate_prefix(w2.simplipy_engine, expr.split(), xv, n_variables=w2.n_variables)
+            fv = FIT._fresh_fvu(pred, yv)
+            assert fv == f["fvu_val"][j] or abs(fv - f["fvu_val"][j]) <= 1e-12 * max(1.0, abs(fv)), (expr, fv)
+            checked += 1
+    assert checked > 10
+    for p in range(len(f["problem_id"])):                                   # parents are rows of the same problem
+        c0, c1 = int(f["cand_off"][p]), int(f["cand_off"][p + 1])
+        pc = f["parent_cand"][c0:c1]
+        assert ((pc == -1) | ((pc >= 0) & (pc < c1 - c0))).all()
+        assert (f["is_variant"][c0:c1][pc >= 0]).all()
+
+
+def test_k_spec_epoch_suffix():
+    """``spec@tag`` keeps the distribution and gives every problem an independent K (a second epoch's fresh K-pools)."""
+    from flash_ansr.datagen.targets import assign_k
+    ids = [f"p7_{i:08d}" for i in range(3000)]
+    a = np.array([assign_k(i, "uniform:1:512") for i in ids])
+    b = np.array([assign_k(i, "uniform:1:512@e2") for i in ids])
+    assert a.min() >= 1 and b.min() >= 1 and a.max() <= 512 and b.max() <= 512
+    assert (a == b).mean() < 0.01 and abs(a.mean() - b.mean()) < 15
+    assert [assign_k(i, "uniform:1:512@e2") for i in ids[:50]] == list(b[:50])     # deterministic
