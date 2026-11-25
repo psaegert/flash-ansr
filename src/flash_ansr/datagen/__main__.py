@@ -4,7 +4,10 @@
                                         [--max-len 128] [--rows 4096] [--chunk-rows 8] [--amp tf32|bf16|fp32]
                                         [--verify-every 0] [--serial]
     python -m flash_ansr.datagen fit --model-dir M --raw RAW --out FIT [--workers W] [--part i/n] [--restarts R]
+                                     [--keep-all-rows]
     python -m flash_ansr.datagen targets --raw RAW --fit FIT --out TGT --k-spec SPEC [--workers W] [--part i/n]
+    python -m flash_ansr.datagen negatives --raw RAW --fit FIT --out NEG --k-spec SPEC [--pairs 8] [--workers W]
+                                           [--part i/n]
 """
 import argparse
 
@@ -34,6 +37,8 @@ def main() -> None:
     f.add_argument("--workers", type=int, default=None)
     f.add_argument("--part", default="0/1")
     f.add_argument("--restarts", type=int, default=None)
+    f.add_argument("--keep-all-rows", action="store_true",
+                   help="also store rows with fresh FVU >= 1 (the T23 negatives need them; fronts ignore them)")
     t = sub.add_parser("targets", help="stage 3 (CPU): front-member and control targets from fitted shards")
     t.add_argument("--raw", required=True)
     t.add_argument("--fit", required=True)
@@ -41,6 +46,14 @@ def main() -> None:
     t.add_argument("--k-spec", required=True, help="training pool size per problem, e.g. uniform:1:512, fixed:512")
     t.add_argument("--workers", type=int, default=None)
     t.add_argument("--part", default="0/1")
+    g = sub.add_parser("negatives", help="stage 3b (CPU): T23 dominance pairs (y+, y-) from fitted shards")
+    g.add_argument("--raw", required=True)
+    g.add_argument("--fit", required=True)
+    g.add_argument("--out", required=True)
+    g.add_argument("--k-spec", required=True, help="the K spec of the front targets the pairs go with")
+    g.add_argument("--pairs", type=int, default=8, help="pairs per problem (fewer if fewer eligible negatives)")
+    g.add_argument("--workers", type=int, default=None)
+    g.add_argument("--part", default="0/1")
     a = ap.parse_args()
     if a.cmd == "sample":
         from flash_ansr.datagen import sample
@@ -50,7 +63,12 @@ def main() -> None:
     elif a.cmd == "fit":
         from flash_ansr.datagen import fit
         i, n = (int(v) for v in a.part.split("/"))
-        fit.run(a.raw, a.out, a.model_dir, workers=a.workers, n_restarts=a.restarts, part=(i, n))
+        fit.run(a.raw, a.out, a.model_dir, workers=a.workers, n_restarts=a.restarts, part=(i, n),
+                keep_all_rows=a.keep_all_rows)
+    elif a.cmd == "negatives":
+        from flash_ansr.datagen import negatives
+        i, n = (int(v) for v in a.part.split("/"))
+        negatives.run(a.raw, a.fit, a.out, k_spec=a.k_spec, pairs=a.pairs, workers=a.workers, part=(i, n))
     else:
         from flash_ansr.datagen import targets
         i, n = (int(v) for v in a.part.split("/"))

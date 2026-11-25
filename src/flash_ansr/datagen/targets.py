@@ -90,7 +90,8 @@ def problem_targets(problem_id: str, k: int, tok_of: Callable[[int], tuple[int, 
     act, fam = draw_act[:k], draw_fam[:k]
     present = np.unique(fam[fam >= 0])
     use = (np.isfinite(cand_mdl) & np.isfinite(cand_fvu_val) & np.isfinite(cand_score)
-           & np.isin(cand_fam, present))                 # only the families this pool contains
+           & np.isin(cand_fam, present)                  # only the families this pool contains
+           & (cand_fvu_val < 1.0))                       # fronts use FVU < 1 rows only (shards may keep all rows)
     fl = y_floor(noise_level)
     cy = np.maximum(np.log10(np.maximum(cand_fvu_val[use], EPS)), fl)
     acts, afam, front = pool_front(act, fam, cand_fam[use], cand_mdl[use] / 1000.0, cy)
@@ -107,7 +108,7 @@ def problem_targets(problem_id: str, k: int, tok_of: Callable[[int], tuple[int, 
         return res
 
     f_acts = acts[front]
-    kept = acts[afam >= 0]
+    kept = acts[np.isin(afam, np.unique(cand_fam[use]))]   # actions with a row of fresh FVU < 1
     rng = np.random.default_rng(zlib.crc32(problem_id.encode()))
     c_acts = rng.choice(kept, size=min(len(f_acts), len(kept)), replace=False) if len(f_acts) else kept[:0]
     return dict(front=weighted(f_acts), ctrl=weighted(np.sort(c_acts)), n_actions=len(acts), n_kept_actions=len(kept),

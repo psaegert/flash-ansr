@@ -13,11 +13,13 @@ Raw shard (stage 1 -> stage 2), keys:
     log_prob [n_draws]        summed token log-likelihood of each draw (float32)
 
 Fitted shard (stage 2 -> targets): the raw shard's identifiers (problem_id, k, skeleton, noise_level, draw_off; the
-problem data stay in the raw shard, aligned by position) and, per problem, the kept candidates (fresh-point FVU < 1):
-    n_raw [P], n_distinct [P], n_fitted [P], n_kept [P], cand_off [P + 1]
-    fam_tok, fam_tok_off      per kept candidate: its beam, i.e. the raw emission of the first draw of its dedup
+problem data stay in the raw shard, aligned by position) and, per problem, the stored candidates: those with fresh
+FVU < 1 (the kept rows), and with ``rows_all`` (``fit --keep-all-rows``) also those with fresh FVU >= 1 or inf:
+    n_raw [P], n_distinct [P], n_fitted [P], n_kept [P] (rows with fresh FVU < 1), n_rows [P] (stored rows),
+    cand_off [P + 1], rows_all (0-d bool; absent in shards written before 2026-11-26, which keep FVU < 1 rows only)
+    fam_tok, fam_tok_off      per stored candidate: its beam, i.e. the raw emission of the first draw of its dedup
                               class, prompt prefix included
-    fam_id [n_cand]           kept-family index within the problem (the rows sharing a draw's log-prob: its fit,
+    fam_id [n_cand]           family index within the problem (the rows sharing a draw's log-prob: its fit,
                               ladder variants and typed-thaw re-fits)
     fvu, fvu_val, mdl, score  support FVU, fresh FVU (clean validation rows), price (milli-bits), ranking score
     n_constants, is_variant, log_prob_draw
@@ -25,7 +27,10 @@ and, per raw draw (aligned with the raw shard's draws through ``draw_off``):
     draw_status               0 ok, 1 no expression, 2 malformed span, 3 invalid, 4 non-finite simplification,
                               5 representative not in the ledger (``fit.STATUS_NAMES``)
     draw_act                  index of the draw's distinct raw expression within the problem (-1: none)
-    draw_fam                  the kept family the draw collapsed into (-1: none kept)
+    draw_gt                   the draw's simplified expression is the problem's true skeleton (shards from
+                              2026-11-26 on; the T23 negatives never use such a draw as a negative)
+    draw_fam                  the family the draw collapsed into (-1: none stored; without ``rows_all`` a family is
+                              stored only if it has a row with fresh FVU < 1)
 
 Target shard (stage 3 -> training): see :mod:`flash_ansr.datagen.targets`; no problem data either.
 """
@@ -69,9 +74,10 @@ def save(path: str, **arrays: np.ndarray) -> None:
     os.replace(tmp, path)
 
 
-def load(path: str) -> dict[str, np.ndarray]:
+def load(path: str, keys: tuple[str, ...] | None = None) -> dict[str, np.ndarray]:
+    """The shard's arrays, or only ``keys`` (npz members decompress on access, so the rest are never read)."""
     with np.load(path, allow_pickle=False) as z:
-        return {k: z[k] for k in z.files}
+        return {k: z[k] for k in (z.files if keys is None else keys)}
 
 
 def write_raw_shard(path: str, problems: list, draws: list[tuple[list[list[int]], list[float]]]) -> None:

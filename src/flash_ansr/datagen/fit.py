@@ -3,8 +3,9 @@
 Per problem: the deployed post-processing (extract, simplify, deduplicate; :meth:`FlashANSRModel._postprocess_sampled`,
 the same call the chunked sampler makes), then :meth:`FlashANSR._fit_refine` (refit with the configured restarts,
 constant ladder) and :meth:`FlashANSR._build_result` (two-part ranking). Every fitted ledger row is scored on the
-problem's clean validation rows (fresh-point FVU). Rows whose fresh FVU is not below 1 are dropped (worse than the
-mean on fresh points). A FAMILY is the set of ledger rows of one deduplicated draw: its fit, its constant-ladder
+problem's clean validation rows (fresh-point FVU). Rows whose fresh FVU is not below 1 (worse than the mean on fresh
+points) are dropped by default; ``keep_all_rows`` stores them too (shard flag ``rows_all``), for targets that rank
+the junk as well (the T23 negatives). The front targets use only rows with fresh FVU below 1 either way. A FAMILY is the set of ledger rows of one deduplicated draw: its fit, its constant-ladder
 variants (``parent`` set) and its typed-thaw re-fits (same beam, no parent); they share the draw's log-prob, which is
 the family key, exactly as the offline oracle (flash-ansr-rl ``target_check_v2``) groups them. Each kept row records
 its beam, the raw emission of the first draw of its dedup class (post-processing deduplicates on the simplified
@@ -47,14 +48,14 @@ def _dump_stacks_later() -> None:
         faulthandler.dump_traceback_later(int(secs), repeat=True, file=sys.stderr)
 
 
-def _init_worker(model_dir: str, n_restarts: int | None) -> None:
+def _init_worker(model_dir: str, n_restarts: int | None, keep_all_rows: bool = False) -> None:
     _dump_stacks_later()
     import torch
     torch.set_num_threads(1)
     from flash_ansr import FlashANSR
     refine = {"n_restarts": int(n_restarts)} if n_restarts is not None else None
     w = FlashANSR.load(directory=model_dir, refine=refine, compute={"device": "cpu", "workers": 0})
-    _W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None))
+    _W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None), keep_all=bool(keep_all_rows))
 
 
 def _fresh_fvu(pred: np.ndarray, y_val: np.ndarray) -> float:
@@ -100,9 +101,22 @@ def trace_draws(m: Any, seqs: list[list[int]]) -> tuple[list[tuple[int, tuple | 
     return out, {k: list(v) for k, v in cache.items() if v is not None}
 
 
-def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
-    """Fit one raw-shard problem record -> kept candidates, the per-draw map and counts (see
-    :mod:`flash_ansr.datagen.shards`)."""
+def _truth_key(m: Any, skeleton: str) -> tuple | None:
+    """The problem's true skeleton through the draws' own pipeline (constantify, simplify): the dedup key a draw of the
+    true law carries. ``None`` if it cannot be read (then no draw is flagged)."""
+    from flash_ansr.utils.skeleton import simplify_realized
+    try:
+        expression = m.tokenizer.constantify_expression(skeleton.split(), exact=True)
+        return tuple(simplify_realized(m.simplipy_engine, list(expression)))
+    except Exception:  # noqa: BLE001 - an unreadable skeleton flags nothing
+        return None
+
+
+def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None, keep_all_rows: bool | None = None) -> dict:
+    """Fit one raw-shard problem record -> stored candidates, the per-draw map and counts (see
+    :mod:`flash_ansr.datagen.shards`). ``keep_all_rows`` (default: the worker's setting, else False) also stores the
+    rows with fresh FVU >= 1 (or not evaluable on fresh points, FVU inf); the default keeps only FVU < 1."""
+    keep_all = _W.get("keep_all", False) if keep_all_rows is None else bool(keep_all_rows)
     from flash_ansr.flash_ansr import Generation
     from flash_ansr.utils.tensor_ops import pad_input_set
     w = w if w is not None else _W["w"]
@@ -114,11 +128,15 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
                                                   valid_only=True, simplify_map=smap)
     n_raw = len(rec["tokens"])
     status = np.array([t[0] for t in trace], np.int8)
+    truth = _truth_key(m, str(rec.get("skeleton", "")))
+    draw_gt = np.array([truth is not None and t[2] == truth for t in trace], bool)   # draws of the true law
     act_of_raw: dict[tuple, int] = {}
     draw_act = np.array([act_of_raw.setdefault(t[1], len(act_of_raw)) if t[1] is not None else -1 for t in trace],
                         np.int32)
     out: dict[str, Any] = dict(n_raw=n_raw, n_distinct=len(seqs), n_fitted=0, cand=[], t_post=time.time() - t0,
-                               draw_status=status, draw_act=draw_act, draw_fam=np.full(n_raw, -1, np.int32))
+                               rows_all=keep_all,
+                               draw_status=status, draw_act=draw_act, draw_fam=np.full(n_raw, -1, np.int32),
+                               draw_gt=draw_gt)
     if not seqs:
         return out
     y = np.asarray(rec["y_noisy"], float).reshape(-1, 1)
@@ -151,7 +169,7 @@ def fit_problem(rec: dict, w: Any = None, prompt_prefix: Any = None) -> dict:
                 fv = _fresh_fvu(result.predict(x_val, rank=int(ri)), y_val)
         except Exception:  # noqa: BLE001  (a candidate that cannot be evaluated on fresh points is not kept)
             fv = float("inf")
-        if not (np.isfinite(fv) and fv < 1.0):
+        if not (np.isfinite(fv) and fv < 1.0) and not keep_all:
             continue
         fam = fam_ids.setdefault(float(L.log_prob[i]), len(fam_ids))
         out["cand"].append(dict(fam=fam, tokens=list(map(int, L.token_lists[i])), fvu=float(L.fvu[i]), fvu_val=fv,
@@ -194,13 +212,15 @@ def _write_fitted(raw_path: str, out_path: str, fits: list[dict]) -> int:
     shards.save(out_path, **keep, n_raw=np.array([f["n_raw"] for f in fits], np.int32),
                 n_distinct=np.array([f["n_distinct"] for f in fits], np.int32),
                 n_fitted=np.array([f["n_fitted"] for f in fits], np.int32),
-                n_kept=np.array([len(f["cand"]) for f in fits], np.int32), cand_off=cand_off,
+                n_kept=np.array([sum(c["fvu_val"] < 1.0 for c in f["cand"]) for f in fits], np.int32),
+                n_rows=np.array([len(f["cand"]) for f in fits], np.int32), cand_off=cand_off,
+                rows_all=np.array(bool(fits and all(f.get("rows_all", False) for f in fits))),
                 fam_tok=fam_tok, fam_tok_off=fam_tok_off, fam_id=col("fam", np.int32), fvu=col("fvu", np.float64),
                 fvu_val=col("fvu_val", np.float64), mdl=col("mdl", np.float64), score=col("score", np.float64),
                 n_constants=col("n_constants", np.int16), is_variant=col("is_variant", bool),
                 log_prob_draw=col("log_prob", np.float32),
                 draw_status=cat("draw_status", np.int8), draw_act=cat("draw_act", np.int32),
-                draw_fam=cat("draw_fam", np.int32),
+                draw_fam=cat("draw_fam", np.int32), draw_gt=cat("draw_gt", bool),
                 t_refine=np.array([f.get("t_refine", 0.0) for f in fits], np.float32),
                 t_post=np.array([f.get("t_post", 0.0) for f in fits], np.float32))
     return len(cand)
@@ -223,7 +243,7 @@ def _fit_task(task: tuple[tuple[int, int], dict]) -> tuple[tuple[int, int], dict
 
 
 def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = None, n_restarts: int | None = None,
-        part: tuple[int, int] = (0, 1), shards_in_flight: int = 4) -> None:
+        part: tuple[int, int] = (0, 1), shards_in_flight: int = 4, keep_all_rows: bool = False) -> None:
     """Fit every raw shard in ``raw_dir`` not yet fitted in ``out_dir``; ``part = (i, n)`` takes every n-th shard
     starting at i (one SLURM array task per part). Resumable: finished shards are skipped.
 
@@ -241,7 +261,8 @@ def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = Non
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         os.environ.setdefault(var, "1")     # one core per worker; inherited by the spawned workers before numpy loads
     _dump_stacks_later()
-    print(f"[fit] {len(jobs)} shards to fit with {workers} workers, problem-level (part {part})", flush=True)
+    print(f"[fit] {len(jobs)} shards to fit with {workers} workers, problem-level (part {part})"
+          + (", all rows kept" if keep_all_rows else ""), flush=True)
     slots = threading.BoundedSemaphore(max(1, shards_in_flight))
     stop = threading.Event()               # set on any exit, so the feeder never blocks Pool.terminate()
     n_of: dict[int, int] = {}
@@ -262,7 +283,7 @@ def run(raw_dir: str, out_dir: str, model_dir: str, *, workers: int | None = Non
 
     t0, n_prob, n_cand, done = time.time(), 0, 0, 0
     pending: dict[int, dict[int, dict]] = {}
-    with get_context("spawn").Pool(workers, initializer=_init_worker, initargs=(model_dir, n_restarts)) as pool:
+    with get_context("spawn").Pool(workers, initializer=_init_worker, initargs=(model_dir, n_restarts, keep_all_rows)) as pool:
         try:
             for (si, p), res in pool.imap_unordered(_fit_task, tasks(), chunksize=1):
                 pending.setdefault(si, {})[p] = res

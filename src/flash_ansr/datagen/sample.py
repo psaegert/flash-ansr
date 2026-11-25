@@ -201,7 +201,9 @@ def _produce(prior_dir: str, seed: int, k_spec: str, n_problems: int, shard_prob
 class _Batches:
     """Shard-sized problem batches in stream order. ``overlap``: a spawned producer process runs ``prefetch`` batches
     ahead of the GPU (a process, not a thread: the decode loop is Python-bound and would contend for the GIL).
-    Otherwise inline. Both give identical problems: the same stream, consumed in the same order."""
+    Otherwise inline. Both give identical problems: the same stream, consumed in the same order. The producer is
+    spawned, so a calling script must guard its entry point (``if __name__ == "__main__":``), as for any spawn-based
+    multiprocessing; the CLI does."""
 
     def __init__(self, prior_dir: str, seed: int, k_spec: str, n_problems: int, shard_problems: int, overlap: bool,
                  prefetch: int = 2):
@@ -223,7 +225,8 @@ class _Batches:
                 b = self.q.get(timeout=60)
             except queue.Empty:
                 if not self.proc.is_alive():
-                    raise RuntimeError(f"problem producer died (exit code {self.proc.exitcode})")
+                    raise RuntimeError(f"problem producer died (exit code {self.proc.exitcode}); a script calling "
+                                       f"sample.run must guard its entry point with `if __name__ == '__main__':`")
                 continue
             if isinstance(b, str):
                 raise RuntimeError(f"problem producer failed:\n{b}")

@@ -63,8 +63,13 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
      per worker.
    - **Parallelism is per problem.** At most 4 shards are loaded at once, and a shard is written when its last
      problem returns, so a node never idles on a last, partial wave of shards.
-   - Each ledger row gets a fresh-point FVU on the clean validation rows. Rows with fresh FVU >= 1 are dropped.
-   - Every raw draw is traced to its status, its action (distinct raw expression) and its kept family.
+   - Each ledger row gets a fresh-point FVU on the clean validation rows. Rows with fresh FVU >= 1 are dropped by
+     default; `--keep-all-rows` (2026-11-26) stores them too (shard flag `rows_all`). The front and control targets
+     use only rows with fresh FVU < 1 either way (tested: identical targets from both shards). The negatives need the
+     FVU >= 1 rows: their MDL cannot be recovered from the raw tokens, since the price is taken after the fitted
+     expression is canonicalized, which can collapse it.
+   - Every raw draw is traced to its status, its action (distinct raw expression), its family, and whether its
+     simplified expression is the problem's true skeleton (`draw_gt`, 2026-11-26).
    - Workers default to one BLAS thread each.
    - `DG_FAULTHANDLER=<s>` dumps every thread's stack every s seconds, to diagnose a hang without ptrace.
    - Output: fitted shards (identifiers, kept candidates, the per-draw map).
@@ -76,6 +81,19 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
    - Every problem is recorded; one with an empty front has `n_front = 0` and no target.
    - Output: one target directory per spec (`tgt_uniform_1_512`, `tgt_fixed_512`, ...), with sequences, weights and
      K only. The trainer reads the problem data from the raw shard of the same name.
+4. **Negatives (CPU nodes; T23 design v5, owner-approved 2026-11-25)**: `datagen/negatives.py`,
+   `python -m flash_ansr.datagen negatives --k-spec SPEC [--pairs 8]`, from an all-rows fit.
+   - Dominance pairs (y+, y-) per problem at its K: y- draw-uniform over the K-pool's non-members (status ok, a stored
+     row, not the true law), y+ uniform over the K-pool front members that dominate y-'s best-FVU row.
+   - An action's rows are its FVU < 1 rows if any, else its FVU >= 1 rows; y = log10 FVU_val unclipped above. The
+     virtual point V = (-inf bits, y = 0) dominates every FVU >= 1-only action, so layer 1 is exactly the front, and V
+     is never a positive. A y- that only V dominates is dropped and counted.
+   - Each pair carries y-'s layer in the problem's full pool (non-dominated sorting, built once per problem: family-
+     wise dominance between two actions does not depend on the pool); the trainer weights by log2(layer), the layer,
+     or 1.
+   - Output: one negative directory per spec (`neg_uniform_1_512`), with the pairs' sequences, layers and the
+     representative rows, plus per-problem counts (invalid, unfitted, true-law, dropped) and layer statistics. The
+     flash-ansr-rl t23 tools add the reference log-probs (`ref_logprobs.py`) and the build report (`neg_report.py`).
 
 ## Definitions (as the offline oracle, so the oracle's numbers apply to these targets)
 - **Family:** the ledger rows of one deduplicated draw: its fit, its constant-ladder variants (`parent` set) and its
@@ -102,13 +120,19 @@ job scripts: flash-ansr-rl `runs/datagen/helix/` (`dg_submit.sh` chains the stag
   | noisy training | 13% | 0.97 |
   | black-box | 28% | 0.93 |
 
-## Gates (all passed, 2026-11-19 and 2026-11-21; `tests/test_datagen.py`: 12 passed)
+## Gates (all passed, 2026-11-19, 2026-11-21 and 2026-11-26; `tests/test_datagen.py`: 14 passed)
 - **Stage 1 == the model's distribution:** every row's accumulated score equals its teacher-forced log-likelihood
   under the plain dynamic forward and its own problem's memory. This holds for equal-K packing, chunked mixed-K
   packing and compaction.
   - Max deviation: 2.3e-5 nats on T8-3M and 1.5e-5 on 120M in fp32; 3e-3 to 7e-3 nats on 120M under TF32.
 - **Stage 2 == the deployed `FlashANSR.fit`** on the same raw draws (sampler monkeypatched to return them): identical
   fitted-row count and kept-row support FVUs.
+- **All-rows fit == default fit where it matters:** the same FVU < 1 rows (values and families), identical front and
+  control targets; the refit of existing data is checked shard by shard (`neg_report.py`).
+- **Negatives:** on a hand-made pool, family-wise dominance, V and the layers equal a naive repeated peeling, and the
+  pair rules hold (y+ dominates y-'s best row; a draw only V dominates is dropped). On real 3M pools every pair's
+  sequences are first-K draws, y+'s dominating row dominates y-'s representative, every y- lies in layer >= 2, and the
+  K-pool front size equals the front targets'.
 - **Overlapped sampling == serial sampling:** byte-identical raw shards; a run resumed after deleting a shard
   rewrites exactly that shard, identically.
 - **Problem-parallel fitting == serial fitting:** every array of every fitted shard is identical except the timings.

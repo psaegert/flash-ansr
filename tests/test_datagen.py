@@ -314,3 +314,98 @@ def test_overlapped_sampler_equals_serial(tmp_path):
     a, b = shards.load(str(tmp_path / "ser" / names[1])), shards.load(str(tmp_path / "ovl" / names[1]))
     for k in a:
         np.testing.assert_array_equal(a[k], b[k], err_msg=f"resumed {names[1]}: {k}")
+
+
+def test_negatives_dominance_layers_and_V():
+    """Hand-made pool: family-wise dominance, V = (-inf bits, 0) over FVU >= 1-only actions, Kahn layers = repeated
+    peeling, and the pair rules (y+ dominates y-'s best row; a draw only V dominates is dropped)."""
+    from flash_ansr.datagen import negatives as NG
+    from flash_ansr.datagen.fit import DRAW_OK, INVALID
+    # rows: (family, bits, fvu_val)
+    rows = [(0, 5.0, 10 ** -2.0), (1, 10.0, 10 ** -3.0), (2, 12.0, 10 ** -1.0), (2, 9.0, 10 ** -0.5),
+            (3, 7.0, 10 ** 0.2), (4, 3.0, 10 ** 0.5)]
+    cand_fam = np.array([r[0] for r in rows]); cand_mdl = np.array([r[1] * 1000 for r in rows])
+    cand_fvu = np.array([r[2] for r in rows]); cand_score = np.zeros(len(rows))
+    # draws: actions 0..4 (family = action), plus an invalid draw and a repeat of action 3
+    draw_act = np.array([0, 1, 2, 3, 4, -1, 3]); draw_fam = np.array([0, 1, 2, 3, 4, -1, 3])
+    draw_status = np.array([DRAW_OK] * 5 + [INVALID, DRAW_OK]); draw_gt = np.zeros(7, bool)
+    usable = np.ones(len(rows), bool)
+    acts, R = NG.action_rows(draw_status, draw_act, draw_fam, cand_fam, cand_fvu, usable)
+    b = cand_mdl / 1000.0; y = np.log10(cand_fvu)
+    FD, M, vdom = NG.dominance(R, b, y)
+    assert list(vdom) == [False, False, False, True, True]
+    # family 2's rows (12, -1) and (9, -0.5): (10, -3) covers only the first (it is longer than 9 bits), so family 1
+    # does not dominate family 2; (5, -2) covers both, so family 0 does
+    assert not FD[1, 2] and FD[0, 2]
+    L = NG.layers(FD, vdom)
+    # naive peeling for comparison, V in layer 1
+    rem, naive, lay = set(range(5)), {}, 1
+    while rem:
+        top = {x for x in rem if not any(FD[z, x] for z in rem) and not (lay == 1 and vdom[x])}
+        for x in top:
+            naive[x] = lay
+        rem -= top
+        lay += 1
+    assert [naive[i] for i in range(5)] == list(L) == [1, 1, 2, 2, 2]
+    tok = {d: (1, 9, 100 + d, 2) for d in range(7)}
+    out = NG.problem_negatives("p", 7, "fixed:7", lambda d: tok[d], draw_status, draw_act, draw_fam, draw_gt, cand_fam,
+                               cand_mdl, cand_fvu, cand_score, 0.0, pairs=8)
+    assert out["n_front_k"] == 2 and out["n_invalid"] == 1
+    assert out["n_drop_vonly"] == 1                    # action 4 (3 bits, FVU > 1): only V dominates it
+    negs = sorted(p["neg"][2] - 100 for p in out["pairs"])
+    assert negs == [2, 3, 6]                           # draws of actions 2 and 3 (twice); never 4, never the members
+    for p in out["pairs"]:
+        assert p["pos"][2] - 100 in (0, 1)
+        assert p["pos_dom_b"] <= p["neg_b"] and p["pos_dom_y"] <= p["neg_y"]
+        assert (p["pos_dom_b"] < p["neg_b"]) or (p["pos_dom_y"] < p["neg_y"])
+        if p["neg"][2] - 100 in (3, 6):
+            assert p["neg_kind"] == 1 and p["pos"][2] - 100 == 0   # only (5 bits) is no longer than 7 bits
+
+
+@needs_model
+def test_keep_all_rows_refit_and_negatives(tmp_path):
+    """fit with keep_all_rows stores the same FVU < 1 rows as the default fit (plus FVU >= 1 ones), the front
+    targets built from either shard are identical, and the negatives built from it satisfy the pair invariants and
+    agree with the front targets' front."""
+    from flash_ansr import FlashANSR
+    from flash_ansr.datagen import fit as FIT
+    from flash_ansr.datagen import negatives as NG
+    from flash_ansr.datagen import sample as S
+    from flash_ansr.datagen import targets as TG
+    torch.manual_seed(0)
+    raw = str(tmp_path / "raw")
+    S.run(MODEL, raw, n_problems=4, seed=51, k_spec="fixed:24", shard_problems=4, device="cpu", amp="fp32")
+    w = FlashANSR.load(directory=MODEL, refine={"n_restarts": 2}, compute={"device": "cpu", "workers": 0})
+    FIT._W.update(w=w, pp=w._prepare_prompt_prefix(emission="fittable", complexity=None))
+    (name,) = os.listdir(raw)
+    for tag, keep in (("def", False), ("all", True)):
+        os.makedirs(tmp_path / tag)
+        FIT._W["keep_all"] = keep
+        FIT._fit_shard((os.path.join(raw, name), str(tmp_path / tag / name)))
+    FIT._W["keep_all"] = False
+    a, b = shards.load(str(tmp_path / "def" / name)), shards.load(str(tmp_path / "all" / name))
+    assert bool(b["rows_all"]) and not bool(a["rows_all"])
+    assert (b["n_rows"] >= b["n_kept"]).all() and (a["n_kept"] == b["n_kept"]).all()
+    lt1 = b["fvu_val"] < 1.0
+    key = lambda z, m: sorted(zip(z["log_prob_draw"][m].round(5), z["mdl"][m], z["fvu_val"][m]))  # noqa: E731
+    assert key(a, np.ones(len(a["mdl"]), bool)) == key(b, lt1)
+    assert (b["fvu_val"] >= 1.0).any(), "expected some FVU >= 1 rows in the 3M pools"
+    for tag in ("def", "all"):
+        TG._targets_shard((os.path.join(raw, name), str(tmp_path / tag / name), str(tmp_path / f"t_{tag}.npz"), "fixed:24"))
+    ta, tb = shards.load(str(tmp_path / "t_def.npz")), shards.load(str(tmp_path / "t_all.npz"))
+    for k in ("n_front", "front_off", "front_tok", "front_tok_off", "front_w", "ctrl_tok", "n_kept_actions"):
+        np.testing.assert_array_equal(ta[k], tb[k], err_msg=k)
+    NG._negatives_shard((os.path.join(raw, name), str(tmp_path / "all" / name), str(tmp_path / "n.npz"), "fixed:24", 8))
+    ng = shards.load(str(tmp_path / "n.npz"))
+    np.testing.assert_array_equal(ng["n_front_k"], tb["n_front"])
+    assert ng["n_pairs"].sum() > 0
+    rw = shards.load(os.path.join(raw, name))
+    for p in range(len(ng["problem_id"])):
+        d0, d1 = int(rw["draw_off"][p]), int(rw["draw_off"][p + 1])
+        drawn = {tuple(rw["tok"][rw["tok_off"][d]:rw["tok_off"][d + 1]].tolist()) for d in range(d0, d1)}
+        for i in range(int(ng["pair_off"][p]), int(ng["pair_off"][p + 1])):
+            pos = tuple(ng["pos_tok"][ng["pos_tok_off"][i]:ng["pos_tok_off"][i + 1]].tolist())
+            neg = tuple(ng["neg_tok"][ng["neg_tok_off"][i]:ng["neg_tok_off"][i + 1]].tolist())
+            assert pos in drawn and neg in drawn and pos != neg
+            assert ng["pos_dom_b"][i] <= ng["neg_b"][i] + 1e-6 and ng["pos_dom_y"][i] <= ng["neg_y"][i] + 1e-6
+            assert ng["layer"][i] >= 2
